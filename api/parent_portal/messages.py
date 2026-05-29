@@ -36,7 +36,14 @@ from models.database import (
 )
 from models.portfolio import ATTACHMENT_OWNER_MESSAGE
 from schemas._common import OkStatusOut, UnreadCountOut
-from schemas.parent_portal_messages import MessageRecallOut
+from schemas.parent_portal_messages import (
+    MessageRecallOut,
+    ParentPortalMessageAttachmentOut,
+    ParentPortalMessageListOut,
+    ParentPortalMessageReplyOut,
+    ParentPortalMessageThreadListOut,
+    ParentPortalMessageThreadOut,
+)
 from services.parent_message_service import (
     append_message,
     assert_thread_participant,
@@ -334,7 +341,7 @@ def _get_thread_for_parent(
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 
-@router.get("/threads")
+@router.get("/threads", response_model=ParentPortalMessageThreadListOut)
 def list_threads(
     cursor: Optional[int] = Query(None, ge=0),
     limit: int = Query(20, ge=1, le=100),
@@ -364,7 +371,7 @@ def list_threads(
     return {"items": items, "next_cursor": next_cursor}
 
 
-@router.get("/threads/{thread_id}")
+@router.get("/threads/{thread_id}", response_model=ParentPortalMessageThreadOut)
 def get_thread(
     thread_id: int,
     current_user: dict = Depends(require_parent_role()),
@@ -375,7 +382,7 @@ def get_thread(
     return _thread_summary(session, thread=t, parent_user_id=user_id)
 
 
-@router.get("/threads/{thread_id}/messages")
+@router.get("/threads/{thread_id}/messages", response_model=ParentPortalMessageListOut)
 def list_messages(
     thread_id: int,
     cursor: Optional[int] = Query(None, ge=0),
@@ -397,7 +404,7 @@ def list_messages(
     return {"items": items, "next_cursor": next_cursor}
 
 
-@router.post("/threads/{thread_id}/messages", status_code=201)
+@router.post("/threads/{thread_id}/messages", status_code=201, response_model=ParentPortalMessageReplyOut)
 def post_reply(
     thread_id: int,
     payload: ReplyMessage,
@@ -436,7 +443,11 @@ def post_reply(
     }
 
 
-@router.post("/threads/{thread_id}/messages/{message_id}/attach", status_code=201)
+@router.post(
+    "/threads/{thread_id}/messages/{message_id}/attach",
+    status_code=201,
+    response_model=ParentPortalMessageAttachmentOut,
+)
 async def attach_to_message(
     thread_id: int,
     message_id: int,
