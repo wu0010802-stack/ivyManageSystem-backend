@@ -28,6 +28,12 @@ from utils.portfolio_access import (
     is_unrestricted,
 )
 from services.student_leave_service import REMARK_PREFIX
+from schemas.student_attendance import (
+    StudentAttendanceDailyOverviewOut,
+    StudentAttendanceDailyOut,
+    StudentAttendanceBatchSaveResultOut,
+    StudentAttendanceByStudentOut,
+)
 from api.exports import (
     SafeWorksheet,
     _sanitize_excel_value,
@@ -227,7 +233,7 @@ class BatchSaveRequest(BaseModel):
 # ============ Routes ============
 
 
-@router.get("/student-attendance/overview")
+@router.get("/student-attendance/overview", response_model=StudentAttendanceDailyOverviewOut)
 async def get_daily_attendance_overview(
     date: str = Query(..., description="YYYY-MM-DD"),
     school_year: Optional[int] = Query(
@@ -251,7 +257,7 @@ async def get_daily_attendance_overview(
         session.close()
 
 
-@router.get("/student-attendance")
+@router.get("/student-attendance", response_model=StudentAttendanceDailyOut)
 async def get_daily_attendance(
     date: str = Query(..., description="YYYY-MM-DD"),
     classroom_id: int = Query(...),
@@ -305,7 +311,7 @@ async def get_daily_attendance(
         session.close()
 
 
-@router.post("/student-attendance/batch")
+@router.post("/student-attendance/batch", response_model=StudentAttendanceBatchSaveResultOut)
 async def batch_save_attendance(
     payload: BatchSaveRequest,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
@@ -380,7 +386,7 @@ async def batch_save_attendance(
         session.close()
 
 
-@router.get("/student-attendance/by-student")
+@router.get("/student-attendance/by-student", response_model=StudentAttendanceByStudentOut)
 async def get_attendance_by_student(
     student_id: int = Query(..., gt=0),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
