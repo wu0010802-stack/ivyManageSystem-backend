@@ -26,11 +26,6 @@ api/activity/registrations_payments.py:delete_registration_payment
 api/activity/registrations_static.py:batch_update_payment
 api/activity/registrations_static.py:export_registrations
 api/activity/registrations_static.py:export_payment_report
-api/activity/settings.py:get_registration_time
-api/activity/settings.py:update_registration_time
-api/activity/settings.py:upload_activity_poster
-api/activity/settings.py:get_changes
-api/activity/settings.py:get_class_options
 api/activity/stats.py:get_stats
 api/activity/stats.py:get_stats_summary
 api/activity/stats.py:get_stats_charts
@@ -179,11 +174,6 @@ api/parent_portal/leaves.py:get_leave
 api/parent_portal/leaves.py:upload_leave_attachment
 api/parent_portal/measurements.py:parent_list_measurements
 api/parent_portal/measurements.py:parent_measurement_chart
-api/parent_portal/messages.py:list_threads
-api/parent_portal/messages.py:get_thread
-api/parent_portal/messages.py:list_messages
-api/parent_portal/messages.py:post_reply
-api/parent_portal/messages.py:attach_to_message
 api/parent_portal/milestones.py:parent_list_milestones
 api/parent_portal/milestones.py:parent_react
 api/parent_portal/milestones.py:parent_acknowledge
@@ -333,9 +323,6 @@ api/students.py:get_student_profile
 api/system_config.py:list_configs
 api/system_config.py:get_config
 api/system_config.py:upsert_config
-api/vendor_payments.py:list_vendor_payments
-api/vendor_payments.py:get_vendor_payment
 api/vendor_payments.py:get_signature_image
-api/vendor_payments.py:upload_attachment
 api/vendor_payments.py:download_attachment
 api/year_end/appraisal_payout.py:delete_payouts

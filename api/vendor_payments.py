@@ -26,6 +26,11 @@ from sqlalchemy.orm import joinedload
 
 from models.database import Employee, VendorPayment, get_session
 from schemas._common import DeleteResultOut, MutationResultOut
+from schemas.vendor_payments import (
+    VendorPaymentAttachmentMetaOut,
+    VendorPaymentListOut,
+    VendorPaymentOut,
+)
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.file_upload import (
@@ -200,7 +205,7 @@ def _load_payment(session, payment_id: int) -> VendorPayment:
 
 
 # ─── Endpoints ───────────────────────────────────────────────────────────
-@router.get("/vendor-payments")
+@router.get("/vendor-payments", response_model=VendorPaymentListOut)
 async def list_vendor_payments(
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
@@ -255,7 +260,7 @@ async def list_vendor_payments(
         session.close()
 
 
-@router.get("/vendor-payments/{payment_id}")
+@router.get("/vendor-payments/{payment_id}", response_model=VendorPaymentOut)
 async def get_vendor_payment(
     payment_id: int,
     current_user: dict = Depends(
@@ -438,7 +443,7 @@ async def get_signature_image(
         session.close()
 
 
-@router.post("/vendor-payments/{payment_id}/attachments", status_code=201)
+@router.post("/vendor-payments/{payment_id}/attachments", status_code=201, response_model=VendorPaymentAttachmentMetaOut)
 async def upload_attachment(
     payment_id: int,
     request: Request,
