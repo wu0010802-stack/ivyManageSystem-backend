@@ -206,6 +206,72 @@ def test_validation_error_envelope():
     assert isinstance(detail["request_id"], str) and detail["request_id"]
 
 
+def _bare_request():
+    """最小 Starlette Request（無 middleware 注入 request_id → 走 handler fallback）。"""
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/x",
+            "headers": [],
+            "query_string": b"",
+        }
+    )
+
+
+def test_validation_handler_handles_non_serializable_ctx():
+    """custom validator 拋 ValueError → Pydantic 把 ValueError 實例放進 errors()[i]['ctx']。
+
+    回歸：validation_error_handler 未過 jsonable_encoder 時，JSONResponse.render 的
+    json.dumps 會二次拋 TypeError → 變成沒有 envelope 的裸 500、X-Request-ID 也丟失。
+    errors 結構鏡像 Pydantic v2 對 value_error 的實際輸出（已實測 pydantic 2.13）。
+    """
+    import asyncio
+    import json
+
+    from fastapi.exceptions import RequestValidationError
+
+    from utils.exception_handlers import validation_error_handler
+
+    exc = RequestValidationError(
+        [
+            {
+                "type": "value_error",
+                "loc": ("body", "amount"),
+                "msg": "Value error, amount 不可為負",
+                "input": -1,
+                "ctx": {"error": ValueError("amount 不可為負")},
+            }
+        ]
+    )
+    resp = asyncio.run(validation_error_handler(_bare_request(), exc))
+    assert resp.status_code == 422
+    body = json.loads(resp.body)
+    assert body["detail"]["code"] == "VALIDATION_ERROR"
+    assert isinstance(body["detail"]["errors"], list) and body["detail"]["errors"]
+    assert body["detail"]["request_id"]
+    assert resp.headers["X-Request-ID"] == body["detail"]["request_id"]
+
+
+def test_business_handler_handles_non_serializable_extra():
+    """BusinessError.extra 帶非 JSON 物件（如 set）時，handler 不應崩潰成裸 500。"""
+    import asyncio
+    import json
+
+    from utils.exception_handlers import business_error_handler
+
+    exc = BusinessError(
+        "LEAVE_OVERLAP", "已有重疊請假", 400, extra={"overlap_ids": {1, 2, 3}}
+    )
+    resp = asyncio.run(business_error_handler(_bare_request(), exc))
+    assert resp.status_code == 400
+    body = json.loads(resp.body)
+    assert body["detail"]["code"] == "LEAVE_OVERLAP"
+    assert sorted(body["detail"]["overlap_ids"]) == [1, 2, 3]
+
+
 # ---------------------------------------------------------------------------
 # Unhandled Exception → 500 envelope
 # ---------------------------------------------------------------------------
