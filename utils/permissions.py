@@ -4,7 +4,7 @@ Permission definitions for fine-grained access control
 """
 
 from enum import Enum
-from typing import List, Dict
+from typing import List, Dict, NamedTuple, Optional
 
 WILDCARD = "*"
 
@@ -702,9 +702,7 @@ def get_permissions_definition(session) -> Dict:
     }
 
 
-# === PermissionGrant + resolve_grant (added Task 2) ===
-
-from typing import NamedTuple, Optional
+# === PermissionGrant + resolve_grant ===
 
 
 class PermissionGrant(NamedTuple):
@@ -717,19 +715,23 @@ _SCOPE_BREADTH = {"own_class": 0, "all": 1}
 
 
 def resolve_grant(user, code: str) -> Optional[PermissionGrant]:
-    """Resolve a user's grant for a permission code.
+    """解析使用者對特定權限 code 的 grant（含 scope 限定詞）。
+
+    解析規則：
+        wildcard '*'              → ('all')
+        bare 'STUDENTS_READ'      → ('all')        # 向後相容
+        'STUDENTS_READ:own_class' → ('own_class')
+        同時含 bare 與 scoped     → 取較寬鬆者（'all'）
+        多個 scoped 並存          → 取最寬鬆者
+        permission_names 為 None / 空 → None
+        所有 scope 皆無效字串     → None（fail-closed，避免誤升權）
+
+    Args:
+        user: 須有 .permission_names 屬性
+        code: 權限 enum 字串值（如 'STUDENTS_READ'）
 
     Returns:
-        PermissionGrant(code, scope) where scope is 'all' / 'own_class' / None.
-        None if user does not hold this permission.
-
-    Rules:
-        - wildcard '*' → ('all')
-        - bare 'STUDENTS_READ' → ('all')  [backward compat]
-        - 'STUDENTS_READ:own_class' → ('own_class')
-        - both bare and scoped present → broader (all) wins
-        - multiple scoped → broadest wins
-        - None / empty permission_names → None
+        PermissionGrant(code, scope) 或 None
     """
     names = getattr(user, "permission_names", None) or []
     if WILDCARD in names:

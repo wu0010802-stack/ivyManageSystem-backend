@@ -36,7 +36,7 @@ def test_resolve_grant_bare_and_scoped_takes_broader():
     assert g.scope == "all"
 
 
-def test_resolve_grant_two_scoped_invalid_takes_broader():
+def test_resolve_grant_two_scoped_takes_broader():
     g = resolve_grant(
         _user("STUDENTS_READ:own_class", "STUDENTS_READ:all"), "STUDENTS_READ"
     )
@@ -50,4 +50,9 @@ def test_resolve_grant_empty_permission_names():
 
 def test_resolve_grant_none_permission_names():
     user = SimpleNamespace(permission_names=None, employee_id=1)
+    assert resolve_grant(user, "STUDENTS_READ") is None
+
+def test_resolve_grant_unknown_scope_only_returns_none():
+    """User with only an invalid scope string falls fail-closed to None (no silent upgrade)."""
+    user = SimpleNamespace(permission_names=["STUDENTS_READ:bogus_scope"], employee_id=1)
     assert resolve_grant(user, "STUDENTS_READ") is None
