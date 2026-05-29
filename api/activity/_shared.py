@@ -756,6 +756,44 @@ def _fetch_reg_supplies(session, reg_ids: list) -> dict:
     return supply_map
 
 
+def query_valid_session_registrations(
+    db_session,
+    course_id: int,
+    registration_ids: list,
+    *,
+    classroom_ids: list | None = None,
+) -> list:
+    """回傳本場次「有效報名」的 (registration_id, student_id) tuple 列表。
+
+    有效 = ActivityRegistration.is_active、match_status != 'rejected'，且確實報了
+    course_id 對應課程（RegistrationCourse.status IN ('enrolled','promoted_pending')）。
+    供 admin 點名與 portal 點名共用，避免兩處重複定義「有效報名」規則。
+
+    classroom_ids=None   → 不限班級（管理端 / 開放後的 portal，跨班）。
+    classroom_ids=[...]   → 額外限定 ActivityRegistration.classroom_id IN(...)（保留彈性）。
+    registration_ids 為空 → 回 []（不打 DB）。
+    """
+    if not registration_ids:
+        return []
+    query = (
+        db_session.query(ActivityRegistration.id, ActivityRegistration.student_id)
+        .join(
+            RegistrationCourse,
+            RegistrationCourse.registration_id == ActivityRegistration.id,
+        )
+        .filter(
+            ActivityRegistration.id.in_(registration_ids),
+            ActivityRegistration.is_active.is_(True),
+            ActivityRegistration.match_status != "rejected",
+            RegistrationCourse.course_id == course_id,
+            RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+        )
+    )
+    if classroom_ids is not None:
+        query = query.filter(ActivityRegistration.classroom_id.in_(classroom_ids))
+    return query.all()
+
+
 def _build_session_detail_response(
     db_session,
     sess: "ActivitySession",

@@ -18,15 +18,16 @@ from sqlalchemy.exc import IntegrityError
 from models.database import get_session
 from models.activity import (
     ActivityCourse,
-    ActivityRegistration,
     ActivitySession,
     ActivityAttendance,
-    RegistrationCourse,
 )
 from utils.auth import get_current_user, require_staff_permission
 from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
-from api.activity._shared import _build_session_detail_response
+from api.activity._shared import (
+    _build_session_detail_response,
+    query_valid_session_registrations,
+)
 from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
 from schemas.activity_admin import (
     ActivityAttendanceBatchUpdateResultOut,
@@ -381,22 +382,8 @@ def batch_update_attendance(
         # 並要求 registration 必須真的報了本 session 對應的課程（enrolled 或
         # promoted_pending 皆算佔位）；避免操作員為「未報該課」的學生寫出席紀錄
         # 污染統計與 student_id 冗餘欄位。一併取 student_id 供冗餘欄位使用。
-        valid_reg_rows = (
-            session.query(ActivityRegistration.id, ActivityRegistration.student_id)
-            .join(
-                RegistrationCourse,
-                RegistrationCourse.registration_id == ActivityRegistration.id,
-            )
-            .filter(
-                ActivityRegistration.id.in_(req_reg_ids),
-                ActivityRegistration.is_active.is_(True),
-                ActivityRegistration.match_status != "rejected",
-                RegistrationCourse.course_id == sess.course_id,
-                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
-            )
-            .all()
-            if req_reg_ids
-            else []
+        valid_reg_rows = query_valid_session_registrations(
+            session, sess.course_id, req_reg_ids
         )
         valid_reg_ids = {row[0] for row in valid_reg_rows}
         reg_student_map = dict(valid_reg_rows)
