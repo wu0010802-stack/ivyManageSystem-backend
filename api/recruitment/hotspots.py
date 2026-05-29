@@ -11,6 +11,7 @@ from sqlalchemy import case, func
 from models.base import session_scope
 from models.recruitment import RecruitmentGeocodeCache, RecruitmentVisit
 from services import recruitment_market_intelligence as market_service
+from services.geocoding_service import truncate_address_to_lane
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -49,6 +50,7 @@ def _query_address_hotspots(
         rows_query.filter(
             RecruitmentVisit.address.isnot(None),
             func.length(normalized_address) > 0,
+            RecruitmentVisit.geocoding_consent_at.isnot(None),
         )
         .group_by(normalized_address, RecruitmentVisit.district)
         .all()
@@ -57,7 +59,12 @@ def _query_address_hotspots(
     merged: dict[str, dict] = {}
     records_with_address = 0
     for row in rows:
-        address = (row.address or "").strip()
+        raw_address = (row.address or "").strip()
+        if not raw_address:
+            continue
+        # PII 降精度：以巷級 truncated address 為 hotspot key
+        # (dialect-agnostic: SQL 只 trim，Python 端 truncate 後再 group)
+        address = truncate_address_to_lane(raw_address)
         if not address:
             continue
 
