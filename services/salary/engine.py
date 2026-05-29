@@ -124,7 +124,9 @@ def _pull_pending_payout_logs(session, salary_record) -> None:
         log.salary_record_id = salary_record.id
 
 
-def _fill_salary_record(salary_record, breakdown, engine, session=None):
+def _fill_salary_record(
+    salary_record, breakdown, engine, session=None, appraisal_bonus=None
+):
     """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
 
     若 SalaryRecord.manual_overrides 不為空,清單內欄位視為「人工調整鎖定」,
@@ -193,11 +195,16 @@ def _fill_salary_record(salary_record, breakdown, engine, session=None):
 
     # 考核年終獎金（2 月發放；不進 gross_salary；source of truth = special_bonus_items）
     if session is not None:
-        salary_record.appraisal_year_end_bonus = query_appraisal_year_end_bonus(
-            session,
-            salary_record.employee_id,
-            salary_record.salary_year,
-            salary_record.salary_month,
+        # 批次路徑可注入預載 appraisal（Decimal，None=單筆路徑照常 query）；型別一致。
+        salary_record.appraisal_year_end_bonus = (
+            appraisal_bonus
+            if appraisal_bonus is not None
+            else query_appraisal_year_end_bonus(
+                session,
+                salary_record.employee_id,
+                salary_record.salary_year,
+                salary_record.salary_month,
+            )
         )
         # Layer 2：撈 scheduler 已寫入但尚未綁定到本 SalaryRecord 的 pending log
         _pull_pending_payout_logs(session, salary_record)
@@ -2633,6 +2640,7 @@ class SalaryEngine:
         month: int,
         *,
         monthly_ctx_cache: dict | None = None,
+        skip_by_month: dict | None = None,
     ) -> tuple[Optional[float], Optional[float]]:
         """發放月時累積期間每月節慶/超額獎金，回傳 (festival_total, overtime_total)。
 
@@ -2669,7 +2677,11 @@ class SalaryEngine:
         overtime_total = 0
         for y, m in period_months:
             # 該月有產假/育嬰/流產假 → 不計入累積（業主慣例對齊 Excel 郭玟秀/陳品棻案例）
-            skip, _ = should_skip_bonuses_for_month(session, emp.id, y, m)
+            # 批次路徑注入預載 skip dict（None=單筆路徑照常 query）；同 overlap 條件。
+            if skip_by_month is not None:
+                skip = skip_by_month.get((emp.id, y, m), False)
+            else:
+                skip, _ = should_skip_bonuses_for_month(session, emp.id, y, m)
             if skip:
                 continue
             try:
@@ -3312,6 +3324,26 @@ class SalaryEngine:
             for ds in all_shifts:
                 shifts_by_emp[ds.employee_id][ds.date] = ds.shift_type_id
 
+        # ── BE-P2-1：批次預載 per-employee N+1 來源（值與 per-employee query 等價）──
+        from services.leave_bonus_skip import should_skip_bonuses_bulk
+        from services.salary.appraisal_year_end import (
+            query_appraisal_year_end_bonus_bulk,
+        )
+        from services.salary.supplementary_premium import query_ytd_bonus_bulk
+
+        from .utils import get_distribution_period_months
+
+        ytd_bonus_by_emp = query_ytd_bonus_bulk(session, employee_ids, year, month)
+        appraisal_by_emp = query_appraisal_year_end_bonus_bulk(
+            session, employee_ids, year, month
+        )
+        period_months = get_distribution_period_months(year, month)
+        skip_by_emp_month = (
+            should_skip_bonuses_bulk(session, employee_ids, period_months)
+            if period_months
+            else {}
+        )
+
         return _BulkSalaryPreload(
             emp_map=emp_map,
             att_by_emp=att_by_emp,
@@ -3330,6 +3362,9 @@ class SalaryEngine:
             holiday_set=holiday_set,
             makeup_set=makeup_set,
             shifts_by_emp=shifts_by_emp,
+            ytd_bonus_by_emp=ytd_bonus_by_emp,
+            appraisal_by_emp=appraisal_by_emp,
+            skip_by_emp_month=skip_by_emp_month,
         )
 
     def _acquire_locks_and_load_existing_records(
@@ -3650,6 +3685,7 @@ class SalaryEngine:
                 year,
                 month,
                 monthly_ctx_cache=monthly_ctx_cache,
+                skip_by_month=preload.skip_by_emp_month,
             )
         )
 
@@ -3682,6 +3718,8 @@ class SalaryEngine:
             month,
             self.insurance_service,
             emp.id,
+            ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
+            appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
         )
 
         breakdown.absent_count = absent_count
@@ -3709,7 +3747,13 @@ class SalaryEngine:
             )
             session.add(salary_record)
 
-        _fill_salary_record(salary_record, breakdown, self, session=session)
+        _fill_salary_record(
+            salary_record,
+            breakdown,
+            self,
+            session=session,
+            appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
+        )
         return emp, breakdown
 
     def process_bulk_salary_calculation(

@@ -100,6 +100,8 @@ def calculate_bonus_supplementary_fee(
     breakdown_bonus_total: float,
     health_insured_salary: float,
     rate: float = 0.0211,
+    ytd_before: float | None = None,
+    appraisal_bonus=None,
 ) -> float:
     """計算本月應扣的「獎金補充保費」。
 
@@ -132,17 +134,27 @@ def calculate_bonus_supplementary_fee(
     if health_insured_salary <= 0 or rate <= 0:
         return 0
 
-    appraisal_bonus = float(
-        query_appraisal_year_end_bonus(session, employee_id, year, month) or 0
+    # 批次路徑可注入預載值（None=單筆路徑，照常 query）；語意完全一致。
+    appraisal = float(
+        (
+            appraisal_bonus
+            if appraisal_bonus is not None
+            else query_appraisal_year_end_bonus(session, employee_id, year, month)
+        )
+        or 0
     )
-    current_month_total = float(breakdown_bonus_total) + appraisal_bonus
+    current_month_total = float(breakdown_bonus_total) + appraisal
     if current_month_total <= 0:
         return 0
 
     threshold = 4.0 * float(health_insured_salary)
-    ytd_before = query_ytd_bonus_before(session, employee_id, year, month)
-    ytd_after = ytd_before + current_month_total
-    basis = max(ytd_before, threshold)
+    ytd = (
+        ytd_before
+        if ytd_before is not None
+        else query_ytd_bonus_before(session, employee_id, year, month)
+    )
+    ytd_after = ytd + current_month_total
+    basis = max(ytd, threshold)
     excess = max(0.0, ytd_after - basis)
     if excess <= 0:
         return 0
@@ -176,6 +188,8 @@ def apply_bonus_supplementary_to_breakdown(
     month: int,
     insurance_service,
     employee_pk: int,
+    ytd_before: float | None = None,
+    appraisal_bonus=None,
 ) -> int:
     """計算獎金補充保費並 mutates breakdown 四個欄位：
     health_insurance / supplementary_health_employee / total_deduction / net_salary。
@@ -207,6 +221,8 @@ def apply_bonus_supplementary_to_breakdown(
         breakdown_bonus_total=breakdown_bonus_total,
         health_insured_salary=health_insured_salary,
         rate=rate,
+        ytd_before=ytd_before,
+        appraisal_bonus=appraisal_bonus,
     )
     if fee <= 0:
         return 0
