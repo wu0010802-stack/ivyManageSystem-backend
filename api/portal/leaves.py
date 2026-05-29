@@ -31,7 +31,11 @@ from models.approval import ApprovalStatus
 from schemas._common import DeleteResultOut, MutationResultOut
 from schemas.portal_leaves import (
     AttachmentUploadResultOut,
+    MyLeaveListItemOut,
     MyLeaveStatsOut,
+    MyQuotaItemOut,
+    MySubstituteRequestItemOut,
+    MyWorkdayHoursOut,
     SubstitutePendingCountOut,
     SubstituteRespondOut,
 )
@@ -166,7 +170,7 @@ def _safe_attach_path(leave_id: int, filename: str) -> Path:
     return resolved
 
 
-@router.get("/my-leaves")
+@router.get("/my-leaves", response_model=list[MyLeaveListItemOut])
 def get_my_leaves(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
@@ -723,7 +727,7 @@ def get_my_leave_stats(
 # ─────────────────────────────────────────────────────────────
 
 
-@router.get("/my-workday-hours")
+@router.get("/my-workday-hours", response_model=MyWorkdayHoursOut)
 def get_my_workday_hours(
     start_date: date,
     end_date: date,
@@ -750,7 +754,7 @@ def get_my_workday_hours(
 # ─────────────────────────────────────────────────────────────
 
 
-@router.get("/my-quotas")
+@router.get("/my-quotas", response_model=list[MyQuotaItemOut])
 def get_my_quotas(
     year: int = None,
     current_user: dict = Depends(get_current_user),
@@ -902,7 +906,7 @@ def substitute_respond(
         session.close()
 
 
-@router.get("/my-substitute-requests")
+@router.get("/my-substitute-requests", response_model=list[MySubstituteRequestItemOut])
 def get_my_substitute_requests(
     status: Optional[str] = Query(
         None, description="過濾狀態：pending/accepted/rejected"

@@ -223,11 +223,7 @@ api/portal/dismissal_calls.py:portal_complete
 api/portal/home.py:get_home_summary
 api/portal/incidents.py:get_my_class_incidents
 api/portal/incidents.py:create_portal_incident
-api/portal/leaves.py:get_my_leaves
 api/portal/leaves.py:get_leave_attachment
-api/portal/leaves.py:get_my_workday_hours
-api/portal/leaves.py:get_my_quotas
-api/portal/leaves.py:get_my_substitute_requests
 api/portal/leaves_quota_expiry.py:get_my_leave_quota_expiry
 api/portal/medications.py:list_today_medications
 api/portal/overtimes.py:get_my_overtimes
