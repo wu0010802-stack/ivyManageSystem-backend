@@ -200,3 +200,38 @@ def test_upload_404_unknown_announcement(admin_client):
     files = {"file": ("p.png", _png_bytes(), "image/png")}
     res = admin_client.post("/api/announcements/999999/attachments", files=files)
     assert res.status_code == 404, res.text
+
+
+def test_delete_attachment_soft_deletes(admin_client, db_session, admin_emp):
+    from models.database import Announcement, Attachment
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.commit()
+    files = {"file": ("p.png", _png_bytes(), "image/png")}
+    up = admin_client.post(f"/api/announcements/{a.id}/attachments", files=files)
+    att_id = up.json()["id"]
+
+    res = admin_client.delete(f"/api/announcements/{a.id}/attachments/{att_id}")
+    assert res.status_code == 200
+
+    row = db_session.query(Attachment).filter(Attachment.id == att_id).first()
+    db_session.refresh(row)
+    assert row.deleted_at is not None
+
+
+def test_delete_rejects_cross_announcement(
+    admin_client, db_session, admin_emp
+):
+    from models.database import Announcement
+
+    a1 = Announcement(title="A", content="C", created_by=admin_emp.id)
+    a2 = Announcement(title="B", content="C", created_by=admin_emp.id)
+    db_session.add_all([a1, a2])
+    db_session.commit()
+    files = {"file": ("p.png", _png_bytes(), "image/png")}
+    up = admin_client.post(f"/api/announcements/{a1.id}/attachments", files=files)
+    att_id = up.json()["id"]
+
+    res = admin_client.delete(f"/api/announcements/{a2.id}/attachments/{att_id}")
+    assert res.status_code == 404

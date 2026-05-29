@@ -560,6 +560,39 @@ def _serialize_attachment_for_announcement(att) -> dict:
     }
 
 
+@router.delete(
+    "/{announcement_id}/attachments/{attachment_id}",
+    response_model=DeleteResultOut,
+)
+def delete_announcement_attachment(
+    announcement_id: int,
+    attachment_id: int,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)
+    ),
+):
+    """軟刪除公告附件。實檔保留 90 天由清理 job 接手。"""
+    from models.database import Attachment, session_scope
+    from models.portfolio import ATTACHMENT_OWNER_ANNOUNCEMENT
+    from utils.taipei_time import now_taipei_naive
+
+    with session_scope() as session:
+        att = (
+            session.query(Attachment)
+            .filter(
+                Attachment.id == attachment_id,
+                Attachment.owner_type == ATTACHMENT_OWNER_ANNOUNCEMENT,
+                Attachment.owner_id == announcement_id,
+                Attachment.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if not att:
+            raise HTTPException(status_code=404, detail="附件不存在")
+        att.deleted_at = now_taipei_naive()
+    return {"message": "附件已刪除"}
+
+
 # ============ 家長端 scope（plan A.5） ============
 #
 # 員工端 announcement_recipients 不動；對家長另寫 announcement_parent_recipients。
