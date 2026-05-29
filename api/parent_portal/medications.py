@@ -50,6 +50,7 @@ from services.medication_service import (
     create_order_with_logs,
     find_allergy_conflicts,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import require_parent_role
 from utils.exceptions import BusinessError
 from utils.file_upload import (
@@ -246,11 +247,21 @@ def list_medication_orders(
 @router.get("/{order_id}")
 def get_medication_order(
     order_id: int,
+    request: Request,
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
 ):
     user_id = current_user["user_id"]
     o = _get_order_for_parent(session, user_id=user_id, order_id=order_id)
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="medication_order",
+        entity_id=str(order_id),
+        summary=f"家長查用藥單詳情：order_id={order_id} student_id={o.student_id}",
+        changes={"student_id": o.student_id},
+        dedup=True,
+    )
     return _order_to_dict(o, _load_logs(session, o.id), _load_photos(session, o.id))
 
 

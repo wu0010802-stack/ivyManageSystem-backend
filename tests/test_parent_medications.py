@@ -397,6 +397,50 @@ class TestListAndDetail:
         )
         assert resp.status_code == 403
 
+    def test_detail_writes_read_audit_row(self, med_client):
+        """家長查單筆用藥單 detail 必留稽核軌跡（forensic readiness）。"""
+        from models.audit import AuditLog
+
+        client, sf = med_client
+        with sf() as session:
+            user, student = _seed(session, line_id="UAUD", student_name="AUD1")
+            session.commit()
+            token = _token(user)
+            sid = student.id
+
+        rsp = client.post(
+            "/api/parent/medication-orders",
+            json={
+                "student_id": sid,
+                "order_date": date.today().isoformat(),
+                "medication_name": "X",
+                "dose": "1",
+                "time_slots": ["09:00"],
+            },
+            cookies={"access_token": token},
+        )
+        order_id = rsp.json()["id"]
+
+        resp = client.get(
+            f"/api/parent/medication-orders/{order_id}",
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+
+        with sf() as session:
+            row = (
+                session.query(AuditLog)
+                .filter(
+                    AuditLog.entity_type == "medication_order",
+                    AuditLog.entity_id == str(order_id),
+                    AuditLog.action == "READ",
+                )
+                .order_by(AuditLog.id.desc())
+                .first()
+            )
+            assert row is not None
+            assert row.user_id == user.id
+
 
 # ════════════════════════════════════════════════════════════════════════
 # 附件
