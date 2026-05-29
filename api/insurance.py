@@ -19,6 +19,13 @@ from models.database import (
     InsuranceBracket,
     SalaryRecord,
 )
+from schemas._common import DeleteResultOut
+from schemas.insurance import (
+    InsuranceBracketDeleteResultOut,
+    InsuranceBracketListOut,
+    InsuranceBracketUpsertResultOut,
+    InsuranceCalculationOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +150,7 @@ def _count_finalized_months_for_year(session, salary_year: int) -> int:
 # ============ Routes ============
 
 
-@router.post("/insurance/import")
+@router.post("/insurance/import", response_model=DeleteResultOut)
 async def import_insurance_table(
     data: InsuranceTableImport,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
@@ -157,7 +164,7 @@ async def import_insurance_table(
     raise HTTPException(status_code=400, detail="匯入失敗")
 
 
-@router.get("/insurance/calculate")
+@router.get("/insurance/calculate", response_model=InsuranceCalculationOut)
 async def calculate_insurance(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     salary: float = Query(...),
@@ -185,7 +192,7 @@ async def calculate_insurance(
 # ============ 級距表維護 (admin) ============
 
 
-@router.get("/insurance/brackets")
+@router.get("/insurance/brackets", response_model=InsuranceBracketListOut)
 async def list_brackets(
     current_user: dict = Depends(_DEP_SALARY_READ),
     year: Optional[int] = Query(None, description="預設取當年；可指定歷史年度"),
@@ -240,7 +247,7 @@ async def list_brackets(
         session.close()
 
 
-@router.put("/insurance/brackets")
+@router.put("/insurance/brackets", response_model=InsuranceBracketUpsertResultOut)
 async def upsert_brackets(
     payload: InsuranceBracketsBulkUpsert,
     request: Request,
@@ -377,7 +384,7 @@ async def upsert_brackets(
     }
 
 
-@router.delete("/insurance/brackets/{bracket_id}")
+@router.delete("/insurance/brackets/{bracket_id}", response_model=InsuranceBracketDeleteResultOut)
 async def delete_bracket(
     bracket_id: int,
     payload: InsuranceBracketDeleteRequest,
