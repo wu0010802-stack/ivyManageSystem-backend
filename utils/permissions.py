@@ -755,3 +755,36 @@ def resolve_grant(user, code: str) -> Optional[PermissionGrant]:
     broadest = max(valid, key=lambda s: _SCOPE_BREADTH[s])
     return PermissionGrant(code, broadest)
 
+
+def require_scoped_permission(code: "Permission"):
+    """FastAPI dependency；同 require_permission 但額外暴露 user 的 grant scope。
+
+    回傳:
+        callable，呼叫後回 (user, PermissionGrant) tuple
+
+    使用方式:
+        @router.get('/students')
+        def list_students(
+            scoped=Depends(require_scoped_permission(Permission.STUDENTS_READ))
+        ):
+            user, grant = scoped
+            clause = student_scope.filter_clause(user, grant.scope)
+            ...
+
+    若使用者未持有該權限，raise 403。
+    """
+    # local import 避循環：utils.auth → utils.permissions
+    from fastapi import Depends, HTTPException
+    from utils.auth import get_current_user
+
+    def dep(user=Depends(get_current_user)):
+        grant = resolve_grant(user, code.value)
+        if grant is None:
+            raise HTTPException(
+                status_code=403,
+                detail=f"missing permission: {code.value}",
+            )
+        return user, grant
+
+    return dep
+
