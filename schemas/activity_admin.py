@@ -851,7 +851,9 @@ class PosCloseHistorySnapshotOut(IvyBaseModel):
 
     id: int
     close_date: str
-    approver_username: Optional[str] = None  # pii-allow: 原簽核者 username 為 staff 識別
+    approver_username: Optional[str] = (
+        None  # pii-allow: 原簽核者 username 為 staff 識別
+    )
     approver_role: Optional[str] = None
     approved_at: Optional[str] = None
     approve_note: Optional[str] = None
@@ -947,7 +949,9 @@ class PendingRegistrationsSearchStudentItemOut(IvyBaseModel):
     birthday: Optional[str] = None  # pii-allow: 後台才藝審核需顯示生日（比對依據）
     classroom_id: Optional[int] = None  # pii-allow: 後台才藝審核需顯示班級
     classroom_name: Optional[str] = None
-    parent_phone: Optional[str] = None  # pii-allow: 後台才藝審核需顯示家長手機（比對依據）
+    parent_phone: Optional[str] = (
+        None  # pii-allow: 後台才藝審核需顯示家長手機（比對依據）
+    )
 
 
 class PendingRegistrationsSearchStudentsOut(IvyBaseModel):
@@ -1123,3 +1127,239 @@ class ActivityAttendanceBatchUpdateResultOut(IvyBaseModel):
     ok: bool
     updated: int
     skipped: int
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Phase 3.5 — api/activity/pos.py 5 endpoint response_model
+#
+# POS 快速收銀 5 端點：outstanding-by-student / checkout / daily-summary /
+# recent-transactions / semester-reconciliation。print_pos_receipt_pdf
+# 為 StreamingResponse 不接 response_model（defer）。
+# 命名 prefix `Pos` 對齊既有 ActivityPosDailyClose 模型 + pos_approval 區塊。
+# 既有 `PosReconciliationOut` 為日結區間對帳；此處 `PosSemesterReconciliationOut`
+# 為學期對帳，名稱明確不衝突。
+# 學生姓名 / birthday / 收據抬頭操作者 username 皆標 pii-allow。
+# ───────────────────────────────────────────────────────────────────────────
+
+
+class PosCourseDetailItemOut(IvyBaseModel):
+    """POS 收據 / 列表內 courses[] 單筆。
+
+    來源 `_fetch_reg_course_details`：name + price (price_snapshot) + status。
+    與 `RegistrationDetailCourseOut` 不同（後者多帶 id/course_id/confirm_deadline）。
+    """
+
+    name: str
+    price: int
+    status: str
+
+
+class PosSupplyDetailItemOut(IvyBaseModel):
+    """POS 收據 / 列表內 supplies[] 單筆。
+
+    來源 `_fetch_reg_supplies`：name + price (price_snapshot)。
+    與 `RegistrationDetailSupplyOut` 不同（後者多帶 id/supply_id）。
+    """
+
+    name: str
+    price: int
+
+
+class PosOutstandingRegistrationItemOut(IvyBaseModel):
+    """GET /pos/outstanding-by-student groups[].registrations[] 單筆。"""
+
+    id: int
+    total_amount: int
+    paid_amount: int
+    owed: int
+    class_name: str
+    courses: list[PosCourseDetailItemOut]
+    supplies: list[PosSupplyDetailItemOut]
+    created_at: Optional[str] = None
+
+
+class PosOutstandingGroupOut(IvyBaseModel):
+    """GET /pos/outstanding-by-student groups[] 單筆（依學生聚合）。
+
+    student_key 為 `student_name|birthday` 字串，前端用作聚合鍵；
+    缺 STUDENTS_READ 角色時 birthday 會被遮成 None。
+    """
+
+    student_key: str
+    student_name: str  # pii-allow: POS 收銀必要顯示，無法遮蓋
+    birthday: Optional[str] = (
+        None  # pii-allow: birthday 為 String(20)，無 STUDENTS_READ 時為 None
+    )
+    class_name: str
+    group_owed_total: int
+    registrations: list[PosOutstandingRegistrationItemOut]
+
+
+class PosOutstandingOut(IvyBaseModel):
+    """GET /pos/outstanding-by-student 完整回應。"""
+
+    groups: list[PosOutstandingGroupOut]
+
+
+class PosCheckoutItemResultOut(IvyBaseModel):
+    """POST /pos/checkout items[] 單筆（含 idempotent replay 兩 path）。"""
+
+    registration_id: int
+    student_name: str  # pii-allow: POS 收據必要顯示
+    class_name: str
+    amount_applied: int
+    new_paid_amount: int
+    total_amount: int
+    new_payment_status: str
+    courses: list[PosCourseDetailItemOut]
+    supplies: list[PosSupplyDetailItemOut]
+
+
+class PosCheckoutOut(IvyBaseModel):
+    """POST /pos/checkout 201 回應。
+
+    同 shape 涵蓋兩條 return path：
+    1) 新建 receipt（line ~896 主回傳）
+    2) idempotent replay（`_parse_receipt_response_from_record` 額外帶
+       `idempotent_replay=True`；新建 path 為 None）
+    tendered/change 僅現金且前端傳 tendered 時有值；replay path 永為 None。
+    """
+
+    receipt_no: str
+    type: str  # "payment" | "refund"
+    total: int
+    tendered: Optional[int] = None
+    change: Optional[int] = None
+    payment_method: str
+    payment_date: Optional[str] = None
+    operator: str  # pii-allow: POS 操作員 username 為 staff 識別
+    notes: str
+    created_at: Optional[str] = None
+    items: list[PosCheckoutItemResultOut]
+    idempotent_replay: Optional[bool] = None
+
+
+class PosDailySummaryByMethodItemOut(IvyBaseModel):
+    """GET /pos/daily-summary by_method[] 單筆（依付款方式聚合）。
+
+    來源 `compute_daily_snapshot` by_method_list — method/payment/refund/count。
+    當日無交易時 caller 回傳空 list（非 dict）。
+    """
+
+    method: str
+    payment: int
+    refund: int
+    count: int
+
+
+class PosDailySummaryOut(IvyBaseModel):
+    """GET /pos/daily-summary 回應。
+
+    by_method 為 list（依付款方式聚合，員工只可輸入「現金」）；
+    cash_warning=True 時前端顯示「請存銀行」橘色提示
+    （cash_in_drawer >= cash_warning_threshold）。
+    """
+
+    date: str
+    payment_total: int
+    refund_total: int
+    net: int
+    payment_count: int
+    refund_count: int
+    by_method: list[PosDailySummaryByMethodItemOut]
+    cash_in_drawer: int
+    cash_warning: bool
+    cash_warning_threshold: int
+
+
+class PosRecentTransactionItemOut(IvyBaseModel):
+    """GET /pos/recent-transactions transactions[].items[] 單筆。"""
+
+    registration_id: int
+    student_name: str  # pii-allow: POS 重印列表必要顯示
+    class_name: str
+    amount_applied: int
+    new_paid_amount: int
+    total_amount: int
+    new_payment_status: str
+    courses: list[PosCourseDetailItemOut]
+    supplies: list[PosSupplyDetailItemOut]
+
+
+class PosRecentTransactionOut(IvyBaseModel):
+    """GET /pos/recent-transactions transactions[] 單筆。
+
+    source: "pos" | "system"（系統沖帳 receipt_no 合成 SYS-<id>）。
+    operator 僅 has_finance_approve 才有真實值，否則為 "[已遮罩]"。
+    tendered/change 歷史無紀錄，永為 None。
+    """
+
+    receipt_no: str
+    source: str
+    type: str
+    total: int
+    tendered: Optional[int] = None
+    change: Optional[int] = None
+    payment_method: str
+    payment_date: Optional[str] = None
+    operator: str  # pii-allow: POS 操作員 username（無 ACTIVITY_PAYMENT_APPROVE 時為 "[已遮罩]"）
+    notes: str
+    created_at: Optional[str] = None
+    student_names: list[str]  # pii-allow: POS 收據抬頭列表
+    items: list[PosRecentTransactionItemOut]
+
+
+class PosRecentTransactionsOut(IvyBaseModel):
+    """GET /pos/recent-transactions 完整回應。"""
+
+    date: str
+    transactions: list[PosRecentTransactionOut]
+
+
+class PosSemesterReconciliationItemOut(IvyBaseModel):
+    """GET /pos/semester-reconciliation items[] 單筆。
+
+    approval_status 四態：fully_approved / partially_approved /
+    pending_approval / no_payment。offline_paid_amount 為非 POS 已繳差額
+    （歷史匯入或直接寫入 paid_amount 的資料）。
+    """
+
+    id: int
+    student_name: str  # pii-allow: 學期對帳必要顯示
+    class_name: str
+    is_active: bool
+    course_names: list[str]
+    total_amount: int
+    paid_amount: int
+    owed: int
+    payment_status: str
+    approval_status: str
+    approved_paid_amount: int
+    pending_paid_amount: int
+    offline_paid_amount: int
+    latest_payment_date: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class PosSemesterReconciliationTotalsOut(IvyBaseModel):
+    """GET /pos/semester-reconciliation totals 區段。"""
+
+    registration_count: int
+    total_amount: int
+    paid_amount: int
+    outstanding_amount: int
+    approved_paid_amount: int
+    pending_paid_amount: int
+    offline_paid_amount: int
+    by_payment_status: dict[str, int]
+    by_approval_status: dict[str, int]
+
+
+class PosSemesterReconciliationOut(IvyBaseModel):
+    """GET /pos/semester-reconciliation 完整回應（學期對帳總表，與 PosReconciliationOut
+    日結區間對帳不同名不衝突）。"""
+
+    school_year: int
+    semester: int
+    items: list[PosSemesterReconciliationItemOut]
+    totals: PosSemesterReconciliationTotalsOut
