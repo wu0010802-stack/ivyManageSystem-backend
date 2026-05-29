@@ -93,6 +93,11 @@ class Employee(Base):
     is_active = Column(Boolean, default=True, comment="是否在職")
     resign_date = Column(Date, nullable=True, comment="離職日期")
     resign_reason = Column(String(200), nullable=True, comment="離職原因")
+    pii_redacted_at = Column(
+        DateTime,
+        nullable=True,
+        comment="Employee 通訊PII 被 retention GC 抹除的時間戳；NOT NULL 即已抹過避免重複",
+    )
     bonus_grade = Column(
         CHAR(1), nullable=True, comment="節慶獎金等級覆蓋 (A/B/C)，NULL=依職稱自動判斷"
     )
