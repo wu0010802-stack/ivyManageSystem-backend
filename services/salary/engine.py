@@ -73,7 +73,7 @@ from .bulk_preload import (  # noqa: F401
 from utils.rounding import round_half_up
 
 
-def _pull_pending_payout_logs(session, salary_record) -> None:
+def _pull_pending_payout_logs(session, salary_record, pending_logs=None) -> None:
     """Layer 2：撈 salary_period_year/month 符合且尚未綁定的 UnusedLeavePayoutLog。
 
     scheduler（T9 expire_comp_leave_grants）在薪資月結前可能已寫入 log 但未建立
@@ -100,16 +100,19 @@ def _pull_pending_payout_logs(session, salary_record) -> None:
     if salary_record.id is None:
         session.flush()
 
-    pending_logs = (
-        session.query(UnusedLeavePayoutLog)
-        .filter(
-            UnusedLeavePayoutLog.employee_id == salary_record.employee_id,
-            UnusedLeavePayoutLog.salary_period_year == salary_record.salary_year,
-            UnusedLeavePayoutLog.salary_period_month == salary_record.salary_month,
-            UnusedLeavePayoutLog.salary_record_id.is_(None),
+    # 批次路徑注入該員工預載 pending log list（None=單筆路徑照常 query）；
+    # 預載與此處 SELECT 同條件（emp + salary_period + salary_record_id IS NULL）。
+    if pending_logs is None:
+        pending_logs = (
+            session.query(UnusedLeavePayoutLog)
+            .filter(
+                UnusedLeavePayoutLog.employee_id == salary_record.employee_id,
+                UnusedLeavePayoutLog.salary_period_year == salary_record.salary_year,
+                UnusedLeavePayoutLog.salary_period_month == salary_record.salary_month,
+                UnusedLeavePayoutLog.salary_record_id.is_(None),
+            )
+            .all()
         )
-        .all()
-    )
 
     if not pending_logs:
         return
@@ -124,8 +127,40 @@ def _pull_pending_payout_logs(session, salary_record) -> None:
         log.salary_record_id = salary_record.id
 
 
+def pending_payout_logs_bulk(session, employee_ids, year, month) -> dict:
+    """批次版 _pull_pending_payout_logs 的 SELECT：一次撈所有員工該薪資期間尚未綁定的
+    UnusedLeavePayoutLog，回 {employee_id: [log, ...]}（缺者空 list）。
+
+    語意與單筆 SELECT 完全一致（同 salary_period_year/month + salary_record_id IS NULL）；
+    僅取代逐人 SELECT，綁定與加總仍由 _pull_pending_payout_logs 逐筆執行。
+    """
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+
+    result: dict = {eid: [] for eid in employee_ids}
+    if not employee_ids:
+        return result
+    rows = (
+        session.query(UnusedLeavePayoutLog)
+        .filter(
+            UnusedLeavePayoutLog.employee_id.in_(employee_ids),
+            UnusedLeavePayoutLog.salary_period_year == year,
+            UnusedLeavePayoutLog.salary_period_month == month,
+            UnusedLeavePayoutLog.salary_record_id.is_(None),
+        )
+        .all()
+    )
+    for log in rows:
+        result.setdefault(log.employee_id, []).append(log)
+    return result
+
+
 def _fill_salary_record(
-    salary_record, breakdown, engine, session=None, appraisal_bonus=None
+    salary_record,
+    breakdown,
+    engine,
+    session=None,
+    appraisal_bonus=None,
+    pending_logs=None,
 ):
     """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
 
@@ -207,7 +242,8 @@ def _fill_salary_record(
             )
         )
         # Layer 2：撈 scheduler 已寫入但尚未綁定到本 SalaryRecord 的 pending log
-        _pull_pending_payout_logs(session, salary_record)
+        # （批次路徑注入該員工預載 list；None=單筆路徑照常 query）
+        _pull_pending_payout_logs(session, salary_record, pending_logs=pending_logs)
 
     # 成功重算 → 清除 stale 旗標(若為預載的舊 record 之前可能被標 True)
     salary_record.needs_recalc = False
@@ -3343,6 +3379,9 @@ class SalaryEngine:
             if period_months
             else {}
         )
+        pending_payout_by_emp = pending_payout_logs_bulk(
+            session, employee_ids, year, month
+        )
 
         return _BulkSalaryPreload(
             emp_map=emp_map,
@@ -3365,6 +3404,7 @@ class SalaryEngine:
             ytd_bonus_by_emp=ytd_bonus_by_emp,
             appraisal_by_emp=appraisal_by_emp,
             skip_by_emp_month=skip_by_emp_month,
+            pending_payout_by_emp=pending_payout_by_emp,
         )
 
     def _acquire_locks_and_load_existing_records(
@@ -3753,6 +3793,7 @@ class SalaryEngine:
             self,
             session=session,
             appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
+            pending_logs=preload.pending_payout_by_emp.get(emp.id, []),
         )
         return emp, breakdown
 

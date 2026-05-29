@@ -86,6 +86,7 @@ _FIELDS = (
     "overtime_bonus",
     "health_insurance_employee",
     "supplementary_health_employee",
+    "unused_leave_payout",
     "net_salary",
 )
 
@@ -174,6 +175,21 @@ def test_single_vs_bulk_february_parity_distinct_values(salary_engine_db):
                 status="approved",
             )
         )
+        # A 有 Feb pending 折現 log 5000；B 無（pending_payout 路徑差異化）
+        from models.unused_leave_payout_log import UnusedLeavePayoutLog
+
+        s.add(
+            UnusedLeavePayoutLog(
+                employee_id=a.id,
+                source_type="comp_leave_expiry",
+                hours=8,
+                hourly_wage=Decimal("625"),
+                amount=Decimal("5000"),
+                wage_basis_date=date(2026, 2, 1),
+                salary_period_year=2026,
+                salary_period_month=2,
+            )
+        )
         s.commit()
         a_id, b_id = a.id, b.id
 
@@ -184,8 +200,14 @@ def test_single_vs_bulk_february_parity_distinct_values(salary_engine_db):
         single_a = _snapshot(s, a_id)
         single_b = _snapshot(s, b_id)
 
-    # 清掉單筆寫入的 Feb 記錄，讓 bulk 在乾淨狀態重算
+    # 清掉單筆寫入的 Feb 記錄，並把單筆已綁定的 pending log 還原為未綁定，
+    # 讓 bulk 在乾淨狀態重算（pending_payout 的 idempotent filter 是 salary_record_id IS NULL）。
     with session_factory() as s:
+        from models.unused_leave_payout_log import UnusedLeavePayoutLog
+
+        s.query(UnusedLeavePayoutLog).update(
+            {UnusedLeavePayoutLog.salary_record_id: None}
+        )
         s.query(SalaryRecord).filter(
             SalaryRecord.salary_year == 2026, SalaryRecord.salary_month == 2
         ).delete()
@@ -208,6 +230,9 @@ def test_single_vs_bulk_february_parity_distinct_values(salary_engine_db):
     assert bulk_a["festival_bonus"] > 0
     assert bulk_b["festival_bonus"] == 0
     assert bulk_b["overtime_bonus"] == 0
+    # pending_payout 生效且差異化：A 折現 5000；B 無
+    assert bulk_a["unused_leave_payout"] == Decimal("5000")
+    assert not bulk_b["unused_leave_payout"]
 
 
 def test_bulk_does_not_invoke_per_employee_n_plus_1(salary_engine_db, monkeypatch):

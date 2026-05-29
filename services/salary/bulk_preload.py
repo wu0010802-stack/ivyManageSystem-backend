@@ -48,6 +48,9 @@ class _BulkSalaryPreload:
     skip_by_emp_month: (
         dict  # {(emp_id, y, m): bool} — should_skip_bonuses_bulk（發放月才有）
     )
+    pending_payout_by_emp: (
+        dict  # {emp_id: [UnusedLeavePayoutLog]} — pending_payout_logs_bulk
+    )
 
 
 def _get_ytd_sick_hours_before(

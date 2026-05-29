@@ -144,3 +144,44 @@ def test_should_skip_bonuses_bulk_equals_single(test_db_session, two_employees):
     assert bulk[(a.id, 2026, 1)] is True
     assert bulk[(b.id, 2025, 12)] is False
     assert bulk[(b.id, 2026, 1)] is False
+
+
+# ── #3 pending payout logs（SELECT 等價，綁定/加總仍逐筆）──────────────────────
+def test_pending_payout_logs_bulk_equals_single(test_db_session, two_employees):
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+    from services.salary.engine import pending_payout_logs_bulk
+
+    a, b = two_employees
+
+    def _log(emp_id, amount):
+        return UnusedLeavePayoutLog(
+            employee_id=emp_id,
+            source_type="comp_leave_expiry",
+            hours=8,
+            hourly_wage=Decimal("125"),
+            amount=Decimal(amount),
+            wage_basis_date=date(2026, 2, 1),
+            salary_period_year=2026,
+            salary_period_month=2,
+        )
+
+    # A 兩筆 pending（未綁定）；B 無
+    test_db_session.add_all([_log(a.id, "3000"), _log(a.id, "2000")])
+    test_db_session.flush()
+
+    def _single(emp_id):
+        return (
+            test_db_session.query(UnusedLeavePayoutLog)
+            .filter(
+                UnusedLeavePayoutLog.employee_id == emp_id,
+                UnusedLeavePayoutLog.salary_period_year == 2026,
+                UnusedLeavePayoutLog.salary_period_month == 2,
+                UnusedLeavePayoutLog.salary_record_id.is_(None),
+            )
+            .all()
+        )
+
+    bulk = pending_payout_logs_bulk(test_db_session, [a.id, b.id], 2026, 2)
+    assert {lg.id for lg in bulk[a.id]} == {lg.id for lg in _single(a.id)}
+    assert bulk[b.id] == _single(b.id) == []
+    assert sum(lg.amount for lg in bulk[a.id]) == Decimal("5000")
