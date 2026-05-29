@@ -89,7 +89,7 @@ def _cancel_active_dismissal_calls(session, student: Student) -> list[dict]:
 
     if broadcasts:
         logger.warning(
-            "學生刪除/離園：自動取消 %d 筆進行中接送通知，student_id=%s name=%s",
+            "學生刪除/離園：自動取消 %d 筆進行中接送通知，student_id=%s student_name=%s",
             len(broadcasts),
             student.id,
             student.name,
@@ -1053,7 +1053,7 @@ async def graduate_student(
 
         session.commit()
         logger.warning(
-            "學生離園：id=%s name=%s status=%s operator=%s",
+            "學生離園：id=%s student_name=%s status=%s operator=%s",
             student.id,
             student.name,
             item.status,
@@ -1310,7 +1310,7 @@ async def transition_student_lifecycle(
 
         session.commit()
         logger.warning(
-            "學生生命週期轉移：id=%s name=%s %s→%s operator=%s",
+            "學生生命週期轉移：id=%s student_name=%s %s→%s operator=%s",
             student.id,
             student.name,
             result.from_status,
