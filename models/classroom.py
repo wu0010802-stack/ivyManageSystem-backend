@@ -88,7 +88,7 @@ class Classroom(Base):
         Integer,
         nullable=False,
         default=_default_school_year,
-        comment="學年度（起始年）",
+        comment="民國學年（如 114）",
     )
     semester = Column(
         Integer,
