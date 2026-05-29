@@ -1,5 +1,5 @@
 """
-Portal - 才藝報名查詢（教師查看班上學生報名狀況）及才藝點名
+Portal - 才藝報名查詢（教師查看自班學生報名）及才藝點名（任何教師可點任意場次完整跨班名冊）
 """
 
 import logging
@@ -10,7 +10,6 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
-from sqlalchemy.exc import IntegrityError
 
 from models.database import get_session, Classroom
 from models.activity import (
