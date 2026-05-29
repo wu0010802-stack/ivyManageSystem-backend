@@ -35,6 +35,8 @@ from schemas._common import DeleteResultOut, MutationResultOut
 from schemas.announcements import (
     AnnouncementListOut,
     AnnouncementParentRecipientsOut,
+    AnnouncementReadersOut,
+    AnnouncementRecipientsOut,
 )
 
 
@@ -368,6 +370,93 @@ def delete_announcement(
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.get(
+    "/{announcement_id}/recipients",
+    response_model=AnnouncementRecipientsOut,
+)
+def list_recipients(
+    announcement_id: int,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_READ)
+    ),
+):
+    """Lazy fetch admin edit dialog 用的 recipient 員工 id 清單。"""
+    session = get_session()
+    try:
+        ann = (
+            session.query(Announcement.id)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
+        if not ann:
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+        rows = (
+            session.query(AnnouncementRecipient.employee_id)
+            .filter(AnnouncementRecipient.announcement_id == announcement_id)
+            .all()
+        )
+        return {"employee_ids": [r[0] for r in rows]}
+    finally:
+        session.close()
+
+
+@router.get(
+    "/{announcement_id}/readers",
+    response_model=AnnouncementReadersOut,
+)
+def list_readers(
+    announcement_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_READ)
+    ),
+):
+    """Lazy fetch admin popover 用的完整已讀名單（分頁、read_at DESC）。"""
+    from sqlalchemy import func
+
+    session = get_session()
+    try:
+        ann = (
+            session.query(Announcement.id)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
+        if not ann:
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+        total = (
+            session.query(func.count(AnnouncementRead.id))
+            .filter(AnnouncementRead.announcement_id == announcement_id)
+            .scalar()
+            or 0
+        )
+        rows = (
+            session.query(AnnouncementRead, Employee.name)
+            .join(Employee, Employee.id == AnnouncementRead.employee_id)
+            .filter(AnnouncementRead.announcement_id == announcement_id)
+            .order_by(AnnouncementRead.read_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        items = [
+            {
+                "employee_id": r.employee_id,
+                "name": name,
+                "read_at": r.read_at.isoformat() if r.read_at else None,
+            }
+            for r, name in rows
+        ]
+        return {
+            "items": items,
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
+        }
     finally:
         session.close()
 

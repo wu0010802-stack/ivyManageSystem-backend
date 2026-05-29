@@ -157,3 +157,79 @@ def test_list_read_preview_top3_by_read_at_desc(admin_client, db_session, admin_
     preview_ids = [p["employee_id"] for p in item["read_preview"]]
     assert preview_ids == [emps[4].id, emps[3].id, emps[2].id]
     assert item["has_more_readers"] is True
+
+
+def test_recipients_endpoint_returns_employee_ids(admin_client, db_session, admin_emp):
+    from models.database import Announcement, AnnouncementRecipient, Employee
+
+    e1 = Employee(
+        employee_id="E_E1", name="e1", is_active=True, base_salary=0
+    )
+    e2 = Employee(
+        employee_id="E_E2", name="e2", is_active=True, base_salary=0
+    )
+    db_session.add_all([e1, e2])
+    db_session.flush()
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.flush()
+    db_session.add(AnnouncementRecipient(announcement_id=a.id, employee_id=e1.id))
+    db_session.add(AnnouncementRecipient(announcement_id=a.id, employee_id=e2.id))
+    db_session.commit()
+
+    res = admin_client.get(f"/api/announcements/{a.id}/recipients")
+    assert res.status_code == 200
+    assert set(res.json()["employee_ids"]) == {e1.id, e2.id}
+
+
+def test_recipients_endpoint_returns_404_for_unknown(admin_client):
+    res = admin_client.get("/api/announcements/999999/recipients")
+    assert res.status_code == 404
+
+
+def test_readers_endpoint_returns_paged_list_desc(
+    admin_client, db_session, admin_emp
+):
+    from datetime import datetime, timedelta
+    from models.database import Announcement, AnnouncementRead, Employee
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.flush()
+    base = datetime(2026, 5, 29, 8, 0, 0)
+    emps = []
+    for i in range(7):
+        e = Employee(
+            employee_id=f"E_RD{i}", name=f"r{i}", is_active=True, base_salary=0
+        )
+        db_session.add(e)
+        db_session.flush()
+        emps.append(e)
+        db_session.add(
+            AnnouncementRead(
+                announcement_id=a.id,
+                employee_id=e.id,
+                read_at=base + timedelta(minutes=i),
+            )
+        )
+    db_session.commit()
+
+    res = admin_client.get(f"/api/announcements/{a.id}/readers?page=1&page_size=3")
+    body = res.json()
+    assert body["total"] == 7
+    assert body["page"] == 1
+    assert body["page_size"] == 3
+    assert len(body["items"]) == 3
+    assert [it["employee_id"] for it in body["items"]] == [
+        emps[6].id, emps[5].id, emps[4].id,
+    ]
+
+    res2 = admin_client.get(f"/api/announcements/{a.id}/readers?page=3&page_size=3")
+    body2 = res2.json()
+    assert len(body2["items"]) == 1
+
+
+def test_readers_endpoint_404_for_unknown(admin_client):
+    res = admin_client.get("/api/announcements/999999/readers")
+    assert res.status_code == 404
