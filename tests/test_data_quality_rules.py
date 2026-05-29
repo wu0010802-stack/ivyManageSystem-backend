@@ -261,3 +261,27 @@ def test_guardian_orphan_user_skips_null_user(test_db_session):
 
     rule = GuardianOrphanRule()
     assert rule.check(test_db_session) == []
+
+
+def test_salary_record_orphan_employee_detects(test_db_session):
+    """SalaryRecord.employee_id 指向不存在的 employee → 觸發 rule。"""
+    from sqlalchemy import text
+    from services.data_quality.rules.salary_no_employee import SalaryOrphanRule
+
+    test_db_session.execute(
+        text(
+            "INSERT INTO salary_records "
+            "(employee_id, salary_year, salary_month, gross_salary) "
+            "VALUES (:eid, :y, :m, :g)"
+        ),
+        {"eid": 9999999, "y": 2026, "m": 5, "g": 0},
+    )
+    test_db_session.commit()
+
+    rule = SalaryOrphanRule()
+    violations = rule.check(test_db_session)
+    assert any(v.rule_code == "salary_record_orphan_employee" for v in violations)
+    v = next(v for v in violations if v.rule_code == "salary_record_orphan_employee")
+    assert v.severity == "P0"
+    assert v.entity_type == "salary_record"
+    assert "2026" in v.summary and "5" in v.summary
