@@ -285,3 +285,38 @@ def test_salary_record_orphan_employee_detects(test_db_session):
     assert v.severity == "P0"
     assert v.entity_type == "salary_record"
     assert "2026" in v.summary and "5" in v.summary
+
+
+def test_run_all_rules_returns_list_of_violations(test_db_session):
+    """run_all_rules 跑全部 5 rule，回傳合併 Violation list。"""
+    from services.data_quality.engine import ALL_RULES, run_all_rules
+
+    assert len(ALL_RULES) == 5
+    rule_codes = {r.code for r in ALL_RULES}
+    assert rule_codes == {
+        "employee_active_but_offboarded",
+        "student_active_but_lifecycle_terminal",
+        "contact_book_orphan_student",
+        "guardian_orphan_user",
+        "salary_record_orphan_employee",
+    }
+
+    violations = run_all_rules(test_db_session)
+    assert isinstance(violations, list)
+    # 空 DB 預期 0 violation
+    assert violations == []
+
+
+def test_run_all_rules_swallows_per_rule_exception(test_db_session, monkeypatch):
+    """單一 rule.check 拋例外不應阻斷其他 rule。"""
+    from services.data_quality.engine import run_all_rules
+    from services.data_quality.rules.employee_offboard import EmployeeOffboardRule
+
+    def boom(self, session):
+        raise RuntimeError("simulated rule crash")
+
+    monkeypatch.setattr(EmployeeOffboardRule, "check", boom)
+
+    violations = run_all_rules(test_db_session)
+    # 不會 raise；其他 4 rule 仍跑
+    assert isinstance(violations, list)
