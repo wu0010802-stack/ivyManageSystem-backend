@@ -190,6 +190,18 @@ class Announcement(Base):
         cascade="all, delete-orphan",
         lazy="select",
     )
+    attachments = relationship(
+        "Attachment",
+        primaryjoin=(
+            "and_("
+            "foreign(Attachment.owner_id) == Announcement.id, "
+            "Attachment.owner_type == 'announcement', "
+            "Attachment.deleted_at.is_(None)"
+            ")"
+        ),
+        viewonly=True,
+        lazy="select",
+    )
 
 
 class AnnouncementRead(Base):
