@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func
 
 from models.base import session_scope
-from models.recruitment import RecruitmentGeocodeCache, RecruitmentVisit
+from models.recruitment import RecruitmentGeocodeCache, RecruitmentIvykidsRecord, RecruitmentVisit
 from services import recruitment_market_intelligence as market_service
 from services.geocoding_service import truncate_address_to_lane
 from utils.auth import require_staff_permission
@@ -120,9 +120,30 @@ def _query_address_hotspots(
         .all()
     )
 
+    # 業主決議 §4.7：ivykids 同 hotspot pipeline；預設 consent NULL → 預設不上 heatmap
+    ivy_dep_case = case((RecruitmentIvykidsRecord.has_deposit == True, 1), else_=0)
+    ivy_addr = func.trim(RecruitmentIvykidsRecord.address)
+    ivy_rows = (
+        session.query(
+            ivy_addr.label("address"),
+            RecruitmentIvykidsRecord.district.label("district"),
+            func.count(RecruitmentIvykidsRecord.id).label("visit"),
+            func.sum(ivy_dep_case).label("deposit"),
+        )
+        .filter(
+            RecruitmentIvykidsRecord.address.isnot(None),
+            func.length(ivy_addr) > 0,
+            RecruitmentIvykidsRecord.geocoding_consent_at.isnot(None),
+        )
+        .group_by(ivy_addr, RecruitmentIvykidsRecord.district)
+        .all()
+    )
+
     merged: dict[str, dict] = {}
     records_with_address = 0
-    for row in rows:
+    # 兩來源同 loop：visit + ivykids 用同 truncated address key 累加
+    all_rows = list(rows) + list(ivy_rows)
+    for row in all_rows:
         raw_address = (row.address or "").strip()
         if not raw_address:
             continue
