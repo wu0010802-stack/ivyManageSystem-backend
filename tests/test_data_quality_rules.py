@@ -175,3 +175,33 @@ def test_student_stale_active_skips_active_in_school(test_db_session):
     rule = StudentStaleActiveRule()
     violations = rule.check(test_db_session)
     assert not any(v.entity_id == str(s.id) for v in violations)
+
+
+def test_contact_book_orphan_student_detects(test_db_session):
+    """SQLite 不 enforce FK，直接 INSERT 孤兒 row 觸發 rule。"""
+    from datetime import date, datetime
+    from sqlalchemy import text
+    from services.data_quality.rules.contact_book_orphan import ContactBookOrphanRule
+
+    now_iso = datetime.now().isoformat()
+    test_db_session.execute(
+        text(
+            "INSERT INTO student_contact_book_entries "
+            "(student_id, classroom_id, log_date, created_at, updated_at) "
+            "VALUES (:sid, :cid, :d, :ts, :ts)"
+        ),
+        {
+            "sid": 9999999,
+            "cid": 1,
+            "d": date.today().isoformat(),
+            "ts": now_iso,
+        },
+    )
+    test_db_session.commit()
+
+    rule = ContactBookOrphanRule()
+    violations = rule.check(test_db_session)
+    assert any(v.entity_type == "contact_book_entry" for v in violations)
+    v = next(v for v in violations if v.entity_type == "contact_book_entry")
+    assert v.rule_code == "contact_book_orphan_student"
+    assert v.severity == "P0"
