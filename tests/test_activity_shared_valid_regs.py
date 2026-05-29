@@ -3,6 +3,8 @@
 使用 conftest 的 test_db_session fixture（單一 session、全表已建）。
 """
 
+import itertools
+
 from api.activity._shared import query_valid_session_registrations
 from models.database import (
     ActivityCourse,
@@ -10,8 +12,7 @@ from models.database import (
     RegistrationCourse,
 )
 
-
-_reg_counter = 0
+_reg_counter = itertools.count(1)
 
 
 def _mk_reg(
@@ -24,17 +25,16 @@ def _mk_reg(
     rc_status="enrolled",
     classroom_id=None,
 ):
-    global _reg_counter
-    _reg_counter += 1
+    n = next(_reg_counter)
     reg = ActivityRegistration(
-        student_name=f"生{_reg_counter}",
+        student_name=f"生{n}",
         birthday="2020-01-01",
         class_name="班",
         is_active=is_active,
         school_year=115,
         semester=1,
         student_id=student_id,
-        parent_phone=f"09{_reg_counter:09d}",
+        parent_phone=f"09{n:09d}",
         classroom_id=classroom_id,
         match_status=match_status,
         pending_review=False,
@@ -90,9 +90,28 @@ def test_valid_regs_classroom_filter(test_db_session):
     }
     assert {
         r[0]
-        for r in query_valid_session_registrations(s, course.id, ids, classroom_ids=[7])
+        for r in query_valid_session_registrations(
+            s, course.id, ids, classroom_ids_filter=[7]
+        )
     } == {in_class}
 
 
 def test_valid_regs_empty_input(test_db_session):
     assert query_valid_session_registrations(test_db_session, 1, []) == []
+
+
+def test_valid_regs_excludes_wrong_course(test_db_session):
+    s = test_db_session
+    course_a = ActivityCourse(
+        name="A課", price=100, school_year=115, semester=1, is_active=True
+    )
+    course_b = ActivityCourse(
+        name="B課", price=100, school_year=115, semester=1, is_active=True
+    )
+    s.add_all([course_a, course_b])
+    s.flush()
+    right = _mk_reg(s, course_id=course_a.id)
+    wrong = _mk_reg(s, course_id=course_b.id)
+    s.commit()
+    rows = query_valid_session_registrations(s, course_a.id, [right, wrong])
+    assert {r[0] for r in rows} == {right}

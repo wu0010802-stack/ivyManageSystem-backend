@@ -761,7 +761,7 @@ def query_valid_session_registrations(
     course_id: int,
     registration_ids: list,
     *,
-    classroom_ids: list | None = None,
+    classroom_ids_filter: list | None = None,
 ) -> list:
     """回傳本場次「有效報名」的 (registration_id, student_id) tuple 列表。
 
@@ -769,9 +769,15 @@ def query_valid_session_registrations(
     course_id 對應課程（RegistrationCourse.status IN ('enrolled','promoted_pending')）。
     供 admin 點名與 portal 點名共用，避免兩處重複定義「有效報名」規則。
 
-    classroom_ids=None   → 不限班級（管理端 / 開放後的 portal，跨班）。
-    classroom_ids=[...]   → 額外限定 ActivityRegistration.classroom_id IN(...)（保留彈性）。
+    classroom_ids_filter=None   → 不限班級（管理端 / 開放後的 portal，跨班）。
+    classroom_ids_filter=[...]  → 額外限定 ActivityRegistration.classroom_id IN(...)（保留彈性）。
+                                  參數命名對齊 _build_session_detail_response(classroom_ids_filter=...)。
     registration_ids 為空 → 回 []（不打 DB）。
+
+    注意：狀態過濾刻意同時接受 'enrolled' 與 'promoted_pending'（已晉升候補、佔位），
+    此為寫入路徑（出席記錄）的既有行為，與 _build_session_detail_response 名冊渲染
+    僅顯示 status == 'enrolled' 的學生不同——非 bug，乃設計上的刻意不對稱：
+    promoted_pending 佔位者可被寫出席，但名冊僅顯示 enrolled（避免混淆家長）。
     """
     if not registration_ids:
         return []
@@ -789,8 +795,8 @@ def query_valid_session_registrations(
             RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
         )
     )
-    if classroom_ids is not None:
-        query = query.filter(ActivityRegistration.classroom_id.in_(classroom_ids))
+    if classroom_ids_filter is not None:
+        query = query.filter(ActivityRegistration.classroom_id.in_(classroom_ids_filter))
     return query.all()
 
 
