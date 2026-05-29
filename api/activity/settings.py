@@ -20,6 +20,13 @@ from utils.file_upload import read_upload_with_size_check, validate_file_signatu
 from utils.permissions import Permission
 
 from ._shared import RegistrationTimeSettings
+from schemas._common import DeleteResultOut
+from schemas.activity_admin import (
+    ActivityClassOptionsOut,
+    ActivityPosterUploadResultOut,
+    ActivityRegistrationChangeListOut,
+    ActivityRegistrationTimeOut,
+)
 
 _POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _POSTER_MODULE = "activity_posters"
@@ -56,7 +63,7 @@ def _serialize_settings(settings: ActivityRegistrationSettings | None) -> dict:
     }
 
 
-@router.get("/settings/registration-time")
+@router.get("/settings/registration-time", response_model=ActivityRegistrationTimeOut)
 async def get_registration_time(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
@@ -69,7 +76,7 @@ async def get_registration_time(
         session.close()
 
 
-@router.post("/settings/registration-time")
+@router.post("/settings/registration-time", response_model=DeleteResultOut)
 async def update_registration_time(
     body: RegistrationTimeSettings,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -99,7 +106,7 @@ async def update_registration_time(
         session.close()
 
 
-@router.post("/settings/poster")
+@router.post("/settings/poster", response_model=ActivityPosterUploadResultOut)
 async def upload_activity_poster(
     file: UploadFile = File(...),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -166,7 +173,7 @@ async def upload_activity_poster(
         session.close()
 
 
-@router.get("/changes")
+@router.get("/changes", response_model=ActivityRegistrationChangeListOut)
 async def get_changes(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -200,7 +207,7 @@ async def get_changes(
         session.close()
 
 
-@router.get("/class-options")
+@router.get("/class-options", response_model=ActivityClassOptionsOut)
 async def get_class_options(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):

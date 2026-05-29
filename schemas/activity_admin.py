@@ -1363,3 +1363,86 @@ class PosSemesterReconciliationOut(IvyBaseModel):
     semester: int
     items: list[PosSemesterReconciliationItemOut]
     totals: PosSemesterReconciliationTotalsOut
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Phase 3.5 — api/activity/settings.py 5 endpoint response_model
+#
+# 報名時間設定 + 海報上傳 + 修改紀錄 + class-options 共 5 grandfather 條目：
+# - get_registration_time   → ActivityRegistrationTimeOut（_serialize_settings shape）
+# - update_registration_time → _common.DeleteResultOut（純 {message} mutation）
+# - upload_activity_poster  → ActivityPosterUploadResultOut（{message, poster_url}）
+# - get_changes             → ActivityRegistrationChangeListOut（含 student_name PII）
+# - get_class_options       → ActivityClassOptionsOut（純班級名清單）
+#
+# 命名 prefix `ActivityRegistrationTime` / `ActivityPoster` /
+# `ActivityRegistrationChange` / `ActivityClassOptions`，與既有 admin
+# Registration 系列（PendingRegistrationListOut 等）不混。
+# datetime 欄位 router 端 .isoformat() 後傳出 → Optional[str]（同既有 trap）。
+# student_name 為後台稽核明確顯示報名學生（ACTIVITY_READ）→ # pii-allow:。
+# ───────────────────────────────────────────────────────────────────────────
+
+
+class ActivityRegistrationTimeOut(IvyBaseModel):
+    """GET /settings/registration-time 回應。
+
+    對應 _serialize_settings 輸出：未設定時 is_open=False，其餘欄位 None；
+    已設定時各欄位來自 ActivityRegistrationSettings ORM。open_at / close_at
+    在 ORM 為 String 欄位（ISO 8601），故為 Optional[str]。
+    """
+
+    is_open: bool
+    open_at: Optional[str] = None
+    close_at: Optional[str] = None
+    page_title: Optional[str] = None
+    term_label: Optional[str] = None
+    event_date_label: Optional[str] = None
+    target_audience: Optional[str] = None
+    form_card_title: Optional[str] = None
+    poster_url: Optional[str] = None
+
+
+class ActivityPosterUploadResultOut(IvyBaseModel):
+    """POST /settings/poster 海報上傳 200 回應。
+
+    回 {message, poster_url}：poster_url 為 backend.public_url 產出的對外網址
+    （local 模式：/api/activity/public/poster/<file>；supabase 模式：
+    https://<project>.supabase.co/.../activity-posters/<file>）。
+    不用 _common.MutationResultOut（後者欄位為 id）— 重用會 silent rename。
+    """
+
+    message: str
+    poster_url: str
+
+
+class ActivityRegistrationChangeItemOut(IvyBaseModel):
+    """GET /changes items[] 單筆 RegistrationChange 稽核紀錄。
+
+    student_name 為快照欄位（報名當下 snapshot），ACTIVITY_READ 後台顯示。
+    changed_by 為操作者 username 或系統字串，非家長/學生 PII。
+    """
+
+    id: int
+    registration_id: int
+    student_name: str  # pii-allow: 後台才藝報名稽核紀錄顯示學生姓名
+    change_type: str
+    description: str
+    changed_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ActivityRegistrationChangeListOut(IvyBaseModel):
+    """GET /changes 列表 + 總筆數。"""
+
+    items: list[ActivityRegistrationChangeItemOut]
+    total: int
+
+
+class ActivityClassOptionsOut(IvyBaseModel):
+    """GET /class-options 回應。
+
+    options 為 Classroom.name 字串清單（filter is_active=True，依 id 排序）；
+    僅班級代稱，非 PII。
+    """
+
+    options: list[str]
