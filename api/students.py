@@ -467,8 +467,10 @@ async def get_students(
 
         # ── Scope 守衛 ────────────────────────────────────
         # teacher 角色限定自己的班級且非終態；admin/hr/supervisor 不變
-        if not is_unrestricted(current_user):
-            allowed_classroom_ids = accessible_classroom_ids(session, current_user)
+        if not is_unrestricted(current_user, code=Permission.STUDENTS_READ.value):
+            allowed_classroom_ids = accessible_classroom_ids(
+                session, current_user, code=Permission.STUDENTS_READ.value
+            )
             if not allowed_classroom_ids:
                 return {"items": [], "total": 0, "skip": skip, "limit": limit}
             q = q.filter(
