@@ -303,3 +303,94 @@ class TestDeviceSetupEndpoint:
             ).status_code
             == 429
         )
+
+
+# ── Task 5 staff 簽發設定碼端點 ──────────────────────────────────────────────
+
+
+def _staff_token(sf):
+    from utils.auth import create_access_token
+
+    s = sf()
+    u = User(
+        username="adm2",
+        password_hash="x",
+        role="admin",
+        permission_names=["GUARDIANS_WRITE"],
+        token_version=0,
+    )
+    s.add(u)
+    s.flush()
+    uid = u.id
+    s.commit()
+    s.close()
+    return create_access_token(
+        {
+            "user_id": uid,
+            "employee_id": None,
+            "role": "admin",
+            "name": "adm2",
+            "permission_names": ["GUARDIANS_WRITE"],
+            "token_version": 0,
+        }
+    )
+
+
+def _make_guardian(sf):
+    s = sf()
+    stu = Student(student_id="S7", name="小光", is_active=True)
+    s.add(stu)
+    s.flush()
+    g = Guardian(student_id=stu.id, name="林爸爸", is_primary=True)
+    s.add(g)
+    s.flush()
+    gid = g.id
+    s.commit()
+    s.close()
+    return gid
+
+
+class TestStaffIssueDeviceCode:
+    def test_issue_returns_plain_once_and_stores_hash(self, pclient):
+        c, sf = pclient
+        gid = _make_guardian(sf)
+        tok = _staff_token(sf)
+        r = c.post(
+            f"/api/guardians/{gid}/device-setup-code",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert r.status_code == 200, r.text
+        plain = r.json()["code"]
+        assert len(plain) == 12
+        s = sf()
+        row = (
+            s.query(ParentDeviceSetupCode)
+            .filter(ParentDeviceSetupCode.guardian_id == gid)
+            .one()
+        )
+        assert row.code_hash != plain
+        from api.parent_portal import auth as pauth
+
+        assert row.code_hash == pauth._hash_code(plain)
+        s.close()
+
+    def test_requires_guardians_write(self, pclient):
+        c, sf = pclient
+        gid = _make_guardian(sf)
+        from utils.auth import create_access_token
+
+        weak = create_access_token(
+            {
+                "user_id": 999,
+                "employee_id": None,
+                "role": "teacher",
+                "name": "t",
+                "permission_names": [],
+                "token_version": 0,
+            }
+        )
+        r = c.post(
+            f"/api/guardians/{gid}/device-setup-code",
+            headers={"Authorization": f"Bearer {weak}"},
+        )
+        assert r.status_code in (401, 403)

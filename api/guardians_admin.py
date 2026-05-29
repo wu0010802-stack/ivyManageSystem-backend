@@ -14,7 +14,7 @@ from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from models.database import AuditLog, Guardian, GuardianBindingCode, get_session
+from models.database import AuditLog, Guardian, GuardianBindingCode, ParentDeviceSetupCode, get_session
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.request_ip import get_client_ip
@@ -123,5 +123,77 @@ def create_binding_code(
             "code": plain_code,
             "expires_at": expires_at.isoformat(),
         }
+    finally:
+        session.close()
+
+
+@router.post("/{guardian_id}/device-setup-code")
+def create_device_setup_code(
+    guardian_id: int,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
+):
+    """為指定 Guardian 簽發無 LINE 裝置登入碼（明碼僅此次回傳）。"""
+    session = get_session()
+    try:
+        guardian = (
+            session.query(Guardian)
+            .filter(Guardian.id == guardian_id, Guardian.deleted_at.is_(None))
+            .first()
+        )
+        if guardian is None:
+            raise HTTPException(status_code=404, detail="找不到監護人")
+
+        now = now_taipei_naive()
+        active_count = (
+            session.query(ParentDeviceSetupCode)
+            .filter(
+                ParentDeviceSetupCode.guardian_id == guardian.id,
+                ParentDeviceSetupCode.used_at.is_(None),
+                ParentDeviceSetupCode.expires_at > now,
+            )
+            .count()
+        )
+        if active_count >= _MAX_ACTIVE_CODES_PER_GUARDIAN:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"此監護人已有 {active_count} 個未使用的裝置登入碼，"
+                    f"請先讓家長使用既有碼或等失效後再簽發"
+                ),
+            )
+
+        plain_code = _generate_plain_code()
+        code_hash = _hash_code(plain_code)
+        expires_at = now_taipei_naive() + timedelta(hours=_CODE_TTL_HOURS)
+
+        session.add(
+            ParentDeviceSetupCode(
+                guardian_id=guardian.id,
+                code_hash=code_hash,
+                expires_at=expires_at,
+                created_by=current_user["user_id"],
+            )
+        )
+        ip = get_client_ip(request)
+        session.add(
+            AuditLog(
+                user_id=current_user["user_id"],
+                username=current_user.get("name") or current_user.get("username") or "",
+                action="CREATE",
+                entity_type="parent_device_setup",
+                entity_id=str(guardian.id),
+                summary="簽發無 LINE 裝置登入碼",
+                ip_address=ip,
+                created_at=now_taipei_naive(),
+            )
+        )
+        session.commit()
+        logger.warning(
+            "[device-setup-code] guardian_id=%s created_by=%s",
+            guardian.id,
+            current_user["user_id"],
+        )
+        return {"code": plain_code, "expires_at": expires_at.isoformat()}
     finally:
         session.close()
