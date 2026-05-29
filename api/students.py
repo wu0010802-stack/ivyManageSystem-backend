@@ -29,7 +29,9 @@ from schemas.students import (
     StudentListOut,
     StudentRecordsTimelineOut,
 )
+from schemas.student_lifecycle import LifecycleOverviewOut
 from services.student_lifecycle import LifecycleTransitionError, transition
+from services.student_lifecycle_overview import build_lifecycle_overview
 from services.student_profile import assemble_profile
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
 from utils.auth import require_staff_permission
@@ -736,8 +738,6 @@ async def get_student(
 
 
 # ── P0d-2 reason-gated 醫療欄位讀取（§6 特種個資取用稽核）─────────────────
-
-
 
 
 class StudentMedicalOut(IvyBaseModel):
@@ -1568,5 +1568,31 @@ async def delete_guardian(
     except Exception as e:
         session.rollback()
         raise_safe_500(e, context="刪除監護人失敗")
+    finally:
+        session.close()
+
+
+@router.get(
+    "/students/{student_id}/lifecycle-overview",
+    response_model=LifecycleOverviewOut,
+)
+def get_student_lifecycle_overview(
+    student_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+):
+    session = get_session()
+    try:
+        overview = build_lifecycle_overview(session, student_id)
+        return LifecycleOverviewOut(
+            student_id=overview.student_id,
+            current_stage=overview.current_stage,
+            on_leave_badge=overview.on_leave_badge,
+            on_leave_since=overview.on_leave_since,
+            outer_steps=[step.__dict__ for step in overview.outer_steps],
+            inner_grade_steps=[gs.__dict__ for gs in overview.inner_grade_steps],
+            terminal=overview.terminal.__dict__,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     finally:
         session.close()

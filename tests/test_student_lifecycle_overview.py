@@ -8,6 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
+# 確保 Base.metadata 含這些 table（test_db_session fixture create_all 時需要）
+import models.student_log  # noqa: F401
+import models.student_transfer  # noqa: F401
+import models.recruitment  # noqa: F401
+import models.academic_term  # noqa: F401
+
 from services.student_lifecycle_overview import (
     StepInfo,
     compute_outer_steps,
@@ -297,3 +303,68 @@ def test_compute_terminal_uses_academic_term_end_date_when_available():
         term_end_date_for=lambda year: date(2027, 6, 30) if year == 2026 else None,
     )
     assert t.expected_date == date(2027, 6, 30)
+
+
+def test_build_lifecycle_overview_end_to_end(test_db_session):
+    """整合 happy path：建一個 active 學生在小班，預期外層 active=current + 預計畢業日。"""
+    from models.classroom import Student, Classroom, ClassGrade
+    from models.student_transfer import StudentClassroomTransfer
+    from services.student_lifecycle_overview import build_lifecycle_overview
+
+    g_small = ClassGrade(name="小班-T3", sort_order=2, is_active=True)
+    g_grad = ClassGrade(
+        name="大班-T3", sort_order=4, is_active=True, is_graduation_grade=True
+    )
+    test_db_session.add_all([g_small, g_grad])
+    test_db_session.flush()
+
+    cr_small = Classroom(
+        name="小班A-T3", school_year=113, semester=1, grade_id=g_small.id
+    )
+    test_db_session.add(cr_small)
+    test_db_session.flush()
+
+    student = Student(
+        student_id="113-T3-01",
+        name="T3測試生",
+        classroom_id=cr_small.id,
+        enrollment_date=date(2024, 8, 15),
+        lifecycle_status="active",
+    )
+    test_db_session.add(student)
+    test_db_session.flush()
+
+    test_db_session.add(
+        StudentClassroomTransfer(
+            student_id=student.id,
+            to_classroom_id=cr_small.id,
+            transferred_at=date(2024, 8, 15),
+        )
+    )
+    test_db_session.commit()
+
+    ov = build_lifecycle_overview(test_db_session, student.id)
+
+    assert ov.student_id == student.id
+    assert ov.current_stage == "active"
+    assert [s.key for s in ov.outer_steps] == [
+        "visited",
+        "deposited",
+        "enrolled",
+        "active",
+        "terminal",
+    ]
+    # 小班 sort=2 entered 2024/8 → diff 4-2=2 → 學年 2024+2=2026 → 預計畢業 2027/7/31
+    assert ov.terminal.kind == "none"
+    assert ov.terminal.expected_date == date(2027, 7, 31)
+    grade_names = [g.name for g in ov.inner_grade_steps]
+    assert "小班-T3" in grade_names
+    assert "大班-T3" in grade_names
+
+
+def test_build_lifecycle_overview_404_when_missing(test_db_session):
+    """student_id 不存在 → raise ValueError。"""
+    from services.student_lifecycle_overview import build_lifecycle_overview
+
+    with pytest.raises(ValueError, match="student not found"):
+        build_lifecycle_overview(test_db_session, 999999)

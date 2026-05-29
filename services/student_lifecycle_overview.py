@@ -308,3 +308,109 @@ def compute_terminal(
         kind="none",
         expected_date=date(expected_school_year + 1, 7, 31),
     )
+
+
+def build_lifecycle_overview(session, student_id: int) -> LifecycleOverview:
+    """API entrypoint — 一次 query 完所有需要資料，丟給純函式。"""
+    from models.classroom import Student, Classroom, ClassGrade
+    from models.recruitment import RecruitmentEventLog
+    from models.student_log import StudentChangeLog
+    from models.student_transfer import StudentClassroomTransfer
+    from models.academic_term import AcademicTerm
+
+    student = session.query(Student).filter(Student.id == student_id).first()
+    if student is None:
+        raise ValueError(f"student not found: id={student_id}")
+
+    funnel_events = (
+        session.query(RecruitmentEventLog)
+        .filter(RecruitmentEventLog.student_id == student_id)
+        .order_by(RecruitmentEventLog.created_at.asc())
+        .all()
+    )
+    # 早期 funnel events 可能 student_id IS NULL 但 visit_id 對應 — 補一筆 by visit_id
+    if student.recruitment_visit_id:
+        extra = (
+            session.query(RecruitmentEventLog)
+            .filter(
+                RecruitmentEventLog.recruitment_visit_id
+                == student.recruitment_visit_id,
+                RecruitmentEventLog.student_id.is_(None),
+            )
+            .order_by(RecruitmentEventLog.created_at.asc())
+            .all()
+        )
+        funnel_events = sorted(extra + funnel_events, key=lambda e: e.created_at)
+
+    change_logs = (
+        session.query(StudentChangeLog)
+        .filter(StudentChangeLog.student_id == student_id)
+        .order_by(StudentChangeLog.event_date.asc())
+        .all()
+    )
+
+    transfers = (
+        session.query(StudentClassroomTransfer)
+        .filter(StudentClassroomTransfer.student_id == student_id)
+        .order_by(StudentClassroomTransfer.transferred_at.asc())
+        .all()
+    )
+
+    all_grades = (
+        session.query(ClassGrade)
+        .filter(ClassGrade.is_active == True)  # noqa: E712
+        .order_by(ClassGrade.sort_order.asc())
+        .all()
+    )
+
+    classroom_rows = session.query(
+        Classroom.id, Classroom.grade_id, Classroom.name
+    ).all()
+    classroom_grade_map = {
+        row[0]: row[1] for row in classroom_rows if row[1] is not None
+    }
+    classroom_name_map = {row[0]: row[2] for row in classroom_rows}
+
+    outer = compute_outer_steps(student, funnel_events, change_logs)
+    inner = compute_inner_grade_steps(
+        student, all_grades, transfers, classroom_grade_map, classroom_name_map
+    )
+
+    grad_sort = next((g.sort_order for g in all_grades if g.is_graduation_grade), None)
+
+    def term_end_date_for(school_year: int) -> Optional[date]:
+        row = (
+            session.query(AcademicTerm.end_date)
+            .filter(
+                AcademicTerm.school_year == school_year,
+                AcademicTerm.semester == 2,
+            )
+            .first()
+        )
+        return row[0] if row else None
+
+    terminal = compute_terminal(student, inner, grad_sort, term_end_date_for)
+
+    on_leave_badge = student.lifecycle_status == "on_leave"
+    on_leave_since: Optional[date] = None
+    if on_leave_badge:
+        latest_leave = (
+            session.query(StudentChangeLog)
+            .filter(
+                StudentChangeLog.student_id == student_id,
+                StudentChangeLog.event_type == "休學",
+            )
+            .order_by(StudentChangeLog.event_date.desc())
+            .first()
+        )
+        on_leave_since = latest_leave.event_date if latest_leave else None
+
+    return LifecycleOverview(
+        student_id=student.id,
+        current_stage=student.lifecycle_status,
+        on_leave_badge=on_leave_badge,
+        on_leave_since=on_leave_since,
+        outer_steps=outer,
+        inner_grade_steps=inner,
+        terminal=terminal,
+    )
