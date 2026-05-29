@@ -71,6 +71,9 @@ def parent_client(tmp_path):
     )
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_portal_router)
 
     with TestClient(app) as client:

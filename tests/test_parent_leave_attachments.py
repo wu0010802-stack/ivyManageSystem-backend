@@ -61,6 +61,9 @@ def leave_att_client(tmp_path, monkeypatch):
         ps_mod._portfolio_storage = None
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_router)
 
     from api.parent_portal._dependencies import get_parent_db

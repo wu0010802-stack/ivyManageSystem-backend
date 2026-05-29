@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from utils.exceptions import BusinessError
 from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
@@ -79,7 +80,7 @@ async def parent_list_milestones(
             .all()
         )
         return {"items": [_milestone_to_dict(r) for r in rows]}
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端查詢里程碑失敗")
@@ -134,7 +135,7 @@ async def parent_react(
                 m.parent_acknowledged_by = g.id
         session.flush()
         return _milestone_to_dict(m)
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端 reaction 失敗")
@@ -174,7 +175,7 @@ async def parent_acknowledge(
                 m.parent_acknowledged_by = g.id
             session.flush()
         return _milestone_to_dict(m)
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端確認里程碑失敗")

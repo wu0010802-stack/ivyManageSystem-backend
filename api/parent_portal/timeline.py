@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from utils.exceptions import BusinessError
 from utils.taipei_time import today_taipei
 from typing import Optional
 
@@ -243,7 +244,7 @@ async def parent_get_timeline(
                 "by_type": _by_type_count(all_items),
             },
         }
-    except HTTPException:
+    except (HTTPException, BusinessError):
         raise
     except Exception as e:
         raise_safe_500(e, context="家長端時間軸查詢失敗")

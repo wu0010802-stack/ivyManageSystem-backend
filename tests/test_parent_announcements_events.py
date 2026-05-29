@@ -46,6 +46,9 @@ def parent_event_client(tmp_path):
     Base.metadata.create_all(db_engine)
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_portal_router)
 
     from api.parent_portal._dependencies import get_parent_db

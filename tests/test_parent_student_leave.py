@@ -43,6 +43,30 @@ def leave_client(tmp_path):
     Base.metadata.create_all(db_engine)
 
     app = FastAPI()
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
+
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
+
+    # 覆寫 422 handler：Pydantic v2 field_validator raise ValueError 時
+    # exc.errors() 帶 raw ValueError 物件，需 jsonable_encoder 轉換。
+    # （production envelope handler latent bug，Phase 3 不在範圍內 fix，
+    # 本 fixture 在地 patch 讓 leaves.py 的 422 path 可序列化。）
+    @app.exception_handler(RequestValidationError)
+    async def _patched_validation_handler(request, exc):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": {
+                    "code": "VALIDATION_ERROR",
+                    "errors": jsonable_encoder(exc.errors()),
+                }
+            },
+        )
+
     app.include_router(parent_portal_router)
     app.include_router(student_leaves_router)
 
@@ -140,7 +164,9 @@ def _admin_token(user: User) -> str:
             "employee_id": user.employee_id,
             "role": user.role,
             "name": user.username,
-            "permission_names": user.permission_names if user.permission_names is not None else -1,
+            "permission_names": (
+                user.permission_names if user.permission_names is not None else -1
+            ),
             "token_version": user.token_version or 0,
         }
     )

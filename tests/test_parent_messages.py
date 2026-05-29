@@ -47,6 +47,9 @@ def msg_client(tmp_path):
     Base.metadata.create_all(db_engine)
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_router)
     app.include_router(portal_router)
 

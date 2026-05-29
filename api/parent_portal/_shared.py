@@ -17,6 +17,10 @@ from models.classroom import (
     Student,
 )
 from models.database import Guardian, User
+from services.business_errors.parent import (
+    ParentNotAuthorized,
+    StudentNotLinkedToParent,
+)
 
 # 終態 lifecycle：家長對這幾種子女不可送新投藥單/簽收/聯絡簿等寫入動作；
 # 讀路徑（成長紀錄、歷史聯絡簿）保留。
@@ -28,7 +32,7 @@ _TERMINAL_LIFECYCLE = frozenset(
 def _get_parent_user(session, current_user: dict) -> User:
     """從 JWT payload 取出家長 User；非 parent role 一律 403。"""
     if current_user.get("role") != "parent":
-        raise HTTPException(status_code=403, detail="此 API 僅限家長端使用")
+        raise ParentNotAuthorized("此 API 僅限家長端使用")
     user_id = current_user.get("user_id")
     if not user_id:
         raise HTTPException(status_code=403, detail="缺少 user_id")
@@ -71,7 +75,7 @@ def _assert_student_owned(
     """
     _, student_ids = _get_parent_student_ids(session, user_id)
     if student_id not in student_ids:
-        raise HTTPException(status_code=403, detail="此學生不屬於您")
+        raise StudentNotLinkedToParent("此學生不屬於您")
     if for_write:
         student = (
             session.query(Student.lifecycle_status)

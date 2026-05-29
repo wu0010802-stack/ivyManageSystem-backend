@@ -48,6 +48,7 @@ from models.database import (
     StudentMedicationOrder,
 )
 from models.fees import StudentFeeRecord
+from services.business_errors.parent import StudentNotLinkedToParent
 from utils.auth import require_parent_role
 from utils.recurrence import expand_event
 
@@ -117,7 +118,7 @@ def _aggregate_period(
     _, all_student_ids = _get_parent_student_ids(session, user_id)
     if student_id is not None:
         if student_id not in all_student_ids:
-            raise HTTPException(status_code=403, detail="此學生不屬於您")
+            raise StudentNotLinkedToParent("此學生不屬於您")
         target_student_ids = [student_id]
     else:
         target_student_ids = all_student_ids

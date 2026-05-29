@@ -25,6 +25,7 @@ from models.database import (
     Student,
 )
 from schemas._common import OkStatusOut, UnreadCountOut
+from services.business_errors.parent import ParentNotAuthorized
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -156,7 +157,7 @@ def mark_read(
         .first()
     )
     if visible is None:
-        raise HTTPException(status_code=403, detail="此公告不在可見範圍")
+        raise ParentNotAuthorized("此公告不在可見範圍")
 
     existing = (
         session.query(AnnouncementParentRead)

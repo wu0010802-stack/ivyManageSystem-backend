@@ -116,6 +116,9 @@ def parent_client(tmp_path, monkeypatch):
     monkeypatch.setattr(svc.ParentAssistantService, "_path", faq_path)
 
     app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
     app.include_router(parent_router)
     client = TestClient(app)
     client.headers.update({"Authorization": f"Bearer {token}"})

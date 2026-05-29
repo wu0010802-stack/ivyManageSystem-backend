@@ -40,6 +40,7 @@ from models.portfolio import (
     ATTACHMENT_OWNER_STUDENT_LEAVE,
     REPORT_STATUS_READY,
 )
+from services.business_errors.parent import ContactBookNotPublished
 from utils.audit import write_explicit_audit
 from utils.auth import require_parent_role
 from utils.portfolio_storage import get_portfolio_storage
@@ -129,7 +130,7 @@ def _resolve_student_id_for_parent(session, owner_type: str, owner_id: int) -> i
             raise HTTPException(status_code=410, detail="聯絡簿已刪除")
         if cb.published_at is None:
             # 草稿不可給家長存取（與 photos.py `_parent_owner_ids` 一致）
-            raise HTTPException(status_code=404, detail="聯絡簿尚未發布")
+            raise ContactBookNotPublished("聯絡簿尚未發布")
         return cb.student_id
 
     if owner_type == ATTACHMENT_OWNER_REPORT:

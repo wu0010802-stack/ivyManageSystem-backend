@@ -16,6 +16,7 @@ from models.database import (
     Student,
 )
 from models.portfolio import StudentAllergy
+from services.business_errors.parent import StudentNotFound
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -59,7 +60,7 @@ def get_child_profile(
     _assert_student_owned(session, user_id, student_id)
     student = session.query(Student).filter(Student.id == student_id).first()
     if not student:
-        raise HTTPException(status_code=404, detail="學生不存在")
+        raise StudentNotFound("學生不存在")
     classroom = (
         session.query(Classroom)
         .filter(Classroom.id == student.classroom_id)
