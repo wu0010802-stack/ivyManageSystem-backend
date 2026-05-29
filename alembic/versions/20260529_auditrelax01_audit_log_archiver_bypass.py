@@ -30,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "auditrelax01"
-down_revision = "emppiired01"
+down_revision = "intghealth01"
 branch_labels = None
 depends_on = None
 
