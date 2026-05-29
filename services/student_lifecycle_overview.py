@@ -167,3 +167,98 @@ def compute_outer_steps(
             occurred_at=terminal_at,
         ),
     ]
+
+
+def compute_inner_grade_steps(
+    student,
+    all_grades: list,  # 已 filter is_active=true，已 sort by sort_order
+    transfers: list,  # list[StudentClassroomTransfer]，可空
+    classroom_grade_map: dict[int, int],  # classroom_id → grade_id
+    classroom_name_map: dict[int, str],
+) -> list[GradeStepInfo]:
+    if not all_grades:
+        return []
+
+    # 依 transfers 找出「曾進入過的 grade」與其最早日期
+    grade_entered: dict[int, date] = {}
+    grade_classroom_name: dict[int, str] = {}
+    for tr in sorted(transfers, key=lambda t: t.transferred_at):
+        gid = classroom_grade_map.get(tr.to_classroom_id)
+        if gid is None:
+            continue
+        d = (
+            tr.transferred_at.date()
+            if hasattr(tr.transferred_at, "date")
+            else tr.transferred_at
+        )
+        if gid not in grade_entered or d < grade_entered[gid]:
+            grade_entered[gid] = d
+        grade_classroom_name[gid] = classroom_name_map.get(
+            tr.to_classroom_id
+        ) or grade_classroom_name.get(gid)
+
+    # 推當前年級：student.classroom_id → grade_id
+    current_grade_id: Optional[int] = None
+    if student.classroom_id is not None:
+        current_grade_id = classroom_grade_map.get(student.classroom_id)
+    # 若 transfers 有但 student.classroom_id 對不到，用最晚的 transfer 推
+    if current_grade_id is None and transfers:
+        latest = max(transfers, key=lambda t: t.transferred_at)
+        current_grade_id = classroom_grade_map.get(latest.to_classroom_id)
+
+    # 入學年級：transfer 中最早的 grade；若無 transfer，用 current_grade_id 兜底
+    if grade_entered:
+        first_grade_id = min(
+            grade_entered.keys(),
+            key=lambda gid: next(g.sort_order for g in all_grades if g.id == gid),
+        )
+    else:
+        first_grade_id = current_grade_id
+
+    # current_grade 的 fallback entered_at = student.enrollment_date
+    if (
+        current_grade_id is not None
+        and current_grade_id not in grade_entered
+        and student.enrollment_date
+    ):
+        grade_entered[current_grade_id] = student.enrollment_date
+        if student.classroom_id is not None:
+            grade_classroom_name[current_grade_id] = classroom_name_map.get(
+                student.classroom_id
+            )
+
+    first_sort = (
+        next((g.sort_order for g in all_grades if g.id == first_grade_id), None)
+        if first_grade_id
+        else None
+    )
+    current_sort = (
+        next((g.sort_order for g in all_grades if g.id == current_grade_id), None)
+        if current_grade_id
+        else None
+    )
+
+    steps: list[GradeStepInfo] = []
+    for g in all_grades:
+        if current_sort is None:
+            status: GradeStepStatus = "future"
+        elif first_sort is not None and g.sort_order < first_sort:
+            status = "skipped"
+        elif g.sort_order > current_sort:
+            status = "future"
+        elif g.sort_order == current_sort:
+            status = "current"
+        else:
+            # 介於 first 與 current 之間
+            status = "done" if g.id in grade_entered else "skipped"
+        steps.append(
+            GradeStepInfo(
+                grade_id=g.id,
+                name=g.name,
+                sort_order=g.sort_order,
+                status=status,
+                entered_at=grade_entered.get(g.id),
+                classroom_name=grade_classroom_name.get(g.id),
+            )
+        )
+    return steps

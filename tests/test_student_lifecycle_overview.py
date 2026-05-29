@@ -107,3 +107,104 @@ def test_compute_outer_steps_legacy_student_no_funnel_events():
     assert steps[3].status == "current"
     assert steps[3].occurred_at == date(2023, 9, 1)
     assert steps[4].status == "future"
+
+
+from services.student_lifecycle_overview import (
+    GradeStepInfo,
+    compute_inner_grade_steps,
+)
+
+
+def _grade(grade_id, name, sort_order, is_grad=False):
+    return SimpleNamespace(
+        id=grade_id,
+        name=name,
+        sort_order=sort_order,
+        is_graduation_grade=is_grad,
+        is_active=True,
+    )
+
+
+def _transfer(student_id, to_classroom_id, transferred_at, from_classroom_id=None):
+    return SimpleNamespace(
+        student_id=student_id,
+        from_classroom_id=from_classroom_id,
+        to_classroom_id=to_classroom_id,
+        transferred_at=transferred_at,
+    )
+
+
+# 共用 grades + classroom maps
+GRADES_FOUR = [
+    _grade(1, "幼幼", 1),
+    _grade(2, "小班", 2),
+    _grade(3, "中班", 3),
+    _grade(4, "大班", 4, is_grad=True),
+]
+# classroom_id → grade_id
+CR_GRADE = {11: 1, 21: 2, 31: 3, 41: 4}
+CR_NAME = {11: "幼幼A", 21: "小班A", 31: "中班A", 41: "大班A"}
+
+
+def test_compute_inner_grades_full_journey_from_yo_yo():
+    """幼幼班一路升大班 — 4 個年級全有 transfer。"""
+    student = _stu(classroom_id=41, enrollment_date=date(2022, 8, 15))
+    transfers = [
+        _transfer(1, 11, date(2022, 8, 15)),
+        _transfer(1, 21, date(2023, 8, 1), from_classroom_id=11),
+        _transfer(1, 31, date(2024, 8, 1), from_classroom_id=21),
+        _transfer(1, 41, date(2025, 8, 1), from_classroom_id=31),
+    ]
+    steps = compute_inner_grade_steps(
+        student, GRADES_FOUR, transfers, CR_GRADE, CR_NAME
+    )
+    assert [s.grade_id for s in steps] == [1, 2, 3, 4]
+    assert [s.status for s in steps] == ["done", "done", "done", "current"]
+    assert steps[0].entered_at == date(2022, 8, 15)
+    assert steps[3].entered_at == date(2025, 8, 1)
+
+
+def test_compute_inner_grades_mid_year_enrollment():
+    """5 歲入大班 — 幼幼/小班/中班 = skipped，大班 = current。"""
+    student = _stu(classroom_id=41, enrollment_date=date(2025, 8, 1))
+    transfers = [_transfer(1, 41, date(2025, 8, 1))]
+    steps = compute_inner_grade_steps(
+        student, GRADES_FOUR, transfers, CR_GRADE, CR_NAME
+    )
+    assert [s.status for s in steps] == ["skipped", "skipped", "skipped", "current"]
+    assert steps[0].entered_at is None
+    assert steps[3].entered_at == date(2025, 8, 1)
+
+
+def test_compute_inner_grades_no_transfer_history_fallback():
+    """無 transfer 紀錄 — 用 student.classroom_id 推當前年級，前段全 skipped。"""
+    student = _stu(classroom_id=31, enrollment_date=date(2024, 8, 1))
+    steps = compute_inner_grade_steps(student, GRADES_FOUR, [], CR_GRADE, CR_NAME)
+    assert [s.status for s in steps] == ["skipped", "skipped", "current", "future"]
+    assert steps[2].entered_at == date(2024, 8, 1)  # 兜底用 enrollment_date
+
+
+def test_compute_inner_grades_with_class_change_same_grade():
+    """同年級內換班 — 不影響 stepper status，但 entered_at 取最早。"""
+    student = _stu(classroom_id=31, enrollment_date=date(2024, 8, 1))
+    transfers = [
+        _transfer(1, 31, date(2024, 8, 1)),  # 中班A
+        _transfer(1, 31, date(2024, 10, 5), from_classroom_id=31),  # 換到中班B 但仍中班
+    ]
+    steps = compute_inner_grade_steps(
+        student, GRADES_FOUR, transfers, CR_GRADE, CR_NAME
+    )
+    assert steps[2].entered_at == date(2024, 8, 1)
+
+
+def test_compute_inner_grades_skipped_middle_grade():
+    """跳級：幼幼 → 中班（跳過小班）— 小班 skipped。"""
+    student = _stu(classroom_id=31)
+    transfers = [
+        _transfer(1, 11, date(2023, 8, 1)),
+        _transfer(1, 31, date(2024, 8, 1), from_classroom_id=11),
+    ]
+    steps = compute_inner_grade_steps(
+        student, GRADES_FOUR, transfers, CR_GRADE, CR_NAME
+    )
+    assert [s.status for s in steps] == ["done", "skipped", "current", "future"]
