@@ -107,3 +107,32 @@ def test_sanity_no_warning_when_scope_options_present(caplog):
     with caplog.at_level(logging.WARNING):
         check_scope_options_sanity(seed)
     assert len(caplog.records) == 0
+
+
+# --- dict input tests (get_current_user returns a dict, not a model) ---
+
+def test_resolve_grant_dict_wildcard_returns_all():
+    user = {"permission_names": ["*"], "employee_id": 1}
+    g = resolve_grant(user, "STUDENTS_READ")
+    assert g == PermissionGrant("STUDENTS_READ", "all")
+
+
+def test_resolve_grant_dict_scoped_own_class():
+    user = {"permission_names": ["STUDENTS_READ:own_class"], "employee_id": 1}
+    g = resolve_grant(user, "STUDENTS_READ")
+    assert g == PermissionGrant("STUDENTS_READ", "own_class")
+
+
+def test_resolve_grant_dict_empty_permission_names():
+    user = {"permission_names": [], "employee_id": 1}
+    assert resolve_grant(user, "STUDENTS_READ") is None
+
+
+def test_resolve_grant_dict_missing_key():
+    user = {"employee_id": 1}
+    assert resolve_grant(user, "STUDENTS_READ") is None
+
+
+def test_resolve_grant_dict_none_permission_names():
+    user = {"permission_names": None, "employee_id": 1}
+    assert resolve_grant(user, "STUDENTS_READ") is None

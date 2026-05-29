@@ -730,13 +730,18 @@ def resolve_grant(user, code: str) -> Optional[PermissionGrant]:
         所有 scope 皆無效字串     → None（fail-closed，避免誤升權）
 
     Args:
-        user: 須有 .permission_names 屬性
+        user: 可為 SQLAlchemy model 物件（有 .permission_names 屬性）或 dict
+              （get_current_user 回傳的 JWT payload dict）
         code: 權限 enum 字串值（如 'STUDENTS_READ'）
 
     Returns:
         PermissionGrant(code, scope) 或 None
     """
-    names = getattr(user, "permission_names", None) or []
+    if isinstance(user, dict):
+        perm_names = user.get("permission_names", [])
+    else:
+        perm_names = getattr(user, "permission_names", None)
+    names = perm_names or []
     if WILDCARD in names:
         return PermissionGrant(code, "all")
 

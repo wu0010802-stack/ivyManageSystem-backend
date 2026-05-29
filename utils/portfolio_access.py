@@ -34,8 +34,20 @@ _TEACHER_BLOCKED_LIFECYCLE = frozenset(
 )
 
 
-def is_unrestricted(current_user: dict) -> bool:
-    """管理角色不受班級限制。"""
+def is_unrestricted(current_user: dict, code: str | None = None) -> bool:
+    """管理角色不受班級限制。
+
+    若提供 code（permission code 字串）：以 PermissionGrant.scope == 'all' 為準
+        — admin/wildcard 持有者 → True
+        — 持有 `<code>:all` 的使用者 → True（自訂角色可表達跨班存取）
+        — 持有 `<code>:own_class` 或未持有 → False
+    若未提供 code：回退到既有 role-based 判斷（admin/hr/supervisor 為 True）
+        — 保留向後相容，~30 處既有呼叫端無需改動
+    """
+    if code is not None:
+        from utils.permissions import resolve_grant
+        grant = resolve_grant(current_user, code)
+        return grant is not None and grant.scope == "all"
     return current_user.get("role", "") in _UNRESTRICTED_ROLES
 
 
@@ -55,13 +67,19 @@ def require_unrestricted_role(
         )
 
 
-def accessible_classroom_ids(session, current_user: dict) -> list[int]:
+def accessible_classroom_ids(
+    session, current_user: dict, code: str | None = None
+) -> list[int]:
     """回傳該 user 有權存取的班級 id 清單。
 
-    管理角色回傳 [] 搭配 is_unrestricted() == True 表示「全放行」。
-    teacher 回傳所擔任的班級 id 清單；若無任何班級則回傳空 list。
+    管理角色（或持有 :all scope 者）回傳 [] 搭配 is_unrestricted() == True
+    表示「全放行」。其他角色回傳所擔任的班級 id 清單；若無任何班級則回傳空 list。
+
+    Args:
+        code: 若提供，以 PermissionGrant.scope == 'all' 判斷是否 unrestricted；
+              否則回退到 role-based 判斷（向後相容）
     """
-    if is_unrestricted(current_user):
+    if is_unrestricted(current_user, code=code):
         return []
     emp_id = current_user.get("employee_id")
     if not emp_id:
