@@ -55,3 +55,7 @@ from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401
 # 2026-05-28 Phase 4 P1 resilience：Supabase fallback + LINE token health tables
 from models.pending_uploads import PendingUpload  # noqa: F401
 from models.integration_health import LineTokenHealth  # noqa: F401
+
+# P0c-1 2026-05-28 法規/個資 sprint: consent + policy version 表
+# CI Tests step `Base.metadata.create_all` 與 prod 啟動需中央 import 否則漏建表
+from .consent import ParentConsentLog, PolicyVersion  # noqa: F401

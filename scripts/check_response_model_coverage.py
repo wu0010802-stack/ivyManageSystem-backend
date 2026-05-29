@@ -68,15 +68,17 @@ def scan_file(path: Path) -> list[tuple[int, str, str]]:
 
 
 def check_grandfather_only_shrinks() -> list[str]:
-    """檢查 grandfather list 相對 origin/main 是否只移除沒新增。回傳新增條目清單（empty = OK）。"""
+    """檢查 grandfather list 相對 origin/main 是否只移除沒新增。回傳新增條目清單（empty = OK）。
+
+    用 set semantics（不靠 git diff 行）；支援檔案重組（分區 header / 重新排序）
+    時不會誤判為「條目搬位 = 條目新增」。
+    """
     try:
         result = subprocess.run(
             [
                 "git",
-                "diff",
-                "origin/main",
-                "--",
-                str(GRANDFATHER_FILE.relative_to(REPO_ROOT)),
+                "show",
+                f"origin/main:{GRANDFATHER_FILE.relative_to(REPO_ROOT)}",
             ],
             cwd=REPO_ROOT,
             check=True,
@@ -86,19 +88,16 @@ def check_grandfather_only_shrinks() -> list[str]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []  # 沒 git 或 origin/main 取不到時 skip 該 check
 
-    # 首次建立 grandfather 檔時，origin/main 沒有 → diff header 含 `--- /dev/null`
-    # 視為 initial seed，跳過「禁止新增」判斷
-    header_lines = result.stdout.splitlines()[:5]
-    if any(ln == "--- /dev/null" for ln in header_lines):
-        return []
+    def parse_entries(text: str) -> set[str]:
+        return {
+            ln.strip()
+            for ln in text.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        }
 
-    added = []
-    for line in result.stdout.splitlines():
-        if line.startswith("+") and not line.startswith("+++"):
-            content = line[1:].strip()
-            if content and not content.startswith("#"):
-                added.append(content)
-    return added
+    old_entries = parse_entries(result.stdout)
+    new_entries = parse_entries(GRANDFATHER_FILE.read_text(encoding="utf-8"))
+    return sorted(new_entries - old_entries)
 
 
 def main() -> int:
