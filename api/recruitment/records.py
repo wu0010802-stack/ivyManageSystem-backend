@@ -179,7 +179,10 @@ def create_recruitment_record(
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
 ):
     with session_scope() as session:
-        record = RecruitmentVisit(**payload.model_dump())
+        data = payload.model_dump(exclude={"geocoding_consent"})
+        record = RecruitmentVisit(**data)
+        if payload.geocoding_consent:
+            record.geocoding_consent_at = now_taipei_naive()
         record.expected_start_label = _extract_expected_label_from_text(
             record.notes, record.parent_response, record.grade
         )
@@ -200,8 +203,14 @@ def update_recruitment_record(
         if not record:
             raise HTTPException(status_code=404, detail="紀錄不存在")
         old_month = record.month
-        for field, value in payload.model_dump(exclude_unset=True).items():
+        update_data = payload.model_dump(exclude_unset=True, exclude={"geocoding_consent"})
+        for field, value in update_data.items():
             setattr(record, field, value)
+        if payload.geocoding_consent is True:
+            record.geocoding_consent_at = now_taipei_naive()
+        elif payload.geocoding_consent is False:
+            record.geocoding_consent_at = None
+        # else None: preserve existing
         record.expected_start_label = _extract_expected_label_from_text(
             record.notes, record.parent_response, record.grade
         )

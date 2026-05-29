@@ -43,6 +43,7 @@ class RecruitmentVisit(Base):
     has_deposit = Column(Boolean, default=False, nullable=False)  # 是否預繳
     notes = Column(Text, nullable=True)  # 備註（含預計就讀月份）
     parent_response = Column(Text, nullable=True)  # 電訪後家長回應
+    geocoding_consent_at = Column(DateTime, nullable=True)  # PII consent attestation
 
     # --- 延伸欄位（Excel 未預繳原因分析 / 近五年追蹤） ---
     no_deposit_reason = Column(String(60), nullable=True)  # 未預繳原因分類
@@ -93,6 +94,7 @@ class RecruitmentIvykidsRecord(Base):
     has_deposit = Column(Boolean, default=False, nullable=False)
     enrolled = Column(Boolean, default=False, nullable=False)
     transfer_term = Column(Boolean, default=False, nullable=False)
+    geocoding_consent_at = Column(DateTime, nullable=True)  # PII consent attestation
     created_at = Column(DateTime, default=now_taipei_naive)
     updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 

@@ -47,6 +47,7 @@ from models.recruitment import (
     RecruitmentPeriod,
     RecruitmentVisit,
 )
+from utils.taipei_time import now_taipei_naive
 
 
 @pytest.fixture
@@ -100,7 +101,9 @@ class TestRecruitmentMonthNormalization:
         assert update_payload.month == "115.04"
         assert month_payload.month == "115.04"
 
-    def test_import_normalizes_month_before_persisting(self, recruitment_session_factory):
+    def test_import_normalizes_month_before_persisting(
+        self, recruitment_session_factory
+    ):
         result = import_recruitment_records(
             [ImportRecord(**{"月份": "115.4", "幼生姓名": "小安"})],
             _=None,
@@ -112,29 +115,35 @@ class TestRecruitmentMonthNormalization:
             record = session.query(RecruitmentVisit).one()
             assert record.month == "115.04"
 
-    def test_import_preserves_multiple_visits_for_same_child_in_same_month(self, recruitment_session_factory):
+    def test_import_preserves_multiple_visits_for_same_child_in_same_month(
+        self, recruitment_session_factory
+    ):
         result = import_recruitment_records(
             [
-                ImportRecord(**{
-                    "月份": "114.12",
-                    "序號": "60",
-                    "日期": "114.12.19媽咪參觀",
-                    "幼生姓名": "范廖翊程",
-                    "幼生來源": "自行蒞園",
-                    "是否預繳": "否",
-                    "備註": "115.07 讀中班",
-                    "電訪後家長回應": "童年綠地,情緒障礙,已告知無名額",
-                }),
-                ImportRecord(**{
-                    "月份": "114.12",
-                    "序號": "69",
-                    "日期": "114.12.19媽咪參觀",
-                    "幼生姓名": "范廖翊程",
-                    "幼生來源": "童年綠地 19-2",
-                    "是否預繳": "是",
-                    "備註": "115.08 讀大班",
-                    "電訪後家長回應": "班導-雅婷",
-                }),
+                ImportRecord(
+                    **{
+                        "月份": "114.12",
+                        "序號": "60",
+                        "日期": "114.12.19媽咪參觀",
+                        "幼生姓名": "范廖翊程",
+                        "幼生來源": "自行蒞園",
+                        "是否預繳": "否",
+                        "備註": "115.07 讀中班",
+                        "電訪後家長回應": "童年綠地,情緒障礙,已告知無名額",
+                    }
+                ),
+                ImportRecord(
+                    **{
+                        "月份": "114.12",
+                        "序號": "69",
+                        "日期": "114.12.19媽咪參觀",
+                        "幼生姓名": "范廖翊程",
+                        "幼生來源": "童年綠地 19-2",
+                        "是否預繳": "是",
+                        "備註": "115.08 讀大班",
+                        "電訪後家長回應": "班導-雅婷",
+                    }
+                ),
             ],
             _=None,
         )
@@ -152,14 +161,18 @@ class TestRecruitmentMonthNormalization:
             assert [row.seq_no for row in rows] == ["60", "69"]
             assert [row.has_deposit for row in rows] == [False, True]
 
-    def test_import_uses_visit_date_month_when_month_column_conflicts(self, recruitment_session_factory):
+    def test_import_uses_visit_date_month_when_month_column_conflicts(
+        self, recruitment_session_factory
+    ):
         result = import_recruitment_records(
             [
-                ImportRecord(**{
-                    "月份": "114.11",
-                    "日期": "114.10.23爸媽參觀",
-                    "幼生姓名": "洪苡真",
-                }),
+                ImportRecord(
+                    **{
+                        "月份": "114.11",
+                        "日期": "114.10.23爸媽參觀",
+                        "幼生姓名": "洪苡真",
+                    }
+                ),
             ],
             _=None,
         )
@@ -171,7 +184,9 @@ class TestRecruitmentMonthNormalization:
             assert record.month == "114.10"
             assert record.visit_date == "114.10.23爸媽參觀"
 
-    def test_normalize_existing_months_repairs_records_using_visit_date(self, recruitment_session_factory):
+    def test_normalize_existing_months_repairs_records_using_visit_date(
+        self, recruitment_session_factory
+    ):
         with recruitment_session_factory() as session:
             session.add(
                 RecruitmentVisit(
@@ -193,7 +208,9 @@ class TestRecruitmentMonthNormalization:
 
 
 class TestPeriodsSummary:
-    def test_by_grade_only_counts_visits_within_defined_periods(self, recruitment_session_factory):
+    def test_by_grade_only_counts_visits_within_defined_periods(
+        self, recruitment_session_factory
+    ):
         with recruitment_session_factory() as session:
             session.add(
                 RecruitmentPeriod(
@@ -205,29 +222,31 @@ class TestPeriodsSummary:
                     sort_order=1,
                 )
             )
-            session.add_all([
-                RecruitmentVisit(
-                    month="114.09",
-                    child_name="小安",
-                    grade="小班",
-                    has_deposit=True,
-                    enrolled=True,
-                ),
-                RecruitmentVisit(
-                    month="115.03",
-                    child_name="小寶",
-                    grade="中班",
-                    has_deposit=False,
-                    enrolled=False,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小晴",
-                    grade="大班",
-                    has_deposit=True,
-                    enrolled=True,
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        month="114.09",
+                        child_name="小安",
+                        grade="小班",
+                        has_deposit=True,
+                        enrolled=True,
+                    ),
+                    RecruitmentVisit(
+                        month="115.03",
+                        child_name="小寶",
+                        grade="中班",
+                        has_deposit=False,
+                        enrolled=False,
+                    ),
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="小晴",
+                        grade="大班",
+                        has_deposit=True,
+                        enrolled=True,
+                    ),
+                ]
+            )
             session.commit()
 
         summary = get_periods_summary(_=None)
@@ -254,39 +273,44 @@ class TestPeriodsSummary:
             },
         ]
 
+
 class TestRecruitmentStats:
-    def test_live_stats_include_enrollment_funnel_counts_and_rates(self, recruitment_session_factory):
+    def test_live_stats_include_enrollment_funnel_counts_and_rates(
+        self, recruitment_session_factory
+    ):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小安",
-                    has_deposit=True,
-                    enrolled=True,
-                    transfer_term=False,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小寶",
-                    has_deposit=True,
-                    enrolled=False,
-                    transfer_term=False,
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="小晴",
-                    has_deposit=False,
-                    enrolled=False,
-                    transfer_term=False,
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="小樂",
-                    has_deposit=True,
-                    enrolled=False,
-                    transfer_term=True,
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="小安",
+                        has_deposit=True,
+                        enrolled=True,
+                        transfer_term=False,
+                    ),
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="小寶",
+                        has_deposit=True,
+                        enrolled=False,
+                        transfer_term=False,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="小晴",
+                        has_deposit=False,
+                        enrolled=False,
+                        transfer_term=False,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="小樂",
+                        has_deposit=True,
+                        enrolled=False,
+                        transfer_term=True,
+                    ),
+                ]
+            )
             session.commit()
 
         stats = get_recruitment_stats(_=None)
@@ -356,57 +380,59 @@ class TestRecruitmentStats:
         recruitment_session_factory,
     ):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="童年甲",
-                    source="童年綠地 19-1",
-                    referrer="Ruby",
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="童年乙",
-                    source="二人同行",
-                    referrer="Ruby",
-                    has_deposit=False,
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="童年丙",
-                    source="Ruby老師",
-                    referrer="Amy",
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="分校甲",
-                    source="國際校介紹",
-                    referrer="Amy",
-                    has_deposit=False,
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="分校乙",
-                    source="仁武校介紹",
-                    referrer="Amy",
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="分校丙",
-                    source="崇德校介紹",
-                    referrer="Amy",
-                    has_deposit=False,
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="網路甲",
-                    source="網路",
-                    referrer="Amy",
-                    has_deposit=False,
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="童年甲",
+                        source="童年綠地 19-1",
+                        referrer="Ruby",
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="童年乙",
+                        source="二人同行",
+                        referrer="Ruby",
+                        has_deposit=False,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="童年丙",
+                        source="Ruby老師",
+                        referrer="Amy",
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="分校甲",
+                        source="國際校介紹",
+                        referrer="Amy",
+                        has_deposit=False,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="分校乙",
+                        source="仁武校介紹",
+                        referrer="Amy",
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="分校丙",
+                        source="崇德校介紹",
+                        referrer="Amy",
+                        has_deposit=False,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="網路甲",
+                        source="網路",
+                        referrer="Amy",
+                        has_deposit=False,
+                    ),
+                ]
+            )
             session.commit()
 
         stats = get_recruitment_stats(_=None)
@@ -482,31 +508,33 @@ class TestRecruitmentStats:
         recruitment_session_factory,
     ):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="關鍵字甲",
-                    source="朋友介紹",
-                    referrer="Ruby",
-                    has_deposit=True,
-                    parent_response="童年綠地家長介紹",
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="關鍵字乙",
-                    source="自行蒞園",
-                    referrer="Amy",
-                    has_deposit=False,
-                    notes="班導-雅婷",
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="一般來源",
-                    source="朋友介紹",
-                    referrer="Amy",
-                    has_deposit=False,
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="關鍵字甲",
+                        source="朋友介紹",
+                        referrer="Ruby",
+                        has_deposit=True,
+                        parent_response="童年綠地家長介紹",
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="關鍵字乙",
+                        source="自行蒞園",
+                        referrer="Amy",
+                        has_deposit=False,
+                        notes="班導-雅婷",
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="一般來源",
+                        source="朋友介紹",
+                        referrer="Amy",
+                        has_deposit=False,
+                    ),
+                ]
+            )
             session.commit()
 
         stats = get_recruitment_stats(_=None)
@@ -542,133 +570,135 @@ class TestRecruitmentStats:
     ):
         now = datetime.now()
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="前月已註冊1",
-                    district="三民區",
-                    source="介紹",
-                    has_deposit=True,
-                    enrolled=True,
-                    transfer_term=False,
-                    created_at=now - timedelta(days=40),
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="前月已註冊2",
-                    district="三民區",
-                    source="介紹",
-                    has_deposit=True,
-                    enrolled=True,
-                    transfer_term=False,
-                    created_at=now - timedelta(days=39),
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="前月已預繳3",
-                    district="左營區",
-                    source="網路",
-                    has_deposit=True,
-                    enrolled=False,
-                    transfer_term=False,
-                    created_at=now - timedelta(days=38),
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="前月已預繳4",
-                    district="左營區",
-                    source="網路",
-                    has_deposit=True,
-                    enrolled=False,
-                    transfer_term=False,
-                    created_at=now - timedelta(days=37),
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="前月未預繳",
-                    district="左營區",
-                    source="網路",
-                    has_deposit=False,
-                    enrolled=False,
-                    transfer_term=False,
-                    created_at=now - timedelta(days=36),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="本月高潛力1",
-                    district="三民區",
-                    source="網路",
-                    has_deposit=False,
-                    enrolled=False,
-                    transfer_term=False,
-                    no_deposit_reason="時程未到／仍在觀望",
-                    created_at=now - timedelta(days=20),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="本月高潛力2",
-                    district="三民區",
-                    source="網路",
-                    has_deposit=False,
-                    enrolled=False,
-                    transfer_term=False,
-                    no_deposit_reason="時程未到／仍在觀望",
-                    created_at=now - timedelta(days=19),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="本月高潛力3",
-                    district="三民區",
-                    source="網路",
-                    has_deposit=False,
-                    enrolled=False,
-                    transfer_term=False,
-                    no_deposit_reason="課程／環境仍在評估",
-                    created_at=now - timedelta(days=18),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="本月高潛力4",
-                    district="三民區",
-                    source="網路",
-                    has_deposit=False,
-                    enrolled=False,
-                    transfer_term=False,
-                    no_deposit_reason="課程／環境仍在評估",
-                    created_at=now - timedelta(days=17),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="本月高潛力5",
-                    district="三民區",
-                    source="網路",
-                    has_deposit=False,
-                    enrolled=False,
-                    transfer_term=False,
-                    no_deposit_reason="時程未到／仍在觀望",
-                    created_at=now - timedelta(days=16),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="本月其他來源1",
-                    district="鳳山區",
-                    source="介紹",
-                    has_deposit=True,
-                    enrolled=True,
-                    transfer_term=False,
-                    created_at=now - timedelta(days=12),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="本月其他來源2",
-                    district="鳳山區",
-                    source="介紹",
-                    has_deposit=True,
-                    enrolled=False,
-                    transfer_term=False,
-                    created_at=now - timedelta(days=10),
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="前月已註冊1",
+                        district="三民區",
+                        source="介紹",
+                        has_deposit=True,
+                        enrolled=True,
+                        transfer_term=False,
+                        created_at=now - timedelta(days=40),
+                    ),
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="前月已註冊2",
+                        district="三民區",
+                        source="介紹",
+                        has_deposit=True,
+                        enrolled=True,
+                        transfer_term=False,
+                        created_at=now - timedelta(days=39),
+                    ),
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="前月已預繳3",
+                        district="左營區",
+                        source="網路",
+                        has_deposit=True,
+                        enrolled=False,
+                        transfer_term=False,
+                        created_at=now - timedelta(days=38),
+                    ),
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="前月已預繳4",
+                        district="左營區",
+                        source="網路",
+                        has_deposit=True,
+                        enrolled=False,
+                        transfer_term=False,
+                        created_at=now - timedelta(days=37),
+                    ),
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="前月未預繳",
+                        district="左營區",
+                        source="網路",
+                        has_deposit=False,
+                        enrolled=False,
+                        transfer_term=False,
+                        created_at=now - timedelta(days=36),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="本月高潛力1",
+                        district="三民區",
+                        source="網路",
+                        has_deposit=False,
+                        enrolled=False,
+                        transfer_term=False,
+                        no_deposit_reason="時程未到／仍在觀望",
+                        created_at=now - timedelta(days=20),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="本月高潛力2",
+                        district="三民區",
+                        source="網路",
+                        has_deposit=False,
+                        enrolled=False,
+                        transfer_term=False,
+                        no_deposit_reason="時程未到／仍在觀望",
+                        created_at=now - timedelta(days=19),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="本月高潛力3",
+                        district="三民區",
+                        source="網路",
+                        has_deposit=False,
+                        enrolled=False,
+                        transfer_term=False,
+                        no_deposit_reason="課程／環境仍在評估",
+                        created_at=now - timedelta(days=18),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="本月高潛力4",
+                        district="三民區",
+                        source="網路",
+                        has_deposit=False,
+                        enrolled=False,
+                        transfer_term=False,
+                        no_deposit_reason="課程／環境仍在評估",
+                        created_at=now - timedelta(days=17),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="本月高潛力5",
+                        district="三民區",
+                        source="網路",
+                        has_deposit=False,
+                        enrolled=False,
+                        transfer_term=False,
+                        no_deposit_reason="時程未到／仍在觀望",
+                        created_at=now - timedelta(days=16),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="本月其他來源1",
+                        district="鳳山區",
+                        source="介紹",
+                        has_deposit=True,
+                        enrolled=True,
+                        transfer_term=False,
+                        created_at=now - timedelta(days=12),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="本月其他來源2",
+                        district="鳳山區",
+                        source="介紹",
+                        has_deposit=True,
+                        enrolled=False,
+                        transfer_term=False,
+                        created_at=now - timedelta(days=10),
+                    ),
+                ]
+            )
             session.commit()
 
         stats = get_recruitment_stats(reference_month="115.05", _=None)
@@ -693,12 +723,18 @@ class TestRecruitmentStats:
         assert stats["month_over_month"]["visit_to_enrolled_rate"]["delta"] == -25.7
 
         alert_codes = {item["code"] for item in stats["alerts"]}
-        assert {"FUNNEL_DROP", "HIGH_POTENTIAL_BACKLOG", "SOURCE_IMBALANCE"} <= alert_codes
+        assert {
+            "FUNNEL_DROP",
+            "HIGH_POTENTIAL_BACKLOG",
+            "SOURCE_IMBALANCE",
+        } <= alert_codes
         assert any(item["target_tab"] == "nodeposit" for item in stats["alerts"])
         assert any(item["target_tab"] == "detail" for item in stats["alerts"])
         assert any(item["target_tab"] == "area" for item in stats["top_action_queue"])
         assert any(item["target_tab"] == "detail" for item in stats["top_action_queue"])
-        assert any(item["target_tab"] == "nodeposit" for item in stats["top_action_queue"])
+        assert any(
+            item["target_tab"] == "nodeposit" for item in stats["top_action_queue"]
+        )
 
     def test_no_deposit_analysis_summary_and_priority_overdue_filters(
         self,
@@ -706,40 +742,42 @@ class TestRecruitmentStats:
     ):
         now = datetime.now()
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="高潛力逾期1",
-                    grade="小班",
-                    has_deposit=False,
-                    no_deposit_reason="時程未到／仍在觀望",
-                    created_at=now - timedelta(days=20),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="高潛力逾期2",
-                    grade="小班",
-                    has_deposit=False,
-                    no_deposit_reason="課程／環境仍在評估",
-                    created_at=now - timedelta(days=18),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="高潛力未逾期",
-                    grade="中班",
-                    has_deposit=False,
-                    no_deposit_reason="課程／環境仍在評估",
-                    created_at=now - timedelta(days=5),
-                ),
-                RecruitmentVisit(
-                    month="115.05",
-                    child_name="冷名單",
-                    grade="大班",
-                    has_deposit=False,
-                    no_deposit_reason="已有其他就學選項／比較他校",
-                    created_at=now - timedelta(days=95),
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="高潛力逾期1",
+                        grade="小班",
+                        has_deposit=False,
+                        no_deposit_reason="時程未到／仍在觀望",
+                        created_at=now - timedelta(days=20),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="高潛力逾期2",
+                        grade="小班",
+                        has_deposit=False,
+                        no_deposit_reason="課程／環境仍在評估",
+                        created_at=now - timedelta(days=18),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="高潛力未逾期",
+                        grade="中班",
+                        has_deposit=False,
+                        no_deposit_reason="課程／環境仍在評估",
+                        created_at=now - timedelta(days=5),
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="冷名單",
+                        grade="大班",
+                        has_deposit=False,
+                        no_deposit_reason="已有其他就學選項／比較他校",
+                        created_at=now - timedelta(days=95),
+                    ),
+                ]
+            )
             session.commit()
 
         result = recruitment_api.get_no_deposit_analysis(
@@ -759,14 +797,31 @@ class TestRecruitmentStats:
             "cold_count": 1,
         }
         assert result["total"] == 2
-        assert {row["child_name"] for row in result["records"]} == {"高潛力逾期1", "高潛力逾期2"}
+        assert {row["child_name"] for row in result["records"]} == {
+            "高潛力逾期1",
+            "高潛力逾期2",
+        }
 
-    def test_stats_export_adds_decision_summary_sheet(self, recruitment_session_factory):
+    def test_stats_export_adds_decision_summary_sheet(
+        self, recruitment_session_factory
+    ):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(month="115.04", child_name="小安", has_deposit=True, enrolled=True),
-                RecruitmentVisit(month="115.05", child_name="小寶", has_deposit=False, enrolled=False),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="小安",
+                        has_deposit=True,
+                        enrolled=True,
+                    ),
+                    RecruitmentVisit(
+                        month="115.05",
+                        child_name="小寶",
+                        has_deposit=False,
+                        enrolled=False,
+                    ),
+                ]
+            )
             session.commit()
 
         response = export_recruitment_stats(reference_month="115.05", _=None)
@@ -783,7 +838,10 @@ class TestRecruitmentStats:
         assert workbook.sheetnames[0] == "決策摘要"
         sheet = workbook["決策摘要"]
         assert sheet["A1"].value == "招生決策摘要"
-        assert any("115.05" in str(sheet.cell(row=row, column=1).value or "") for row in range(1, 12))
+        assert any(
+            "115.05" in str(sheet.cell(row=row, column=1).value or "")
+            for row in range(1, 12)
+        )
 
 
 class TestAddressHotspots:
@@ -792,36 +850,42 @@ class TestAddressHotspots:
         recruitment_session_factory,
     ):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小安",
-                    address="高雄市三民區民族一路100號",
-                    district=None,
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小寶",
-                    address="高雄市三民區民族一路100號",
-                    district="三民區",
-                    has_deposit=False,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小晴",
-                    address="高雄市鳳山區光遠路50號",
-                    district="鳳山區",
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小樂",
-                    address="   ",
-                    district="左營區",
-                    has_deposit=False,
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小安",
+                        address="高雄市三民區民族一路",
+                        district=None,
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小寶",
+                        address="高雄市三民區民族一路",
+                        district="三民區",
+                        has_deposit=False,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小晴",
+                        address="高雄市鳳山區光遠路",
+                        district="鳳山區",
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小樂",
+                        address="",
+                        district="左營區",
+                        has_deposit=False,
+                    ),
+                ]
+            )
             session.commit()
 
         result = get_recruitment_address_hotspots(limit=10, _=None)
@@ -837,7 +901,7 @@ class TestAddressHotspots:
         assert result["stale_hotspots"] == 0
         assert result["hotspots"] == [
             {
-                "address": "高雄市三民區民族一路100號",
+                "address": "高雄市三民區民族一路",
                 "district": "三民區",
                 "visit": 2,
                 "deposit": 1,
@@ -857,7 +921,7 @@ class TestAddressHotspots:
                 "data_quality": "partial",
             },
             {
-                "address": "高雄市鳳山區光遠路50號",
+                "address": "高雄市鳳山區光遠路",
                 "district": "鳳山區",
                 "visit": 1,
                 "deposit": 1,
@@ -878,60 +942,69 @@ class TestAddressHotspots:
             },
         ]
 
-    def test_address_hotspots_counts_all_cached_rows_beyond_display_limit(self, recruitment_session_factory):
+    def test_address_hotspots_counts_all_cached_rows_beyond_display_limit(
+        self, recruitment_session_factory
+    ):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小安",
-                    address="高雄市三民區民族一路100號",
-                    district="三民區",
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小寶",
-                    address="高雄市鳳山區光遠路50號",
-                    district="鳳山區",
-                    has_deposit=False,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小晴",
-                    address="高雄市左營區自由路1號",
-                    district="左營區",
-                    has_deposit=False,
-                ),
-            ])
-            session.add_all([
-                RecruitmentGeocodeCache(
-                    address="高雄市三民區民族一路100號",
-                    district="三民區",
-                    provider="google",
-                    status="resolved",
-                    lat=22.6461,
-                    lng=120.3209,
-                    google_place_id="google-place-1",
-                ),
-                RecruitmentGeocodeCache(
-                    address="高雄市鳳山區光遠路50號",
-                    district="鳳山區",
-                    provider="google",
-                    status="resolved",
-                    lat=22.6321,
-                    lng=120.3565,
-                    google_place_id="google-place-2",
-                ),
-                RecruitmentGeocodeCache(
-                    address="高雄市左營區自由路1號",
-                    district="左營區",
-                    provider="google",
-                    status="resolved",
-                    lat=22.6782,
-                    lng=120.3081,
-                    google_place_id="google-place-3",
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小安",
+                        address="高雄市三民區民族一路",
+                        district="三民區",
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小寶",
+                        address="高雄市鳳山區光遠路",
+                        district="鳳山區",
+                        has_deposit=False,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小晴",
+                        address="高雄市左營區自由路",
+                        district="左營區",
+                        has_deposit=False,
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    RecruitmentGeocodeCache(
+                        address="高雄市三民區民族一路",
+                        district="三民區",
+                        provider="google",
+                        status="resolved",
+                        lat=22.6461,
+                        lng=120.3209,
+                        google_place_id="google-place-1",
+                    ),
+                    RecruitmentGeocodeCache(
+                        address="高雄市鳳山區光遠路",
+                        district="鳳山區",
+                        provider="google",
+                        status="resolved",
+                        lat=22.6321,
+                        lng=120.3565,
+                        google_place_id="google-place-2",
+                    ),
+                    RecruitmentGeocodeCache(
+                        address="高雄市左營區自由路",
+                        district="左營區",
+                        provider="google",
+                        status="resolved",
+                        lat=22.6782,
+                        lng=120.3081,
+                        google_place_id="google-place-3",
+                    ),
+                ]
+            )
             session.commit()
 
         result = get_recruitment_address_hotspots(limit=2, _=None)
@@ -943,21 +1016,28 @@ class TestAddressHotspots:
         assert result["remaining_hotspots"] == 0
         assert result["failed_hotspots"] == 0
 
-    def test_sync_address_hotspots_persists_geocode_cache(self, recruitment_session_factory, monkeypatch):
+    def test_sync_address_hotspots_persists_geocode_cache(
+        self, recruitment_session_factory, monkeypatch
+    ):
         with recruitment_session_factory() as session:
             session.add(
                 RecruitmentVisit(
+                    geocoding_consent_at=now_taipei_naive(),
                     month="115.04",
                     child_name="小安",
-                    address="高雄市三民區民族一路100號",
+                    address="高雄市三民區民族一路",
                     district="三民區",
                     has_deposit=True,
                 )
             )
             session.commit()
 
-        monkeypatch.setattr(recruitment_api.market_service, "market_provider_available", lambda: True)
-        monkeypatch.setattr(recruitment_api.market_service, "current_market_provider", lambda: "google")
+        monkeypatch.setattr(
+            recruitment_api.market_service, "market_provider_available", lambda: True
+        )
+        monkeypatch.setattr(
+            recruitment_api.market_service, "current_market_provider", lambda: "google"
+        )
         monkeypatch.setattr(
             recruitment_api.market_service,
             "resolve_address_metadata",
@@ -997,7 +1077,7 @@ class TestAddressHotspots:
 
         with recruitment_session_factory() as session:
             cached = session.query(RecruitmentGeocodeCache).one()
-            assert cached.address == "高雄市三民區民族一路100號"
+            assert cached.address == "高雄市三民區民族一路"
             assert cached.status == "resolved"
             assert cached.lat == 22.6461
             assert cached.lng == 120.3209
@@ -1011,33 +1091,42 @@ class TestAddressHotspots:
         monkeypatch,
     ):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小安",
-                    address="高雄市三民區民族一路100號",
-                    district="三民區",
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小寶",
-                    address="高雄市鳳山區光遠路50號",
-                    district="鳳山區",
-                    has_deposit=False,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小晴",
-                    address="高雄市左營區自由路1號",
-                    district="左營區",
-                    has_deposit=False,
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小安",
+                        address="高雄市三民區民族一路",
+                        district="三民區",
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小寶",
+                        address="高雄市鳳山區光遠路",
+                        district="鳳山區",
+                        has_deposit=False,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小晴",
+                        address="高雄市左營區自由路",
+                        district="左營區",
+                        has_deposit=False,
+                    ),
+                ]
+            )
             session.commit()
 
-        monkeypatch.setattr(recruitment_api.market_service, "market_provider_available", lambda: True)
-        monkeypatch.setattr(recruitment_api.market_service, "current_market_provider", lambda: "google")
+        monkeypatch.setattr(
+            recruitment_api.market_service, "market_provider_available", lambda: True
+        )
+        monkeypatch.setattr(
+            recruitment_api.market_service, "current_market_provider", lambda: "google"
+        )
         monkeypatch.setattr(
             recruitment_api.market_service,
             "resolve_address_metadata",
@@ -1071,20 +1160,23 @@ class TestAddressHotspots:
         with recruitment_session_factory() as session:
             assert session.query(RecruitmentGeocodeCache).count() == 3
 
-    def test_address_hotspots_reports_stale_google_upgrade_count(self, recruitment_session_factory):
+    def test_address_hotspots_reports_stale_google_upgrade_count(
+        self, recruitment_session_factory
+    ):
         with recruitment_session_factory() as session:
             session.add(
                 RecruitmentVisit(
+                    geocoding_consent_at=now_taipei_naive(),
                     month="115.04",
                     child_name="小安",
-                    address="高雄市三民區民族一路100號",
+                    address="高雄市三民區民族一路",
                     district="三民區",
                     has_deposit=True,
                 )
             )
             session.add(
                 RecruitmentGeocodeCache(
-                    address="高雄市三民區民族一路100號",
+                    address="高雄市三民區民族一路",
                     district="三民區",
                     provider="nominatim",
                     status="resolved",
@@ -1101,60 +1193,73 @@ class TestAddressHotspots:
         assert result["hotspots"][0]["provider"] == "nominatim"
         assert result["hotspots"][0]["google_place_id"] is None
 
-    def test_resync_google_only_targets_non_google_or_failed_cache(self, recruitment_session_factory, monkeypatch):
+    def test_resync_google_only_targets_non_google_or_failed_cache(
+        self, recruitment_session_factory, monkeypatch
+    ):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小安",
-                    address="高雄市三民區民族一路100號",
-                    district="三民區",
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小寶",
-                    address="高雄市三民區澄清路88號",
-                    district="三民區",
-                    has_deposit=False,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小晴",
-                    address="高雄市左營區自由路1號",
-                    district="左營區",
-                    has_deposit=False,
-                ),
-            ])
-            session.add_all([
-                RecruitmentGeocodeCache(
-                    address="高雄市三民區民族一路100號",
-                    district="三民區",
-                    provider="google",
-                    status="resolved",
-                    lat=22.6461,
-                    lng=120.3209,
-                    google_place_id="google-place-current",
-                ),
-                RecruitmentGeocodeCache(
-                    address="高雄市三民區澄清路88號",
-                    district="三民區",
-                    provider="nominatim",
-                    status="resolved",
-                    lat=22.6401,
-                    lng=120.3301,
-                ),
-                RecruitmentGeocodeCache(
-                    address="高雄市左營區自由路1號",
-                    district="左營區",
-                    provider=None,
-                    status="failed",
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小安",
+                        address="高雄市三民區民族一路",
+                        district="三民區",
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小寶",
+                        address="高雄市三民區澄清路",
+                        district="三民區",
+                        has_deposit=False,
+                    ),
+                    RecruitmentVisit(
+                        geocoding_consent_at=now_taipei_naive(),
+                        month="115.04",
+                        child_name="小晴",
+                        address="高雄市左營區自由路",
+                        district="左營區",
+                        has_deposit=False,
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    RecruitmentGeocodeCache(
+                        address="高雄市三民區民族一路",
+                        district="三民區",
+                        provider="google",
+                        status="resolved",
+                        lat=22.6461,
+                        lng=120.3209,
+                        google_place_id="google-place-current",
+                    ),
+                    RecruitmentGeocodeCache(
+                        address="高雄市三民區澄清路",
+                        district="三民區",
+                        provider="nominatim",
+                        status="resolved",
+                        lat=22.6401,
+                        lng=120.3301,
+                    ),
+                    RecruitmentGeocodeCache(
+                        address="高雄市左營區自由路",
+                        district="左營區",
+                        provider=None,
+                        status="failed",
+                    ),
+                ]
+            )
             session.commit()
 
-        monkeypatch.setattr(recruitment_api.market_service, "market_provider_available", lambda: True)
-        monkeypatch.setattr(recruitment_api.market_service, "current_market_provider", lambda: "google")
+        monkeypatch.setattr(
+            recruitment_api.market_service, "market_provider_available", lambda: True
+        )
+        monkeypatch.setattr(
+            recruitment_api.market_service, "current_market_provider", lambda: "google"
+        )
 
         resolved_addresses = []
 
@@ -1176,7 +1281,9 @@ class TestAddressHotspots:
                 "data_quality": "complete",
             }
 
-        monkeypatch.setattr(recruitment_api.market_service, "resolve_address_metadata", fake_resolve)
+        monkeypatch.setattr(
+            recruitment_api.market_service, "resolve_address_metadata", fake_resolve
+        )
 
         result = sync_recruitment_address_hotspots(
             batch_size=10,
@@ -1192,19 +1299,24 @@ class TestAddressHotspots:
         assert result["skipped"] == 1
         assert result["stale_hotspots"] == 0
         assert resolved_addresses == [
-            "高雄市三民區澄清路88號",
-            "高雄市左營區自由路1號",
+            "高雄市三民區澄清路",
+            "高雄市左營區自由路",
         ]
 
         with recruitment_session_factory() as session:
             current = {
-                row.address: row
-                for row in session.query(RecruitmentGeocodeCache).all()
+                row.address: row for row in session.query(RecruitmentGeocodeCache).all()
             }
-            assert current["高雄市三民區民族一路100號"].google_place_id == "google-place-current"
-            assert current["高雄市三民區澄清路88號"].provider == "google"
-            assert current["高雄市三民區澄清路88號"].google_place_id == "place:高雄市三民區澄清路88號"
-            assert current["高雄市左營區自由路1號"].provider == "google"
+            assert (
+                current["高雄市三民區民族一路"].google_place_id
+                == "google-place-current"
+            )
+            assert current["高雄市三民區澄清路"].provider == "google"
+            assert (
+                current["高雄市三民區澄清路"].google_place_id
+                == "place:高雄市三民區澄清路"
+            )
+            assert current["高雄市左營區自由路"].provider == "google"
 
 
 class TestMarketIntelligence:
@@ -1226,43 +1338,45 @@ class TestMarketIntelligence:
 
     def test_market_intelligence_returns_raw_metrics(self, recruitment_session_factory):
         with recruitment_session_factory() as session:
-            session.add_all([
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小安",
-                    district="三民區",
-                    address="高雄市三民區民族一路100號",
-                    has_deposit=True,
-                ),
-                RecruitmentVisit(
-                    month="115.04",
-                    child_name="小寶",
-                    district="三民區",
-                    address="高雄市三民區澄清路88號",
-                    has_deposit=False,
-                ),
-                RecruitmentGeocodeCache(
-                    address="高雄市三民區民族一路100號",
-                    district="三民區",
-                    town_code="64000010",
-                    travel_minutes=9.0,
-                    status="resolved",
-                ),
-                RecruitmentAreaInsightCache(
-                    district="三民區",
-                    town_code="64000010",
-                    population_density=1234.5,
-                    population_0_6=456,
-                    data_completeness="partial",
-                ),
-                RecruitmentCampusSetting(
-                    campus_name="本園",
-                    campus_address="高雄市三民區民族一路100號",
-                    campus_lat=22.6461,
-                    campus_lng=120.3209,
-                    travel_mode="driving",
-                ),
-            ])
+            session.add_all(
+                [
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="小安",
+                        district="三民區",
+                        address="高雄市三民區民族一路100號",
+                        has_deposit=True,
+                    ),
+                    RecruitmentVisit(
+                        month="115.04",
+                        child_name="小寶",
+                        district="三民區",
+                        address="高雄市三民區澄清路88號",
+                        has_deposit=False,
+                    ),
+                    RecruitmentGeocodeCache(
+                        address="高雄市三民區民族一路100號",
+                        district="三民區",
+                        town_code="64000010",
+                        travel_minutes=9.0,
+                        status="resolved",
+                    ),
+                    RecruitmentAreaInsightCache(
+                        district="三民區",
+                        town_code="64000010",
+                        population_density=1234.5,
+                        population_0_6=456,
+                        data_completeness="partial",
+                    ),
+                    RecruitmentCampusSetting(
+                        campus_name="本園",
+                        campus_address="高雄市三民區民族一路100號",
+                        campus_lat=22.6461,
+                        campus_lng=120.3209,
+                        travel_mode="driving",
+                    ),
+                ]
+            )
             session.commit()
 
         snapshot = get_recruitment_market_intelligence(_=None)
@@ -1273,7 +1387,9 @@ class TestMarketIntelligence:
         assert snapshot["districts"][0]["deposit_rate_90d"] == 50.0
         assert snapshot["districts"][0]["population_density"] == 1234.5
 
-    def test_market_sync_keeps_cached_snapshot_when_no_external_indexes(self, recruitment_session_factory, monkeypatch):
+    def test_market_sync_keeps_cached_snapshot_when_no_external_indexes(
+        self, recruitment_session_factory, monkeypatch
+    ):
         with recruitment_session_factory() as session:
             session.add(
                 RecruitmentAreaInsightCache(
@@ -1294,8 +1410,12 @@ class TestMarketIntelligence:
             )
             session.commit()
 
-        monkeypatch.setattr(recruitment_api.market_service, "load_population_density_index", lambda: {})
-        monkeypatch.setattr(recruitment_api.market_service, "load_population_age_index", lambda: {})
+        monkeypatch.setattr(
+            recruitment_api.market_service, "load_population_density_index", lambda: {}
+        )
+        monkeypatch.setattr(
+            recruitment_api.market_service, "load_population_age_index", lambda: {}
+        )
 
         result = sync_recruitment_market_intelligence(hotspot_limit=200, _=None)
 
@@ -1377,8 +1497,12 @@ class TestNearbyKindergartens:
                 "nextPageToken": "token-2",
             }
 
-        monkeypatch.setattr(recruitment_api.market_service, "_google_places_api_available", lambda: True)
-        monkeypatch.setattr(recruitment_api.market_service, "_query_google_places_text", fake_query)
+        monkeypatch.setattr(
+            recruitment_api.market_service, "_google_places_api_available", lambda: True
+        )
+        monkeypatch.setattr(
+            recruitment_api.market_service, "_query_google_places_text", fake_query
+        )
 
         result = get_nearby_kindergartens(
             south=22.62,
@@ -1433,7 +1557,11 @@ class TestNearbyKindergartens:
             )
             session.commit()
 
-        monkeypatch.setattr(recruitment_api.market_service, "_google_places_api_available", lambda: False)
+        monkeypatch.setattr(
+            recruitment_api.market_service,
+            "_google_places_api_available",
+            lambda: False,
+        )
 
         result = get_nearby_kindergartens(
             south=22.62,
@@ -1450,7 +1578,9 @@ class TestNearbyKindergartens:
         assert result["schools"] == []
         assert "Places API" in result["message"]
 
-    def test_nearby_kindergartens_rejects_invalid_query_bounds(self, recruitment_client):
+    def test_nearby_kindergartens_rejects_invalid_query_bounds(
+        self, recruitment_client
+    ):
         response = recruitment_client.get(
             "/api/recruitment/nearby-kindergartens",
             params={
@@ -1481,7 +1611,9 @@ class TestNearbyKindergartens:
             )
             session.commit()
 
-        monkeypatch.setattr(recruitment_api.market_service, "_google_places_api_available", lambda: True)
+        monkeypatch.setattr(
+            recruitment_api.market_service, "_google_places_api_available", lambda: True
+        )
         monkeypatch.setattr(
             recruitment_api.market_service,
             "_query_google_places_text",

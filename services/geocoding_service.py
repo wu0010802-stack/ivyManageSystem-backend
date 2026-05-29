@@ -82,6 +82,23 @@ def _strip_floor_suffix(address: str) -> str:
     return stripped
 
 
+def truncate_address_to_lane(address: str) -> str:
+    r"""招生地址 PII 降精度：去樓號 + 去門牌號（\d+號|\d+弄），保留「\d+巷」級。
+
+    例：
+      臺北市文山區興隆路四段30巷5號3樓  → 臺北市文山區興隆路四段30巷
+      臺北市信義區忠孝東路五段100號     → 臺北市信義區忠孝東路五段
+
+    用途：招生地址送 Google Geocoding API / 入 RecruitmentGeocodeCache 前的 PII 降精度。
+    """
+    s = _strip_floor_suffix(address or "")
+    # 先剃號（含 \d+號之\d+）
+    s = re.sub(r"\d+號(?:之\d+)?.*$", "", s).strip()
+    # 再剃弄（不剃巷）
+    s = re.sub(r"\d+弄.*$", "", s).strip()
+    return s
+
+
 def _extract_address_parts(address: str) -> Optional[tuple[str, str, str]]:
     base = address.removeprefix("臺灣 ").strip()
     matched = re.match(
@@ -156,12 +173,15 @@ def _geocode_with_google(address: str) -> Optional[dict]:
     if not _GOOGLE_MAPS_API_KEY:
         return None
 
+    # PII 降精度：巷級 truncate 後才送 Google
+    truncated = truncate_address_to_lane(address)
+
     try:
         resp = EXTERNAL_HTTP_BREAKER.call(
             lambda: requests.get(
                 _GOOGLE_GEOCODING_URL,
                 params={
-                    "address": _normalize_query_address(address),
+                    "address": _normalize_query_address(truncated),
                     "key": _GOOGLE_MAPS_API_KEY,
                     "language": "zh-TW",
                     "region": "tw",
@@ -200,7 +220,9 @@ def _geocode_with_google(address: str) -> Optional[dict]:
 
 
 def _geocode_with_nominatim(address: str) -> Optional[dict]:
-    for query in _build_nominatim_query_candidates(address):
+    # PII 降精度：巷級 truncate 後才送 Nominatim
+    truncated = truncate_address_to_lane(address)
+    for query in _build_nominatim_query_candidates(truncated):
         _throttle_nominatim()
 
         params = {

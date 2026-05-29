@@ -36,7 +36,10 @@ class TestNominatimFallbackCandidates:
 
         def fake_get(_url, params, headers, timeout):
             requested_queries.append(params["q"])
-            if params["q"] == "九如一路 819號 三民區 高雄市":
+            # Task 2 (24cd075) truncate_address_to_lane 移除門牌號，
+            # 原 input "高雄市三民區九如一路819號" 變成 "高雄市三民區九如一路"
+            # 期待的 query 是 "九如一路 三民區 高雄市"（無 819號）
+            if params["q"] == "九如一路 三民區 高雄市":
                 return DummyResponse([{
                     "lat": "22.6401",
                     "lon": "120.3215",
@@ -55,8 +58,10 @@ class TestNominatimFallbackCandidates:
             "lng": 120.3215,
             "formatted_address": "819號, 九如一路, 安發里, 三民區, 高雄市, 807, 臺灣",
         }
+        # 首兩個 candidate 是 normalize 的原始（含臺灣）+ 去臺灣
         assert requested_queries[:2] == [
-            "臺灣 高雄市三民區九如一路819號",
-            "高雄市三民區九如一路819號",
+            "臺灣 高雄市三民區九如一路",
+            "高雄市三民區九如一路",
         ]
-        assert "九如一路 819號 三民區 高雄市" in requested_queries
+        # truncated 後的 query candidate 包含 "九如一路 三民區 高雄市"
+        assert "九如一路 三民區 高雄市" in requested_queries

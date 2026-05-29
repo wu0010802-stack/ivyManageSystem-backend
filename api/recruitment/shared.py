@@ -640,6 +640,10 @@ class RecruitmentVisitCreate(BaseModel):
     enrolled: bool = False
     transfer_term: bool = False
 
+    geocoding_consent: bool = Field(
+        default=False,
+        description="家長已口頭同意以本住址進行招生區位分析（送至 Google Maps）；業主決議預設不勾。",
+    )
     @field_validator("month")
     @classmethod
     def validate_month_format(cls, v: str) -> str:
@@ -667,6 +671,10 @@ class RecruitmentVisitUpdate(BaseModel):
     enrolled: Optional[bool] = None
     transfer_term: Optional[bool] = None
 
+    geocoding_consent: bool | None = Field(
+        default=None,
+        description="None=不修改；True/False=修改 consent_at（True=寫 now()；False=寫 NULL）",
+    )
     @field_validator("month")
     @classmethod
     def validate_month_format(cls, v: Optional[str]) -> Optional[str]:
