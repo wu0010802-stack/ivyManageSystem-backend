@@ -879,6 +879,8 @@ class TestF009_AnnouncementsRead:
         assert resp.status_code == 200
 
 
+# F-010 放寬後（才藝點名任何老師可查）：enumeration collapse 已移除，場次存在→200、不存在→404。
+# 此 class 保留作「universal access + 404」回歸用，不再是 oracle 一致化斷言。
 class TestF010_PortalActivitySession:
     def _seed_no_own_class(self, session):
         """教師 A 無自班學生在此場次（場次中所有學生都屬於 B 班）。"""

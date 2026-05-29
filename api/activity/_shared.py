@@ -809,7 +809,7 @@ def _build_session_detail_response(
 ) -> dict:
     """取得場次詳情 + 出席狀態，供管理端及 Portal 共用。
 
-    classroom_ids_filter=None  → 包含所有 enrolled 學生（管理端）
+    classroom_ids_filter=None  → 包含所有 enrolled 學生（管理端 + 開放後的 portal）
     classroom_ids_filter=[...] → 只包含指定班級的學生（Portal，FK 比對）
     group_by="classroom"       → 額外回傳 groups：按 classroom_id 分組
 
