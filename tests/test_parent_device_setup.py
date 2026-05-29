@@ -394,3 +394,52 @@ class TestStaffIssueDeviceCode:
             headers={"Authorization": f"Bearer {weak}"},
         )
         assert r.status_code in (401, 403)
+
+
+# ── Task 6 staff 撤銷裝置端點 ──────────────────────────────────────────────
+
+
+class TestRevokeDevices:
+    def test_revoke_invalidates_device(self, pclient):
+        c, sf = pclient
+        gid = _make_guardian(sf)
+        from api.parent_portal import auth as pauth
+
+        s = sf()
+        staff = User(username="adm3", password_hash="x", role="admin", token_version=0)
+        s.add(staff)
+        s.flush()
+        s.add(
+            ParentDeviceSetupCode(
+                guardian_id=gid,
+                code_hash=pauth._hash_code("REVCODE0001"),
+                expires_at=now_taipei_naive() + timedelta(hours=24),
+                created_by=staff.id,
+            )
+        )
+        s.commit()
+        s.close()
+        r = c.post("/api/parent/auth/device-setup", json={"code": "REVCODE0001"})
+        assert r.status_code == 200
+        assert c.post("/api/parent/auth/refresh").status_code == 200
+        # 清除 TestClient 保存的 parent access_token cookie，避免覆蓋 staff Authorization header
+        c.cookies.delete("access_token")
+        tok = _staff_token(sf)
+        rv = c.post(
+            f"/api/guardians/{gid}/revoke-devices",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert rv.status_code == 200
+        assert rv.json()["revoked"] >= 1
+        assert c.post("/api/parent/auth/refresh").status_code == 401
+
+    def test_revoke_guardian_without_user_returns_zero(self, pclient):
+        c, sf = pclient
+        gid = _make_guardian(sf)
+        tok = _staff_token(sf)
+        rv = c.post(
+            f"/api/guardians/{gid}/revoke-devices",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert rv.status_code == 200
+        assert rv.json()["revoked"] == 0

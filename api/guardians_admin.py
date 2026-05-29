@@ -14,7 +14,7 @@ from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from models.database import AuditLog, Guardian, GuardianBindingCode, ParentDeviceSetupCode, get_session
+from models.database import AuditLog, Guardian, GuardianBindingCode, ParentDeviceSetupCode, ParentRefreshToken, get_session
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.request_ip import get_client_ip
@@ -195,5 +195,61 @@ def create_device_setup_code(
             current_user["user_id"],
         )
         return {"code": plain_code, "expires_at": expires_at.isoformat()}
+    finally:
+        session.close()
+
+
+@router.post("/{guardian_id}/revoke-devices")
+def revoke_guardian_devices(
+    guardian_id: int,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
+):
+    """撤銷此 Guardian 對應家長 User 的所有未撤銷裝置（遺失/被盜裝置）。
+
+    撤銷後該家長所有裝置下次 /refresh 即 401，需重新以新設定碼設定。
+    （含 LINE 裝置一併撤銷——「全撤」為安全動作，over-revoke 安全。）
+    """
+    session = get_session()
+    try:
+        guardian = (
+            session.query(Guardian)
+            .filter(Guardian.id == guardian_id, Guardian.deleted_at.is_(None))
+            .first()
+        )
+        if guardian is None:
+            raise HTTPException(status_code=404, detail="找不到監護人")
+        if guardian.user_id is None:
+            return {"revoked": 0}
+
+        n = (
+            session.query(ParentRefreshToken)
+            .filter(
+                ParentRefreshToken.user_id == guardian.user_id,
+                ParentRefreshToken.revoked_at.is_(None),
+            )
+            .update({"revoked_at": now_taipei_naive()}, synchronize_session=False)
+        )
+        ip = get_client_ip(request)
+        session.add(
+            AuditLog(
+                user_id=current_user["user_id"],
+                username=current_user.get("name") or current_user.get("username") or "",
+                action="UPDATE",
+                entity_type="parent_device_setup",
+                entity_id=str(guardian.id),
+                summary=f"撤銷家長裝置（{int(n or 0)} 個 session）",
+                ip_address=ip,
+                created_at=now_taipei_naive(),
+            )
+        )
+        session.commit()
+        logger.warning(
+            "[revoke-devices] guardian_id=%s user_id=%s revoked=%s",
+            guardian.id,
+            guardian.user_id,
+            n,
+        )
+        return {"revoked": int(n or 0)}
     finally:
         session.close()
