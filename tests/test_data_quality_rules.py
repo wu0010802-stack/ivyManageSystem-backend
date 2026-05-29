@@ -60,3 +60,75 @@ def test_principal_role_template_includes_data_quality():
     principal_perms = ROLE_TEMPLATES["principal"]
     assert "DATA_QUALITY_READ" in principal_perms
     assert "DATA_QUALITY_WRITE" in principal_perms
+
+
+from datetime import date, timedelta
+
+
+def test_employee_offboard_rule_detects(test_db_session):
+    """Employee is_active=True 且 resign_date <= today → 1 條 violation。"""
+    from models.employee import Employee
+    from services.data_quality.rules.employee_offboard import EmployeeOffboardRule
+
+    emp = Employee(
+        employee_id="E999",
+        name="測試離職",
+        is_active=True,
+        resign_date=date.today() - timedelta(days=1),
+    )
+    test_db_session.add(emp)
+    test_db_session.commit()
+
+    rule = EmployeeOffboardRule()
+    violations = rule.check(test_db_session)
+
+    assert len(violations) == 1
+    v = violations[0]
+    assert v.rule_code == "employee_active_but_offboarded"
+    assert v.severity == "P1"
+    assert v.entity_type == "employee"
+    assert v.entity_id == str(emp.id)
+    # summary 不含 PII（用 id 不用 name）
+    assert "測試離職" not in v.summary
+    assert str(emp.id) in v.summary
+
+
+def test_employee_offboard_rule_skips_inactive(test_db_session):
+    """is_active=False（已關旗標）→ 不偵測。"""
+    from models.employee import Employee
+    from services.data_quality.rules.employee_offboard import EmployeeOffboardRule
+
+    emp = Employee(
+        employee_id="E998",
+        name="正常離職",
+        is_active=False,
+        resign_date=date.today() - timedelta(days=10),
+    )
+    test_db_session.add(emp)
+    test_db_session.commit()
+
+    rule = EmployeeOffboardRule()
+    assert rule.check(test_db_session) == []
+
+
+def test_employee_offboard_rule_dedup_key_stable():
+    """Violation.dedup_key 為 sha256(rule_code:entity_type:entity_id)[:32]，
+    同 (rule, entity_type, entity_id) 跨次呼叫應穩定。"""
+    from services.data_quality._base import Violation
+
+    v1 = Violation(
+        rule_code="employee_active_but_offboarded",
+        severity="P1",
+        entity_type="employee",
+        entity_id="42",
+        summary="x",
+    )
+    v2 = Violation(
+        rule_code="employee_active_but_offboarded",
+        severity="P1",
+        entity_type="employee",
+        entity_id="42",
+        summary="y",  # different summary, same dedup
+    )
+    assert v1.dedup_key == v2.dedup_key
+    assert len(v1.dedup_key) == 32
