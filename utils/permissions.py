@@ -700,3 +700,56 @@ def get_permissions_definition(session) -> Dict:
         "roles": roles,
         "split_modules": SPLIT_MODULES,
     }
+
+
+# === PermissionGrant + resolve_grant (added Task 2) ===
+
+from typing import NamedTuple, Optional
+
+
+class PermissionGrant(NamedTuple):
+    code: str
+    scope: Optional[str]  # "all" | "own_class" | None (no scope_options)
+
+
+# scope ranking: higher index = broader
+_SCOPE_BREADTH = {"own_class": 0, "all": 1}
+
+
+def resolve_grant(user, code: str) -> Optional[PermissionGrant]:
+    """Resolve a user's grant for a permission code.
+
+    Returns:
+        PermissionGrant(code, scope) where scope is 'all' / 'own_class' / None.
+        None if user does not hold this permission.
+
+    Rules:
+        - wildcard '*' → ('all')
+        - bare 'STUDENTS_READ' → ('all')  [backward compat]
+        - 'STUDENTS_READ:own_class' → ('own_class')
+        - both bare and scoped present → broader (all) wins
+        - multiple scoped → broadest wins
+        - None / empty permission_names → None
+    """
+    names = getattr(user, "permission_names", None) or []
+    if WILDCARD in names:
+        return PermissionGrant(code, "all")
+
+    found_scopes: list[str] = []
+    for n in names:
+        if n == code:
+            found_scopes.append("all")
+        elif n.startswith(f"{code}:"):
+            scope = n.split(":", 1)[1]
+            found_scopes.append(scope)
+
+    if not found_scopes:
+        return None
+
+    # pick broadest valid scope; fail-closed if all scopes are invalid strings
+    valid = [s for s in found_scopes if s in _SCOPE_BREADTH]
+    if not valid:
+        return None
+    broadest = max(valid, key=lambda s: _SCOPE_BREADTH[s])
+    return PermissionGrant(code, broadest)
+
