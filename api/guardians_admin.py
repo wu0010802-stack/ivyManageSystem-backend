@@ -14,7 +14,14 @@ from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from models.database import AuditLog, Guardian, GuardianBindingCode, ParentDeviceSetupCode, ParentRefreshToken, get_session
+from models.database import (
+    AuditLog,
+    Guardian,
+    GuardianBindingCode,
+    ParentDeviceSetupCode,
+    ParentRefreshToken,
+    get_session,
+)
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.request_ip import get_client_ip
