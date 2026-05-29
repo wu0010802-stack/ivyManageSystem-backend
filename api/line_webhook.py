@@ -11,12 +11,21 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from models.database import get_session
+from utils.rate_limit import create_limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/line", tags=["line-webhook"])
 
 _line_service = None
+
+# Rate-limit: per-channel 1000 events / 5min（spec §5）
+_LINE_WEBHOOK_LIMITER = create_limiter(
+    max_calls=1000,
+    window_seconds=300,
+    name="line_webhook",
+    error_detail="LINE webhook rate-limit exceeded",
+)
 
 
 def init_webhook_service(line_service) -> None:
@@ -62,6 +71,9 @@ async def line_webhook(body: bytes = Depends(verify_line_signature)):
     - 區分教師（既有指令 handler）與家長（reply / postback 雙向）
     - postback 寫 LineReplyContext，後續訊息歸 thread
     """
+    # Rate-limit (spec §5): 在 signature verify 後、parse events 前 check
+    _LINE_WEBHOOK_LIMITER.check("channel")
+
     import json
 
     try:
