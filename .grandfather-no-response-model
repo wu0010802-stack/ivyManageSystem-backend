@@ -181,12 +181,6 @@ api/parent_portal/attendance.py:get_monthly_attendance
 api/parent_portal/auth.py:parent_logout
 api/parent_portal/calendar.py:get_week_agenda
 api/parent_portal/calendar.py:get_month_agenda
-api/parent_portal/contact_book.py:get_today
-api/parent_portal/contact_book.py:list_history
-api/parent_portal/contact_book.py:get_detail
-api/parent_portal/contact_book.py:mark_read
-api/parent_portal/contact_book.py:reply
-api/parent_portal/contact_book.py:delete_reply
 api/parent_portal/data_export.py:get_data_export
 api/parent_portal/events.py:list_events
 api/parent_portal/events.py:acknowledge_event

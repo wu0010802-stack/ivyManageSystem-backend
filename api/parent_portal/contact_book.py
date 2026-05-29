@@ -33,6 +33,15 @@ from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK
 from utils.audit import mark_soft_delete, write_explicit_audit
 from utils.auth import require_parent_role
 
+from schemas._common import DeleteResultOut
+from schemas.parent_portal_contact_book import (
+    ParentContactBookAckOut,
+    ParentContactBookDetailOut,
+    ParentContactBookHistoryOut,
+    ParentContactBookReplyOut,
+    ParentContactBookTodayOut,
+)
+
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
 
@@ -154,7 +163,7 @@ def _get_my_ack_at(session, entry_id: int, user_id: int) -> Optional[datetime]:
 # ── Endpoints ─────────────────────────────────────────────────────────────
 
 
-@router.get("/today")
+@router.get("/today", response_model=ParentContactBookTodayOut)
 def get_today(
     request: Request,
     student_id: int = Query(..., gt=0),
@@ -203,7 +212,7 @@ def get_today(
     }
 
 
-@router.get("")
+@router.get("", response_model=ParentContactBookHistoryOut)
 def list_history(
     request: Request,
     student_id: int = Query(..., gt=0),
@@ -291,7 +300,7 @@ def list_history(
     }
 
 
-@router.get("/{entry_id}")
+@router.get("/{entry_id}", response_model=ParentContactBookDetailOut)
 def get_detail(
     entry_id: int,
     request: Request,
@@ -331,7 +340,7 @@ def get_detail(
     }
 
 
-@router.post("/{entry_id}/ack")
+@router.post("/{entry_id}/ack", response_model=ParentContactBookAckOut)
 def mark_read(
     entry_id: int,
     request: Request,
@@ -408,7 +417,7 @@ def mark_read(
     }
 
 
-@router.post("/{entry_id}/reply", status_code=201)
+@router.post("/{entry_id}/reply", status_code=201, response_model=ParentContactBookReplyOut)
 def reply(
     entry_id: int,
     payload: ReplyCreate,
@@ -470,7 +479,7 @@ def reply(
     return _reply_to_dict(row)
 
 
-@router.delete("/{entry_id}/replies/{reply_id}")
+@router.delete("/{entry_id}/replies/{reply_id}", response_model=DeleteResultOut)
 def delete_reply(
     entry_id: int,
     reply_id: int,
