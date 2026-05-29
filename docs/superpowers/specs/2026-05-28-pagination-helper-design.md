@@ -49,22 +49,22 @@
 3. 呼叫 paginate(query, pagination) 取得 (items, total)
 """
 
-from typing import Generic, TypeVar
 from fastapi import Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Query as SAQuery
-
-T = TypeVar("T")
 
 
 class PaginationParams(BaseModel):
     """FastAPI Depends() 注入的分頁參數。
 
     透過 paginated_params() factory 產生，default/max_size 由呼叫端決定。
+    Field(ge=1) 為 defense in depth：HTTP 路徑經 paginated_params 的 Query(ge=1)
+    早已擋下，但若呼叫端直接 PaginationParams(page=0) 構造（測試或非 HTTP caller），
+    Pydantic ValidationError 確保不會傳入無效值給 paginate()。
     """
 
-    page: int
-    page_size: int
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
 
 
 def paginated_params(default: int = 20, max_size: int = 200):
