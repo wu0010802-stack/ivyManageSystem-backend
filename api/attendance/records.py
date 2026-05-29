@@ -18,6 +18,11 @@ from utils.approval_helpers import _get_finalized_salary_record
 from utils.attendance_guards import require_not_self_attendance
 from services.salary.utils import lock_and_premark_stale
 from ._shared import AttendanceRecordUpdate
+from schemas._common import DeleteResultOut
+from schemas.attendance_records import (
+    AttendanceRecordItemOut,
+    AttendanceRecordUpsertResultOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +149,7 @@ def _assert_upload_months_not_finalized(session, emp_ids: set, dates: set) -> No
         )
 
 
-@router.get("/records")
+@router.get("/records", response_model=list[AttendanceRecordItemOut])
 async def get_attendance_records(
     year: int = Query(...),
     month: int = Query(...),
@@ -212,7 +217,7 @@ async def get_attendance_records(
         session.close()
 
 
-@router.post("/record", status_code=201)
+@router.post("/record", status_code=201, response_model=AttendanceRecordUpsertResultOut)
 async def create_or_update_attendance_record(
     record: AttendanceRecordUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
@@ -366,7 +371,7 @@ async def create_or_update_attendance_record(
         session.close()
 
 
-@router.delete("/record/{employee_id}/{date}")
+@router.delete("/record/{employee_id}/{date}", response_model=DeleteResultOut)
 async def delete_single_attendance_record(
     employee_id: int,
     date: str,
@@ -415,7 +420,7 @@ async def delete_single_attendance_record(
         session.close()
 
 
-@router.delete("/records/{employee_id}/{date_str}")
+@router.delete("/records/{employee_id}/{date_str}", response_model=DeleteResultOut)
 def delete_single_attendance(
     employee_id: int,
     date_str: str,
@@ -464,7 +469,7 @@ def delete_single_attendance(
         session.close()
 
 
-@router.delete("/records/{year}/{month}")
+@router.delete("/records/{year}/{month}", response_model=DeleteResultOut)
 async def delete_attendance_records(
     year: int,
     month: int,

@@ -60,11 +60,6 @@ api/attachments.py:download_portfolio_file
 api/attendance/anomalies.py:get_attendance_anomalies
 api/attendance/anomalies.py:batch_confirm_anomalies
 api/attendance/anomalies.py:export_attendance_anomalies
-api/attendance/records.py:get_attendance_records
-api/attendance/records.py:create_or_update_attendance_record
-api/attendance/records.py:delete_single_attendance_record
-api/attendance/records.py:delete_single_attendance
-api/attendance/records.py:delete_attendance_records
 api/attendance/reports.py:get_today_attendance_summary
 api/attendance/reports.py:get_attendance_summary
 api/attendance/reports.py:get_today_anomalies
