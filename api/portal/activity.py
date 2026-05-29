@@ -295,33 +295,23 @@ def portal_get_session_detail(
     group_by: Optional[str] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """場次詳情（僅含自班學生；classroom_id FK 比對）"""
+    """場次詳情：完整跨班名冊（任何老師可查）。
+
+    放寬前僅回自班學生並以 403 collapse 防列舉；現任何老師皆可查任何場次，
+    無受保護資源可列舉，故場次不存在直接回 404（對齊 admin）。
+    group_by="classroom" → 額外回傳 groups（按班級分組）。
+    """
     session = get_session()
     try:
-        emp = _get_employee(session, current_user)
-        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
-
         sess = (
             session.query(ActivitySession)
             .filter(ActivitySession.id == session_id)
             .first()
         )
-        # F-010：「場次不存在」與「場次不含自班學生」collapse 為同一 generic 403，
-        # 避免透過 status code 差異枚舉 ActivitySession id 與 course_name 中介資料。
         if not sess:
-            raise HTTPException(status_code=403, detail="查無此場次或無權存取")
-
+            raise HTTPException(status_code=404, detail="找不到場次")
         group_key = "classroom" if group_by == "classroom" else None
-        response = _build_session_detail_response(
-            session,
-            sess,
-            classroom_ids_filter=classroom_ids,
-            group_by=group_key,
-        )
-        # 若教師對此場次無自班學生，視同無權查閱：不外露 course_name / 日期等中介資料。
-        if not response.get("students"):
-            raise HTTPException(status_code=403, detail="查無此場次或無權存取")
-        return response
+        return _build_session_detail_response(session, sess, group_by=group_key)
     finally:
         session.close()
 
