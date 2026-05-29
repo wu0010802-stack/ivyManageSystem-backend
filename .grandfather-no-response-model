@@ -306,9 +306,6 @@ api/salary/detail.py:get_unused_leave_payout_detail
 api/salary/festival.py:get_festival_bonus
 api/salary/festival.py:get_festival_bonus_period_accrual
 api/salary/manual_adjust.py:manual_adjust_salary
-api/salary/records.py:get_salary_history
-api/salary/records.py:get_salary_history_all
-api/salary/records.py:get_salary_records
 api/salary/simulate.py:simulate_salary
 api/shifts.py:get_shift_import_template
 api/student_assessments.py:create_assessment

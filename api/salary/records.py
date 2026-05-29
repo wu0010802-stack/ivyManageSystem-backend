@@ -36,10 +36,16 @@ from utils.salary_access import (
     resolve_salary_viewer_employee_id as _resolve_salary_viewer_employee_id,
 )
 
+from schemas.salary_records import (
+    SalaryHistoryAllOut,
+    SalaryHistoryItemOut,
+    SalaryRecordItemOut,
+)
+
 router = APIRouter()
 
 
-@router.get("/salaries/records")
+@router.get("/salaries/records", response_model=list[SalaryRecordItemOut])
 def get_salary_records(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -272,7 +278,7 @@ def export_all_salaries(
         )
 
 
-@router.get("/salaries/history")
+@router.get("/salaries/history", response_model=list[SalaryHistoryItemOut])
 def get_salary_history(
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
@@ -336,7 +342,7 @@ def get_salary_history(
         return results
 
 
-@router.get("/salaries/history-all")
+@router.get("/salaries/history-all", response_model=SalaryHistoryAllOut)
 def get_salary_history_all(
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
