@@ -132,3 +132,46 @@ def test_employee_offboard_rule_dedup_key_stable():
     )
     assert v1.dedup_key == v2.dedup_key
     assert len(v1.dedup_key) == 32
+
+
+def test_student_stale_active_detects(test_db_session):
+    """學生 lifecycle_status 為終態（graduated/withdrawn/transferred）但 is_active 仍 True。"""
+    from models.classroom import Student
+    from services.data_quality.rules.student_stale_active import StudentStaleActiveRule
+
+    s = Student(
+        student_id="S999",
+        name="畢業學生",
+        is_active=True,
+        lifecycle_status="graduated",
+    )
+    test_db_session.add(s)
+    test_db_session.commit()
+
+    rule = StudentStaleActiveRule()
+    violations = rule.check(test_db_session)
+    assert any(v.entity_id == str(s.id) for v in violations)
+    v = next(v for v in violations if v.entity_id == str(s.id))
+    assert v.rule_code == "student_active_but_lifecycle_terminal"
+    assert v.severity == "P1"
+    # PII 不外洩
+    assert "畢業學生" not in v.summary
+
+
+def test_student_stale_active_skips_active_in_school(test_db_session):
+    """lifecycle_status=active（非終態）→ 不偵測。"""
+    from models.classroom import Student
+    from services.data_quality.rules.student_stale_active import StudentStaleActiveRule
+
+    s = Student(
+        student_id="S998",
+        name="在校",
+        is_active=True,
+        lifecycle_status="active",
+    )
+    test_db_session.add(s)
+    test_db_session.commit()
+
+    rule = StudentStaleActiveRule()
+    violations = rule.check(test_db_session)
+    assert not any(v.entity_id == str(s.id) for v in violations)
