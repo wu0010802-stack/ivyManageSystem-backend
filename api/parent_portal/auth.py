@@ -43,12 +43,14 @@ from api.auth import (
 from schemas.parent_portal_auth import (
     BindAdditionalChildOut,
     BindFirstChildOut,
+    DeviceSetupOut,
     LiffLoginOut,
     ParentRefreshOut,
 )
 from models.database import (
     Guardian,
     GuardianBindingCode,
+    ParentDeviceSetupCode,
     ParentRefreshToken,
     User,
     get_session,
@@ -390,6 +392,80 @@ _BIND_FAILURE_MESSAGES = {
     "BIND_CODE_EXPIRED": "綁定碼已過期，請向園所索取新碼",
     "BIND_CODE_USED": "綁定碼已被使用，請向園所索取新碼",
 }
+
+
+# ── 無 LINE 裝置登入（device-setup）─────────────────────────────────────────
+_DEVICE_SETUP_SCOPE = "parent_device_setup"
+
+
+def _claim_device_setup_code_atomic(session, code_hash: str):
+    """atomic 單次 claim parent_device_setup_codes（used_at IS NULL 且未過期）。
+
+    rowcount==1 才成功；回更新後 ORM 物件，失敗回 None（已用 / 過期 / 不存在）。
+    """
+    now = _now()
+    stmt = (
+        update(ParentDeviceSetupCode)
+        .where(
+            ParentDeviceSetupCode.code_hash == code_hash,
+            ParentDeviceSetupCode.used_at.is_(None),
+            ParentDeviceSetupCode.expires_at > now,
+        )
+        .values(used_at=now)
+    )
+    if session.execute(stmt).rowcount != 1:
+        return None
+    return (
+        session.query(ParentDeviceSetupCode)
+        .filter(ParentDeviceSetupCode.code_hash == code_hash)
+        .first()
+    )
+
+
+def _username_for_device(guardian_id: int) -> str:
+    """無 LINE 家長 User 的 username：parent_device_<guardian_id>（唯一）。"""
+    return f"parent_device_{guardian_id}"
+
+
+def _create_parent_user_for_device(session, guardian) -> User:
+    """建立無 LINE 的 role='parent' User。
+
+    line_user_id=None（欄位 nullable+unique，多筆 NULL 允許）；display_name 取
+    Guardian.name（無 LINE 暱稱可用）；password_hash sentinel 同 LINE 家長。
+    """
+    user = User(
+        employee_id=None,
+        username=_username_for_device(guardian.id),
+        password_hash="!LINE_ONLY",
+        role="parent",
+        permission_names=[],
+        is_active=True,
+        must_change_password=False,
+        line_user_id=None,
+        display_name=_clean_display_name(guardian.name),
+        token_version=0,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+def _check_device_setup_lockout(ip: str) -> None:
+    """device-setup 為 ungated 入口 → 以 IP 為 key 做失敗鎖（連 5 次鎖 15 分）。"""
+    from utils.rate_limit_db import count_recent_attempts
+
+    count = count_recent_attempts(
+        _DEVICE_SETUP_SCOPE, ip, within_seconds=_BIND_FAIL_LOCKOUT
+    )
+    if count >= _BIND_FAIL_THRESHOLD:
+        logger.warning("device-setup 失敗過多，ip=%s 已鎖 (failures=%d)", ip, count)
+        raise HTTPException(status_code=429, detail="嘗試次數過多，請稍後再試")
+
+
+def _record_device_setup_failure(ip: str) -> None:
+    from utils.rate_limit_db import record_attempt
+
+    record_attempt(_DEVICE_SETUP_SCOPE, ip, window_seconds=_BIND_FAIL_LOCKOUT)
 
 
 def _username_for_line(line_user_id: str) -> str:
