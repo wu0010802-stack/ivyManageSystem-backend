@@ -81,6 +81,33 @@ def test_maintenance_blocks_non_bypass_endpoint(monkeypatch):
     assert r.headers["retry-after"] == "300"
 
 
+def test_maintenance_503_includes_cors_header(monkeypatch):
+    """維護 503 短路回應必須帶 CORS header。
+
+    回歸：CORSMiddleware 原本最先 add（最內層），KillSwitch 503 在其外層短路，
+    回應不經過 CORS → 缺 Access-Control-Allow-Origin → 跨來源前端收到 CORS error
+    而非可讀的 503，打斷 MaintenanceView / 503-redirect 友善降級。
+    CORS 移到 KillSwitch/CSRF 外層後，503 回流經過 CORS → 帶 header。
+    """
+    from starlette.middleware.cors import CORSMiddleware
+
+    client = _client(monkeypatch, MAINTENANCE_MODE="1")
+    # 從 live middleware stack 取實際允許的 origin（不假設 config 值）
+    allowed: list[str] = []
+    for m in client.app.user_middleware:
+        if m.cls is CORSMiddleware:
+            allowed = list((getattr(m, "kwargs", {}) or {}).get("allow_origins") or [])
+            break
+    assert allowed, "main.app 找不到 CORSMiddleware 的 allow_origins"
+    origin = allowed[0]
+
+    r = client.get("/api/employees", headers={"Origin": origin})
+    assert r.status_code == 503, r.text
+    assert (
+        r.headers.get("access-control-allow-origin") == origin
+    ), f"維護 503 缺 CORS header（CORS middleware 順序錯誤）；headers={dict(r.headers)}"
+
+
 def test_maintenance_bypasses_health_live(monkeypatch):
     """MAINTENANCE_MODE 期間 /health/live 仍可達（UptimeRobot 監控不中斷）。"""
     client = _client(monkeypatch, MAINTENANCE_MODE="1")
