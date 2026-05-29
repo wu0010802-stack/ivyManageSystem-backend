@@ -2706,9 +2706,18 @@ class SalaryEngine:
                 festival_total += int(row.get("festival_bonus", 0) or 0)
                 overtime_total += int(row.get("overtime_bonus", 0) or 0)
             except Exception:
-                logger.exception(
-                    "計算期間累積失敗 emp=%s year=%s month=%s", emp.id, y, m
+                # 真實錯誤（DB 中斷、設定缺漏等）不可靜默吞成「該月 0 貢獻」→ 發放月
+                # 總額少算 → 直接覆蓋整筆獎金且以 needs_recalc=False commit → 永久少付。
+                # 改為傳播：bulk path 由 savepoint 接住標 needs_recalc=True；單筆路徑回
+                # API 錯誤。空月（期中到職前/無班級）走 eligibility 優雅回 0，不到此分支。
+                # 用 warning 保留月份 context（完整 stack 由上層 bulk handler 記，避免雙重）。
+                logger.warning(
+                    "計算期間累積失敗 emp=%s year=%s month=%s，整筆標記需重算",
+                    emp.id,
+                    y,
+                    m,
                 )
+                raise
         return festival_total, overtime_total
 
     def _adjust_period_totals_for_discipline(

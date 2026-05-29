@@ -756,6 +756,51 @@ class TestBonusDistributionMonth:
         assert breakdown.festival_bonus > 0
 
 
+class TestPeriodAccrualErrorPropagation:
+    """_compute_period_accrual_totals 對單月「真實錯誤」的處理。
+
+    回歸：原本 bare except 把單月計算失敗靜默吞成「該月 0 貢獻」→ 發放月總額少算
+    → 直接覆蓋整筆獎金且以 needs_recalc=False commit → 永久少付、操作者零訊號，
+    且繞過 bulk path 的 savepoint 失敗保護。空月（期中到職前/無班級）走 eligibility
+    優雅回 0，不經此例外路徑，故 re-raise 不會 regress 期中到職。
+    """
+
+    def test_real_error_in_one_month_propagates(self, engine, monkeypatch):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+
+        import services.leave_bonus_skip as lbs
+        import services.salary.utils as salary_utils
+
+        # period 有 2 個月；皆不跳過；班級解析回 None（不查 DB）；config swap no-op
+        monkeypatch.setattr(
+            salary_utils,
+            "get_distribution_period_months",
+            lambda y, m: [(2026, 3), (2026, 4)],
+        )
+        monkeypatch.setattr(
+            lbs, "should_skip_bonuses_for_month", lambda *a, **k: (False, None)
+        )
+        monkeypatch.setattr(
+            engine, "_resolve_classroom_for_employee_in_term", lambda *a, **k: None
+        )
+        monkeypatch.setattr(engine, "config_for_month", lambda *a, **k: nullcontext())
+
+        # 第一個月正常、第二個月丟真實 DB 錯誤
+        def fake_row(emp_id, y, m, _ctx=None):
+            if m == 4:
+                raise RuntimeError("DB connection lost")
+            return {"festival_bonus": 1000, "overtime_bonus": 200}
+
+        monkeypatch.setattr(engine, "calculate_period_accrual_row", fake_row)
+
+        emp = SimpleNamespace(id=1, name="測試員工")
+        with pytest.raises(RuntimeError, match="DB connection lost"):
+            engine._compute_period_accrual_totals(
+                session=object(), emp=emp, year=2026, month=6
+            )
+
+
 # ──────────────────────────────────────────────
 # 園務會議缺席扣款 — 跨月補查回歸測試
 # ──────────────────────────────────────────────
@@ -2111,7 +2156,9 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        assert calculate_overtime_pay(30000, 2, "weekday") == round_half_up(hourly * 2 * 1.34)
+        assert calculate_overtime_pay(30000, 2, "weekday") == round_half_up(
+            hourly * 2 * 1.34
+        )
 
     def test_weekday_beyond_2h(self):
         """平日4小時：前2h ×1.34 + 後2h ×1.67"""
@@ -2150,7 +2197,9 @@ class TestCalculateOvertimePay:
         from api.overtimes import calculate_overtime_pay
 
         hourly = 30000 / 30 / 8
-        expected = round_half_up(hourly * 2 * 1.34 + hourly * 6 * 1.67 + hourly * 2 * 2.67)
+        expected = round_half_up(
+            hourly * 2 * 1.34 + hourly * 6 * 1.67 + hourly * 2 * 2.67
+        )
         assert calculate_overtime_pay(30000, 10, "weekend") == expected
 
     def test_holiday_flat_rate(self):
