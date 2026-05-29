@@ -19,6 +19,7 @@ class AuditLog(Base):
         Index("ix_audit_entity", "entity_type", "entity_id"),
         Index("ix_audit_user", "user_id"),
         Index("ix_audit_logs_ack_created", "acknowledged_at", "created_at"),
+        Index("ix_audit_session", "session_id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -41,4 +42,14 @@ class AuditLog(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         comment="ack 操作者",
+    )
+    user_agent_hash = Column(
+        String(64),
+        nullable=True,
+        comment="SHA256(UA) hex digest 取前 32 字元（避免直存 device PII；String(64) 為未來擴充保留）",
+    )
+    session_id = Column(
+        String(64),
+        nullable=True,
+        comment="JWT jti claim — forensic 用，stateless 無伺服端 session",
     )
