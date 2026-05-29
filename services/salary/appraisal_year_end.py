@@ -41,3 +41,38 @@ def query_appraisal_year_end_bonus(
         )
     )
     return Decimal(result or 0)
+
+
+def query_appraisal_year_end_bonus_bulk(
+    db: Session, employee_ids: list[int], year: int, month: int
+) -> dict[int, Decimal]:
+    """批次版 query_appraisal_year_end_bonus：回 {employee_id: Decimal}。
+
+    語意與 per-employee 版一致：非 2 月或無資料者回 Decimal(0)。回傳 Decimal（直接
+    寫進 SalaryRecord.appraisal_year_end_bonus 並進下月累計，型別不可降為 float）。
+    """
+    result = {eid: Decimal(0) for eid in employee_ids}
+    if month != 2 or not employee_ids:
+        return result
+    target_academic_year = civil_year_to_target_academic_year(year)
+    rows = db.execute(
+        select(
+            SpecialBonusItem.employee_id,
+            func.coalesce(func.sum(SpecialBonusItem.amount), 0),
+        )
+        .join(YearEndCycle, YearEndCycle.id == SpecialBonusItem.year_end_cycle_id)
+        .where(
+            YearEndCycle.academic_year == target_academic_year,
+            SpecialBonusItem.employee_id.in_(employee_ids),
+            SpecialBonusItem.bonus_type.in_(
+                [
+                    SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+                    SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
+                ]
+            ),
+        )
+        .group_by(SpecialBonusItem.employee_id)
+    ).all()
+    for eid, total in rows:
+        result[eid] = Decimal(total or 0)
+    return result

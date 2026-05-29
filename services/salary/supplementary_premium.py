@@ -62,6 +62,35 @@ def query_ytd_bonus_before(
     return float(result or 0)
 
 
+def query_ytd_bonus_bulk(
+    session: Session, employee_ids: list[int], year: int, month: int
+) -> dict[int, float]:
+    """批次版 query_ytd_bonus_before：一次 GROUP BY 查回 {employee_id: ytd_bonus}。
+
+    語意與 per-employee 版完全一致（同欄位、同 year/month<month 條件）；缺紀錄者回 0.0。
+    """
+    result = {eid: 0.0 for eid in employee_ids}
+    if not employee_ids:
+        return result
+    columns = [getattr(SalaryRecord, name) for name in BONUS_FIELDS_FOR_YTD]
+    row_total = sum(func.coalesce(col, 0) for col in columns)
+    rows = session.execute(
+        select(
+            SalaryRecord.employee_id,
+            func.coalesce(func.sum(row_total), 0),
+        )
+        .where(
+            SalaryRecord.employee_id.in_(employee_ids),
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month < month,
+        )
+        .group_by(SalaryRecord.employee_id)
+    ).all()
+    for eid, total in rows:
+        result[eid] = float(total or 0)
+    return result
+
+
 def calculate_bonus_supplementary_fee(
     session: Session,
     employee_id: int,
