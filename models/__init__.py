@@ -60,3 +60,6 @@ from models.integration_health import LineTokenHealth  # noqa: F401
 # CI Tests step `Base.metadata.create_all` 與 prod 啟動需中央 import 否則漏建表
 from .consent import ParentConsentLog, PolicyVersion  # noqa: F401
 from .dsr import DsrRequest  # noqa: F401
+
+# P0d-2 2026-05-28: medical_access_log（特種個資取用獨立稽核 §6）
+from .medical_access_log import MedicalAccessLog  # noqa: F401

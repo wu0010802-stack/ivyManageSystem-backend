@@ -585,7 +585,9 @@ def _semester_date_range(school_year: int, semester: int) -> tuple[date, date]:
     return date(ad_year + 1, 2, 1), date(ad_year + 1, 7, 31)
 
 
-@router.get("/students/{student_id}/academic-summary", response_model=AcademicSummaryOut)
+@router.get(
+    "/students/{student_id}/academic-summary", response_model=AcademicSummaryOut
+)
 async def get_academic_summary(
     student_id: int,
     school_year: Optional[int] = Query(None, ge=100, le=200),
@@ -728,6 +730,60 @@ async def get_student(
             summary=f"查看學生資料：{student_name}",
         )
         return mask_student_health_fields(payload, current_user)
+    finally:
+        session.close()
+
+
+# ── P0d-2 reason-gated 醫療欄位讀取（§6 特種個資取用稽核）─────────────────
+
+
+@router.get("/students/{student_id}/medical")
+async def get_student_medical(
+    student_id: int,
+    request: Request,
+    reason: str = Query(
+        ...,
+        min_length=10,
+        max_length=500,
+        description="讀取醫療資訊原因（≥10 字，將寫入 medical_access_log 供稽核）",
+    ),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.STUDENTS_HEALTH_READ)
+    ),
+):
+    """讀取兒童醫療欄位（過敏 / 用藥 / 特殊需求）。
+
+    法源：個資法 §6 特種個資。每次取用必記入 medical_access_log，
+    與 audit_log 獨立稽核 trail，含 reason ≥10 字 gate。
+
+    權限：STUDENTS_HEALTH_READ
+    回 fields: allergy / medication / special_needs（ORM 透明解密）
+    """
+    from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
+    from utils.request_ip import get_client_ip
+
+    session = get_session()
+    try:
+        student = assert_student_access(session, current_user, student_id)
+
+        # 寫 medical_access_log（獨立 trail，不走 audit_log）
+        log = MedicalAccessLog(
+            user_id=current_user["user_id"],
+            student_id=student_id,
+            field_name=MEDICAL_FIELD_BUNDLE,
+            reason=reason,
+            ip_address=get_client_ip(request),
+        )
+        session.add(log)
+        session.commit()
+
+        return {
+            "student_id": student.id,
+            "name": student.name,
+            "allergy": student.allergy,
+            "medication": student.medication,
+            "special_needs": student.special_needs,
+        }
     finally:
         session.close()
 
