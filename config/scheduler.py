@@ -49,6 +49,12 @@ class SchedulerSettings(BaseSettings):
     finance_reconciliation_enabled: BoolEnv = False
     security_gc_disabled: BoolEnv = False
 
+    # Data quality (Ch2 of observability-forensic spec)
+    data_quality_enabled: BoolEnv = False
+    data_quality_check_interval: int = 60  # 每分鐘檢查是否到目標時間
+    data_quality_hour: int = 3  # 03:00 Asia/Taipei
+    data_quality_minute: int = 0
+
     # PDF worker (growth report background generation)
     # max_concurrency=4：避免單機群體生成壓垮 starlette threadpool（預設 40 slot）
     # recovery_enabled：啟動時把孤兒 'generating' row 標 failed。本 repo prod 走

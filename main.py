@@ -535,6 +535,23 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("對帳排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # 資料品質排程（spec 2026-05-28 observability-forensic Ch2.4）：
+    # 每日 03:00 Asia/Taipei 跑 run_all_rules → dispatch.emit → flush_line_digest
+    # 預設關閉（DATA_QUALITY_ENABLED=1 才啟用）；HR 確認 baseline 不雜音再開
+    data_quality_task = None
+    data_quality_stop_event: asyncio.Event | None = None
+    try:
+        from services import data_quality_scheduler as _dq_sched
+
+        if _dq_sched.scheduler_enabled():
+            data_quality_stop_event = asyncio.Event()
+            data_quality_task = asyncio.create_task(
+                _dq_sched.run_data_quality_scheduler(data_quality_stop_event)
+            )
+    except Exception as e:
+        logger.warning("資料品質排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     try:
         yield
     finally:
@@ -646,6 +663,17 @@ async def app_lifespan(app_instance: FastAPI):
                 finance_reconciliation_task.cancel()
                 try:
                     await finance_reconciliation_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if data_quality_task is not None:
+            if data_quality_stop_event is not None:
+                data_quality_stop_event.set()
+            try:
+                await asyncio.wait_for(data_quality_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                data_quality_task.cancel()
+                try:
+                    await data_quality_task
                 except (asyncio.CancelledError, Exception):
                     pass
         if recruitment_term_advance_task is not None:
