@@ -12,21 +12,22 @@ import openpyxl
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, case
 from sqlalchemy.exc import IntegrityError
 
 from models.database import get_session
 from models.activity import (
     ActivityCourse,
-    ActivityRegistration,
     ActivitySession,
     ActivityAttendance,
-    RegistrationCourse,
 )
 from utils.auth import get_current_user, require_staff_permission
 from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
-from api.activity._shared import _build_session_detail_response
+from api.activity._shared import (
+    _build_session_detail_response,
+    build_session_rows_with_stats,
+    query_valid_session_registrations,
+)
 from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
 from schemas.activity_admin import (
     ActivityAttendanceBatchUpdateResultOut,
@@ -104,45 +105,7 @@ def list_sessions(
             .all()
         )
 
-        # 計算各場次出席統計（SQL GROUP BY，避免 Python 迴圈）
-        session_ids = [r.id for r in rows]
-        attendance_stats: dict[int, dict] = {}
-        if session_ids:
-            agg_rows = (
-                session.query(
-                    ActivityAttendance.session_id,
-                    func.count(ActivityAttendance.id).label("recorded"),
-                    func.sum(
-                        case((ActivityAttendance.is_present.is_(True), 1), else_=0)
-                    ).label("present"),
-                )
-                .filter(ActivityAttendance.session_id.in_(session_ids))
-                .group_by(ActivityAttendance.session_id)
-                .all()
-            )
-            attendance_stats = {
-                row.session_id: {"recorded": row.recorded, "present": row.present or 0}
-                for row in agg_rows
-            }
-
-        result = []
-        for r in rows:
-            stat = attendance_stats.get(r.id, {"recorded": 0, "present": 0})
-            result.append(
-                {
-                    "id": r.id,
-                    "course_id": r.course_id,
-                    "course_name": r.course_name,
-                    "session_date": (
-                        r.session_date.isoformat() if r.session_date else None
-                    ),
-                    "notes": r.notes or "",
-                    "created_by": r.created_by,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                    "recorded_count": stat["recorded"],
-                    "present_count": stat["present"],
-                }
-            )
+        result = build_session_rows_with_stats(session, rows)
         return {"items": result, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
@@ -381,22 +344,8 @@ def batch_update_attendance(
         # 並要求 registration 必須真的報了本 session 對應的課程（enrolled 或
         # promoted_pending 皆算佔位）；避免操作員為「未報該課」的學生寫出席紀錄
         # 污染統計與 student_id 冗餘欄位。一併取 student_id 供冗餘欄位使用。
-        valid_reg_rows = (
-            session.query(ActivityRegistration.id, ActivityRegistration.student_id)
-            .join(
-                RegistrationCourse,
-                RegistrationCourse.registration_id == ActivityRegistration.id,
-            )
-            .filter(
-                ActivityRegistration.id.in_(req_reg_ids),
-                ActivityRegistration.is_active.is_(True),
-                ActivityRegistration.match_status != "rejected",
-                RegistrationCourse.course_id == sess.course_id,
-                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
-            )
-            .all()
-            if req_reg_ids
-            else []
+        valid_reg_rows = query_valid_session_registrations(
+            session, sess.course_id, req_reg_ids
         )
         valid_reg_ids = {row[0] for row in valid_reg_rows}
         reg_student_map = dict(valid_reg_rows)

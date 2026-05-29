@@ -149,6 +149,27 @@ class TestParentBlockedFromPortal:
         )
         assert response.status_code == 403
 
+    def test_parent_activity_attendance_records_returns_403(self, isolated_app):
+        """家長 token 撞才藝點名寫入端點 → 403。
+
+        才藝點名放寬為任何老師可點任意場次後，家長仍須被 router-level
+        require_non_parent_role 擋下；守衛在端點商業邏輯前觸發，故 session
+        是否存在不影響 403（spec §7 回歸測試）。
+        """
+        client, session_factory = isolated_app
+        with session_factory() as session:
+            parent = _create_parent_user(session)
+            session.commit()
+            token = _make_token(parent)
+
+        response = client.put(
+            "/api/portal/activity/attendance/sessions/1/records",
+            json={"records": [{"registration_id": 1, "is_present": True, "notes": ""}]},
+            cookies={"access_token": token},
+        )
+        assert response.status_code == 403
+        assert "家長" in response.json().get("detail", "")
+
 
 class TestTeacherStillReachesPortal:
     """既有教師 token 仍可進 portal（router-level dependency 不誤傷）。"""

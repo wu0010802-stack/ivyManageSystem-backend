@@ -954,6 +954,8 @@ class TestF009_AnnouncementsRead:
         assert resp.status_code == 200
 
 
+# F-010 放寬後（才藝點名任何老師可查）：enumeration collapse 已移除，場次存在→200、不存在→404。
+# 此 class 保留作「universal access + 404」回歸用，不再是 oracle 一致化斷言。
 class TestF010_PortalActivitySession:
     def _seed_no_own_class(self, session):
         """教師 A 無自班學生在此場次（場次中所有學生都屬於 B 班）。"""
@@ -1058,7 +1060,8 @@ class TestF010_PortalActivitySession:
         session.commit()
         return _teacher_token(user_a), sess.id
 
-    def test_get_session_with_no_own_class_students_returns_403(self, portal_client):
+    def test_get_session_any_teacher_sees_cross_class_roster_200(self, portal_client):
+        """放寬後：非該班導師的老師也能看完整跨班名冊（不再 403）。"""
         client, sf = portal_client
         with sf() as s:
             token, sid = self._seed_no_own_class(s)
@@ -1066,11 +1069,13 @@ class TestF010_PortalActivitySession:
             f"/api/portal/activity/attendance/sessions/{sid}",
             cookies={"access_token": token},
         )
-        assert resp.status_code == 403
-        assert resp.json()["detail"] == "查無此場次或無權存取"
+        assert resp.status_code == 200, resp.text
+        names = [st["student_name"] for st in resp.json()["students"]]
+        assert "B生" in names  # 跨班學生現在可見
 
-    def test_get_session_non_existent_same_detail(self, portal_client):
-        """non-existent session id 也應 collapse 為同 generic 403。"""
+    def test_get_session_existing_200_missing_404(self, portal_client):
+        """放寬後：場次存在→200、不存在→404（F-010 collapse 已移除，
+        因任何老師都能看任何場次，無可列舉的受保護資源）。"""
         client, sf = portal_client
         with sf() as s:
             token, sid = self._seed_no_own_class(s)
@@ -1082,17 +1087,8 @@ class TestF010_PortalActivitySession:
             "/api/portal/activity/attendance/sessions/999999",
             cookies={"access_token": token},
         )
-        assert resp_other.status_code == 403
-        assert resp_other.status_code == resp_missing.status_code
-        other_d = resp_other.json()["detail"]
-        missing_d = resp_missing.json()["detail"]
-        # detail 可能是 BusinessError envelope (dict 含 code/message/request_id) 或 raw string
-        if isinstance(other_d, dict):
-            assert isinstance(missing_d, dict)
-            assert other_d["code"] == missing_d["code"]
-            assert other_d["message"] == missing_d["message"]
-        else:
-            assert other_d == missing_d
+        assert resp_other.status_code == 200, resp_other.text
+        assert resp_missing.status_code == 404
 
     def test_get_session_with_own_class_students_returns_200(self, portal_client):
         client, sf = portal_client

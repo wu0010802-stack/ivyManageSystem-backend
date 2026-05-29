@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func, or_, select as sa_select
+from sqlalchemy import func, case, or_, select as sa_select
 from sqlalchemy.exc import CompileError, OperationalError
 
 from models.database import (
@@ -756,6 +756,95 @@ def _fetch_reg_supplies(session, reg_ids: list) -> dict:
     return supply_map
 
 
+def query_valid_session_registrations(
+    db_session,
+    course_id: int,
+    registration_ids: list,
+    *,
+    classroom_ids_filter: list | None = None,
+) -> list:
+    """回傳本場次「有效報名」的 (registration_id, student_id) tuple 列表。
+
+    有效 = ActivityRegistration.is_active、match_status != 'rejected'，且確實報了
+    course_id 對應課程（RegistrationCourse.status IN ('enrolled','promoted_pending')）。
+    供 admin 點名與 portal 點名共用，避免兩處重複定義「有效報名」規則。
+
+    classroom_ids_filter=None   → 不限班級（管理端 / 開放後的 portal，跨班）。
+    classroom_ids_filter=[...]  → 額外限定 ActivityRegistration.classroom_id IN(...)（保留彈性）。
+                                  參數命名對齊 _build_session_detail_response(classroom_ids_filter=...)。
+    registration_ids 為空 → 回 []（不打 DB）。
+
+    注意：狀態過濾刻意同時接受 'enrolled' 與 'promoted_pending'（已晉升候補、佔位），
+    此為寫入路徑（出席記錄）的既有行為，與 _build_session_detail_response 名冊渲染
+    僅顯示 status == 'enrolled' 的學生不同——非 bug，乃設計上的刻意不對稱：
+    promoted_pending 佔位者可被寫出席，但名冊僅顯示 enrolled（避免混淆家長）。
+    """
+    if not registration_ids:
+        return []
+    query = (
+        db_session.query(ActivityRegistration.id, ActivityRegistration.student_id)
+        .join(
+            RegistrationCourse,
+            RegistrationCourse.registration_id == ActivityRegistration.id,
+        )
+        .filter(
+            ActivityRegistration.id.in_(registration_ids),
+            ActivityRegistration.is_active.is_(True),
+            ActivityRegistration.match_status != "rejected",
+            RegistrationCourse.course_id == course_id,
+            RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+        )
+    )
+    if classroom_ids_filter is not None:
+        query = query.filter(ActivityRegistration.classroom_id.in_(classroom_ids_filter))
+    return query.all()
+
+
+def build_session_rows_with_stats(db_session, rows) -> list:
+    """給定已查出的場次 row（需含 .id/.course_id/.session_date/.notes/.created_by/
+    .created_at/.course_name），補上整堂出席統計（recorded_count/present_count）並組成
+    dict 列表。admin list_sessions 與 portal portal_list_sessions 共用，避免統計邏輯 drift。
+    """
+    session_ids = [r.id for r in rows]
+    attendance_stats: dict = {}
+    if session_ids:
+        agg_rows = (
+            db_session.query(
+                ActivityAttendance.session_id,
+                func.count(ActivityAttendance.id).label("recorded"),
+                func.sum(
+                    case((ActivityAttendance.is_present.is_(True), 1), else_=0)
+                ).label("present"),
+            )
+            .filter(ActivityAttendance.session_id.in_(session_ids))
+            .group_by(ActivityAttendance.session_id)
+            .all()
+        )
+        attendance_stats = {
+            row.session_id: {"recorded": row.recorded, "present": row.present or 0}
+            for row in agg_rows
+        }
+    result = []
+    for r in rows:
+        stat = attendance_stats.get(r.id, {"recorded": 0, "present": 0})
+        result.append(
+            {
+                "id": r.id,
+                "course_id": r.course_id,
+                "course_name": r.course_name,
+                "session_date": (
+                    r.session_date.isoformat() if r.session_date else None
+                ),
+                "notes": r.notes or "",
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "recorded_count": stat["recorded"],
+                "present_count": stat["present"],
+            }
+        )
+    return result
+
+
 def _build_session_detail_response(
     db_session,
     sess: "ActivitySession",
@@ -765,7 +854,7 @@ def _build_session_detail_response(
 ) -> dict:
     """取得場次詳情 + 出席狀態，供管理端及 Portal 共用。
 
-    classroom_ids_filter=None  → 包含所有 enrolled 學生（管理端）
+    classroom_ids_filter=None  → 包含所有 enrolled 學生（管理端 + 開放後的 portal）
     classroom_ids_filter=[...] → 只包含指定班級的學生（Portal，FK 比對）
     group_by="classroom"       → 額外回傳 groups：按 classroom_id 分組
 
