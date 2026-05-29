@@ -48,6 +48,7 @@ from schemas.parent_portal_auth import (
     ParentRefreshOut,
 )
 from models.database import (
+    AuditLog,
     Guardian,
     GuardianBindingCode,
     ParentDeviceSetupCode,
@@ -773,6 +774,19 @@ def device_setup(
         if binding is None:
             session.rollback()
             _record_device_setup_failure(ip)
+            session.add(
+                AuditLog(
+                    user_id=None,
+                    username="",
+                    action="LOGIN_FAILED",
+                    entity_type="parent_device_setup",
+                    entity_id=None,
+                    summary="裝置設定碼兌換失敗",
+                    ip_address=ip,
+                    created_at=_now(),
+                )
+            )
+            session.commit()
             raise BusinessError(
                 code="DEVICE_SETUP_CODE_INVALID",
                 message="設定碼無效或已過期，請向園所索取新碼",
@@ -810,6 +824,18 @@ def device_setup(
             user_id=user.id,
             user_agent=request.headers.get("user-agent"),
             ip=get_client_ip(request),
+        )
+        session.add(
+            AuditLog(
+                user_id=user.id,
+                username=user.username,
+                action="LOGIN",
+                entity_type="parent_device_setup",
+                entity_id=str(guardian.id),
+                summary="家長以裝置設定碼登入",
+                ip_address=ip,
+                created_at=_now(),
+            )
         )
         session.commit()
         session.refresh(user)

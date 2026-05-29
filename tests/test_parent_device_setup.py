@@ -283,6 +283,61 @@ class TestDeviceSetupEndpoint:
         r = c.post("/api/parent/auth/device-setup", json={"code": "DEVCODE0001"})
         assert r.status_code == 400
         assert "監護人已不存在" in r.text
+        s = sf()
+        code = (
+            s.query(ParentDeviceSetupCode)
+            .filter(ParentDeviceSetupCode.guardian_id == gid)
+            .first()
+        )
+        assert code.used_at is None  # guardian 已刪 → rollback 復原 claim，碼仍可用
+        s.close()
+
+    def test_success_writes_audit_log(self, pclient):
+        c, sf = pclient
+        gid = _seed_code(sf)
+        assert (
+            c.post(
+                "/api/parent/auth/device-setup", json={"code": "DEVCODE0001"}
+            ).status_code
+            == 200
+        )
+        s = sf()
+        from models.database import AuditLog
+
+        row = (
+            s.query(AuditLog)
+            .filter(
+                AuditLog.entity_type == "parent_device_setup",
+                AuditLog.action == "LOGIN",
+            )
+            .first()
+        )
+        assert row is not None
+        assert row.entity_id == str(gid)
+        s.close()
+
+    def test_invalid_code_writes_failure_audit(self, pclient):
+        c, sf = pclient
+        _seed_code(sf)
+        assert (
+            c.post(
+                "/api/parent/auth/device-setup", json={"code": "WRONGCODE99"}
+            ).status_code
+            == 400
+        )
+        s = sf()
+        from models.database import AuditLog
+
+        row = (
+            s.query(AuditLog)
+            .filter(
+                AuditLog.entity_type == "parent_device_setup",
+                AuditLog.action == "LOGIN_FAILED",
+            )
+            .first()
+        )
+        assert row is not None
+        s.close()
 
     def test_lockout_after_repeated_failures(self, pclient):
         c, sf = pclient
