@@ -5,9 +5,9 @@ psycopg2-binary>=2.9.0
 pandas>=2.0.0
 openpyxl>=3.1.0
 xlrd>=2.0  # 讀取 .xls (Excel 97-2003) 用於匯入舊版考核 / 年終經營績效表
-python-multipart>=0.0.20  # CVE-2026-40347, CVE-2026-42561（>=0.0.27 要求 Python 3.10+，本機用 3.9）
+python-multipart>=0.0.20,<0.0.27  # CVE-2026-40347, CVE-2026-42561; <0.0.27 需 Python 3.10+
 reportlab>=4.0.0
-Pillow>=11.3.0  # CVE-2026-25990, CVE-2026-40192, CVE-2026-42308/9/10/11（>=12.2.0 要求 Python 3.10+，本機用 3.9）
+Pillow>=11.3.0,<12.2.0  # CVE-2026-25990, CVE-2026-40192, CVE-2026-42308/9/10/11; <12.2.0 需 Python 3.10+
 # pillow-heif 可選：若部署環境有 libheif 且安裝成功，HEIC 上傳會自動轉 JPG；
 # 未安裝則拒絕 HEIC 上傳並提示使用者改用 JPG/PNG。
 pillow-heif>=0.16.0
@@ -17,9 +17,9 @@ holidays>=0.30.0
 python-jose>=3.3.0
 python-dateutil>=2.8.0
 cachetools>=5.3.0
-python-dotenv>=1.2.0  # CVE-2026-28684（>=1.2.2 要求 Python 3.10+，本機用 3.9）
+python-dotenv>=1.2.0,<1.2.2  # CVE-2026-28684; <1.2.2 需 Python 3.10+
 alembic>=1.13.0
-requests>=2.32.0  # CVE-2026-25645（>=2.33.0 要求 Python 3.10+，本機用 3.9）
+requests>=2.32.0,<2.33.0  # CVE-2026-25645; <2.33.0 需 Python 3.10+
 supabase>=2.0.0  # 物件儲存（activity_posters / leave_attachments）
 python-json-logger>=2.0.0
 pytest>=9.0.3  # CVE-2025-71176
