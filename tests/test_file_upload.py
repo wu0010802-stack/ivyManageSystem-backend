@@ -152,24 +152,45 @@ from utils.file_upload import (
 
 
 class _FakeUpload:
-    """模擬 UploadFile.read(chunk_size) 行為，並追蹤實際讀取量。"""
+    """模擬 UploadFile.read(chunk_size) 行為，並追蹤實際讀取量。
 
-    def __init__(self, total_size: int, chunk_size: int = 64 * 1024):
+    P0a 落地後（2026-05-28）read_upload_with_size_check 會在 ext 已知時
+    內部 call validate_file_signature，所以需要正確 magic bytes prefix。
+    """
+
+    def __init__(
+        self, total_size: int, chunk_size: int = 64 * 1024, prefix: bytes = b""
+    ):
         self._remaining = total_size
         self._chunk_size = chunk_size
         self.bytes_read = 0
+        self._pos = 0
+        self._prefix = prefix
 
     async def read(self, n: int = -1) -> bytes:
         if self._remaining <= 0:
             return b""
         size = self._remaining if n < 0 else min(n, self._remaining)
         self._remaining -= size
+        # 從 prefix 取（位元組序），prefix 用完則填 null
+        out = bytearray(size)
+        for i in range(size):
+            if self._pos < len(self._prefix):
+                out[i] = self._prefix[self._pos]
+            else:
+                out[i] = 0
+            self._pos += 1
         self.bytes_read += size
-        return b"\x00" * size
+        return bytes(out)
+
+
+# MP4 ISO base media format magic bytes：offset 4 起 "ftyp"
+_MP4_PREFIX = b"\x00\x00\x00\x20ftypmp42\x00" * 4  # 80 bytes prefix
 
 
 class TestReadUploadChunked:
     def test_returns_full_content_under_limit(self):
+        """無 ext 路徑：保持向後相容，不觸發 validate。"""
         f = _FakeUpload(total_size=1024)
         out = asyncio.run(read_upload_with_size_check(f))
         assert len(out) == 1024
@@ -185,12 +206,78 @@ class TestReadUploadChunked:
         assert f.bytes_read <= MAX_UPLOAD_SIZE + 64 * 1024
 
     def test_video_extension_uses_video_limit(self):
-        f = _FakeUpload(total_size=20 * 1024 * 1024)
+        """MP4 ext + 真實 magic bytes prefix → 通過 size + validate。"""
+        f = _FakeUpload(total_size=20 * 1024 * 1024, prefix=_MP4_PREFIX)
         out = asyncio.run(read_upload_with_size_check(f, extension=".mp4"))
         assert len(out) == 20 * 1024 * 1024
 
     def test_aborts_early_when_exceeds_video_limit(self):
-        f = _FakeUpload(total_size=200 * 1024 * 1024)
+        f = _FakeUpload(total_size=200 * 1024 * 1024, prefix=_MP4_PREFIX)
         with pytest.raises(HTTPException):
             asyncio.run(read_upload_with_size_check(f, extension=".mp4"))
         assert f.bytes_read <= MAX_VIDEO_UPLOAD_SIZE + 64 * 1024
+
+
+# ── P0a 落地：integration tests for image strip 透明清洗 ───────────────────
+
+
+class TestReadUploadImageSanitize:
+    """integration: read_upload_with_size_check 對 image ext 自動 strip EXIF。"""
+
+    def _fixture(self, name: str) -> bytes:
+        from pathlib import Path
+
+        return (Path(__file__).parent / "fixtures" / "exif" / name).read_bytes()
+
+    def _upload(self, content: bytes) -> _FakeUpload:
+        f = _FakeUpload(total_size=len(content), prefix=content)
+        return f
+
+    def test_image_with_gps_is_sanitized_on_read(self):
+        """上傳含 GPS 的 JPEG 經 helper 讀取後 metadata 應已清。"""
+        import io
+
+        from PIL.ExifTags import Base as ExifBase
+        from PIL import Image
+
+        original = self._fixture("with_gps.jpg")
+        f = self._upload(original)
+        out = asyncio.run(read_upload_with_size_check(f, extension=".jpg"))
+        # 內容應已被替換（非原始 bytes）
+        assert out != original
+        img = Image.open(io.BytesIO(out))
+        assert ExifBase.GPSInfo.value not in img.getexif().keys()
+        assert ExifBase.Make.value not in img.getexif().keys()
+
+    def test_non_image_pdf_passes_through_unchanged(self):
+        """PDF 不在 image 白名單 → strip 不觸發；只走 size + validate。"""
+        pdf = b"%PDF-1.4\n" + b"\x00" * 2048
+        f = self._upload(pdf)
+        out = asyncio.run(read_upload_with_size_check(f, extension=".pdf"))
+        # PDF 不被 strip，bytes 應完全一致
+        assert out == pdf
+
+    def test_jpeg_signature_mismatch_raises_400(self):
+        """副檔名 .jpg 但內容是 PNG → 內部 validate 應 raise 400。"""
+        png_content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        f = self._upload(png_content)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(read_upload_with_size_check(f, extension=".jpg"))
+        assert exc.value.status_code == 400
+
+    def test_orientation_applied_to_pixels_through_helper(self):
+        """Orientation=6 樣本經 helper 後像素應已旋轉。"""
+        import io
+
+        from PIL import Image
+
+        original = self._fixture("with_orientation_6.jpg")
+        orig_img = Image.open(io.BytesIO(original))
+        assert orig_img.size == (100, 60)  # raw 橫長
+
+        f = self._upload(original)
+        out = asyncio.run(read_upload_with_size_check(f, extension=".jpg"))
+
+        cleaned_img = Image.open(io.BytesIO(out))
+        # 套到像素後 view dimension 變成 (60, 100)
+        assert cleaned_img.size == (60, 100)

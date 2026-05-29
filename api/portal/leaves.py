@@ -514,6 +514,14 @@ async def upload_leave_attachments(
                     status_code=400, detail=f"檔案 {f.filename} 超過 5 MB 限制"
                 )
             validate_file_signature(content, raw_ext)
+            # P0a 兒童照片位置個資保護：image 附件清 EXIF（GPS / 相機 id / 拍攝時間）
+            from utils.image_sanitize import (
+                IMAGE_EXTENSIONS_TO_SANITIZE,
+                strip_image_metadata,
+            )
+
+            if raw_ext in IMAGE_EXTENSIONS_TO_SANITIZE:
+                content = strip_image_metadata(content, raw_ext)
 
             safe_name = f"{uuid.uuid4().hex}{raw_ext}"
             content_type = {
