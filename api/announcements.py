@@ -5,6 +5,7 @@ Announcements router - Admin CRUD for announcements
 import logging
 from html.parser import HTMLParser
 from typing import Literal, Optional, List
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
@@ -80,6 +81,23 @@ def _strip_html(text: str) -> str:
     return p.get_text()
 
 
+def _validate_schedule(publish_at, expires_at) -> None:
+    """expires_at 必須晚於 publish_at；publish_at 不可早於 now-5min。"""
+    from utils.taipei_time import now_taipei_naive
+
+    if publish_at is not None and expires_at is not None:
+        if expires_at <= publish_at:
+            raise HTTPException(
+                status_code=400, detail="到期時間必須晚於發佈時間"
+            )
+    if publish_at is not None:
+        threshold = now_taipei_naive() - timedelta(minutes=5)
+        if publish_at < threshold:
+            raise HTTPException(
+                status_code=400, detail="排程發佈時間不可早於目前時間"
+            )
+
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/announcements", tags=["announcements"])
@@ -94,6 +112,8 @@ class AnnouncementCreate(BaseModel):
     priority: str = "normal"
     is_pinned: bool = False
     target_employee_ids: Optional[List[int]] = None  # None / [] = 全員可見
+    publish_at: Optional[datetime] = None  # None = 立即發佈
+    expires_at: Optional[datetime] = None  # None = 永不過期
 
 
 class AnnouncementUpdate(BaseModel):
@@ -102,6 +122,8 @@ class AnnouncementUpdate(BaseModel):
     priority: Optional[str] = None
     is_pinned: Optional[bool] = None
     target_employee_ids: Optional[List[int]] = None  # None = 不變；[] = 改為全員可見
+    publish_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
 
 
 # ============ Endpoints ============
@@ -116,6 +138,10 @@ def list_announcements(
     ),
 ):
     """列出所有公告（管理員用）"""
+    from services.announcements.visibility import derive_status
+    from utils.taipei_time import now_taipei_naive
+
+    _now = now_taipei_naive()
     session = get_session()
     try:
         query = (
@@ -179,6 +205,9 @@ def list_announcements(
                     "updated_at": (
                         ann.updated_at.isoformat() if ann.updated_at else None
                     ),
+                    "publish_at": ann.publish_at.isoformat() if ann.publish_at else None,
+                    "expires_at": ann.expires_at.isoformat() if ann.expires_at else None,
+                    "status": derive_status(ann, _now),
                     "read_count": len(ann.reads),
                     "read_preview": readers[:3],
                     "has_more_readers": len(readers) > 3,
@@ -203,6 +232,7 @@ def create_announcement(
     """新增公告"""
     if data.priority not in ("normal", "important", "urgent"):
         raise HTTPException(status_code=400, detail="無效的優先級")
+    _validate_schedule(data.publish_at, data.expires_at)
 
     session = get_session()
     try:
@@ -211,6 +241,8 @@ def create_announcement(
             content=_strip_html(data.content),
             priority=data.priority,
             is_pinned=data.is_pinned,
+            publish_at=data.publish_at,
+            expires_at=data.expires_at,
             created_by=current_user["employee_id"],
         )
         session.add(ann)
@@ -260,6 +292,12 @@ def update_announcement(
             ann.priority = data.priority
         if data.is_pinned is not None:
             ann.is_pinned = data.is_pinned
+
+        new_publish = data.publish_at if data.publish_at is not None else ann.publish_at
+        new_expires = data.expires_at if data.expires_at is not None else ann.expires_at
+        _validate_schedule(new_publish, new_expires)
+        ann.publish_at = new_publish
+        ann.expires_at = new_expires
 
         if data.target_employee_ids is not None:
             # 清除舊 recipients，再批次 INSERT 新的
@@ -693,19 +731,27 @@ def _replace_recipients_impl(
 
         # 通知 enqueue（commit 前；dispatch after_commit hook 自動 fan-out）
         if rows:
-            try:
-                _fire_announcement_push(
-                    session,
-                    ann,
-                    rows,
-                    sender_user_id=current_user.get("user_id"),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "announcement enqueue 失敗（已吞）：announcement_id=%s err=%s",
+            from utils.taipei_time import now_taipei_naive as _now_tn
+            if ann.publish_at is not None and ann.publish_at > _now_tn():
+                logger.info(
+                    "announcement %s publish_at 未到（%s），跳過立即推播；scheduler 接手",
                     announcement_id,
-                    exc,
+                    ann.publish_at.isoformat(),
                 )
+            else:
+                try:
+                    _fire_announcement_push(
+                        session,
+                        ann,
+                        rows,
+                        sender_user_id=current_user.get("user_id"),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "announcement enqueue 失敗（已吞）：announcement_id=%s err=%s",
+                        announcement_id,
+                        exc,
+                    )
 
         session.commit()
         return {
