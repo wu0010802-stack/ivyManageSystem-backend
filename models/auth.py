@@ -5,6 +5,7 @@ models/auth.py — 用戶認證模型
 from datetime import datetime
 from utils.taipei_time import now_taipei_naive
 
+import sqlalchemy as sa
 from sqlalchemy import (
     Column,
     Integer,
@@ -65,6 +66,13 @@ class User(Base):
         unique=True,
         index=True,
         comment="綁定的 LINE User ID",
+    )
+    line_push_consent = Column(
+        Boolean,
+        server_default=sa.text("false"),
+        default=False,
+        nullable=False,
+        comment="LINE 推播跨境傳輸同意（P0 #6）；opt-in 預設 False",
     )
     line_follow_confirmed_at = Column(
         DateTime, nullable=True, comment="LINE Bot 被加為好友的時刻；推播可達性旗標"

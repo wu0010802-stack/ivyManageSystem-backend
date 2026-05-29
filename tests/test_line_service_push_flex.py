@@ -75,10 +75,14 @@ def test_push_flex_no_user_id_returns_false(enabled_svc):
 
 @patch("services.line_service.requests.post")
 def test_push_flex_calls_line_api_correctly(mock_post, enabled_svc):
-    """200 回應 → 回傳 True，payload 包含正確 to / type / altText / contents。"""
+    """200 回應 → 回傳 True，payload 包含正確 to / type / altText / contents。
+    consent_checked=True 跳過 consent gate，測試純 API 機制。
+    """
     mock_post.return_value = MagicMock(status_code=200)
 
-    result = enabled_svc.push_flex_to_user(_LINE_USER_ID, _FLEX_BUBBLE, _ALT_TEXT)
+    result = enabled_svc.push_flex_to_user(
+        _LINE_USER_ID, _FLEX_BUBBLE, _ALT_TEXT, consent_checked=True
+    )
 
     assert result is True
     mock_post.assert_called_once()
@@ -99,10 +103,14 @@ def test_push_flex_calls_line_api_correctly(mock_post, enabled_svc):
 
 @patch("services.line_service.requests.post")
 def test_push_flex_authorization_header(mock_post, enabled_svc):
-    """requests.post 的 Authorization header 使用正確 Bearer token。"""
+    """requests.post 的 Authorization header 使用正確 Bearer token。
+    consent_checked=True 跳過 consent gate，測試純 API 機制。
+    """
     mock_post.return_value = MagicMock(status_code=200)
 
-    enabled_svc.push_flex_to_user(_LINE_USER_ID, _FLEX_BUBBLE, _ALT_TEXT)
+    enabled_svc.push_flex_to_user(
+        _LINE_USER_ID, _FLEX_BUBBLE, _ALT_TEXT, consent_checked=True
+    )
 
     headers = mock_post.call_args[1]["headers"]
     assert headers["Authorization"] == "Bearer dummy_token"
