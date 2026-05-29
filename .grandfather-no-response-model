@@ -250,11 +250,6 @@ api/recruitment/competitors.py:get_campus_competition
 api/recruitment/competitors.py:geocode_competitor_schools
 api/recruitment/hotspots.py:get_recruitment_address_hotspots
 api/recruitment/hotspots.py:sync_recruitment_address_hotspots
-api/recruitment/market.py:get_recruitment_campus_setting
-api/recruitment/market.py:update_recruitment_campus_setting
-api/recruitment/market.py:get_nearby_kindergartens
-api/recruitment/market.py:sync_recruitment_market_intelligence
-api/recruitment/market.py:get_recruitment_market_intelligence
 api/recruitment/periods.py:get_periods_summary
 api/recruitment/periods.py:delete_period
 api/recruitment/records.py:delete_recruitment_record

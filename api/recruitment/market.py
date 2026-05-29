@@ -15,13 +15,19 @@ from api.recruitment.shared import (
     CampusSettingPayload,
     DATASET_SCOPE_ALL,
 )
+from schemas.recruitment_market import (
+    RecruitmentCampusSettingOut,
+    RecruitmentMarketIntelligenceSnapshotOut,
+    RecruitmentMarketSyncResultOut,
+    RecruitmentNearbyKindergartensOut,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/recruitment", tags=["recruitment-market"])
 
 
-@router.get("/campus-setting")
+@router.get("/campus-setting", response_model=RecruitmentCampusSettingOut)
 def get_recruitment_campus_setting(
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
@@ -30,7 +36,7 @@ def get_recruitment_campus_setting(
         return market_service.serialize_campus_setting(setting)
 
 
-@router.put("/campus-setting")
+@router.put("/campus-setting", response_model=RecruitmentCampusSettingOut)
 def update_recruitment_campus_setting(
     payload: CampusSettingPayload,
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
@@ -40,7 +46,7 @@ def update_recruitment_campus_setting(
         return market_service.serialize_campus_setting(setting)
 
 
-@router.get("/nearby-kindergartens")
+@router.get("/nearby-kindergartens", response_model=RecruitmentNearbyKindergartensOut)
 def get_nearby_kindergartens(
     south: float = Query(None, ge=-90, le=90, description="視野南界緯度"),
     west: float = Query(None, ge=-180, le=180, description="視野西界經度"),
@@ -69,7 +75,7 @@ def get_nearby_kindergartens(
         )
 
 
-@router.post("/market-intelligence/sync")
+@router.post("/market-intelligence/sync", response_model=RecruitmentMarketSyncResultOut)
 def sync_recruitment_market_intelligence(
     hotspot_limit: int = Query(200, ge=50, le=500),
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
@@ -85,7 +91,7 @@ def sync_recruitment_market_intelligence(
         }
 
 
-@router.get("/market-intelligence")
+@router.get("/market-intelligence", response_model=RecruitmentMarketIntelligenceSnapshotOut)
 def get_recruitment_market_intelligence(
     dataset_scope: str = Query(DATASET_SCOPE_ALL, pattern="^(all)$"),
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
