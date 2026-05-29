@@ -3,7 +3,7 @@ Punch correction management router（管理員審核補打卡申請）
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -269,6 +269,32 @@ def approve_punch_correction(
             att.punch_in_time = correction.requested_punch_in
         if correction.correction_type in ("punch_out", "both"):
             att.punch_out_time = correction.requested_punch_out
+
+        # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 22:00→04:00）。
+        # 前端 PortalPunchCorrectionForm 用 `${attendance_date}T${time}:00` 把兩個
+        # datetime 都鎖在同日，跨夜情境會讓 recompute_attendance_status 算出
+        # work_hours 變負 / early_leave_minutes 約 14h / 加班費歸零 → 扣全薪。
+        # 與 api/attendance/records.py:266-273 + api/attendance/upload.py:340-356
+        # 既有 normalize pattern 對齊；helper docstring（utils/attendance_calc.py:54）
+        # 明列 caller 負責跨夜修正，本路徑原為唯一漏寫的 caller。
+        if (
+            att.punch_in_time
+            and att.punch_out_time
+            and att.punch_out_time < att.punch_in_time
+        ):
+            att.punch_out_time += timedelta(days=1)
+        elif (
+            att.punch_in_time
+            and att.punch_out_time
+            and att.punch_out_time == att.punch_in_time
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"時間錯誤：上下班時間相同 "
+                    f"{att.punch_in_time.isoformat()}，請確認資料"
+                ),
+            )
 
         # 依新 punch 時間整套重算 is_late/is_early_leave/late_minutes/
         # early_leave_minutes/status/is_missing_*。否則舊的遲到/早退欄位殘留會被
