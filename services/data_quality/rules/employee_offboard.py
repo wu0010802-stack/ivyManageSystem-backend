@@ -1,11 +1,10 @@
 """rule: 員工 is_active=True 但 resign_date 已過。"""
 
-from datetime import date
-
 from sqlalchemy.orm import Session
 
 from models.employee import Employee
 from services.data_quality._base import Rule, Violation
+from utils.taipei_time import today_taipei
 
 
 class EmployeeOffboardRule(Rule):
@@ -14,7 +13,7 @@ class EmployeeOffboardRule(Rule):
     description = "員工已過離職日但 is_active 仍為 True"
 
     def check(self, session: Session) -> list[Violation]:
-        today = date.today()
+        today = today_taipei()
         rows = (
             session.query(Employee)
             .filter(
