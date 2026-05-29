@@ -14,19 +14,18 @@ import hashlib
 import html
 import logging
 import re
+import ssl
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 import json as _json
 
+import certifi
 import requests
-import urllib3
-
-# 教育部網站使用台灣政府 GRCA 根憑證，不在 certifi CA bundle 中，
-# 需停用 SSL 驗證；此為已知政府網站，風險可接受。
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from requests.adapters import HTTPAdapter
 
 from models.base import session_scope
 from models.recruitment import CompetitorSchool, RecruitmentSyncState
@@ -52,6 +51,18 @@ TARGET_CITY_CODE = "18"  # 教育部網站高雄市縣市代碼
 
 # 僵屍鎖閾值：sync_in_progress 持有超過此時間視為前一個 worker crash，可強奪。
 _STUCK_LOCK_THRESHOLD = timedelta(hours=2)
+
+# 誠實識別爬蟲身分（不偽裝瀏覽器）。實測 MOE 對非瀏覽器 UA 仍回 200。
+_USER_AGENT = (
+    "ivyManageSystem-recruitment/1.0 "
+    "(+https://github.com/wu0010802-stack/ivyManageSystem-backend)"
+)
+
+# MOE 站只回傳 leaf 憑證、漏送中繼憑證，預設 TLS 驗證會失敗。下面 adapter 補載
+# 中繼以完成憑證鏈，僅 mount 到此 host；其他 host（如 kiang.github.io）走預設嚴格驗證。
+_MOE_HOST_PREFIX = "https://ap.ece.moe.edu.tw"
+_TWCA_AIA_URL = "http://sslserver.twca.com.tw/cacert/secure_sha2_2023G3.crt"
+_TWCA_INTERMEDIATE_PEM = Path(__file__).parent / "certs" / "twca_secure_ssl_ca.crt"
 
 
 def _try_acquire_db_lock() -> bool:
@@ -332,20 +343,49 @@ def _owner_has_penalty(punish_data: dict, owner_name: Optional[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+class _MoeSSLAdapter(HTTPAdapter):
+    """ap.ece.moe.edu.tw 的 TLS adapter（完整驗證，不降級）。
+
+    教育部站只回傳 leaf 憑證、未附中繼憑證 ``TWCA Secure SSL Certification
+    Authority``，導致預設驗證報 "unable to get local issuer certificate"。
+    本 adapter 在 certifi 根憑證之外補載該中繼憑證，維持完整 CA 鏈 + hostname
+    驗證。fail-closed：中繼憑證遺失即 raise，**絕不** fallback 到 verify=False。
+    """
+
+    def _build_context(self) -> ssl.SSLContext:
+        if not _TWCA_INTERMEDIATE_PEM.exists():
+            logger.error(
+                "MOE 中繼憑證遺失：%s — 無法建立安全連線；請從 %s 重新下載",
+                _TWCA_INTERMEDIATE_PEM,
+                _TWCA_AIA_URL,
+            )
+            raise FileNotFoundError(f"缺少 MOE 中繼憑證：{_TWCA_INTERMEDIATE_PEM}")
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        ctx.load_verify_locations(cafile=str(_TWCA_INTERMEDIATE_PEM))
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        return ctx
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = self._build_context()
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        kwargs["ssl_context"] = self._build_context()
+        return super().proxy_manager_for(*args, **kwargs)
+
+
 def _make_session() -> requests.Session:
     sess = requests.Session()
     sess.headers.update(
         {
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": _USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
         }
     )
-    sess.verify = False  # 教育部使用 GRCA 憑證，certifi 不信任，停用驗證
+    # MOE 站走補中繼憑證的完整驗證；其餘 host（kiang.github.io）走預設嚴格驗證。
+    sess.mount(_MOE_HOST_PREFIX, _MoeSSLAdapter())
     return sess
 
 
