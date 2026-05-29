@@ -258,11 +258,6 @@ api/portal/medications.py:list_today_medications
 api/portal/overtimes.py:get_my_overtimes
 api/portal/overtimes.py:create_my_overtime
 api/portal/overtimes.py:delete_my_overtime
-api/portal/profile.py:get_profile
-api/portal/profile.py:get_line_binding
-api/portal/profile.py:update_line_binding
-api/portal/profile.py:delete_line_binding
-api/portal/profile.py:update_profile
 api/portal/punch_corrections.py:get_my_punch_corrections
 api/portal/punch_corrections.py:create_my_punch_correction
 api/portal/salary.py:get_salary_preview
@@ -351,10 +346,6 @@ api/student_assessments.py:list_assessments
 api/student_assessments.py:create_assessment
 api/student_assessments.py:update_assessment
 api/student_assessments.py:delete_assessment
-api/student_attendance.py:get_daily_attendance_overview
-api/student_attendance.py:get_daily_attendance
-api/student_attendance.py:batch_save_attendance
-api/student_attendance.py:get_attendance_by_student
 api/student_attendance.py:get_monthly_summary
 api/student_attendance.py:export_student_attendance
 api/student_change_logs.py:get_change_log_options

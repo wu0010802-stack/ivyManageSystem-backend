@@ -14,6 +14,12 @@ from models.auth import User
 from utils.audit import write_explicit_audit
 from utils.auth import get_current_user
 from ._shared import _get_employee, ProfileUpdate, _mask_bank_account
+from schemas._common import DeleteResultOut
+from schemas.portal_profile import (
+    PortalProfileOut,
+    PortalProfileLineBindingOut,
+    PortalProfileLineBindingUpdateOut,
+)
 
 _LINE_USER_ID_RE = re.compile(r"^U[0-9a-f]{32}$")
 
@@ -25,7 +31,7 @@ class LineBindingUpdate(BaseModel):
 router = APIRouter()
 
 
-@router.get("/profile")
+@router.get("/profile", response_model=PortalProfileOut)
 def get_profile(
     request: Request,
     current_user: dict = Depends(get_current_user),
@@ -82,7 +88,7 @@ def get_profile(
         session.close()
 
 
-@router.get("/profile/line-binding")
+@router.get("/profile/line-binding", response_model=PortalProfileLineBindingOut)
 def get_line_binding(
     current_user: dict = Depends(get_current_user),
 ):
@@ -98,7 +104,7 @@ def get_line_binding(
         session.close()
 
 
-@router.put("/profile/line-binding")
+@router.put("/profile/line-binding", response_model=PortalProfileLineBindingUpdateOut)
 def update_line_binding(
     data: LineBindingUpdate,
     current_user: dict = Depends(get_current_user),
@@ -139,7 +145,7 @@ def update_line_binding(
         session.close()
 
 
-@router.delete("/profile/line-binding")
+@router.delete("/profile/line-binding", response_model=DeleteResultOut)
 def delete_line_binding(
     current_user: dict = Depends(get_current_user),
 ):
@@ -162,7 +168,7 @@ def delete_line_binding(
         session.close()
 
 
-@router.put("/profile")
+@router.put("/profile", response_model=DeleteResultOut)
 def update_profile(
     data: ProfileUpdate,
     current_user: dict = Depends(get_current_user),
