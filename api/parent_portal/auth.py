@@ -747,6 +747,85 @@ def bind_additional_child(
         session.close()
 
 
+class DeviceSetupRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=20)
+
+
+@router.post("/device-setup", response_model=DeviceSetupOut)
+def device_setup(
+    payload: DeviceSetupRequest,
+    request: Request,
+    response: Response,
+):
+    """無 LINE 家長以 staff 簽發的設定碼兌換裝置登入 session（passwordless）。
+
+    成功 → 找/建 parent User（link guardian.user_id）+ 發 access + 30d refresh
+    （裝置記憶）。失敗一律回通用錯誤，避免碼枚舉。
+    """
+    ip = get_client_ip(request) or "unknown"
+    _check_ip_rate_limit(ip)
+    _check_device_setup_lockout(ip)
+
+    code_hash = _hash_code(payload.code)
+    session = get_session()
+    try:
+        binding = _claim_device_setup_code_atomic(session, code_hash)
+        if binding is None:
+            session.rollback()
+            _record_device_setup_failure(ip)
+            raise BusinessError(
+                code="DEVICE_SETUP_CODE_INVALID",
+                message="設定碼無效或已過期，請向園所索取新碼",
+                http_status=400,
+            )
+
+        guardian = (
+            session.query(Guardian).filter(Guardian.id == binding.guardian_id).first()
+        )
+        if guardian is None or guardian.deleted_at is not None:
+            session.rollback()
+            raise HTTPException(status_code=400, detail="此設定碼對應的監護人已不存在")
+
+        if guardian.user_id:
+            user = session.query(User).filter(User.id == guardian.user_id).first()
+            if user is None:
+                user = _create_parent_user_for_device(session, guardian)
+                guardian.user_id = user.id
+        else:
+            user = _create_parent_user_for_device(session, guardian)
+            guardian.user_id = user.id
+
+        binding.used_by_user_id = user.id
+        user.last_login = _now()
+        _issue_refresh_token(
+            session,
+            response,
+            user_id=user.id,
+            user_agent=request.headers.get("user-agent"),
+            ip=get_client_ip(request),
+        )
+        session.commit()
+        session.refresh(user)
+        _issue_access_token(response, user)
+
+        logger.warning(
+            "[device-setup] guardian_id=%s user_id=%s ip=%s",
+            guardian.id,
+            user.id,
+            ip,
+        )
+        return {
+            "status": "ok",
+            "user": {
+                "user_id": user.id,
+                "name": resolve_parent_display_name(session, user),
+                "role": "parent",
+            },
+        }
+    finally:
+        session.close()
+
+
 @router.post("/logout", status_code=204)
 def parent_logout(
     request: Request,
