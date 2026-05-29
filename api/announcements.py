@@ -942,6 +942,22 @@ def _resolve_parent_user_ids(
     return user_ids
 
 
+def _build_attachments_context(announcement) -> list:
+    """從 announcement.attachments viewonly relationship 抽出 LINE renderer 需要的最小欄位。"""
+    result = []
+    for a in getattr(announcement, "attachments", None) or []:
+        thumb_key = getattr(a, "thumb_key", None)
+        result.append({
+            "mime_type": getattr(a, "mime_type", None),
+            "thumb_url": (
+                f"/api/uploads/portfolio/{thumb_key}"
+                if thumb_key
+                else None
+            ),
+        })
+    return result
+
+
 def _fire_announcement_push(
     session,
     announcement: Announcement,
@@ -967,6 +983,7 @@ def _fire_announcement_push(
                 "title": announcement.title,
                 "preview": announcement.content,
                 "announcement_id": announcement.id,
+                "attachments": _build_attachments_context(announcement),
             },
             sender_id=sender_user_id,
             source_entity_type="announcement",

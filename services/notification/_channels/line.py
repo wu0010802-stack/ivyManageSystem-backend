@@ -290,17 +290,75 @@ def _h_parent_message_received(ls, evt, rendered) -> None:
 
 
 def _h_parent_announcement(ls, evt, rendered) -> None:
+    """家長公告推播：含影像附件時推 flex bubble + hero；否則純文字。"""
     ctx = evt.context
     title = ctx.get("title", "")
     preview = ctx.get("preview")
-    body = f"【園所公告】\n{title}"
+    text = f"【園所公告】\n{title}"
     if preview:
         snippet = preview.strip()
         if len(snippet) > 60:
             snippet = snippet[:60] + "…"
-        body += f"\n{snippet}"
-    body += "\n請開啟家長 App 查看詳情。"
-    ls._push_to_user(evt.recipient_user_id, body)
+        text += f"\n{snippet}"
+    text += "\n請開啟家長 App 查看詳情。"
+
+    hero_url = getattr(rendered, "hero_url", None)
+    if hero_url:
+        flex = {
+            "type": "bubble",
+            "hero": {
+                "type": "image",
+                "url": hero_url,
+                "size": "full",
+                "aspectRatio": "20:13",
+                "aspectMode": "cover",
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "md",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "📣 園所公告",
+                        "weight": "bold",
+                        "size": "sm",
+                        "color": "#888888",
+                    },
+                    {
+                        "type": "text",
+                        "text": title,
+                        "weight": "bold",
+                        "size": "md",
+                        "wrap": True,
+                    },
+                ],
+            },
+        }
+        if preview:
+            snippet = preview.strip()
+            if len(snippet) > 80:
+                snippet = snippet[:80] + "…"
+            flex["body"]["contents"].append({
+                "type": "text",
+                "text": snippet,
+                "size": "sm",
+                "color": "#555555",
+                "wrap": True,
+                "margin": "md",
+            })
+        try:
+            ls.push_flex_to_user(
+                evt.recipient_user_id,
+                flex,
+                alt_text=f"園所公告：{title}",
+            )
+            return
+        except Exception:
+            # flex 推播失敗 fallback 文字
+            pass
+
+    ls._push_to_user(evt.recipient_user_id, text)
 
 
 def _h_parent_event_ack_required(ls, evt, rendered) -> None:
