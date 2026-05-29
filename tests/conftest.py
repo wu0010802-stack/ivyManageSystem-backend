@@ -206,6 +206,21 @@ def _reset_settings_cache():
     reset_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _mock_hibp_no_match(monkeypatch):
+    """所有 test 預設 HIBP 回傳「未命中」，避免端點測試對外發 HTTP。
+
+    個別需測試 HIBP 命中行為的測試可自行覆蓋（patch utils.hibp.requests.get）。
+    """
+    from unittest.mock import MagicMock
+
+    mock_resp = MagicMock()
+    mock_resp.text = ""
+    mock_resp.status_code = 200
+    mock_resp.raise_for_status = lambda: None
+    monkeypatch.setattr("utils.hibp.requests.get", lambda *a, **kw: mock_resp)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _csrf_testclient_origin_allowlist():
     """TestClient 預設 Origin http://testserver 注入 cors_origins。

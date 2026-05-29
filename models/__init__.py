@@ -69,3 +69,7 @@ from models.staff_refresh_token import StaffRefreshToken  # noqa: F401
 
 # 2026-05-28 BE-A: DB-backed scheduler heartbeat（解決 in-memory restart 丟失）
 from models.scheduler_heartbeat import SchedulerHeartbeat  # noqa: F401
+
+# 2026-05-28 P2 password policy：PasswordHistory 是 users.id 的 FK target；
+# CI Tests step `Base.metadata.create_all` 需要該表先建立。
+from models.auth import PasswordHistory  # noqa: F401

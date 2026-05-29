@@ -118,7 +118,7 @@ def test_change_password_user_lockout(app_with_db):
     for i in range(5):
         res = client.post(
             "/api/auth/change-password",
-            json={"old_password": "WrongOld", "new_password": "NewGood456!"},
+            json={"old_password": "WrongOld", "new_password": "NewGoodPass456!"},
         )
         assert (
             res.status_code == 400
@@ -128,7 +128,7 @@ def test_change_password_user_lockout(app_with_db):
     with patch("api.auth.write_login_audit") as audit_spy:
         res = client.post(
             "/api/auth/change-password",
-            json={"old_password": "WrongOld", "new_password": "NewGood456!"},
+            json={"old_password": "WrongOld", "new_password": "NewGoodPass456!"},
         )
         assert res.status_code == 429, f"第 6 次應 429 lockout, got {res.status_code}"
         assert "密碼修改失敗次數過多" in res.json()["detail"]
@@ -154,25 +154,25 @@ def test_change_password_clear_failures_on_success(app_with_db):
     for _ in range(4):
         res = client.post(
             "/api/auth/change-password",
-            json={"old_password": "WrongOld", "new_password": "NewGood456!"},
+            json={"old_password": "WrongOld", "new_password": "NewGoodPass456!"},
         )
         assert res.status_code == 400
 
     # 成功一次（用正確 old_password）
     res = client.post(
         "/api/auth/change-password",
-        json={"old_password": "GoodOld123!", "new_password": "NewGood456!"},
+        json={"old_password": "GoodOld123!", "new_password": "NewGoodPass456!"},
     )
     assert res.status_code == 200, res.text
 
     # 用新密碼重 login（前次 change-password 已 invalidate token_version）
-    new_token = _login_as(client, "t_pwd2", "NewGood456!")
+    new_token = _login_as(client, "t_pwd2", "NewGoodPass456!")
     client.cookies.set("access_token", new_token)
 
     # 再失敗 1 次 → 應仍 400（不是 429），counter 已 clear
     res = client.post(
         "/api/auth/change-password",
-        json={"old_password": "WrongAgain", "new_password": "Another789!"},
+        json={"old_password": "WrongAgain", "new_password": "AnotherPass789!"},
     )
     assert res.status_code == 400, f"counter 應已 clear, got {res.status_code}"
 
