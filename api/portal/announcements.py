@@ -3,7 +3,7 @@ Portal - announcement endpoints
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from utils.errors import raise_safe_500
 
 from models.database import (
@@ -15,6 +15,8 @@ from models.database import (
 )
 from utils.auth import get_current_user
 from utils.error_messages import ANNOUNCEMENT_NOT_FOUND
+from services.announcements.visibility import visibility_time_predicate
+from utils.taipei_time import now_taipei_naive
 
 from ._shared import check_etag, compute_etag
 
@@ -38,6 +40,8 @@ def get_portal_announcements(
         max_changed = session.query(
             func.max(Announcement.updated_at),
             func.max(Announcement.created_at),
+            func.max(Announcement.publish_at),
+            func.max(Announcement.expires_at),
         ).first()
         max_ts = max(filter(None, max_changed or []), default=None)
         etag_payload = f"emp={emp_id}|skip={skip}|limit={limit}|ts={max_ts.isoformat() if max_ts else 'none'}"
@@ -60,7 +64,8 @@ def get_portal_announcements(
             )
             .exists()
         )
-        visible_filter = no_recipients_subq | targeted_to_me_subq
+        _time_pred = visibility_time_predicate(now_taipei_naive())
+        visible_filter = and_(or_(no_recipients_subq, targeted_to_me_subq), _time_pred)
 
         base_q = (
             session.query(Announcement, Employee.name)
@@ -137,7 +142,8 @@ def mark_announcement_read(
             )
             .exists()
         )
-        visible_filter = no_recipients_subq | targeted_to_me_subq
+        _time_pred = visibility_time_predicate(now_taipei_naive())
+        visible_filter = and_(or_(no_recipients_subq, targeted_to_me_subq), _time_pred)
 
         ann = (
             session.query(Announcement)
@@ -196,7 +202,8 @@ def get_unread_count(
             )
             .exists()
         )
-        visible_filter = no_recipients_subq | targeted_to_me_subq
+        _time_pred = visibility_time_predicate(now_taipei_naive())
+        visible_filter = and_(or_(no_recipients_subq, targeted_to_me_subq), _time_pred)
 
         total = session.query(Announcement).filter(visible_filter).count()
         read = (

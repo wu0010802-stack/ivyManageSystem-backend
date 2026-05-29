@@ -166,6 +166,16 @@ class Announcement(Base):
         String(20), default="normal", comment="優先級: normal/important/urgent"
     )
     is_pinned = Column(Boolean, default=False, comment="是否置頂")
+    publish_at = Column(
+        DateTime,
+        nullable=True,
+        comment="排程發佈時間；NULL 視為立即發佈",
+    )
+    expires_at = Column(
+        DateTime,
+        nullable=True,
+        comment="到期下架時間；NULL 視為永久",
+    )
     created_by = Column(
         Integer, ForeignKey("employees.id"), nullable=False, comment="發佈者"
     )

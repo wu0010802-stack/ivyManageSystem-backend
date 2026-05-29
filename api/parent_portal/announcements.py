@@ -26,6 +26,7 @@ from models.database import (
 )
 from schemas._common import OkStatusOut, UnreadCountOut
 from services.business_errors.parent import ParentNotAuthorized
+from services.announcements.visibility import visibility_time_predicate
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -73,9 +74,10 @@ def list_announcements(
     cond = _build_visibility_subquery(session, user_id)
     apr = AnnouncementParentRecipient
     visible_subq = exists().where(and_(apr.announcement_id == Announcement.id, cond))
+    _time_pred = visibility_time_predicate(now_taipei_naive())
     q = (
         session.query(Announcement)
-        .filter(visible_subq)
+        .filter(visible_subq, _time_pred)
         .order_by(Announcement.created_at.desc())
     )
     total = q.count()
@@ -118,12 +120,13 @@ def count_unread_for_user(session, user_id: int) -> int:
     cond = _build_visibility_subquery(session, user_id)
     apr = AnnouncementParentRecipient
     visible_subq = exists().where(and_(apr.announcement_id == Announcement.id, cond))
+    _time_pred = visibility_time_predicate(now_taipei_naive())
     read_ids_select = select(AnnouncementParentRead.announcement_id).where(
         AnnouncementParentRead.user_id == user_id
     )
     return (
         session.query(Announcement)
-        .filter(visible_subq, ~Announcement.id.in_(read_ids_select))
+        .filter(visible_subq, _time_pred, ~Announcement.id.in_(read_ids_select))
         .count()
     )
 
@@ -148,11 +151,13 @@ def mark_read(
     # 先確認可見性，避免「已讀」洩漏不可見公告的存在
     cond = _build_visibility_subquery(session, user_id)
     apr = AnnouncementParentRecipient
+    _time_pred = visibility_time_predicate(now_taipei_naive())
     visible = (
         session.query(Announcement)
         .filter(
             Announcement.id == announcement_id,
             exists().where(and_(apr.announcement_id == Announcement.id, cond)),
+            _time_pred,
         )
         .first()
     )

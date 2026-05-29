@@ -371,6 +371,24 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("補休到期排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # Announcement publish scheduler（排程發佈到時自動推播家長 LINE）
+    announcement_publish_task = None
+    announcement_publish_stop_event: asyncio.Event | None = None
+    try:
+        from services import announcement_publish_scheduler as _ann_pub_sched
+
+        if _ann_pub_sched.scheduler_enabled():
+            announcement_publish_stop_event = asyncio.Event()
+            announcement_publish_task = asyncio.create_task(
+                _ann_pub_sched.run_announcement_publish_scheduler(
+                    announcement_publish_stop_event
+                )
+            )
+            logger.info("announcement publish scheduler 已啟用")
+    except Exception as e:
+        logger.warning("公告排程發佈 scheduler 啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # LINE retry scheduler（Phase 2 P1 resilience）：每 5 min 重發 pending retry row
     line_retry_task = None
     line_retry_stop_event: asyncio.Event | None = None
@@ -678,6 +696,17 @@ async def app_lifespan(app_instance: FastAPI):
                 leave_quota_expiry_task.cancel()
                 try:
                     await leave_quota_expiry_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if announcement_publish_task is not None:
+            if announcement_publish_stop_event is not None:
+                announcement_publish_stop_event.set()
+            try:
+                await asyncio.wait_for(announcement_publish_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                announcement_publish_task.cancel()
+                try:
+                    await announcement_publish_task
                 except (asyncio.CancelledError, Exception):
                     pass
         if line_retry_task is not None:
