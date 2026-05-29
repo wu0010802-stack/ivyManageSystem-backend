@@ -7,8 +7,11 @@ import logging
 import time
 from collections import defaultdict
 from datetime import datetime
+from hashlib import sha256
 from utils.taipei_time import now_taipei_naive
 from typing import List, Optional
+
+from sqlalchemy import text
 
 from config import settings
 
@@ -18,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from models.database import get_session, User, Employee
+from models.staff_refresh_token import StaffRefreshToken
 from schemas._common import DeleteResultOut, MutationResultOut
 from schemas.auth import (
     AuthAdminUserItemOut,
@@ -45,6 +49,8 @@ from utils.cookie import (
     clear_access_token_cookie,
     set_admin_token_cookie,
     clear_admin_token_cookie,
+    set_staff_refresh_cookie,
+    clear_staff_refresh_cookie,
 )
 from utils.permissions import Permission
 from utils.permissions import (
@@ -366,6 +372,15 @@ class ImpersonateRequest(BaseModel):
     employee_id: int
 
 
+class SessionItemOut(BaseModel):
+    family_id: str
+    last_active: datetime
+    user_agent: str | None
+    ip: str | None
+    token_count: int
+    is_current: bool = False  # 標記當前裝置的 session
+
+
 # ============ Public Routes ============
 
 
@@ -616,6 +631,16 @@ def login(data: LoginRequest, request: Request):
             }
         )
         set_access_token_cookie(response, token)
+        # Spec F: 簽 refresh token + 寫 staff_refresh_tokens + 記 UA/IP
+        from services.staff_refresh import issue_refresh_token as _issue_staff_refresh
+
+        _ua = request.headers.get("user-agent") or ""
+        _refresh_raw, _ = _issue_staff_refresh(
+            user_id=user.id,
+            user_agent=_ua,
+            ip=client_ip,
+        )
+        set_staff_refresh_cookie(response, _refresh_raw)
         return response
     except HTTPException:
         raise
@@ -634,6 +659,9 @@ def refresh_token(request: Request):
     """以現有 token（可為剛過期）換發新 token。
     寬限期內的過期 token 仍可刷新，超過則需重新登入。
     Token 來源：httpOnly Cookie 或 Authorization header。
+
+    Spec F 整合：若 staff_refresh_token cookie 存在，走 rotation 路徑（新 access +
+    新 refresh cookie）；否則 fallback 既有 JWT grace period 路徑（向下相容）。
     """
     # 與 login 對稱：IP 滑動視窗限流，避免拿無效 token 壓 DB / 暴力試 jti。
     client_ip = get_client_ip(request) or "unknown"
@@ -648,6 +676,59 @@ def refresh_token(request: Request):
             extras={"reason": "ip_rate_limited", "ip": client_ip},
         )
         raise
+
+    # Spec F: staff_refresh_token cookie → rotation 路徑
+    staff_refresh_raw = request.cookies.get("staff_refresh_token")
+    if staff_refresh_raw:
+        from services.staff_refresh import rotate_refresh_token as _rotate_staff
+
+        _ua = request.headers.get("user-agent") or ""
+        new_refresh_raw, rotated_user_id = _rotate_staff(
+            staff_refresh_raw, _ua, client_ip
+        )
+        _session = get_session()
+        try:
+            _user = (
+                _session.query(User)
+                .filter(
+                    User.id == rotated_user_id, User.is_active == True
+                )  # noqa: E712
+                .first()
+            )
+            if _user is None:
+                raise HTTPException(status_code=401, detail="使用者已停用")
+            _emp = (
+                _session.query(Employee)
+                .filter(Employee.id == _user.employee_id)
+                .first()
+                if _user.employee_id
+                else None
+            )
+            _perm = resolve_user_permissions(_user)
+            _new_access = create_access_token(
+                {
+                    "user_id": _user.id,
+                    "employee_id": _user.employee_id,
+                    "role": _user.role,
+                    "name": _emp.name if _emp else "",
+                    "permission_names": _perm,
+                    "token_version": _user.token_version,
+                }
+            )
+            _username_for_audit = _user.username
+        finally:
+            _session.close()
+
+        write_login_audit(
+            request,
+            action="TOKEN_REFRESH",  # 對齊既有 audit action（test_audit_login.py 用此名）
+            username=_username_for_audit,  # 對齊既存 test 期望 (帶實際 username 非 None)
+            user_id=rotated_user_id,
+        )
+        _resp = JSONResponse(content={"message": "refreshed"})
+        set_access_token_cookie(_resp, _new_access)
+        set_staff_refresh_cookie(_resp, new_refresh_raw)
+        return _resp
 
     # 從 Cookie 或 header 取得舊 token
     token = request.cookies.get("access_token")
@@ -883,9 +964,122 @@ def logout(request: Request):
             user_id=audit_user_id,
         )
 
+    # Spec F: revoke current staff refresh family on logout
+    _staff_refresh_raw = request.cookies.get("staff_refresh_token")
+    if _staff_refresh_raw:
+        try:
+            from hashlib import sha256 as _sha256
+
+            from models.staff_refresh_token import StaffRefreshToken as _SRT
+
+            _h = _sha256(_staff_refresh_raw.encode()).hexdigest()
+            _srt_session = get_session()
+            try:
+                _rt = _srt_session.query(_SRT).filter(_SRT.token_hash == _h).first()
+                if _rt:
+                    from services.staff_refresh import revoke_family as _revoke_family
+
+                    _revoke_family(_rt.user_id, _rt.family_id)
+            finally:
+                _srt_session.close()
+        except Exception as _e:
+            logger.warning(
+                "logout 撤銷 staff refresh family 失敗（仍清 cookie）：%s", _e
+            )
+
     response = JSONResponse(content={"message": "已登出"})
     clear_access_token_cookie(response)
     clear_admin_token_cookie(response)
+    clear_staff_refresh_cookie(response)
+    return response
+
+
+# ============ Sessions Management (Spec F) ============
+
+
+@router.get("/sessions", response_model=list[SessionItemOut])
+def list_my_sessions(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """列出目前使用者的所有 active StaffRefreshToken family，含 is_current 標記當前裝置。
+
+    Spec F §3.4 (audit P1 #11)
+    """
+    raw = request.cookies.get("staff_refresh_token")
+    current_family = None
+    if raw:
+        h = sha256(raw.encode()).hexdigest()
+        _session = get_session()
+        try:
+            rt = _session.query(StaffRefreshToken).filter_by(token_hash=h).first()
+            if rt:
+                current_family = rt.family_id
+        finally:
+            _session.close()
+
+    session = get_session()
+    try:
+        sql = text("""
+            SELECT family_id, MAX(created_at) AS last_active,
+                   MAX(user_agent) AS user_agent, MAX(ip) AS ip,
+                   COUNT(*) AS token_count
+            FROM staff_refresh_tokens
+            WHERE user_id = :uid AND revoked_at IS NULL AND expires_at > :now
+            GROUP BY family_id
+            ORDER BY last_active DESC
+            """)
+        rows = session.execute(
+            sql,
+            {"uid": current_user["user_id"], "now": now_taipei_naive()},
+        ).all()
+        return [
+            SessionItemOut(
+                family_id=r.family_id,
+                last_active=r.last_active,
+                user_agent=r.user_agent,
+                ip=r.ip,
+                token_count=r.token_count,
+                is_current=(r.family_id == current_family),
+            )
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@router.delete("/sessions/{family_id}")
+def revoke_session(
+    family_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Per-session revoke：撤銷指定 family 的所有 token（其他 family 不影響）。
+
+    Spec F §3.4 (audit P1 #11)
+    """
+    from services.staff_refresh import revoke_family
+
+    n = revoke_family(current_user["user_id"], family_id)
+    if n == 0:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"revoked": n}
+
+
+@router.post("/sessions/logout-all")
+def logout_all_sessions(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Logout-all：revoke 所有 family + bump token_version + clear self cookies。
+
+    Spec F §3.4 (audit P1 #11)
+    """
+    from services.staff_refresh import revoke_all_for_user
+
+    revoke_all_for_user(current_user["user_id"])
+    response = JSONResponse(content={"logout_all": True})
+    clear_staff_refresh_cookie(response)
+    clear_access_token_cookie(response)
     return response
 
 

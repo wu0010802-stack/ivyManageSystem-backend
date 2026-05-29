@@ -1,10 +1,12 @@
 """
 services/security_gc_scheduler.py — 安全支援表 GC 排程
 
-兩個 GC：
+三個 GC：
 - rate_limit_buckets：每 5 分鐘清除超過 1 小時的舊視窗
 - jwt_blocklist：每 6 小時清除已過期的黑名單項目（資安掃描 2026-05-07 P1，
   原 24 小時太長，高峰登出量會讓 blocklist 表持續長到下次 GC 才縮）
+- staff_refresh_tokens：每 24 小時清除過期 + revoked >7 天的員工端 refresh token
+  （Spec F §3.5）
 
 環境變數：
 - SECURITY_GC_DISABLED=1 → 完全關閉本排程（用於測試或多 worker 部署時只在主 worker 跑）
@@ -31,6 +33,8 @@ _RATE_LIMIT_GC_INTERVAL_SEC = 5 * 60
 _JWT_BLOCKLIST_GC_INTERVAL_SEC = 6 * 60 * 60
 # P0b audit_log retention GC: 每日跑一次（spec 2026-05-28-audit-pii-redact-retention）
 _AUDIT_LOG_GC_INTERVAL_SEC = 24 * 60 * 60
+# 員工端 refresh token GC：每 24 小時跑一次，清過期 + revoked >7 天（Spec F §3.5）
+_STAFF_REFRESH_GC_INTERVAL_SEC = 24 * 60 * 60
 
 
 def scheduler_enabled() -> bool:
@@ -38,13 +42,14 @@ def scheduler_enabled() -> bool:
 
 
 async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:
-    """主迴圈：定期執行 GC（rate_limit / jwt_blocklist / audit_log）。
+    """主迴圈：定期執行 GC（rate_limit / jwt_blocklist / audit_log / staff_refresh）。
 
     迴圈以 60 秒為基本心跳，分別追蹤各 GC 的下次執行時間。
     """
     last_rate_gc = 0.0
     last_jwt_gc = 0.0
     last_audit_gc = 0.0
+    last_staff_refresh_gc = 0.0
     logger.info("security_gc_scheduler started")
     try:
         while not stop_event.is_set():
@@ -58,6 +63,9 @@ async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:
             if now - last_audit_gc >= _AUDIT_LOG_GC_INTERVAL_SEC:
                 _run_audit_log_gc()
                 last_audit_gc = now
+            if now - last_staff_refresh_gc >= _STAFF_REFRESH_GC_INTERVAL_SEC:
+                _run_staff_refresh_gc()
+                last_staff_refresh_gc = now
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
@@ -127,3 +135,50 @@ def _run_audit_log_gc() -> None:
             logger.info("audit_log GC: 總刪除 %s 列", deleted)
     except Exception as exc:
         logger.exception("audit_log GC 失敗：%s", exc)
+
+
+def gc_staff_refresh_tokens() -> int:
+    """清除過期 + revoked >7 天的 staff_refresh_tokens。
+
+    cutoff = now() - 7 天；凡 expires_at < cutoff OR revoked_at < cutoff 即刪除。
+    回傳刪除筆數。Spec F §3.5。
+    """
+    from datetime import timedelta
+
+    from models.staff_refresh_token import StaffRefreshToken
+    from utils.taipei_time import now_taipei_naive
+
+    cutoff = now_taipei_naive() - timedelta(days=7)
+    with session_scope() as session:
+        n = (
+            session.query(StaffRefreshToken)
+            .filter(
+                (StaffRefreshToken.expires_at < cutoff)
+                | (StaffRefreshToken.revoked_at < cutoff)
+            )
+            .delete(synchronize_session=False)
+        )
+    return int(n or 0)
+
+
+def _run_staff_refresh_gc() -> None:
+    # 多 worker 部署時以 advisory lock（24 小時窗口 bucket）互斥。
+    with scheduler_iteration("security_staff_refresh_gc"):
+        with session_scope() as lock_session:
+            with try_scheduler_lock(
+                lock_session,
+                scheduler_name="security_staff_refresh_gc",
+                run_key=str(int(time.time() // _STAFF_REFRESH_GC_INTERVAL_SEC)),
+            ) as acquired:
+                if not acquired:
+                    return
+                try:
+                    deleted = gc_staff_refresh_tokens()
+                    record_rows("security_staff_refresh_gc", deleted)
+                    logger.info(
+                        "staff_refresh_tokens GC at %s: 已刪除 %s 列",
+                        datetime.now(timezone.utc).isoformat(),
+                        deleted,
+                    )
+                except Exception as e:
+                    logger.warning("gc_staff_refresh_tokens failed: %s", e)

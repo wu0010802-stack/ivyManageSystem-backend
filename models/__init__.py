@@ -63,3 +63,6 @@ from .dsr import DsrRequest  # noqa: F401
 
 # P0d-2 2026-05-28: medical_access_log（特種個資取用獨立稽核 §6）
 from .medical_access_log import MedicalAccessLog  # noqa: F401
+
+# 2026-05-28 Spec F：員工端 refresh token（Base.metadata.create_all 需要此 import）
+from models.staff_refresh_token import StaffRefreshToken  # noqa: F401
