@@ -395,6 +395,59 @@ class TestStaffIssueDeviceCode:
         )
         assert r.status_code in (401, 403)
 
+    def test_active_cap_returns_409(self, pclient):
+        c, sf = pclient
+        gid = _make_guardian(sf)
+        tok = _staff_token(sf)
+        for _ in range(3):  # _MAX_ACTIVE_CODES_PER_GUARDIAN = 3
+            assert (
+                c.post(
+                    f"/api/guardians/{gid}/device-setup-code",
+                    headers={"Authorization": f"Bearer {tok}"},
+                ).status_code
+                == 200
+            )
+        r = c.post(
+            f"/api/guardians/{gid}/device-setup-code",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert r.status_code == 409
+
+    def test_guardian_not_found_returns_404(self, pclient):
+        c, sf = pclient
+        tok = _staff_token(sf)
+        r = c.post(
+            "/api/guardians/999999/device-setup-code",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert r.status_code == 404
+
+    def test_issue_writes_audit_log(self, pclient):
+        c, sf = pclient
+        gid = _make_guardian(sf)
+        tok = _staff_token(sf)
+        assert (
+            c.post(
+                f"/api/guardians/{gid}/device-setup-code",
+                headers={"Authorization": f"Bearer {tok}"},
+            ).status_code
+            == 200
+        )
+        s = sf()
+        from models.database import AuditLog
+
+        row = (
+            s.query(AuditLog)
+            .filter(
+                AuditLog.entity_type == "parent_device_setup",
+                AuditLog.entity_id == str(gid),
+            )
+            .first()
+        )
+        assert row is not None
+        assert row.action == "CREATE"
+        s.close()
+
 
 # ── Task 6 staff 撤銷裝置端點 ──────────────────────────────────────────────
 
