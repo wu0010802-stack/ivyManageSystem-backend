@@ -16,6 +16,7 @@ from models.database import (
     get_session,
     Announcement,
     AnnouncementParentRecipient,
+    AnnouncementRead,
     AnnouncementRecipient,
     Classroom,
     Employee,
@@ -34,6 +35,8 @@ from schemas._common import DeleteResultOut, MutationResultOut
 from schemas.announcements import (
     AnnouncementListOut,
     AnnouncementParentRecipientsOut,
+    AnnouncementReadersOut,
+    AnnouncementRecipientsOut,
 )
 
 
@@ -137,59 +140,81 @@ def list_announcements(
         require_staff_permission(Permission.ANNOUNCEMENTS_READ)
     ),
 ):
-    """列出所有公告（管理員用）"""
+    """列出所有公告（管理員用）。
+
+    read_count / recipient_count 走 SQL correlated COUNT subquery；
+    read_preview 走 batch query + Python group top-3（per announcement by read_at DESC）。
+    完整 readers / recipient_ids 改為 lazy 端點 GET /announcements/{id}/readers 與
+    GET /announcements/{id}/recipients，避免 list 路徑線性退化。
+    """
+    from sqlalchemy import func, select
+
     from services.announcements.visibility import derive_status
     from utils.taipei_time import now_taipei_naive
 
     _now = now_taipei_naive()
     session = get_session()
     try:
+        read_count_subq = (
+            select(func.count(AnnouncementRead.id))
+            .where(AnnouncementRead.announcement_id == Announcement.id)
+            .correlate(Announcement)
+            .scalar_subquery()
+        )
+        recipient_count_subq = (
+            select(func.count(AnnouncementRecipient.id))
+            .where(AnnouncementRecipient.announcement_id == Announcement.id)
+            .correlate(Announcement)
+            .scalar_subquery()
+        )
+
         query = (
-            session.query(Announcement)
-            .options(
-                joinedload(Announcement.author),
-                selectinload(Announcement.reads),
-                selectinload(Announcement.recipients),
+            session.query(
+                Announcement,
+                read_count_subq.label("read_count"),
+                recipient_count_subq.label("recipient_count"),
             )
+            .options(joinedload(Announcement.author))
             .order_by(
                 Announcement.is_pinned.desc(),
                 Announcement.created_at.desc(),
             )
         )
-        total = query.count()
-        items = query.offset((page - 1) * page_size).limit(page_size).all()
+        total = session.query(func.count(Announcement.id)).scalar() or 0
+        rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
-        read_employee_ids = {
-            read.employee_id
-            for ann in items
-            for read in ann.reads
-            if read.employee_id is not None
-        }
-        read_employee_map = {}
-        if read_employee_ids:
-            employees = (
-                session.query(Employee.id, Employee.name)
-                .filter(Employee.id.in_(read_employee_ids))
+        ann_ids = [ann.id for ann, *_ in rows]
+        preview_map: dict[int, list[dict]] = {}
+        if ann_ids:
+            preview_rows = (
+                session.query(
+                    AnnouncementRead.announcement_id,
+                    Employee.id,
+                    Employee.name,
+                    AnnouncementRead.read_at,
+                )
+                .join(Employee, Employee.id == AnnouncementRead.employee_id)
+                .filter(AnnouncementRead.announcement_id.in_(ann_ids))
+                .order_by(
+                    AnnouncementRead.announcement_id,
+                    AnnouncementRead.read_at.desc(),
+                )
                 .all()
             )
-            read_employee_map = {employee.id: employee.name for employee in employees}
+            for ann_id, emp_id, emp_name, read_at in preview_rows:
+                bucket = preview_map.setdefault(ann_id, [])
+                if len(bucket) < 3:
+                    bucket.append(
+                        {
+                            "employee_id": emp_id,
+                            "name": emp_name,
+                            "read_at": read_at.isoformat() if read_at else None,
+                        }
+                    )
 
         results = []
-        for ann in items:
-            recipient_ids = [r.employee_id for r in ann.recipients]
-            sorted_reads = sorted(
-                ann.reads,
-                key=lambda read: read.read_at or 0,
-                reverse=True,
-            )
-            readers = [
-                {
-                    "employee_id": read.employee_id,
-                    "name": read_employee_map.get(read.employee_id, "未知"),
-                    "read_at": read.read_at.isoformat() if read.read_at else None,
-                }
-                for read in sorted_reads
-            ]
+        for ann, read_count, recipient_count in rows:
+            preview = preview_map.get(ann.id, [])
             results.append(
                 {
                     "id": ann.id,
@@ -208,16 +233,13 @@ def list_announcements(
                     "publish_at": ann.publish_at.isoformat() if ann.publish_at else None,
                     "expires_at": ann.expires_at.isoformat() if ann.expires_at else None,
                     "status": derive_status(ann, _now),
-                    "read_count": len(ann.reads),
-                    "read_preview": readers[:3],
-                    "has_more_readers": len(readers) > 3,
-                    "readers": readers,
-                    "recipient_count": len(recipient_ids),
-                    "recipient_ids": recipient_ids,
+                    "read_count": int(read_count or 0),
+                    "read_preview": preview,
+                    "has_more_readers": int(read_count or 0) > len(preview),
+                    "recipient_count": int(recipient_count or 0),
                 }
             )
-
-        return {"total": total, "items": results}
+        return {"total": int(total), "items": results}
     finally:
         session.close()
 
@@ -348,6 +370,93 @@ def delete_announcement(
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.get(
+    "/{announcement_id}/recipients",
+    response_model=AnnouncementRecipientsOut,
+)
+def list_recipients(
+    announcement_id: int,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_READ)
+    ),
+):
+    """Lazy fetch admin edit dialog 用的 recipient 員工 id 清單。"""
+    session = get_session()
+    try:
+        ann = (
+            session.query(Announcement.id)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
+        if not ann:
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+        rows = (
+            session.query(AnnouncementRecipient.employee_id)
+            .filter(AnnouncementRecipient.announcement_id == announcement_id)
+            .all()
+        )
+        return {"employee_ids": [r[0] for r in rows]}
+    finally:
+        session.close()
+
+
+@router.get(
+    "/{announcement_id}/readers",
+    response_model=AnnouncementReadersOut,
+)
+def list_readers(
+    announcement_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_READ)
+    ),
+):
+    """Lazy fetch admin popover 用的完整已讀名單（分頁、read_at DESC）。"""
+    from sqlalchemy import func
+
+    session = get_session()
+    try:
+        ann = (
+            session.query(Announcement.id)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
+        if not ann:
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+        total = (
+            session.query(func.count(AnnouncementRead.id))
+            .filter(AnnouncementRead.announcement_id == announcement_id)
+            .scalar()
+            or 0
+        )
+        rows = (
+            session.query(AnnouncementRead, Employee.name)
+            .join(Employee, Employee.id == AnnouncementRead.employee_id)
+            .filter(AnnouncementRead.announcement_id == announcement_id)
+            .order_by(AnnouncementRead.read_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        items = [
+            {
+                "employee_id": r.employee_id,
+                "name": name,
+                "read_at": r.read_at.isoformat() if r.read_at else None,
+            }
+            for r, name in rows
+        ]
+        return {
+            "items": items,
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
+        }
     finally:
         session.close()
 

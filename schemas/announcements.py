@@ -53,9 +53,7 @@ class AnnouncementItemOut(IvyBaseModel):
     read_count: int
     read_preview: list[AnnouncementReaderItemOut]  # pii-allow: 已讀者姓名預覽（同上）
     has_more_readers: bool
-    readers: list[AnnouncementReaderItemOut]  # pii-allow: 已讀者完整列表（同上）
     recipient_count: int
-    recipient_ids: list[int]
 
 
 class AnnouncementListOut(IvyBaseModel):
@@ -81,6 +79,29 @@ class AnnouncementParentRecipientsOut(IvyBaseModel):
     announcement_id: int
     items: list[AnnouncementParentRecipientItemOut]
     total: int
+
+
+class AnnouncementRecipientsOut(IvyBaseModel):
+    """GET /announcements/{id}/recipients 回傳（lazy fetch admin edit dialog 用）。"""
+
+    employee_ids: list[int]
+
+
+class ReaderListItem(IvyBaseModel):
+    """單筆已讀者明細（list_readers 端用，等同 AnnouncementReaderItemOut 但獨立暴露）。"""
+
+    employee_id: int
+    name: str  # pii-allow: 員工姓名（ANNOUNCEMENTS_READ 必看）
+    read_at: Optional[str] = None
+
+
+class AnnouncementReadersOut(IvyBaseModel):
+    """GET /announcements/{id}/readers 分頁回傳。"""
+
+    items: list[ReaderListItem]
+    total: int
+    page: int
+    page_size: int
 
 
 # Backward-compat re-export — POST /announcements 用 _common 的 {message, id}。

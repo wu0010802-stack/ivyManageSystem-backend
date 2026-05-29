@@ -123,4 +123,8 @@ class TestAnnouncementsApi:
         assert payload["read_count"] == 4
         assert [reader["name"] for reader in payload["read_preview"]] == ["黃老師", "陳老師", "林老師"]
         assert payload["has_more_readers"] is True
-        assert [reader["name"] for reader in payload["readers"]] == ["黃老師", "陳老師", "林老師", "王老師"]
+        ann_id = payload["id"]
+        readers_res = client.get(f"/api/announcements/{ann_id}/readers")
+        assert readers_res.status_code == 200
+        readers_data = readers_res.json()
+        assert [r["name"] for r in readers_data["items"]] == ["黃老師", "陳老師", "林老師", "王老師"]
