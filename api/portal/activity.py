@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, func, case
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
 from models.database import get_session, Classroom
@@ -22,7 +22,7 @@ from models.activity import (
 )
 from utils.auth import get_current_user
 from ._shared import _get_employee, _get_teacher_classroom_ids
-from api.activity._shared import _build_session_detail_response
+from api.activity._shared import _build_session_detail_response, build_session_rows_with_stats
 
 logger = logging.getLogger(__name__)
 
@@ -209,45 +209,7 @@ def portal_list_sessions(
             ActivitySession.session_date.desc(), ActivitySession.id.desc()
         ).all()
 
-        session_ids = [r.id for r in rows]
-        attendance_stats: dict[int, dict] = {}
-        if session_ids:
-            agg_rows = (
-                session.query(
-                    ActivityAttendance.session_id,
-                    func.count(ActivityAttendance.id).label("recorded"),
-                    func.sum(
-                        case((ActivityAttendance.is_present.is_(True), 1), else_=0)
-                    ).label("present"),
-                )
-                .filter(ActivityAttendance.session_id.in_(session_ids))
-                .group_by(ActivityAttendance.session_id)
-                .all()
-            )
-            attendance_stats = {
-                row.session_id: {"recorded": row.recorded, "present": row.present or 0}
-                for row in agg_rows
-            }
-
-        result = []
-        for r in rows:
-            stat = attendance_stats.get(r.id, {"recorded": 0, "present": 0})
-            result.append(
-                {
-                    "id": r.id,
-                    "course_id": r.course_id,
-                    "course_name": r.course_name,
-                    "session_date": (
-                        r.session_date.isoformat() if r.session_date else None
-                    ),
-                    "notes": r.notes or "",
-                    "created_by": r.created_by,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                    "recorded_count": stat["recorded"],
-                    "present_count": stat["present"],
-                }
-            )
-        return result
+        return build_session_rows_with_stats(session, rows)
     finally:
         session.close()
 

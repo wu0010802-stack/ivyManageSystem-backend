@@ -12,7 +12,6 @@ import openpyxl
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, case
 from sqlalchemy.exc import IntegrityError
 
 from models.database import get_session
@@ -26,6 +25,7 @@ from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
 from api.activity._shared import (
     _build_session_detail_response,
+    build_session_rows_with_stats,
     query_valid_session_registrations,
 )
 from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
@@ -105,45 +105,7 @@ def list_sessions(
             .all()
         )
 
-        # 計算各場次出席統計（SQL GROUP BY，避免 Python 迴圈）
-        session_ids = [r.id for r in rows]
-        attendance_stats: dict[int, dict] = {}
-        if session_ids:
-            agg_rows = (
-                session.query(
-                    ActivityAttendance.session_id,
-                    func.count(ActivityAttendance.id).label("recorded"),
-                    func.sum(
-                        case((ActivityAttendance.is_present.is_(True), 1), else_=0)
-                    ).label("present"),
-                )
-                .filter(ActivityAttendance.session_id.in_(session_ids))
-                .group_by(ActivityAttendance.session_id)
-                .all()
-            )
-            attendance_stats = {
-                row.session_id: {"recorded": row.recorded, "present": row.present or 0}
-                for row in agg_rows
-            }
-
-        result = []
-        for r in rows:
-            stat = attendance_stats.get(r.id, {"recorded": 0, "present": 0})
-            result.append(
-                {
-                    "id": r.id,
-                    "course_id": r.course_id,
-                    "course_name": r.course_name,
-                    "session_date": (
-                        r.session_date.isoformat() if r.session_date else None
-                    ),
-                    "notes": r.notes or "",
-                    "created_by": r.created_by,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                    "recorded_count": stat["recorded"],
-                    "present_count": stat["present"],
-                }
-            )
+        result = build_session_rows_with_stats(session, rows)
         return {"items": result, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()

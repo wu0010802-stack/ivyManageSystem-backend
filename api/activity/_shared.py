@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func, or_, select as sa_select
+from sqlalchemy import func, case, or_, select as sa_select
 from sqlalchemy.exc import CompileError, OperationalError
 
 from models.database import (
@@ -798,6 +798,51 @@ def query_valid_session_registrations(
     if classroom_ids_filter is not None:
         query = query.filter(ActivityRegistration.classroom_id.in_(classroom_ids_filter))
     return query.all()
+
+
+def build_session_rows_with_stats(db_session, rows) -> list:
+    """給定已查出的場次 row（需含 .id/.course_id/.session_date/.notes/.created_by/
+    .created_at/.course_name），補上整堂出席統計（recorded_count/present_count）並組成
+    dict 列表。admin list_sessions 與 portal portal_list_sessions 共用，避免統計邏輯 drift。
+    """
+    session_ids = [r.id for r in rows]
+    attendance_stats: dict = {}
+    if session_ids:
+        agg_rows = (
+            db_session.query(
+                ActivityAttendance.session_id,
+                func.count(ActivityAttendance.id).label("recorded"),
+                func.sum(
+                    case((ActivityAttendance.is_present.is_(True), 1), else_=0)
+                ).label("present"),
+            )
+            .filter(ActivityAttendance.session_id.in_(session_ids))
+            .group_by(ActivityAttendance.session_id)
+            .all()
+        )
+        attendance_stats = {
+            row.session_id: {"recorded": row.recorded, "present": row.present or 0}
+            for row in agg_rows
+        }
+    result = []
+    for r in rows:
+        stat = attendance_stats.get(r.id, {"recorded": 0, "present": 0})
+        result.append(
+            {
+                "id": r.id,
+                "course_id": r.course_id,
+                "course_name": r.course_name,
+                "session_date": (
+                    r.session_date.isoformat() if r.session_date else None
+                ),
+                "notes": r.notes or "",
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "recorded_count": stat["recorded"],
+                "present_count": stat["present"],
+            }
+        )
+    return result
 
 
 def _build_session_detail_response(
