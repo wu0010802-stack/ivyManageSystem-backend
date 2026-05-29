@@ -22,7 +22,7 @@ PII 註解：
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from schemas._base import IvyBaseModel
 
@@ -47,6 +47,9 @@ class AnnouncementItemOut(IvyBaseModel):
     created_by_name: str  # pii-allow: 公告作者姓名（ANNOUNCEMENTS_READ 必看）
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    publish_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    status: Literal["scheduled", "active", "expired"]
     read_count: int
     read_preview: list[AnnouncementReaderItemOut]  # pii-allow: 已讀者姓名預覽（同上）
     has_more_readers: bool
