@@ -131,11 +131,6 @@ api/gov_reports.py:export_withholding
 api/gov_reports.py:export_pension
 api/guardians_admin.py:create_binding_code
 api/health.py:readiness
-api/insurance.py:import_insurance_table
-api/insurance.py:calculate_insurance
-api/insurance.py:list_brackets
-api/insurance.py:upsert_brackets
-api/insurance.py:delete_bracket
 api/leave_quota_expiry.py:list_upcoming_expiring_grants
 api/leave_quota_expiry.py:list_upcoming_anniversaries
 api/leave_quota_expiry.py:list_payout_history

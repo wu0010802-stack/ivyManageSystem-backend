@@ -17,6 +17,11 @@ from sqlalchemy.orm import joinedload
 from models.database import get_session, Classroom, ClassGrade, Employee, Student
 from schemas._common import MutationResultOut
 from schemas.classrooms import (
+    ClassroomCloneTermResultOut,
+    ClassroomDetailOut,
+    ClassroomEnrollmentCompositionOut,
+    ClassroomListItemOut,
+    ClassroomPromoteAcademicYearResultOut,
     ClassroomUpdateResultOut,
     GradeOut,
     TeacherOptionOut,
@@ -432,7 +437,7 @@ def _serialize_classroom_detail(
 # ============ Routes ============
 
 
-@router.get("/classrooms")
+@router.get("/classrooms", response_model=list[ClassroomListItemOut])
 async def get_classrooms(
     request: Request,
     response: Response,
@@ -589,7 +594,7 @@ async def get_teacher_options(
         session.close()
 
 
-@router.get("/classrooms/{classroom_id}")
+@router.get("/classrooms/{classroom_id}", response_model=ClassroomDetailOut)
 async def get_classroom(
     classroom_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
@@ -610,7 +615,7 @@ async def get_classroom(
         session.close()
 
 
-@router.get("/classrooms/{classroom_id}/enrollment-composition")
+@router.get("/classrooms/{classroom_id}/enrollment-composition", response_model=ClassroomEnrollmentCompositionOut)
 async def get_classroom_enrollment_composition(
     classroom_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
@@ -829,7 +834,7 @@ async def update_classroom(
         session.close()
 
 
-@router.post("/classrooms/clone-term", status_code=201)
+@router.post("/classrooms/clone-term", status_code=201, response_model=ClassroomCloneTermResultOut)
 async def clone_classrooms_to_term(
     item: ClassroomCloneTerm,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
@@ -921,7 +926,7 @@ async def clone_classrooms_to_term(
         session.close()
 
 
-@router.post("/classrooms/promote-academic-year", status_code=201)
+@router.post("/classrooms/promote-academic-year", status_code=201, response_model=ClassroomPromoteAcademicYearResultOut)
 async def promote_classrooms_to_academic_year(
     item: ClassroomPromoteAcademicYear,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
