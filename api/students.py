@@ -19,7 +19,15 @@ from models.dismissal import StudentDismissalCall
 from models.guardian import GUARDIAN_RELATIONS, Guardian
 from models.classroom import LIFECYCLE_STATUSES
 from schemas._common import MutationResultOut
-from schemas.students import GuardianListOut, GuardianOut
+from schemas.students import (
+    AcademicSummaryOut,
+    BulkTransferResultOut,
+    GuardianListOut,
+    GuardianOut,
+    StudentDetailOut,
+    StudentListOut,
+    StudentRecordsTimelineOut,
+)
 from services.student_lifecycle import LifecycleTransitionError, transition
 from services.student_profile import assemble_profile
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
@@ -413,7 +421,7 @@ class GuardianUpdate(BaseModel):
 # ============ Routes ============
 
 
-@router.get("/students")
+@router.get("/students", response_model=StudentListOut)
 async def get_students(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
@@ -524,7 +532,7 @@ async def get_students(
 # ============ 學生紀錄聚合端點（事件 + 評量 + 異動統一時間軸）============
 
 
-@router.get("/students/records")
+@router.get("/students/records", response_model=StudentRecordsTimelineOut)
 async def get_student_records_timeline(
     type: Optional[list[str]] = Query(
         None,
@@ -577,7 +585,7 @@ def _semester_date_range(school_year: int, semester: int) -> tuple[date, date]:
     return date(ad_year + 1, 2, 1), date(ad_year + 1, 7, 31)
 
 
-@router.get("/students/{student_id}/academic-summary")
+@router.get("/students/{student_id}/academic-summary", response_model=AcademicSummaryOut)
 async def get_academic_summary(
     student_id: int,
     school_year: Optional[int] = Query(None, ge=100, le=200),
@@ -675,7 +683,7 @@ async def get_academic_summary(
         session.close()
 
 
-@router.get("/students/{student_id}")
+@router.get("/students/{student_id}", response_model=StudentDetailOut)
 async def get_student(
     student_id: int,
     request: Request,
@@ -1017,7 +1025,7 @@ async def graduate_student(
     return {"message": f"已設定為「{item.status}」", "id": student_id}
 
 
-@router.post("/students/bulk-transfer")
+@router.post("/students/bulk-transfer", response_model=BulkTransferResultOut)
 async def bulk_transfer_students(
     item: StudentBulkTransfer,
     request: Request,
