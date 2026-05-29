@@ -75,3 +75,7 @@ class SchedulerSettings(BaseSettings):
     # Leave quota expiry（補休到期 + 特休週年 cutover）
     leave_quota_expiry_enabled: BoolEnv = False
     leave_quota_expiry_check_interval: int = 3600  # 1 小時輪詢一次
+
+    # Announcement publish scheduler（spec 2026-05-29-announcement-improvements-design.md）
+    announcement_publish_scheduler_enabled: BoolEnv = True
+    announcement_publish_check_interval: int = 60  # 60 秒輪詢，足以讓「8:00 排程」最遲 8:01 推播
