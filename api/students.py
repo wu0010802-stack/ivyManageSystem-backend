@@ -18,6 +18,7 @@ from models.database import get_session, Student, Classroom, StudentClassroomTra
 from models.dismissal import StudentDismissalCall
 from models.guardian import GUARDIAN_RELATIONS, Guardian
 from models.classroom import LIFECYCLE_STATUSES
+from schemas._base import IvyBaseModel
 from schemas._common import MutationResultOut
 from schemas.students import (
     AcademicSummaryOut,
@@ -737,7 +738,19 @@ async def get_student(
 # ── P0d-2 reason-gated 醫療欄位讀取（§6 特種個資取用稽核）─────────────────
 
 
-@router.get("/students/{student_id}/medical")
+
+
+class StudentMedicalOut(IvyBaseModel):
+    """GET /students/{id}/medical — 特種個資取用（reason ≥10 字 gate）."""
+
+    student_id: int
+    name: str  # pii-allow: 學生姓名（STUDENTS_HEALTH_READ 必看）
+    allergy: str | None = None  # pii-allow: 過敏（特種個資）
+    medication: str | None = None  # pii-allow: 用藥（特種個資）
+    special_needs: str | None = None  # pii-allow: 特殊需求（特種個資）
+
+
+@router.get("/students/{student_id}/medical", response_model=StudentMedicalOut)
 async def get_student_medical(
     student_id: int,
     request: Request,

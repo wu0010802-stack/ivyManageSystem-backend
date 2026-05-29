@@ -72,3 +72,15 @@ class AuthPermissionsDefinitionOut(IvyBaseModel):
     permissions: dict[str, Any]
     groups: list[dict[str, Any]]  # 含 {name, permissions, split_permissions} 動態
     roles: dict[str, Any]  # role_code → {label, description, permissions, is_core}
+
+
+class RevokeSessionOut(IvyBaseModel):
+    """DELETE /sessions/{family_id} — Per-session revoke."""
+
+    revoked: int
+
+
+class LogoutAllSessionsOut(IvyBaseModel):
+    """POST /sessions/logout-all — Logout all + bump token_version."""
+
+    logout_all: bool

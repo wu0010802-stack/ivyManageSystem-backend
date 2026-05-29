@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from schemas._base import IvyBaseModel
+
 from fastapi import APIRouter, HTTPException, Request
 
 from config import settings
@@ -55,7 +57,14 @@ def _build_message(monitor: str, alert_type: str, details: str) -> str:
         return f"ℹ️ 監控更新：{monitor}\n細節：{details}"
 
 
-@router.post("/uptime-webhook")
+
+
+class UptimeWebhookOut(IvyBaseModel):
+    """POST /uptime-webhook — UptimeRobot callback ack."""
+
+    status: str
+
+@router.post("/uptime-webhook", response_model=UptimeWebhookOut)
 async def uptime_webhook(token: str, request: Request):
     """收 UptimeRobot 告警 → 推 LINE 群。
 

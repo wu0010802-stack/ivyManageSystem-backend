@@ -30,6 +30,8 @@ from schemas.auth import (
     AuthPermissionsDefinitionOut,
     AuthUserOut,
     AuthUserResultOut,
+    LogoutAllSessionsOut,
+    RevokeSessionOut,
 )
 from utils.audit import write_login_audit, mark_soft_delete
 from utils.request_ip import get_client_ip
@@ -1052,7 +1054,7 @@ def list_my_sessions(
         session.close()
 
 
-@router.delete("/sessions/{family_id}")
+@router.delete("/sessions/{family_id}", response_model=RevokeSessionOut)
 def revoke_session(
     family_id: str,
     current_user: dict = Depends(get_current_user),
@@ -1069,7 +1071,7 @@ def revoke_session(
     return {"revoked": n}
 
 
-@router.post("/sessions/logout-all")
+@router.post("/sessions/logout-all", response_model=LogoutAllSessionsOut)
 def logout_all_sessions(
     request: Request,
     current_user: dict = Depends(get_current_user),

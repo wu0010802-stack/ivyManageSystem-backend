@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+
+from schemas._base import IvyBaseModel
 from sqlalchemy import text
 
 from models.base import get_engine, get_session
@@ -54,7 +56,27 @@ async def readiness():
         )
 
 
-@router.get("/schedulers")
+
+
+class SchedulerHealthItem(IvyBaseModel):
+    """schedulers_health item shape."""
+
+    name: str
+    last_success_at: str | None = None
+    lag_seconds: float | None = None
+    expected_interval_seconds: int
+    consecutive_failures: int
+
+
+class SchedulersHealthOut(IvyBaseModel):
+    """GET /health/schedulers — UptimeRobot 公開 endpoint."""
+
+    status: str
+    schedulers: list[SchedulerHealthItem]
+    lagging: list[SchedulerHealthItem] | None = None
+
+
+@router.get("/schedulers", response_model=SchedulersHealthOut)
 async def schedulers_health():
     """檢查所有 scheduler heartbeat lag。
 
