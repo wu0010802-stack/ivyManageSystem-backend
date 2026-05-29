@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 from typing import Literal, Optional, List
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import joinedload, selectinload
@@ -102,6 +102,11 @@ def _validate_schedule(publish_at, expires_at) -> None:
 
 
 logger = logging.getLogger(__name__)
+
+_ANNOUNCEMENT_ALLOWED_EXT = {
+    ".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif", ".pdf",
+}
+_ANNOUNCEMENT_ATTACHMENT_LIMIT = 5
 
 router = APIRouter(prefix="/api/announcements", tags=["announcements"])
 
@@ -459,6 +464,100 @@ def list_readers(
         }
     finally:
         session.close()
+
+
+@router.post("/{announcement_id}/attachments", status_code=201)
+async def upload_announcement_attachment(
+    announcement_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.ANNOUNCEMENTS_WRITE)
+    ),
+) -> dict:
+    """上傳公告附件（圖片 / PDF），單一公告最多 5 個。"""
+    import os
+
+    from models.database import Attachment, session_scope
+    from models.portfolio import ATTACHMENT_OWNER_ANNOUNCEMENT
+    from utils.file_upload import (
+        read_upload_with_size_check,
+        safe_attachment_filename,
+        validate_file_signature,
+    )
+    from utils.portfolio_storage import get_portfolio_storage
+
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in _ANNOUNCEMENT_ALLOWED_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支援的檔案格式：{ext or '未知'}；僅接受 JPG/PNG/GIF/HEIC/PDF",
+        )
+
+    with session_scope() as session:
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == announcement_id)
+            .first()
+        )
+        if not ann:
+            raise HTTPException(status_code=404, detail=ANNOUNCEMENT_NOT_FOUND)
+        existing_count = (
+            session.query(Attachment)
+            .filter(
+                Attachment.owner_type == ATTACHMENT_OWNER_ANNOUNCEMENT,
+                Attachment.owner_id == announcement_id,
+                Attachment.deleted_at.is_(None),
+            )
+            .count()
+        )
+        if existing_count >= _ANNOUNCEMENT_ATTACHMENT_LIMIT:
+            raise HTTPException(
+                status_code=400,
+                detail=f"附件上限 {_ANNOUNCEMENT_ATTACHMENT_LIMIT} 個",
+            )
+
+    content = await read_upload_with_size_check(file, extension=ext)
+    # read_upload_with_size_check already calls validate_file_signature internally
+    # when extension is provided; calling again is idempotent and safe.
+    validate_file_signature(content, ext)
+
+    storage = get_portfolio_storage()
+    stored = storage.put_attachment(content, ext)
+
+    with session_scope() as session:
+        att = Attachment(
+            owner_type=ATTACHMENT_OWNER_ANNOUNCEMENT,
+            owner_id=announcement_id,
+            storage_key=stored.storage_key,
+            display_key=stored.display_key,
+            thumb_key=stored.thumb_key,
+            original_filename=safe_attachment_filename(filename, ext),
+            mime_type=stored.mime_type,
+            size_bytes=len(content),
+            uploaded_by=current_user.get("user_id"),
+        )
+        session.add(att)
+        session.flush()
+        return _serialize_attachment_for_announcement(att)
+
+
+def _serialize_attachment_for_announcement(att) -> dict:
+    """公告 attachment 序列化（與 list 端統一）。"""
+    from utils.portfolio_storage import PORTFOLIO_MODULE
+
+    return {
+        "id": att.id,
+        "filename": att.original_filename,
+        "mime_type": att.mime_type,
+        "size_bytes": att.size_bytes,
+        "url": f"/api/uploads/{PORTFOLIO_MODULE}/{att.storage_key}",
+        "thumb_url": (
+            f"/api/uploads/{PORTFOLIO_MODULE}/{att.thumb_key}"
+            if att.thumb_key
+            else None
+        ),
+    }
 
 
 # ============ 家長端 scope（plan A.5） ============
