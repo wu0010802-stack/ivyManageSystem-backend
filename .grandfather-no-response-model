@@ -310,10 +310,6 @@ api/salary/records.py:get_salary_history
 api/salary/records.py:get_salary_history_all
 api/salary/records.py:get_salary_records
 api/salary/simulate.py:simulate_salary
-api/salary/snapshots.py:create_manual_salary_snapshot
-api/salary/snapshots.py:get_salary_snapshot
-api/salary/snapshots.py:get_salary_snapshot_diff
-api/salary/snapshots.py:list_salary_snapshots
 api/shifts.py:get_shift_import_template
 api/student_assessments.py:create_assessment
 api/student_assessments.py:delete_assessment

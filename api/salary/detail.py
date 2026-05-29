@@ -28,6 +28,12 @@ from services.salary_field_breakdown import (
 from utils.auth import require_staff_permission
 from utils.cache_layer import get_cache
 from utils.error_messages import SALARY_RECORD_NOT_FOUND
+from schemas.salary_detail import (
+    SalaryDetailAuditLogOut,
+    SalaryDetailBreakdownOut,
+    SalaryDetailFieldBreakdownOut,
+    SalaryDetailUnusedLeavePayoutOut,
+)
 from utils.permissions import Permission
 from utils.salary_access import (
     enforce_self_or_full_salary as _enforce_self_or_full_salary,
@@ -65,7 +71,7 @@ def _snapshot_cache_put(record_id: int, version: int, data: dict) -> None:
     )
 
 
-@router.get("/salaries/{record_id}/audit-log")
+@router.get("/salaries/{record_id}/audit-log", response_model=SalaryDetailAuditLogOut)
 def get_salary_audit_log(
     record_id: int,
     request: Request,
@@ -124,7 +130,7 @@ def get_salary_audit_log(
         return result
 
 
-@router.get("/salaries/{record_id}/breakdown")
+@router.get("/salaries/{record_id}/breakdown", response_model=SalaryDetailBreakdownOut)
 def get_salary_breakdown(
     record_id: int,
     request: Request,
@@ -206,7 +212,7 @@ def get_salary_breakdown(
         return result
 
 
-@router.get("/salaries/{record_id}/field-breakdown")
+@router.get("/salaries/{record_id}/field-breakdown", response_model=SalaryDetailFieldBreakdownOut)
 def get_salary_field_breakdown(
     record_id: int,
     request: Request,
@@ -260,7 +266,7 @@ def get_salary_field_breakdown(
         return result
 
 
-@router.get("/salaries/{record_id}/unused-leave-payout-detail")
+@router.get("/salaries/{record_id}/unused-leave-payout-detail", response_model=SalaryDetailUnusedLeavePayoutOut)
 def get_unused_leave_payout_detail(
     record_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
