@@ -55,3 +55,6 @@ from .overtime_comp_leave_grant import OvertimeCompLeaveGrant  # noqa: F401
 # 2026-05-28 Phase 4 P1 resilience：Supabase fallback + LINE token health tables
 from models.pending_uploads import PendingUpload  # noqa: F401
 from models.integration_health import LineTokenHealth  # noqa: F401
+
+# 2026-05-29 Ch2 data quality：每日 invariant 偵測結果表
+from models.data_quality import DataQualityReport  # noqa: F401
