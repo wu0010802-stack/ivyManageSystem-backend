@@ -25,7 +25,14 @@ from sqlalchemy.orm import Session
 from models.classroom import Classroom, Student, StudentAssessment, StudentIncident
 from models.student_log import StudentChangeLog
 
-RECORD_TYPES = ("incident", "assessment", "change_log")
+RECORD_TYPES = (
+    "incident",
+    "assessment",
+    "change_log",
+    "funnel_event",
+    "classroom_transfer",
+    "payment",
+)
 
 
 def _to_datetime(d) -> datetime:
@@ -311,6 +318,39 @@ def list_timeline(
         ):
             items.append(_build_change_log_item(log))
 
+    if "funnel_event" in enabled:
+        for fe in _fetch_funnel_events(
+            session,
+            student_id=student_id,
+            classroom_id=classroom_id,
+            date_from=date_from,
+            date_to=date_to,
+            scope_ids=scope_ids,
+        ):
+            items.append(_build_funnel_event_item(fe))
+
+    if "classroom_transfer" in enabled:
+        for tr in _fetch_classroom_transfers(
+            session,
+            student_id=student_id,
+            classroom_id=classroom_id,
+            date_from=date_from,
+            date_to=date_to,
+            scope_ids=scope_ids,
+        ):
+            items.append(_build_classroom_transfer_item(tr))
+
+    if "payment" in enabled:
+        for row in _fetch_payments(
+            session,
+            student_id=student_id,
+            classroom_id=classroom_id,
+            date_from=date_from,
+            date_to=date_to,
+            scope_ids=scope_ids,
+        ):
+            items.append(_build_payment_item(row))
+
     # 穩定排序：時間倒序 → record_type 字典序 → record_id 倒序
     items.sort(
         key=lambda it: (it["_ts"], it["record_type"], it["record_id"]),
@@ -383,4 +423,130 @@ def list_timeline(
         "total": total,
         "page": page,
         "page_size": page_size,
+    }
+
+
+def _fetch_funnel_events(
+    session,
+    *,
+    student_id,
+    classroom_id,
+    date_from,
+    date_to,
+    scope_ids,
+):
+    from models.recruitment import RecruitmentEventLog
+
+    q = session.query(RecruitmentEventLog).filter(
+        RecruitmentEventLog.student_id.isnot(None)
+    )
+    if student_id is not None:
+        q = q.filter(RecruitmentEventLog.student_id == student_id)
+    if date_from is not None:
+        q = q.filter(RecruitmentEventLog.created_at >= date_from)
+    if date_to is not None:
+        q = q.filter(RecruitmentEventLog.created_at <= date_to)
+    if scope_ids is not None:
+        q = q.filter(RecruitmentEventLog.student_id.in_(scope_ids))
+    return q.all()
+
+
+def _build_funnel_event_item(fe) -> dict[str, Any]:
+    summary = f"招生階段 {fe.from_stage or '-'} → {fe.to_stage}"
+    return {
+        "record_type": "funnel_event",
+        "record_id": fe.id,
+        "student_id": fe.student_id,
+        "summary": summary,
+        "occurred_at": (
+            fe.created_at.date() if hasattr(fe.created_at, "date") else fe.created_at
+        ),
+        "_ts": _to_datetime(fe.created_at),
+        "reason": fe.reason,
+        "actor_user_id": fe.actor_user_id,
+        "event_type": fe.event_type,
+    }
+
+
+def _fetch_classroom_transfers(
+    session,
+    *,
+    student_id,
+    classroom_id,
+    date_from,
+    date_to,
+    scope_ids,
+):
+    from models.student_transfer import StudentClassroomTransfer
+
+    q = session.query(StudentClassroomTransfer)
+    if student_id is not None:
+        q = q.filter(StudentClassroomTransfer.student_id == student_id)
+    if date_from is not None:
+        q = q.filter(StudentClassroomTransfer.transferred_at >= date_from)
+    if date_to is not None:
+        q = q.filter(StudentClassroomTransfer.transferred_at <= date_to)
+    if scope_ids is not None:
+        q = q.filter(StudentClassroomTransfer.student_id.in_(scope_ids))
+    return q.all()
+
+
+def _build_classroom_transfer_item(tr) -> dict[str, Any]:
+    return {
+        "record_type": "classroom_transfer",
+        "record_id": tr.id,
+        "student_id": tr.student_id,
+        "summary": "轉班",
+        "occurred_at": (
+            tr.transferred_at.date()
+            if hasattr(tr.transferred_at, "date")
+            else tr.transferred_at
+        ),
+        "_ts": _to_datetime(tr.transferred_at),
+        "from_classroom_id": tr.from_classroom_id,
+        "to_classroom_id": tr.to_classroom_id,
+        "actor_user_id": tr.transferred_by,
+    }
+
+
+def _fetch_payments(
+    session,
+    *,
+    student_id,
+    classroom_id,
+    date_from,
+    date_to,
+    scope_ids,
+):
+    from models.fees import StudentFeePayment, StudentFeeRecord
+
+    q = session.query(
+        StudentFeePayment,
+        StudentFeeRecord.student_id,
+        StudentFeeRecord.fee_item_name,
+    ).join(
+        StudentFeeRecord,
+        StudentFeePayment.record_id == StudentFeeRecord.id,
+    )
+    if student_id is not None:
+        q = q.filter(StudentFeeRecord.student_id == student_id)
+    if date_from is not None:
+        q = q.filter(StudentFeePayment.payment_date >= date_from)
+    if date_to is not None:
+        q = q.filter(StudentFeePayment.payment_date <= date_to)
+    if scope_ids is not None:
+        q = q.filter(StudentFeeRecord.student_id.in_(scope_ids))
+    return q.all()
+
+
+def _build_payment_item(row) -> dict[str, Any]:
+    payment, sid, item_name = row
+    return {
+        "record_type": "payment",
+        "record_id": payment.id,
+        "student_id": sid,
+        "summary": f"繳交 {item_name} NT${payment.amount}",
+        "occurred_at": payment.payment_date,
+        "_ts": _to_datetime(payment.payment_date),
+        "amount": payment.amount,
     }
