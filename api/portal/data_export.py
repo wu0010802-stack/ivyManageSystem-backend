@@ -17,7 +17,31 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Any
+
 from fastapi.responses import Response
+from pydantic import Field
+
+from schemas._base import IvyBaseModel
+
+
+class PortalMyDataExportOut(IvyBaseModel):
+    """GET /portal/my-data-export 員工自身完整資料 JSON download.
+
+    FastAPI 對 Response(content=...) bypass validation；本 schema 主要用於
+    OpenAPI codegen 讓前端 type 對得上。多 nested 結構，用 dict[str, Any]
+    彈性允許 backend 慢慢補強型別。
+    """
+
+    exported_at: str
+    exported_by_user_id: int
+    schema_version: int
+    employee: dict[str, Any]
+    salary_records: list[dict[str, Any]]
+    attendance: list[dict[str, Any]]
+    leaves: list[dict[str, Any]]
+    overtimes: list[dict[str, Any]]
+    appraisals: list[dict[str, Any]]
 
 from models.database import get_session
 from utils.audit import write_explicit_audit
@@ -41,7 +65,7 @@ _export_limiter = create_limiter(
 )
 
 
-@router.get("/my-data-export")
+@router.get("/my-data-export", response_model=PortalMyDataExportOut)
 def get_my_data_export(
     request: Request,
     current_user: dict = Depends(get_current_user),
