@@ -66,3 +66,4 @@ update_*.py
 setup_db.py
 query_debug.py
 init_holidays.py
+.worktrees/
