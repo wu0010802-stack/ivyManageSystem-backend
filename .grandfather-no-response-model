@@ -226,12 +226,6 @@ api/parent_portal/profile.py:get_me
 api/parent_portal/profile.py:get_child_profile
 api/parent_portal/profile.py:get_my_children
 api/parent_portal/timeline.py:parent_get_timeline
-api/permissions_admin.py:create_permission_definition
-api/permissions_admin.py:update_permission_definition
-api/permissions_admin.py:delete_permission_definition
-api/permissions_admin.py:create_role
-api/permissions_admin.py:update_role
-api/permissions_admin.py:delete_role
 api/portal/activity.py:get_portal_activity_registrations
 api/portal/activity.py:portal_list_sessions
 api/portal/activity.py:portal_get_session_detail

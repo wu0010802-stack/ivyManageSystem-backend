@@ -19,6 +19,11 @@ from sqlalchemy.orm import Session
 
 from models.database import User, get_session_dep
 from models.permission_models import PermissionDefinition, Role
+from schemas.permissions_admin import (
+    PermissionAdminOkOut,
+    PermissionDefinitionOut,
+    RoleOut,
+)
 from utils.auth import require_permission
 from utils.permissions import Permission
 
@@ -63,7 +68,7 @@ class RoleUpdate(BaseModel):
 # ============================================================
 
 
-@router.post("/permissions/definitions")
+@router.post("/permissions/definitions", response_model=PermissionDefinitionOut)
 def create_permission_definition(
     payload: PermissionDefinitionIn,
     session: Session = Depends(get_session_dep),
@@ -91,7 +96,7 @@ def create_permission_definition(
     }
 
 
-@router.put("/permissions/definitions/{code}")
+@router.put("/permissions/definitions/{code}", response_model=PermissionDefinitionOut)
 def update_permission_definition(
     code: str,
     payload: PermissionDefinitionUpdate,
@@ -118,7 +123,7 @@ def update_permission_definition(
     }
 
 
-@router.delete("/permissions/definitions/{code}")
+@router.delete("/permissions/definitions/{code}", response_model=PermissionAdminOkOut)
 def delete_permission_definition(
     code: str,
     session: Session = Depends(get_session_dep),
@@ -190,7 +195,7 @@ def delete_permission_definition(
 # ============================================================
 
 
-@router.post("/roles")
+@router.post("/roles", response_model=RoleOut)
 def create_role(
     payload: RoleIn,
     session: Session = Depends(get_session_dep),
@@ -235,7 +240,7 @@ def create_role(
     }
 
 
-@router.put("/roles/{code}")
+@router.put("/roles/{code}", response_model=RoleOut)
 def update_role(
     code: str,
     payload: RoleUpdate,
@@ -292,7 +297,7 @@ def update_role(
     }
 
 
-@router.delete("/roles/{code}")
+@router.delete("/roles/{code}", response_model=PermissionAdminOkOut)
 def delete_role(
     code: str,
     session: Session = Depends(get_session_dep),
