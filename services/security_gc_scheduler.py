@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_GC_INTERVAL_SEC = 5 * 60
 # 資安掃描 2026-05-07 P1：原 24h 太長，改 6h；blocklist 內容輕（只 jti+exp）多跑無壓力。
 _JWT_BLOCKLIST_GC_INTERVAL_SEC = 6 * 60 * 60
+# 招生地址 cache 90d retention（個資法 §19）— 每 24h 跑一次
+_RECRUITMENT_GEOCODE_CACHE_GC_INTERVAL_SEC = 24 * 60 * 60
+_RECRUITMENT_GEOCODE_CACHE_RETENTION_DAYS = 90
 
 
 def scheduler_enabled() -> bool:
@@ -42,6 +45,7 @@ async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:
     """
     last_rate_gc = 0.0
     last_jwt_gc = 0.0
+    last_geocode_gc = 0.0
     logger.info("security_gc_scheduler started")
     try:
         while not stop_event.is_set():
@@ -52,6 +56,9 @@ async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:
             if now - last_jwt_gc >= _JWT_BLOCKLIST_GC_INTERVAL_SEC:
                 _run_jwt_blocklist_gc()
                 last_jwt_gc = now
+            if now - last_geocode_gc >= _RECRUITMENT_GEOCODE_CACHE_GC_INTERVAL_SEC:
+                _run_recruitment_geocode_cache_gc()
+                last_geocode_gc = now
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
@@ -101,3 +108,42 @@ def _run_jwt_blocklist_gc() -> None:
                     datetime.now(timezone.utc).isoformat(),
                     deleted,
                 )
+
+
+def _gc_recruitment_geocode_cache(session) -> int:
+    """純函式：刪除 90 天前已 resolved 的 RecruitmentGeocodeCache row。
+
+    NULL resolved_at（pending / failed）保留不刪。
+    回傳刪除 row 數。
+    """
+    from datetime import timedelta
+
+    from models.recruitment import RecruitmentGeocodeCache
+
+    cutoff = datetime.utcnow() - timedelta(days=_RECRUITMENT_GEOCODE_CACHE_RETENTION_DAYS)
+    deleted = session.query(RecruitmentGeocodeCache).filter(
+        RecruitmentGeocodeCache.resolved_at.isnot(None),
+        RecruitmentGeocodeCache.resolved_at < cutoff,
+    ).delete(synchronize_session=False)
+    return int(deleted or 0)
+
+
+def _run_recruitment_geocode_cache_gc() -> None:
+    """Scheduler 包裝：advisory lock + observability。"""
+    with scheduler_iteration("security_recruitment_geocode_cache_gc"):
+        with session_scope() as lock_session:
+            with try_scheduler_lock(
+                lock_session,
+                scheduler_name="security_recruitment_geocode_cache_gc",
+                run_key=str(int(time.time() // _RECRUITMENT_GEOCODE_CACHE_GC_INTERVAL_SEC)),
+            ) as acquired:
+                if not acquired:
+                    return
+                with session_scope() as session:
+                    deleted = _gc_recruitment_geocode_cache(session)
+                    record_rows("security_recruitment_geocode_cache_gc", deleted)
+                    logger.info(
+                        "recruitment_geocode_cache GC: 已刪除 %s 列 (retention=%sd)",
+                        deleted,
+                        _RECRUITMENT_GEOCODE_CACHE_RETENTION_DAYS,
+                    )
