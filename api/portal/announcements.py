@@ -4,6 +4,7 @@ Portal - announcement endpoints
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import selectinload
 from utils.errors import raise_safe_500
 
 from models.database import (
@@ -70,6 +71,7 @@ def get_portal_announcements(
         base_q = (
             session.query(Announcement, Employee.name)
             .outerjoin(Employee, Announcement.created_by == Employee.id)
+            .options(selectinload(Announcement.attachments))
             .filter(visible_filter)
             .order_by(
                 Announcement.is_pinned.desc(),
@@ -107,6 +109,10 @@ def get_portal_announcements(
                         ann.created_at.isoformat() if ann.created_at else None
                     ),
                     "is_read": ann.id in read_ids,
+                    "attachments": [
+                        _serialize_attachment_for_portal(att)
+                        for att in ann.attachments
+                    ],
                 }
             )
 
@@ -217,3 +223,8 @@ def get_unread_count(
         return {"unread_count": max(0, total - read)}
     finally:
         session.close()
+
+def _serialize_attachment_for_portal(att) -> dict:
+    """序列化 announcement attachment（portal list 用）。"""
+    from api.announcements import _serialize_attachment_for_announcement
+    return _serialize_attachment_for_announcement(att)

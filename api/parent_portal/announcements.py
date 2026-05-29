@@ -15,7 +15,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, exists, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from models.database import (
     Announcement,
@@ -77,6 +77,7 @@ def list_announcements(
     _time_pred = visibility_time_predicate(now_taipei_naive())
     q = (
         session.query(Announcement)
+        .options(selectinload(Announcement.attachments))
         .filter(visible_subq, _time_pred)
         .order_by(Announcement.created_at.desc())
     )
@@ -106,6 +107,10 @@ def list_announcements(
             "is_pinned": bool(a.is_pinned),
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "is_read": a.id in read_ids,
+            "attachments": [
+                _serialize_attachment_for_parent(att)
+                for att in a.attachments
+            ],
         }
         for a in rows
     ]
@@ -182,3 +187,8 @@ def mark_read(
         )
         session.flush()
     return {"status": "ok"}
+
+def _serialize_attachment_for_parent(att) -> dict:
+    """序列化 announcement attachment（家長端 list 用）。"""
+    from api.announcements import _serialize_attachment_for_announcement
+    return _serialize_attachment_for_announcement(att)

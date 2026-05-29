@@ -35,6 +35,17 @@ class AnnouncementReaderItemOut(IvyBaseModel):
     read_at: Optional[str] = None
 
 
+class AnnouncementAttachmentOut(IvyBaseModel):
+    """單筆公告附件（list 內嵌）。"""
+
+    id: int
+    filename: str
+    mime_type: str
+    size_bytes: int
+    url: str
+    thumb_url: Optional[str] = None
+
+
 class AnnouncementItemOut(IvyBaseModel):
     """單筆公告（管理員列表用，含 readers/recipient 統計）。"""
 
@@ -54,6 +65,7 @@ class AnnouncementItemOut(IvyBaseModel):
     read_preview: list[AnnouncementReaderItemOut]  # pii-allow: 已讀者姓名預覽（同上）
     has_more_readers: bool
     recipient_count: int
+    attachments: list[AnnouncementAttachmentOut] = []
 
 
 class AnnouncementListOut(IvyBaseModel):

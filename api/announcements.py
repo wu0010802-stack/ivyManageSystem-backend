@@ -179,7 +179,7 @@ def list_announcements(
                 read_count_subq.label("read_count"),
                 recipient_count_subq.label("recipient_count"),
             )
-            .options(joinedload(Announcement.author))
+            .options(joinedload(Announcement.author), selectinload(Announcement.attachments))
             .order_by(
                 Announcement.is_pinned.desc(),
                 Announcement.created_at.desc(),
@@ -242,6 +242,10 @@ def list_announcements(
                     "read_preview": preview,
                     "has_more_readers": int(read_count or 0) > len(preview),
                     "recipient_count": int(recipient_count or 0),
+                    "attachments": [
+                        _serialize_attachment_for_announcement(att)
+                        for att in ann.attachments
+                    ],
                 }
             )
         return {"total": int(total), "items": results}

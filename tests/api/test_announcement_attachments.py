@@ -281,3 +281,84 @@ def test_download_410_for_soft_deleted_attachment(
     admin_client.delete(f"/api/announcements/{a.id}/attachments/{att_id}")
     res = admin_client.get(url)
     assert res.status_code == 410
+
+
+def test_admin_list_includes_attachments(admin_client, db_session, admin_emp):
+    """GET /api/announcements 回傳公告含 attachments 陣列（至少 1 筆）。"""
+    from models.database import Announcement
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.commit()
+    admin_client.post(
+        f"/api/announcements/{a.id}/attachments",
+        files={"file": ("p.png", _png_bytes(), "image/png")},
+    )
+    res = admin_client.get("/api/announcements")
+    assert res.status_code == 200, res.text
+    item = next(i for i in res.json()["items"] if i["id"] == a.id)
+    assert len(item["attachments"]) == 1
+    assert item["attachments"][0]["mime_type"].startswith("image/")
+    assert item["attachments"][0]["thumb_url"] is not None
+
+
+def test_admin_list_excludes_soft_deleted_attachment(
+    admin_client, db_session, admin_emp
+):
+    """軟刪除附件後，list 端不再回傳該附件。"""
+    from models.database import Announcement
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.commit()
+    up = admin_client.post(
+        f"/api/announcements/{a.id}/attachments",
+        files={"file": ("p.png", _png_bytes(), "image/png")},
+    )
+    att_id = up.json()["id"]
+    admin_client.delete(f"/api/announcements/{a.id}/attachments/{att_id}")
+
+    res = admin_client.get("/api/announcements")
+    assert res.status_code == 200, res.text
+    item = next(i for i in res.json()["items"] if i["id"] == a.id)
+    assert item["attachments"] == []
+
+
+def test_admin_list_returns_pdf_attachment_without_thumb(
+    admin_client, db_session, admin_emp
+):
+    """PDF 附件 thumb_url 為 None（非圖片不生縮圖）。"""
+    from models.database import Announcement
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.commit()
+    admin_client.post(
+        f"/api/announcements/{a.id}/attachments",
+        files={"file": ("notice.pdf", _pdf_bytes(), "application/pdf")},
+    )
+    res = admin_client.get("/api/announcements")
+    assert res.status_code == 200, res.text
+    item = next(i for i in res.json()["items"] if i["id"] == a.id)
+    assert len(item["attachments"]) == 1
+    assert item["attachments"][0]["mime_type"] == "application/pdf"
+    assert item["attachments"][0]["thumb_url"] is None
+
+
+def test_admin_list_attachments_filename_preserved(
+    admin_client, db_session, admin_emp
+):
+    """附件 filename 保留原始副檔名（中文檔名 safe_attachment_filename 處理後 .pdf）。"""
+    from models.database import Announcement
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.commit()
+    admin_client.post(
+        f"/api/announcements/{a.id}/attachments",
+        files={"file": ("母親節通知.pdf", _pdf_bytes(), "application/pdf")},
+    )
+    res = admin_client.get("/api/announcements")
+    assert res.status_code == 200, res.text
+    item = next(i for i in res.json()["items"] if i["id"] == a.id)
+    assert item["attachments"][0]["filename"].endswith(".pdf")
