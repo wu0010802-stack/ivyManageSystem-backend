@@ -61,7 +61,7 @@ async def run_pii_retention_scheduler(stop_event: asyncio.Event) -> None:
             pass
 
         while not stop_event.is_set():
-            with scheduler_iteration("pii_retention"):
+            with scheduler_iteration("pii_retention", expected_interval_seconds=_GC_INTERVAL_SEC):
                 _run_pii_retention_gc()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=_GC_INTERVAL_SEC)

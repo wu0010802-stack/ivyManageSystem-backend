@@ -92,7 +92,7 @@ async def run_salary_snapshot_scheduler(stop_event: asyncio.Event) -> None:
         interval,
     )
     while not stop_event.is_set():
-        with scheduler_iteration("salary_snapshot"):
+        with scheduler_iteration("salary_snapshot", expected_interval_seconds=interval):
             created = check_and_snapshot_once()
             record_rows("salary_snapshot", int(created or 0))
             if created:

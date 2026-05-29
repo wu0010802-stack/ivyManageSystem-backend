@@ -182,7 +182,7 @@ async def run_auto_graduation_scheduler(stop_event: asyncio.Event) -> None:
             target = graduation_date_for_year(today.year)
             if today == target and last_run_year != today.year:
                 logger.warning("觸發自動畢業（date=%s）", today.isoformat())
-                with scheduler_iteration("auto_graduation"):
+                with scheduler_iteration("auto_graduation", expected_interval_seconds=CHECK_INTERVAL_SECONDS):
                     result = run_auto_graduation(effective_date=today)
                     record_rows("auto_graduation", int(result.get("succeeded", 0) or 0))
                     last_run_year = today.year

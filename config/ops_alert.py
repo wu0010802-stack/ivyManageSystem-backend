@@ -19,6 +19,12 @@ class OpsAlertSettings(BaseSettings):
     slow_request_alert_threshold: int = 10
     slow_request_alert_cooldown_seconds: int = 300
 
+    # UptimeRobot webhook 驗證 token（free tier 不支援 custom header，走 query param）。
+    # validation_alias 跳過 env_prefix（OPS_ALERT_），用全域 UPTIME_ROBOT_WEBHOOK_TOKEN。
+    uptime_robot_webhook_token: str | None = Field(
+        default=None, validation_alias="UPTIME_ROBOT_WEBHOOK_TOKEN", repr=False
+    )
+
     @property
     def enabled(self) -> bool:
         return self.slow_request_alert_window_seconds > 0

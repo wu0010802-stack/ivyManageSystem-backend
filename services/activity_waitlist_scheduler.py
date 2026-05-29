@@ -69,7 +69,7 @@ async def run_activity_waitlist_scheduler(stop_event: asyncio.Event) -> None:
         interval,
     )
     while not stop_event.is_set():
-        with scheduler_iteration("activity_waitlist"):
+        with scheduler_iteration("activity_waitlist", expected_interval_seconds=interval):
             result = check_and_sweep_once()
             expired = result.get("expired", 0)
             reminded = result.get("reminded", 0)

@@ -40,7 +40,7 @@ async def run_recruitment_term_advance_scheduler(stop_event: asyncio.Event) -> N
     )
 
     while not stop_event.is_set():
-        with scheduler_iteration("recruitment_term_advance"):
+        with scheduler_iteration("recruitment_term_advance", expected_interval_seconds=check_interval):
             today = _today_taipei()
             advanced = 0
             with session_scope() as session:

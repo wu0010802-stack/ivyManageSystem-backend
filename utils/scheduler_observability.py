@@ -124,7 +124,10 @@ def record_rows(scheduler_name: str, count: int) -> None:
 
 
 @contextmanager
-def scheduler_iteration(scheduler_name: str) -> Iterator[None]:
+def scheduler_iteration(
+    scheduler_name: str,
+    expected_interval_seconds: int | None = None,
+) -> Iterator[None]:
     """執行一次 scheduler iteration，自動記 metrics + throttle Sentry 上報。
 
     成功：reset consecutive_failures、更新 last_success_at。
@@ -134,6 +137,11 @@ def scheduler_iteration(scheduler_name: str) -> Iterator[None]:
     Sentry 重複捕避免：失敗時用 ``logger.warning``（不會被 LoggingIntegration
     event_level=ERROR 自動抓），達閾值才透過 ``utils.sentry_init.capture_exception``
     顯式上報；保證每連串失敗最多上報 1 次（除非真的繼續累計新 3 次）。
+
+    expected_interval_seconds：選填。若 caller 傳入則同時 UPSERT
+    scheduler_heartbeats DB row（解決 in-memory metrics 在 process restart 後
+    丟失最近成功時間的問題）。未傳則僅更新 in-memory 不寫 DB（既有 caller 行為
+    不變）。DB 寫失敗 swallow（log warning），不影響 scheduler loop。
     """
     stats = _METRICS.get_or_create(scheduler_name)
     with _METRICS._lock:
@@ -148,6 +156,7 @@ def scheduler_iteration(scheduler_name: str) -> Iterator[None]:
             stats.last_failure_at = now
             stats.last_error_message = f"{type(exc).__name__}: {exc}"[:500]
             failure_count = stats.consecutive_failures
+            last_error_message = stats.last_error_message
         if failure_count >= ALERT_THRESHOLD:
             logger.warning(
                 "%s 連續 %d 次失敗，上報 Sentry: %s",
@@ -165,9 +174,78 @@ def scheduler_iteration(scheduler_name: str) -> Iterator[None]:
                 ALERT_THRESHOLD,
                 exc,
             )
+        if expected_interval_seconds is not None:
+            try:
+                _persist_heartbeat(
+                    scheduler_name=scheduler_name,
+                    success=False,
+                    error_message=last_error_message,
+                    expected_interval_seconds=expected_interval_seconds,
+                )
+            except Exception:  # noqa: BLE001 — DB 寫失敗不能炸 scheduler loop
+                logger.warning(
+                    "scheduler_heartbeat DB persist failed (failure path) for %s",
+                    scheduler_name,
+                    exc_info=True,
+                )
     else:
         now = datetime.now(timezone.utc)
         with _METRICS._lock:
             stats.consecutive_failures = 0
             stats.last_success_at = now
             stats.last_error_message = None
+        if expected_interval_seconds is not None:
+            try:
+                _persist_heartbeat(
+                    scheduler_name=scheduler_name,
+                    success=True,
+                    error_message=None,
+                    expected_interval_seconds=expected_interval_seconds,
+                )
+            except Exception:  # noqa: BLE001 — DB 寫失敗不能炸 scheduler loop
+                logger.warning(
+                    "scheduler_heartbeat DB persist failed (success path) for %s",
+                    scheduler_name,
+                    exc_info=True,
+                )
+
+
+def _persist_heartbeat(
+    scheduler_name: str,
+    success: bool,
+    error_message: str | None,
+    expected_interval_seconds: int,
+) -> None:
+    """獨立 transaction 寫 scheduler_heartbeats row；用 session_scope 自動 commit。
+
+    row 不存在時 upsert（避免新加 scheduler 漏掉 seed 也能 work）。
+    呼叫端的 try/except 已包住，這裡保持 raise 讓 caller 決定 swallow 行為。
+    """
+    # 延遲 import 避免 utils 在 models 載入完成前被 import 造成循環。
+    from models.base import session_scope  # noqa: PLC0415
+    from models.scheduler_heartbeat import SchedulerHeartbeat  # noqa: PLC0415
+
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        row = (
+            session.query(SchedulerHeartbeat)
+            .filter_by(scheduler_name=scheduler_name)
+            .one_or_none()
+        )
+        if row is None:
+            row = SchedulerHeartbeat(
+                scheduler_name=scheduler_name,
+                expected_interval_seconds=expected_interval_seconds,
+            )
+            session.add(row)
+        else:
+            # interval 可能因 config 變動，每次 tick 同步更新。
+            row.expected_interval_seconds = expected_interval_seconds
+        if success:
+            row.last_success_at = now
+            row.consecutive_failures = 0
+            row.last_error_message = None
+        else:
+            row.last_failure_at = now
+            row.consecutive_failures = (row.consecutive_failures or 0) + 1
+            row.last_error_message = (error_message or "")[:1000]

@@ -110,6 +110,10 @@ from services.leave_quota_expiry.comp_grant_reminder import (
     init_comp_grant_reminder_line_service,
 )
 from services.ops_alert import init_ops_alert_service
+from api.internal.uptime_webhook import (
+    router as uptime_webhook_router,
+    init_uptime_webhook_service,
+)
 
 # Startup modules
 from startup.migrations import run_alembic_upgrade
@@ -822,6 +826,7 @@ init_growth_reports_line_service(line_service)
 init_webhook_service(line_service)
 init_comp_grant_reminder_line_service(line_service)
 init_ops_alert_service(line_service)
+init_uptime_webhook_service(line_service)
 init_gov_report_services(insurance_service)
 init_bonus_preview_services(salary_engine)
 init_parent_line_service(line_login_service)
@@ -874,6 +879,7 @@ app.include_router(exports_router)
 app.include_router(audit_router)
 app.include_router(internal_metrics_router)
 app.include_router(integrations_health_router)
+app.include_router(uptime_webhook_router)
 if settings.core.dev_router_should_mount:
     from api.dev import router as dev_router, init_dev_services
 

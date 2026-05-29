@@ -79,7 +79,7 @@ async def run_official_calendar_scheduler(stop_event: asyncio.Event) -> None:
         interval,
     )
     while not stop_event.is_set():
-        with scheduler_iteration("official_calendar"):
+        with scheduler_iteration("official_calendar", expected_interval_seconds=interval):
             results = sync_official_calendar_once()
             # 任一年 status=error 視為本次 iteration 失敗；wrapper 用 raise 觸發 throttle
             errored_years = [y for y, st in results.items() if st == "error"]

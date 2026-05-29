@@ -66,3 +66,6 @@ from .medical_access_log import MedicalAccessLog  # noqa: F401
 
 # 2026-05-28 Spec F：員工端 refresh token（Base.metadata.create_all 需要此 import）
 from models.staff_refresh_token import StaffRefreshToken  # noqa: F401
+
+# 2026-05-28 BE-A: DB-backed scheduler heartbeat（解決 in-memory restart 丟失）
+from models.scheduler_heartbeat import SchedulerHeartbeat  # noqa: F401
