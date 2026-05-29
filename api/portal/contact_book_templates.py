@@ -29,6 +29,12 @@ from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.permissions import Permission, has_permission
 
+from schemas._common import DeleteResultOut
+from schemas.portal_contact_book_templates import (
+    ContactBookTemplateOut,
+    ContactBookTemplateListOut,
+)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -106,7 +112,7 @@ def _assert_can_modify(template: ContactBookTemplate, current_user: dict) -> Non
 # ── Endpoints ─────────────────────────────────────────────────────────────
 
 
-@router.get("")
+@router.get("", response_model=ContactBookTemplateListOut)
 def list_templates(
     request: Request,
     include_archived: bool = Query(False),
@@ -145,7 +151,7 @@ def list_templates(
         session.close()
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=ContactBookTemplateOut)
 def create_template(
     payload: TemplateCreate,
     request: Request,
@@ -179,7 +185,7 @@ def create_template(
         session.close()
 
 
-@router.patch("/{template_id}")
+@router.patch("/{template_id}", response_model=ContactBookTemplateOut)
 def update_template(
     template_id: int,
     payload: TemplateUpdate,
@@ -214,7 +220,7 @@ def update_template(
         session.close()
 
 
-@router.delete("/{template_id}")
+@router.delete("/{template_id}", response_model=DeleteResultOut)
 def delete_template(
     template_id: int,
     request: Request,
@@ -243,7 +249,7 @@ def delete_template(
         session.close()
 
 
-@router.post("/{template_id}/promote")
+@router.post("/{template_id}/promote", response_model=ContactBookTemplateOut)
 def promote_to_shared(
     template_id: int,
     request: Request,

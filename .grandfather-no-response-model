@@ -236,11 +236,6 @@ api/portal/attendance.py:print_attendance_sheet_pdf
 api/portal/calendar.py:get_portal_calendar
 api/portal/comp_leave_history.py:list_my_comp_leave_grants
 api/portal/comp_leave_history.py:list_my_payout_history
-api/portal/contact_book_templates.py:list_templates
-api/portal/contact_book_templates.py:create_template
-api/portal/contact_book_templates.py:update_template
-api/portal/contact_book_templates.py:delete_template
-api/portal/contact_book_templates.py:promote_to_shared
 api/portal/dismissal_calls.py:portal_list_dismissal_calls
 api/portal/dismissal_calls.py:portal_pending_count
 api/portal/dismissal_calls.py:portal_acknowledge
