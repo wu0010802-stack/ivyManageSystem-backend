@@ -87,3 +87,23 @@ def test_require_scoped_permission_wildcard_grants_all():
     dep = require_scoped_permission(Permission.STUDENTS_READ)
     _, grant = dep(user=user)
     assert grant.scope == "all"
+
+
+import logging
+from utils.permissions import check_scope_options_sanity
+
+
+def test_sanity_warns_when_students_prefix_lacks_scope_options(caplog):
+    seed = {"STUDENTS_READ": None, "DASHBOARD": None}
+    with caplog.at_level(logging.WARNING):
+        check_scope_options_sanity(seed)
+    assert any("STUDENTS_READ" in r.message for r in caplog.records)
+    # DASHBOARD lacks STUDENTS_/PORTFOLIO_/etc prefix -> no warning
+    assert not any("DASHBOARD" in r.message for r in caplog.records)
+
+
+def test_sanity_no_warning_when_scope_options_present(caplog):
+    seed = {"STUDENTS_READ": ["own_class", "all"]}
+    with caplog.at_level(logging.WARNING):
+        check_scope_options_sanity(seed)
+    assert len(caplog.records) == 0

@@ -788,3 +788,37 @@ def require_scoped_permission(code: "Permission"):
 
     return dep
 
+
+
+# === Startup sanity warning for missing scope_options ===
+
+import logging as _logging
+
+_logger = _logging.getLogger(__name__)
+
+# Prefixes that imply a permission SHOULD support scope_options.
+# Phase 1 only includes STUDENTS_*. Phases 2-4 expand this list.
+_SCOPE_AWARE_PREFIXES = (
+    "STUDENTS_",
+)
+_SCOPE_AWARE_EXACT: tuple = ()
+
+
+def check_scope_options_sanity(seed: dict) -> None:
+    """Log WARNING (not raise) for permission codes that look scope-aware
+    by name prefix but have NULL/empty scope_options in the DB.
+
+    Usage (startup): called after init_*_services in main.py on_startup().
+    Catches seed drift when new scope-aware perms are added without a migration.
+    """
+    for code, opts in seed.items():
+        looks_scope_aware = (
+            any(code.startswith(p) for p in _SCOPE_AWARE_PREFIXES)
+            or code in _SCOPE_AWARE_EXACT
+        )
+        if looks_scope_aware and not opts:
+            _logger.warning(
+                "permission %r looks scope-aware but scope_options is empty/NULL "
+                "in permission_definitions; consider adding a migration",
+                code,
+            )
