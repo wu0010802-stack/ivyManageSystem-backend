@@ -62,6 +62,13 @@ from utils.portfolio_storage import (
     is_heic_extension,
 )
 
+from schemas._common import DeleteResultOut
+from schemas.parent_portal_medications import (
+    ParentMedicationOrderListOut,
+    ParentMedicationOrderOut,
+    ParentMedicationPhotoOut,
+)
+
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
 
@@ -214,7 +221,7 @@ def _get_order_for_parent(
 # ── Endpoints ────────────────────────────────────────────────────────────
 
 
-@router.get("")
+@router.get("", response_model=ParentMedicationOrderListOut)
 def list_medication_orders(
     student_id: int = Query(..., gt=0),
     date_from: Optional[date] = Query(None, alias="from"),
@@ -243,7 +250,7 @@ def list_medication_orders(
     return {"items": items, "total": len(items)}
 
 
-@router.get("/{order_id}")
+@router.get("/{order_id}", response_model=ParentMedicationOrderOut)
 def get_medication_order(
     order_id: int,
     current_user: dict = Depends(require_parent_role()),
@@ -254,7 +261,7 @@ def get_medication_order(
     return _order_to_dict(o, _load_logs(session, o.id), _load_photos(session, o.id))
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=ParentMedicationOrderOut)
 def create_medication_order(
     payload: ParentMedicationOrderCreate,
     request: Request,
@@ -329,7 +336,7 @@ def create_medication_order(
     return _order_to_dict(order, logs, [])
 
 
-@router.post("/{order_id}/photos", status_code=201)
+@router.post("/{order_id}/photos", status_code=201, response_model=ParentMedicationPhotoOut)
 async def upload_medication_photo(
     order_id: int,
     request: Request,
@@ -399,7 +406,7 @@ async def upload_medication_photo(
     return _attachment_to_dict(att)
 
 
-@router.delete("/{order_id}/photos/{attachment_id}")
+@router.delete("/{order_id}/photos/{attachment_id}", response_model=DeleteResultOut)
 def delete_medication_photo(
     order_id: int,
     attachment_id: int,

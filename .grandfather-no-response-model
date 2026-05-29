@@ -14,11 +14,6 @@ api/activity/inquiries.py:mark_inquiry_read
 api/activity/inquiries.py:reply_inquiry
 api/activity/inquiries.py:delete_inquiry
 api/activity/pos.py:print_pos_receipt_pdf
-api/activity/pos.py:outstanding_by_student
-api/activity/pos.py:pos_checkout
-api/activity/pos.py:pos_daily_summary
-api/activity/pos.py:pos_recent_transactions
-api/activity/pos.py:pos_semester_reconciliation
 api/activity/public.py:get_public_poster
 api/activity/registrations_items.py:add_registration_course
 api/activity/registrations_items.py:add_registration_supply
@@ -199,11 +194,6 @@ api/parent_portal/leaves.py:get_leave
 api/parent_portal/leaves.py:upload_leave_attachment
 api/parent_portal/measurements.py:parent_list_measurements
 api/parent_portal/measurements.py:parent_measurement_chart
-api/parent_portal/medications.py:list_medication_orders
-api/parent_portal/medications.py:get_medication_order
-api/parent_portal/medications.py:create_medication_order
-api/parent_portal/medications.py:upload_medication_photo
-api/parent_portal/medications.py:delete_medication_photo
 api/parent_portal/messages.py:list_threads
 api/parent_portal/messages.py:get_thread
 api/parent_portal/messages.py:list_messages
@@ -358,11 +348,6 @@ api/student_incidents.py:create_incident
 api/student_incidents.py:update_incident
 api/student_incidents.py:delete_incident
 api/student_leaves.py:list_leaves
-api/students.py:get_students
-api/students.py:get_student_records_timeline
-api/students.py:get_academic_summary
-api/students.py:get_student
-api/students.py:bulk_transfer_students
 api/students.py:get_student_profile
 api/system_config.py:list_configs
 api/system_config.py:get_config
