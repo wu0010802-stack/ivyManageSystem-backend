@@ -3,10 +3,13 @@ Permission definitions for fine-grained access control
 （text[] 版本，2026-05-21 重構：脫離 64-bit IntFlag 容量限制）
 """
 
+import logging
 from enum import Enum
 from typing import List, Dict, NamedTuple, Optional
 
 WILDCARD = "*"
+
+_logger = logging.getLogger(__name__)
 
 
 class Permission(str, Enum):
@@ -792,10 +795,6 @@ def require_scoped_permission(code: "Permission"):
 
 # === Startup sanity warning for missing scope_options ===
 
-import logging as _logging
-
-_logger = _logging.getLogger(__name__)
-
 # Prefixes that imply a permission SHOULD support scope_options.
 # Phase 1 only includes STUDENTS_*. Phases 2-4 expand this list.
 _SCOPE_AWARE_PREFIXES = (
@@ -805,11 +804,15 @@ _SCOPE_AWARE_EXACT: tuple = ()
 
 
 def check_scope_options_sanity(seed: dict) -> None:
-    """Log WARNING (not raise) for permission codes that look scope-aware
-    by name prefix but have NULL/empty scope_options in the DB.
+    """startup sanity warning — 若 seed 中某 permission code 名稱看起來像
+    scope-aware（前綴匹配 _SCOPE_AWARE_PREFIXES 或精確匹配 _SCOPE_AWARE_EXACT），
+    但 DB permission_definitions.scope_options 為 NULL/空，則 log WARNING。
 
-    Usage (startup): called after init_*_services in main.py on_startup().
-    Catches seed drift when new scope-aware perms are added without a migration.
+    用途：未來 Phase 2-4 新增 scope-aware 權限時，若 migration 忘了補
+    scope_options seed，此檢查能在 startup 立刻發出警告（不擋啟動）。
+
+    Args:
+        seed: dict[str, list[str] | None]，鍵為 permission code，值為 scope_options
     """
     for code, opts in seed.items():
         looks_scope_aware = (

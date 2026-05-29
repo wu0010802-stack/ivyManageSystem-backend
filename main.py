@@ -227,8 +227,11 @@ def on_startup():
         from models.permission_models import PermissionDefinition
         from models.database import get_session
 
-        with get_session() as s:
+        s = get_session()
+        try:
             seed = {p.code: p.scope_options for p in s.query(PermissionDefinition).all()}
+        finally:
+            s.close()
         check_scope_options_sanity(seed)
     except Exception as e:
         logger.warning("scope_options sanity check skipped: %s", e)
