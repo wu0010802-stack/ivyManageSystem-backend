@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import or_, func, case
 from sqlalchemy.exc import IntegrityError
 
 from models.database import get_session, Classroom
@@ -183,47 +183,22 @@ def portal_list_sessions(
     end_date: Optional[date] = None,
     current_user: dict = Depends(get_current_user),
 ):
-    """取得含自班學生的場次列表"""
+    """才藝場次列表：列全部才藝場次（任何老師可見），出席統計算整堂。
+
+    放寬前僅列『自班有報名的課程』場次且統計只算自班；現對齊 admin：
+    列全部場次、整堂統計。維持回傳陣列（與既有前端相容，無分頁）。
+    """
     session = get_session()
     try:
-        emp = _get_employee(session, current_user)
-        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
-        if not classroom_ids:
-            return []
-
-        # 取得自班有報名的課程 ID（以 classroom_id FK 比對）
-        enrolled_course_ids = [
-            row.course_id
-            for row in session.query(RegistrationCourse.course_id)
-            .join(
-                ActivityRegistration,
-                RegistrationCourse.registration_id == ActivityRegistration.id,
-            )
-            .filter(
-                ActivityRegistration.classroom_id.in_(classroom_ids),
-                ActivityRegistration.is_active.is_(True),
-                ActivityRegistration.match_status != "rejected",
-                RegistrationCourse.status == "enrolled",
-            )
-            .distinct()
-            .all()
-        ]
-        if not enrolled_course_ids:
-            return []
-
-        query = (
-            session.query(
-                ActivitySession.id,
-                ActivitySession.course_id,
-                ActivitySession.session_date,
-                ActivitySession.notes,
-                ActivitySession.created_by,
-                ActivitySession.created_at,
-                ActivityCourse.name.label("course_name"),
-            )
-            .join(ActivityCourse, ActivitySession.course_id == ActivityCourse.id)
-            .filter(ActivitySession.course_id.in_(enrolled_course_ids))
-        )
+        query = session.query(
+            ActivitySession.id,
+            ActivitySession.course_id,
+            ActivitySession.session_date,
+            ActivitySession.notes,
+            ActivitySession.created_by,
+            ActivitySession.created_at,
+            ActivityCourse.name.label("course_name"),
+        ).join(ActivityCourse, ActivitySession.course_id == ActivityCourse.id)
         if course_id:
             query = query.filter(ActivitySession.course_id == course_id)
         if start_date:
@@ -234,37 +209,25 @@ def portal_list_sessions(
             ActivitySession.session_date.desc(), ActivitySession.id.desc()
         ).all()
 
-        # 計算自班出席統計（以 classroom_id FK 比對）
         session_ids = [r.id for r in rows]
-        class_reg_ids = set(
-            row.id
-            for row in session.query(ActivityRegistration.id)
-            .filter(
-                ActivityRegistration.classroom_id.in_(classroom_ids),
-                ActivityRegistration.is_active.is_(True),
-                ActivityRegistration.match_status != "rejected",
-            )
-            .all()
-        )
-
         attendance_stats: dict[int, dict] = {}
-        if session_ids and class_reg_ids:
-            raw_atts = (
+        if session_ids:
+            agg_rows = (
                 session.query(
-                    ActivityAttendance.session_id, ActivityAttendance.is_present
+                    ActivityAttendance.session_id,
+                    func.count(ActivityAttendance.id).label("recorded"),
+                    func.sum(
+                        case((ActivityAttendance.is_present.is_(True), 1), else_=0)
+                    ).label("present"),
                 )
-                .filter(
-                    ActivityAttendance.session_id.in_(session_ids),
-                    ActivityAttendance.registration_id.in_(class_reg_ids),
-                )
+                .filter(ActivityAttendance.session_id.in_(session_ids))
+                .group_by(ActivityAttendance.session_id)
                 .all()
             )
-            for att in raw_atts:
-                if att.session_id not in attendance_stats:
-                    attendance_stats[att.session_id] = {"recorded": 0, "present": 0}
-                attendance_stats[att.session_id]["recorded"] += 1
-                if att.is_present:
-                    attendance_stats[att.session_id]["present"] += 1
+            attendance_stats = {
+                row.session_id: {"recorded": row.recorded, "present": row.present or 0}
+                for row in agg_rows
+            }
 
         result = []
         for r in rows:
