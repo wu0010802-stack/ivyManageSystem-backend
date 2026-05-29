@@ -5,7 +5,7 @@ psycopg2-binary>=2.9.0
 pandas>=2.0.0
 openpyxl>=3.1.0
 xlrd>=2.0  # 讀取 .xls (Excel 97-2003) 用於匯入舊版考核 / 年終經營績效表
-python-multipart>=0.0.20,<0.0.27  # CVE-2026-40347, CVE-2026-42561; <0.0.27 需 Python 3.10+
+python-multipart>=0.0.26,<0.0.27  # CVE-2026-40347, CVE-2026-42561; <0.0.27 需 Python 3.10+
 reportlab>=4.0.0
 Pillow>=11.3.0,<12.2.0  # CVE-2026-25990, CVE-2026-40192, CVE-2026-42308/9/10/11; <12.2.0 需 Python 3.10+
 # pillow-heif 可選：若部署環境有 libheif 且安裝成功，HEIC 上傳會自動轉 JPG；
