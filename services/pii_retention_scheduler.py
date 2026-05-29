@@ -45,6 +45,10 @@ def retention_days() -> int:
     return int(get_settings().scheduler.pii_retention_terminal_days or 365)
 
 
+def employee_retention_years() -> int:
+    return int(get_settings().scheduler.employee_pii_retention_years or 5)
+
+
 async def run_pii_retention_scheduler(stop_event: asyncio.Event) -> None:
     """主迴圈：每 24 小時跑一次 PII retention GC。"""
     logger.info(
@@ -63,6 +67,8 @@ async def run_pii_retention_scheduler(stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             with scheduler_iteration("pii_retention", expected_interval_seconds=_GC_INTERVAL_SEC):
                 _run_pii_retention_gc()
+            with scheduler_iteration("pii_retention_employee"):
+                _run_employee_pii_retention_gc()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=_GC_INTERVAL_SEC)
             except asyncio.TimeoutError:
@@ -175,6 +181,115 @@ def _run_pii_retention_gc(session=None) -> None:
     except Exception as e:
         # Downgraded：scheduler 端 wrapper 會做 throttled Sentry 上報
         logger.warning("pii_retention GC 失敗: %s", e, exc_info=True)
+        if owns_session:
+            session.rollback()
+        raise
+    finally:
+        if owns_session:
+            session.close()
+
+
+def _run_employee_pii_retention_gc(session=None) -> None:
+    """單次 GC：找離職滿 5 年 Employee → 抹通訊 PII → 寫 audit_log。
+
+    抹欄位：address, emergency_contact_name, emergency_contact_phone, bank_account, bank_account_name
+    保留欄位：身分證、薪資歷史 (供稅務 query)
+    觸發條件：is_active=False AND resign_date < NOW - 5y AND pii_redacted_at IS NULL
+
+    驅動：個資法 §11 特定目的消失應主動刪除；保留期限 5 年參酌商業會計法 +
+    勞基法工資紀錄保存 5 年規範。
+    """
+    cutoff_years = employee_retention_years()
+    cutoff = datetime.now(timezone.utc).date() - timedelta(days=cutoff_years * 365)
+    dry = dry_run_enabled()
+    owns_session = session is None
+    if owns_session:
+        session = get_session()
+    try:
+        dialect = session.bind.dialect.name
+        lock_clause = "FOR UPDATE SKIP LOCKED" if dialect == "postgresql" else ""
+        rows = session.execute(
+            text(f"""
+            SELECT id, name, resign_date
+            FROM employees
+            WHERE is_active = FALSE
+              AND resign_date IS NOT NULL
+              AND resign_date < :cutoff
+              AND pii_redacted_at IS NULL
+            ORDER BY id
+            LIMIT :limit
+            {lock_clause}
+        """),
+            {"cutoff": cutoff, "limit": _BATCH_LIMIT},
+        ).fetchall()
+
+        if not rows:
+            logger.info("employee_pii_retention GC: 無到期 Employee")
+            return
+
+        emp_ids = [r[0] for r in rows]
+        logger.info(
+            "employee_pii_retention GC: %s 筆%s",
+            len(emp_ids),
+            " (dry-run)" if dry else "",
+        )
+
+        if dry:
+            if owns_session:
+                session.rollback()
+            return
+
+        now = datetime.now(timezone.utc)
+        stmt = text("""
+            UPDATE employees
+            SET address = NULL,
+                emergency_contact_name = NULL,
+                emergency_contact_phone = NULL,
+                bank_account = NULL,
+                bank_account_name = NULL,
+                pii_redacted_at = :now,
+                updated_at = :now
+            WHERE id IN :ids
+        """).bindparams(bindparam("ids", expanding=True))
+        session.execute(stmt, {"ids": tuple(emp_ids), "now": now})
+
+        for r in rows:
+            session.add(
+                AuditLog(
+                    user_id=None,
+                    username="pii_retention_gc",
+                    action="UPDATE",
+                    entity_type="employee",
+                    entity_id=str(r[0]),
+                    summary=f"Employee PII retention redact (>{cutoff_years}y after resign)",
+                    changes=json.dumps(
+                        {
+                            "reason": f"retention_{cutoff_years}y",
+                            "resign_date": str(r[2]),
+                            "fields_redacted": [
+                                "address",
+                                "emergency_contact_name",
+                                "emergency_contact_phone",
+                                "bank_account",
+                                "bank_account_name",
+                            ],
+                            "fields_preserved": ["id_number", "salary_history"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    ip_address=None,
+                    created_at=now_taipei_naive(),
+                )
+            )
+
+        if owns_session:
+            session.commit()
+        else:
+            session.flush()
+        logger.info("employee_pii_retention GC: 已抹 %s 筆 Employee PII", len(emp_ids))
+        record_rows("pii_retention_employee", len(emp_ids))
+    except Exception as e:
+        logger.warning("employee_pii_retention GC 失敗: %s", e, exc_info=True)
         if owns_session:
             session.rollback()
         raise
