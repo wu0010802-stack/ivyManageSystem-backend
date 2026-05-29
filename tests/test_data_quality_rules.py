@@ -205,3 +205,59 @@ def test_contact_book_orphan_student_detects(test_db_session):
     v = next(v for v in violations if v.entity_type == "contact_book_entry")
     assert v.rule_code == "contact_book_orphan_student"
     assert v.severity == "P0"
+
+
+def test_guardian_orphan_user_detects(test_db_session):
+    """Guardian.user_id 指向不存在的 user → 觸發 rule。"""
+    from datetime import datetime
+    from sqlalchemy import text
+    from services.data_quality.rules.guardian_orphan_user import GuardianOrphanRule
+
+    now_iso = datetime.now().isoformat()
+    test_db_session.execute(
+        text(
+            "INSERT INTO guardians "
+            "(student_id, user_id, name, relation, "
+            " is_primary, is_emergency, can_pickup, sort_order, "
+            " created_at, updated_at) "
+            "VALUES (:sid, :uid, :nm, :rel, 0, 0, 0, 0, :ts, :ts)"
+        ),
+        {
+            "sid": 1,
+            "uid": 9999999,
+            "nm": "test guardian",
+            "rel": "father",
+            "ts": now_iso,
+        },
+    )
+    test_db_session.commit()
+
+    rule = GuardianOrphanRule()
+    violations = rule.check(test_db_session)
+    assert any(v.entity_type == "guardian" for v in violations)
+    v = next(v for v in violations if v.entity_type == "guardian")
+    assert v.rule_code == "guardian_orphan_user"
+    assert v.severity == "P0"
+
+
+def test_guardian_orphan_user_skips_null_user(test_db_session):
+    """user_id IS NULL（未綁定 LIFF 帳號）→ 不視為孤兒。"""
+    from datetime import datetime
+    from sqlalchemy import text
+    from services.data_quality.rules.guardian_orphan_user import GuardianOrphanRule
+
+    now_iso = datetime.now().isoformat()
+    test_db_session.execute(
+        text(
+            "INSERT INTO guardians "
+            "(student_id, user_id, name, relation, "
+            " is_primary, is_emergency, can_pickup, sort_order, "
+            " created_at, updated_at) "
+            "VALUES (:sid, NULL, :nm, :rel, 0, 0, 0, 0, :ts, :ts)"
+        ),
+        {"sid": 2, "nm": "unbound", "rel": "mother", "ts": now_iso},
+    )
+    test_db_session.commit()
+
+    rule = GuardianOrphanRule()
+    assert rule.check(test_db_session) == []
