@@ -19,6 +19,7 @@ from models.database import get_session
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from models.employee import Employee
 from utils.auth import get_current_user
+from utils.taipei_time import today_taipei
 from services.leave_quota_expiry.helpers import (
     _compensatory_balance,
     _next_month,
