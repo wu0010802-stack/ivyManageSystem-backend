@@ -22,6 +22,7 @@ from models.database import (
 
 # 既有家長推播 helper（不重新定義，遵守 DRY）
 from api.announcements import _fire_announcement_push
+from utils.scheduler_observability import scheduler_iteration
 
 logger = logging.getLogger(__name__)
 
