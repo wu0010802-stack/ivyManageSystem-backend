@@ -505,6 +505,10 @@ def write_audit_in_session(
 
     changes_json = None
     if changes is not None:
+        # P0b: 遮罩 PII（共用 Sentry denylist + amount 例外）
+        from utils.audit_redact import redact_pii
+
+        changes = redact_pii(changes)
         try:
             changes_json = json.dumps(changes, ensure_ascii=False, default=str)
             if len(changes_json) > 64 * 1024:
@@ -560,6 +564,10 @@ def write_explicit_audit(
         ip = get_client_ip(request)
         changes_json = None
         if changes is not None:
+            # P0b: 遮罩 PII（共用 Sentry denylist + amount 例外）
+            from utils.audit_redact import redact_pii
+
+            changes = redact_pii(changes)
             try:
                 changes_json = json.dumps(changes, ensure_ascii=False, default=str)
                 if len(changes_json) > 64 * 1024:
@@ -624,6 +632,12 @@ def write_login_audit(
             changes["username"] = username
         changes_json = None
         if changes:
+            # P0b: 遮罩 PII（共用 Sentry denylist + amount 例外）
+            # login extras 通常含 username（不在 denylist 保留）/ ip_address（exempt 保留）
+            # 若未來加 password / phone 等會自動遮
+            from utils.audit_redact import redact_pii
+
+            changes = redact_pii(changes)
             try:
                 changes_json = json.dumps(changes, ensure_ascii=False, default=str)
                 if len(changes_json) > 64 * 1024:

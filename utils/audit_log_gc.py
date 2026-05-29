@@ -1,0 +1,162 @@
+"""utils/audit_log_gc.py — audit_logs 保留期 GC。
+
+P0b 法規/個資 sprint：個資法 §11（特定目的消失應主動刪除）+ GDPR Art. 5(1)(e)。
+
+Retention policy by entity_type:
+- 金流稅務 7 年 (稅捐稽徵法 §30): salary / fee / fee_record / overtime /
+  vendor_payment / year_end / salary_record / payslip / bonus / appraisal_year_end
+- 認證 6 個月 (個資法 §11 必要範圍): auth
+- 學生/員工資料 3 年 (個資法 §11 + 兒少): student / employee / guardian /
+  parent / classroom / enrollment / recruitment / appraisal / attendance /
+  leave / medical
+- Fallback 3 年: 其他全部 entity_type（保守 default）
+
+設計：
+- 跑頻率 daily（heartbeat 60s 內檢查 last_run > 24h）
+- advisory_lock 防多 worker 並發
+- 分組 batched DELETE（per-entity_type batch 10000）避免長交易
+- record_rows 寫 scheduler observability
+
+Refs: spec docs/superpowers/specs/2026-05-28-audit-pii-redact-retention-design.md
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import timedelta
+
+from sqlalchemy import text
+
+from utils.advisory_lock import try_scheduler_lock
+from utils.scheduler_observability import record_rows, scheduler_iteration
+from utils.taipei_time import now_taipei_naive
+
+logger = logging.getLogger(__name__)
+
+_BATCH_SIZE = 10000
+
+# Retention table (天數)
+_FINANCE_DAYS = 365 * 7
+_AUTH_DAYS = 30 * 6
+_STUDENT_DAYS = 365 * 3
+_FALLBACK_DAYS = 365 * 3
+
+# Entity type 分組
+_FINANCE_TYPES: frozenset[str] = frozenset(
+    {
+        "salary",
+        "fee",
+        "fee_record",
+        "overtime",
+        "vendor_payment",
+        "year_end",
+        "salary_record",
+        "payslip",
+        "bonus",
+        "appraisal_year_end",
+    }
+)
+_AUTH_TYPES: frozenset[str] = frozenset({"auth"})
+_STUDENT_TYPES: frozenset[str] = frozenset(
+    {
+        "student",
+        "employee",
+        "guardian",
+        "parent",
+        "classroom",
+        "enrollment",
+        "recruitment",
+        "appraisal",
+        "attendance",
+        "leave",
+        "medical",
+    }
+)
+
+
+def _retention_days_for(entity_type: str) -> int:
+    """依 entity_type 回對應 retention 天數。未知 type 走 fallback。"""
+    if entity_type in _FINANCE_TYPES:
+        return _FINANCE_DAYS
+    if entity_type in _AUTH_TYPES:
+        return _AUTH_DAYS
+    if entity_type in _STUDENT_TYPES:
+        return _STUDENT_DAYS
+    return _FALLBACK_DAYS
+
+
+def cleanup_audit_logs(session) -> int:
+    """掃 audit_logs，按 entity_type retention 分批刪過期列。
+
+    回傳：總刪除筆數。
+    分批：每組 entity_type 內每次最多 _BATCH_SIZE 列，loop until done。
+    """
+    now = now_taipei_naive()
+    total_deleted = 0
+
+    # 先取得 DB 中現有的 entity_type 清單（避免硬編一份 list 跟現實不同步）
+    rows = session.execute(
+        text(
+            "SELECT DISTINCT entity_type FROM audit_logs WHERE entity_type IS NOT NULL"
+        )
+    ).all()
+    entity_types = [r[0] for r in rows]
+
+    for et in entity_types:
+        cutoff = now - timedelta(days=_retention_days_for(et))
+        et_deleted = 0
+        # 多輪 batch 直到該 entity_type 的過期列清完
+        while True:
+            # PG / SQLite 都支援 DELETE ... WHERE id IN (SELECT id ... LIMIT)
+            result = session.execute(
+                text("""
+                    DELETE FROM audit_logs
+                    WHERE id IN (
+                        SELECT id FROM audit_logs
+                        WHERE created_at < :cutoff
+                          AND entity_type = :et
+                        LIMIT :batch
+                    )
+                    """),
+                {"cutoff": cutoff, "et": et, "batch": _BATCH_SIZE},
+            )
+            batch_deleted = result.rowcount or 0
+            session.commit()
+            et_deleted += batch_deleted
+            if batch_deleted < _BATCH_SIZE:
+                break
+
+        if et_deleted > 0:
+            logger.info(
+                "audit_log GC: entity_type=%s retention_days=%d deleted=%d",
+                et,
+                _retention_days_for(et),
+                et_deleted,
+            )
+        total_deleted += et_deleted
+
+    return total_deleted
+
+
+def run_audit_log_gc_once(session_factory) -> int:
+    """跑一次 audit_log GC。caller 端負責 advisory_lock 與 disabled flag 判斷。
+
+    `session_factory`: zero-arg callable 回傳 SQLAlchemy session（contextmanager）。
+    """
+    from models.base import session_scope
+
+    with scheduler_iteration("security_audit_log_gc"):
+        with session_scope() as lock_session:
+            with try_scheduler_lock(
+                lock_session,
+                scheduler_name="security_audit_log_gc",
+                run_key=str(int(time.time() // 86400)),  # 日 bucket
+            ) as acquired:
+                if not acquired:
+                    return 0
+
+                with session_scope() as work_session:
+                    deleted = cleanup_audit_logs(work_session)
+                    record_rows("security_audit_log_gc", int(deleted))
+                    return deleted
