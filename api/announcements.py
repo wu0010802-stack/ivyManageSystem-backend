@@ -560,6 +560,79 @@ def _serialize_attachment_for_announcement(att) -> dict:
     }
 
 
+def assert_announcement_attachment_visible(session, att, current_user) -> None:
+    """依 caller role 三分流：
+
+    - admin / hr / supervisor (is_unrestricted): 直接通過
+    - employee: 套 portal visible_filter + time predicate
+    - parent: 套 parent visible_subquery + time predicate
+
+    安全：不能用「持有 ANNOUNCEMENTS_READ」當 bypass — 員工 portal user
+    持有此權限時仍須套 targeted_to_me 守衛，避免限定 target 公告附件被未指定
+    員工讀到。
+    """
+    from sqlalchemy import and_, exists, or_
+
+    from models.database import (
+        Announcement,
+        AnnouncementParentRecipient,
+        AnnouncementRecipient,
+    )
+    from services.announcements.visibility import visibility_time_predicate
+    from utils.portfolio_access import is_unrestricted
+    from utils.taipei_time import now_taipei_naive
+
+    if is_unrestricted(current_user):
+        return
+
+    ann_id = att.owner_id
+    time_pred = visibility_time_predicate(now_taipei_naive())
+    role = current_user.get("role")
+
+    if role == "parent":
+        from api.parent_portal.announcements import _build_visibility_subquery
+
+        cond = _build_visibility_subquery(session, current_user["user_id"])
+        apr = AnnouncementParentRecipient
+        visible_subq = exists().where(
+            and_(apr.announcement_id == Announcement.id, cond)
+        )
+        ann = (
+            session.query(Announcement)
+            .filter(Announcement.id == ann_id, visible_subq, time_pred)
+            .first()
+        )
+        if ann is None:
+            raise HTTPException(status_code=403, detail="無權存取此附件")
+        return
+
+    # employee role
+    emp_id = current_user.get("employee_id")
+    if emp_id is None:
+        raise HTTPException(status_code=403, detail="無權存取此附件")
+    no_recipients = ~exists().where(
+        AnnouncementRecipient.announcement_id == ann_id
+    )
+    targeted_to_me = exists().where(
+        and_(
+            AnnouncementRecipient.announcement_id == ann_id,
+            AnnouncementRecipient.employee_id == emp_id,
+        )
+    )
+    ann = (
+        session.query(Announcement)
+        .filter(
+            Announcement.id == ann_id,
+            or_(no_recipients, targeted_to_me),
+            time_pred,
+        )
+        .first()
+    )
+    if ann is None:
+        raise HTTPException(status_code=403, detail="無權存取此附件")
+
+
+
 @router.delete(
     "/{announcement_id}/attachments/{attachment_id}",
     response_model=DeleteResultOut,

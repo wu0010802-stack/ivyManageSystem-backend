@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 import models.base as base_module
 from api.announcements import router as announcements_router
+from api.attachments import download_router as attachments_download_router
 from models.database import (
     Announcement,
     Attachment,
@@ -92,6 +93,7 @@ def admin_client(db_engine, admin_emp, db_session):
 
     app = FastAPI()
     app.include_router(announcements_router)
+    app.include_router(attachments_download_router)
 
     with TestClient(app) as client:
         client.cookies.set("access_token", token)
@@ -235,3 +237,47 @@ def test_delete_rejects_cross_announcement(
 
     res = admin_client.delete(f"/api/announcements/{a2.id}/attachments/{att_id}")
     assert res.status_code == 404
+
+
+def test_admin_can_download_announcement_attachment(
+    admin_client, db_session, admin_emp
+):
+    from models.database import Announcement
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.commit()
+    up = admin_client.post(
+        f"/api/announcements/{a.id}/attachments",
+        files={"file": ("p.png", _png_bytes(), "image/png")},
+    )
+    url = up.json()["url"]
+    res = admin_client.get(url)
+    assert res.status_code == 200
+
+
+def test_download_404_for_unknown_key(admin_client):
+    res = admin_client.get("/api/uploads/portfolio/2026/05/nonexistent.png")
+    assert res.status_code == 404
+
+
+def test_download_410_for_soft_deleted_attachment(
+    admin_client, db_session, admin_emp
+):
+    from models.database import Announcement, Attachment
+
+    a = Announcement(title="T", content="C", created_by=admin_emp.id)
+    db_session.add(a)
+    db_session.commit()
+    up = admin_client.post(
+        f"/api/announcements/{a.id}/attachments",
+        files={"file": ("p.png", _png_bytes(), "image/png")},
+    )
+    body = up.json()
+    url = body["url"]
+    att_id = body["id"]
+
+    # 軟刪除
+    admin_client.delete(f"/api/announcements/{a.id}/attachments/{att_id}")
+    res = admin_client.get(url)
+    assert res.status_code == 410

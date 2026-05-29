@@ -37,7 +37,7 @@ from models.database import (
 )
 from models.portfolio import ATTACHMENT_OWNER_TYPES, ATTACHMENT_OWNER_OBSERVATION
 from schemas._common import DeleteResultOut
-from utils.auth import require_permission
+from utils.auth import get_current_user, require_permission
 from utils.errors import raise_safe_500
 from utils.file_upload import (
     max_upload_size_for,
@@ -270,7 +270,7 @@ async def delete_attachment(
 @download_router.get("/portfolio/{key:path}")
 async def download_portfolio_file(
     key: str,
-    current_user: dict = Depends(require_permission(Permission.PORTFOLIO_READ)),
+    current_user: dict = Depends(get_current_user),
 ) -> Response:
     """讀取附件檔案內容。
 
@@ -296,11 +296,20 @@ async def download_portfolio_file(
             if att.deleted_at:
                 raise HTTPException(status_code=410, detail="檔案已刪除")
 
-            # 權限：反查 student + 班級 scope
-            student_id = _resolve_owner_student_id(
-                session, att.owner_type, att.owner_id
-            )
-            assert_student_access(session, current_user, student_id)
+            # 權限分流：announcement attachment 走 announcement visibility，
+            # 其餘 portfolio owner_type 走班級 scope + PORTFOLIO_READ。
+            from models.portfolio import ATTACHMENT_OWNER_ANNOUNCEMENT
+            if att.owner_type == ATTACHMENT_OWNER_ANNOUNCEMENT:
+                from api.announcements import assert_announcement_attachment_visible
+                assert_announcement_attachment_visible(session, att, current_user)
+            else:
+                from utils.permissions import has_permission
+                if not has_permission(current_user.get("permission_names"), Permission.PORTFOLIO_READ):
+                    raise HTTPException(status_code=403, detail="無權存取此附件")
+                student_id = _resolve_owner_student_id(
+                    session, att.owner_type, att.owner_id
+                )
+                assert_student_access(session, current_user, student_id)
 
             storage = get_portfolio_storage()
             path = storage.absolute_path(key)
