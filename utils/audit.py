@@ -3,6 +3,7 @@ Audit logging middleware - automatically records all data-modifying API requests
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -446,6 +447,35 @@ def _extract_user_from_header(request: Request):
     return payload.get("user_id"), payload.get("name")
 
 
+def _extract_session_id_from_request(request: Request) -> str | None:
+    """從 Authorization Bearer JWT 取 jti claim（forensic session 識別）。
+
+    失敗（無 header、bad token、無 jti）一律回 None — audit 寫入應該繼續，
+    session_id 為 NULL 是預期過渡狀態（既有 token 過期後自然填補）。
+    """
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("bearer "):
+        return None
+    token = header[7:].strip()
+    if not token:
+        return None
+    from utils.auth import decode_token_for_audit
+
+    payload = decode_token_for_audit(token) or {}
+    jti = payload.get("jti")
+    if jti and isinstance(jti, str):
+        return jti
+    return None
+
+
+def _compute_ua_hash(request: Request) -> str | None:
+    """SHA256(User-Agent) hex digest 取前 32 字元。raw UA 不存（含 device PII）。"""
+    ua = request.headers.get("user-agent", "")
+    if not ua:
+        return None
+    return hashlib.sha256(ua.encode("utf-8", errors="ignore")).hexdigest()[:32]
+
+
 def _write_audit_sync(payload: dict) -> None:
     """在 threadpool 中執行的同步寫入，不可拋出例外到上層。"""
     try:
@@ -523,6 +553,8 @@ def write_audit_in_session(
         summary=summary,
         changes=changes_json,
         ip_address=ip,
+        user_agent_hash=_compute_ua_hash(request),
+        session_id=_extract_session_id_from_request(request),
         created_at=now_taipei_naive(),
     )
     session.add(log)
@@ -578,6 +610,8 @@ def write_explicit_audit(
             summary=summary,
             changes=changes_json,
             ip_address=ip,
+            user_agent_hash=_compute_ua_hash(request),
+            session_id=_extract_session_id_from_request(request),
             created_at=now_taipei_naive(),
         )
         _schedule_audit_write(payload)
@@ -642,6 +676,8 @@ def write_login_audit(
             summary=_build_login_summary(action, username),
             changes=changes_json,
             ip_address=ip,
+            user_agent_hash=_compute_ua_hash(request),
+            session_id=_extract_session_id_from_request(request),
             created_at=now_taipei_naive(),
         )
         _schedule_audit_write(payload)
@@ -737,6 +773,8 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 summary=summary,
                 changes=changes_json,
                 ip_address=ip,
+                user_agent_hash=_compute_ua_hash(request),
+                session_id=_extract_session_id_from_request(request),
                 created_at=now_taipei_naive(),
             )
             _schedule_audit_write(payload)
