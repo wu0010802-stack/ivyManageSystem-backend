@@ -123,7 +123,8 @@ def test_seed_roles_admin_is_wildcard(session_with_seed):
 
 
 def test_seed_roles_principal_inherits_supervisor(session_with_seed):
-    """principal seed 內容 = supervisor + SALARY_READ + AUDIT_LOGS + GOV_REPORTS_EXPORT。"""
+    """principal seed 內容 = supervisor + SALARY_READ + AUDIT_LOGS + GOV_REPORTS_EXPORT
+    + DATA_QUALITY_READ + DATA_QUALITY_WRITE。"""
     from utils.permissions import ROLE_TEMPLATES, Permission
 
     pri = set(
@@ -136,6 +137,8 @@ def test_seed_roles_principal_inherits_supervisor(session_with_seed):
         Permission.SALARY_READ.value,
         Permission.AUDIT_LOGS.value,
         Permission.GOV_REPORTS_EXPORT.value,
+        Permission.DATA_QUALITY_READ.value,
+        Permission.DATA_QUALITY_WRITE.value,
     }
 
 
@@ -143,12 +146,22 @@ def test_seed_roles_principal_inherits_supervisor(session_with_seed):
 # T5: get_permissions_definition(session) 從 DB 拉
 # ============================================================
 
+
 def test_get_permissions_definition_from_db_returns_all_roles(session_with_seed):
     """get_permissions_definition(session) 應回 7 個 role，每個含 label/description/permissions/is_core。"""
     from utils.permissions import get_permissions_definition
+
     definition = get_permissions_definition(session_with_seed)
     roles = definition["roles"]
-    assert set(roles.keys()) == {"admin", "principal", "supervisor", "hr", "accountant", "teacher", "parent"}
+    assert set(roles.keys()) == {
+        "admin",
+        "principal",
+        "supervisor",
+        "hr",
+        "accountant",
+        "teacher",
+        "parent",
+    }
     for role_data in roles.values():
         assert "label" in role_data
         assert "description" in role_data
@@ -160,6 +173,7 @@ def test_get_permissions_definition_from_db_returns_all_roles(session_with_seed)
 def test_get_permissions_definition_from_db_returns_all_permissions(session_with_seed):
     """get_permissions_definition(session).permissions 應含 PERMISSION_LABELS 全部條目（含 ROLES_MANAGE）。"""
     from utils.permissions import get_permissions_definition, PERMISSION_LABELS
+
     definition = get_permissions_definition(session_with_seed)
     perms = definition["permissions"]
     assert len(perms) == len(PERMISSION_LABELS)
@@ -173,6 +187,7 @@ def test_get_permissions_definition_from_db_returns_all_permissions(session_with
 def test_get_permissions_definition_includes_groups(session_with_seed):
     """response 應含 groups（從 group_name 動態組）。"""
     from utils.permissions import get_permissions_definition
+
     definition = get_permissions_definition(session_with_seed)
     assert "groups" in definition
     assert len(definition["groups"]) > 0
@@ -181,6 +196,7 @@ def test_get_permissions_definition_includes_groups(session_with_seed):
 def test_get_permissions_definition_includes_split_modules(session_with_seed):
     """split_modules 暫保 in-code，仍在 response 內。"""
     from utils.permissions import get_permissions_definition, SPLIT_MODULES
+
     definition = get_permissions_definition(session_with_seed)
     assert definition["split_modules"] == SPLIT_MODULES
 
@@ -189,8 +205,10 @@ def test_get_permissions_definition_includes_split_modules(session_with_seed):
 # T6: get_role_default_permissions(session, code) 從 DB 拉
 # ============================================================
 
+
 def test_get_role_default_permissions_returns_db_role(session_with_seed):
     from utils.permissions import get_role_default_permissions
+
     perms = get_role_default_permissions(session_with_seed, "principal")
     # principal = supervisor 全部 + SALARY_READ + AUDIT_LOGS + GOV_REPORTS_EXPORT
     assert "SALARY_READ" in perms
@@ -200,12 +218,16 @@ def test_get_role_default_permissions_returns_db_role(session_with_seed):
 
 def test_get_role_default_permissions_admin_wildcard(session_with_seed):
     from utils.permissions import get_role_default_permissions
+
     assert get_role_default_permissions(session_with_seed, "admin") == ["*"]
 
 
-def test_get_role_default_permissions_unknown_role_falls_back_to_teacher(session_with_seed):
+def test_get_role_default_permissions_unknown_role_falls_back_to_teacher(
+    session_with_seed,
+):
     """未知 role code 回傳 teacher 預設（既有行為）。"""
     from utils.permissions import get_role_default_permissions
+
     perms = get_role_default_permissions(session_with_seed, "nonexistent_role_xyz")
     teacher_perms = get_role_default_permissions(session_with_seed, "teacher")
     assert perms == teacher_perms
