@@ -40,8 +40,19 @@ def _fake_request():
 
 
 def _fake_admin():
-    """最小 admin 使用者 dict（無 employee_id，僅 role=admin）。"""
-    return {"user_id": 1, "username": "admin", "role": "admin", "employee_id": 1}
+    """最小 admin 使用者 dict（無 employee_id，僅 role=admin）。
+
+    permission_names=['*'] 是 Phase 2.1 後 portfolio_access wrapper 的 code= 入參
+    走 resolve_grant 路徑時要 admin 通行所必須（wildcard → ('all') scope）；
+    舊測試僅靠 role-based fallback，但已 migrate 的 router 帶 code= 後不再走 role 短路。
+    """
+    return {
+        "user_id": 1,
+        "username": "admin",
+        "role": "admin",
+        "employee_id": 1,
+        "permission_names": ["*"],
+    }
 
 
 @contextmanager
@@ -325,9 +336,9 @@ def test_employee_deactivate_sets_soft_delete_audit():
     assert request.state.audit_summary.startswith(
         "軟刪"
     ), f"summary should start with '軟刪', got: {request.state.audit_summary!r}"
-    assert "員工" in request.state.audit_summary, (
-        f"summary should contain '員工', got: {request.state.audit_summary!r}"
-    )
+    assert (
+        "員工" in request.state.audit_summary
+    ), f"summary should contain '員工', got: {request.state.audit_summary!r}"
     assert getattr(request.state, "audit_delete_kind", None) == "soft"
 
 
@@ -367,7 +378,9 @@ def test_user_deactivate_sets_soft_delete_audit():
 
     with patch.object(auth_module, "get_session", return_value=fake_session):
         with patch.object(auth_module, "_assert_can_manage_user"):
-            with patch.object(auth_module, "get_role_default_permissions", return_value=[]):
+            with patch.object(
+                auth_module, "get_role_default_permissions", return_value=[]
+            ):
                 result = update_user(
                     user_id=3,
                     data=data,
@@ -381,7 +394,7 @@ def test_user_deactivate_sets_soft_delete_audit():
     assert request.state.audit_summary.startswith(
         "軟刪"
     ), f"summary should start with '軟刪', got: {request.state.audit_summary!r}"
-    assert "使用者帳號" in request.state.audit_summary, (
-        f"summary should contain '使用者帳號', got: {request.state.audit_summary!r}"
-    )
+    assert (
+        "使用者帳號" in request.state.audit_summary
+    ), f"summary should contain '使用者帳號', got: {request.state.audit_summary!r}"
     assert getattr(request.state, "audit_delete_kind", None) == "soft"

@@ -169,7 +169,7 @@ async def upload_attachment(
         # 權限檢查之後。
         with session_scope() as session:
             student_id = _resolve_owner_student_id(session, owner_type, owner_id)
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
 
         # 通過 ACL 後才讀檔 + size + magic bytes，再開新 session 寫入
         content = await read_upload_with_size_check(file, extension=ext)
@@ -178,7 +178,7 @@ async def upload_attachment(
         with session_scope() as session:
             # owner 反查可能在 race 下 stale（owner 已被 delete），保守再驗一次
             student_id = _resolve_owner_student_id(session, owner_type, owner_id)
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
 
             storage = get_portfolio_storage()
             stored = storage.put_attachment(content, ext)
@@ -242,7 +242,7 @@ async def delete_attachment(
             student_id = _resolve_owner_student_id(
                 session, att.owner_type, att.owner_id
             )
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
 
             att.deleted_at = now_taipei_naive()
             mark_soft_delete(request, "attachment", str(attachment_id))
@@ -309,7 +309,7 @@ async def download_portfolio_file(
                 student_id = _resolve_owner_student_id(
                     session, att.owner_type, att.owner_id
                 )
-                assert_student_access(session, current_user, student_id)
+                assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
 
             storage = get_portfolio_storage()
             path = storage.absolute_path(key)

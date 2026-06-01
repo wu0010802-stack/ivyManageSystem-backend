@@ -107,3 +107,26 @@ def test_reports_endpoints_use_both_read_and_publish_codes():
     # 3 個 READ (list/detail/download) + 3 個 PUBLISH (create/delete/send-line)
     assert source.count("code=Permission.PORTFOLIO_READ") >= 3
     assert source.count("code=Permission.PORTFOLIO_PUBLISH") >= 3
+
+
+def test_attachments_endpoints_use_read_and_write_codes():
+    """api/attachments.py 含 POST upload (WRITE ×2 pre-check + post-IO) + DELETE (WRITE) + GET download (READ)。
+
+    所有 wrapper call 都落在 PORTFOLIO_* family（upload/delete 守 PORTFOLIO_WRITE；
+    download 走 has_permission(PORTFOLIO_READ) 後再 assert_student_access），
+    並無 STUDENTS_* 或其他 perm family。
+    """
+    import inspect
+
+    import api.attachments as mod
+
+    source = inspect.getsource(mod)
+    assert (
+        "code=Permission.PORTFOLIO_WRITE" in source
+    ), "attachments.py POST upload / DELETE 端點應傳 code=PORTFOLIO_WRITE"
+    assert (
+        "code=Permission.PORTFOLIO_READ" in source
+    ), "attachments.py GET /portfolio/{key} 下載端點應傳 code=PORTFOLIO_READ"
+    # 至少 3 個 WRITE (upload pre-check + upload post-IO + delete) + 1 個 READ (download)
+    assert source.count("code=Permission.PORTFOLIO_WRITE") >= 3
+    assert source.count("code=Permission.PORTFOLIO_READ") >= 1
