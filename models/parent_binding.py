@@ -72,3 +72,50 @@ class GuardianBindingCode(Base):
             "used_at",
         ),
     )
+
+
+class ParentDeviceSetupCode(Base):
+    """無 LINE 家長裝置登入：一次性設定碼。
+
+    行政對特定 Guardian 簽發；無 LINE 家長在一般瀏覽器頁輸入明碼，兌換成裝置
+    refresh token（passwordless device-trust）。與 GuardianBindingCode 語意分離
+    （後者走 LINE LIFF /bind），不共用資料表以免污染既有 claim 邏輯。
+    """
+
+    __tablename__ = "parent_device_setup_codes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    guardian_id = Column(
+        Integer,
+        ForeignKey("guardians.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code_hash = Column(
+        String(64),
+        nullable=False,
+        unique=True,
+        comment="sha256(明碼) hex；明碼僅回傳簽發者一次",
+    )
+    expires_at = Column(DateTime, nullable=False, comment="預設 24h 過期")
+    used_at = Column(
+        DateTime, nullable=True, comment="兌換成功時間；non-null 即視為已用"
+    )
+    used_by_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="兌換該碼的家長 User",
+    )
+    created_by = Column(
+        Integer, ForeignKey("users.id"), nullable=False, comment="簽發此碼的行政 User"
+    )
+    created_at = Column(DateTime, default=now_taipei_naive, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_parent_device_setup_expires_unused",
+            "expires_at",
+            "used_at",
+        ),
+    )

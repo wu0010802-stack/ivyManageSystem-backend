@@ -33,6 +33,13 @@ class BindFirstChildOut(IvyBaseModel):
     user: ParentUserInfo
 
 
+class DeviceSetupOut(IvyBaseModel):
+    """POST /auth/device-setup 兌換設定碼成功回傳（無 LINE 家長裝置登入）。"""
+
+    status: Literal["ok"]
+    user: ParentUserInfo
+
+
 class BindAdditionalChildOut(IvyBaseModel):
     """POST /bind-additional 綁定多個小孩成功回傳。"""
 

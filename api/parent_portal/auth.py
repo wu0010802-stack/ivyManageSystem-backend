@@ -43,12 +43,15 @@ from api.auth import (
 from schemas.parent_portal_auth import (
     BindAdditionalChildOut,
     BindFirstChildOut,
+    DeviceSetupOut,
     LiffLoginOut,
     ParentRefreshOut,
 )
 from models.database import (
+    AuditLog,
     Guardian,
     GuardianBindingCode,
+    ParentDeviceSetupCode,
     ParentRefreshToken,
     User,
     get_session,
@@ -392,6 +395,80 @@ _BIND_FAILURE_MESSAGES = {
 }
 
 
+# ── 無 LINE 裝置登入（device-setup）─────────────────────────────────────────
+_DEVICE_SETUP_SCOPE = "parent_device_setup"
+
+
+def _claim_device_setup_code_atomic(session, code_hash: str):
+    """atomic 單次 claim parent_device_setup_codes（used_at IS NULL 且未過期）。
+
+    rowcount==1 才成功；回更新後 ORM 物件，失敗回 None（已用 / 過期 / 不存在）。
+    """
+    now = _now()
+    stmt = (
+        update(ParentDeviceSetupCode)
+        .where(
+            ParentDeviceSetupCode.code_hash == code_hash,
+            ParentDeviceSetupCode.used_at.is_(None),
+            ParentDeviceSetupCode.expires_at > now,
+        )
+        .values(used_at=now)
+    )
+    if session.execute(stmt).rowcount != 1:
+        return None
+    return (
+        session.query(ParentDeviceSetupCode)
+        .filter(ParentDeviceSetupCode.code_hash == code_hash)
+        .first()
+    )
+
+
+def _username_for_device(guardian_id: int) -> str:
+    """無 LINE 家長 User 的 username：parent_device_<guardian_id>（唯一）。"""
+    return f"parent_device_{guardian_id}"
+
+
+def _create_parent_user_for_device(session, guardian) -> User:
+    """建立無 LINE 的 role='parent' User。
+
+    line_user_id=None（欄位 nullable+unique，多筆 NULL 允許）；display_name 取
+    Guardian.name（無 LINE 暱稱可用）；password_hash sentinel 同 LINE 家長。
+    """
+    user = User(
+        employee_id=None,
+        username=_username_for_device(guardian.id),
+        password_hash="!LINE_ONLY",
+        role="parent",
+        permission_names=[],
+        is_active=True,
+        must_change_password=False,
+        line_user_id=None,
+        display_name=_clean_display_name(guardian.name),
+        token_version=0,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+def _check_device_setup_lockout(ip: str) -> None:
+    """device-setup 為 ungated 入口 → 以 IP 為 key 做失敗鎖（連 5 次鎖 15 分）。"""
+    from utils.rate_limit_db import count_recent_attempts
+
+    count = count_recent_attempts(
+        _DEVICE_SETUP_SCOPE, ip, within_seconds=_BIND_FAIL_LOCKOUT
+    )
+    if count >= _BIND_FAIL_THRESHOLD:
+        logger.warning("device-setup 失敗過多，ip=%s 已鎖 (failures=%d)", ip, count)
+        raise HTTPException(status_code=429, detail="嘗試次數過多，請稍後再試")
+
+
+def _record_device_setup_failure(ip: str) -> None:
+    from utils.rate_limit_db import record_attempt
+
+    record_attempt(_DEVICE_SETUP_SCOPE, ip, window_seconds=_BIND_FAIL_LOCKOUT)
+
+
 def _username_for_line(line_user_id: str) -> str:
     """家長 User 的 username 規則：parent_line_<完整 line_user_id>。
 
@@ -666,6 +743,117 @@ def bind_additional_child(
             "status": "ok",
             "guardian_id": guardian.id,
             "student_id": guardian.student_id,
+        }
+    finally:
+        session.close()
+
+
+class DeviceSetupRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=20)
+
+
+@router.post("/device-setup", response_model=DeviceSetupOut)
+def device_setup(
+    payload: DeviceSetupRequest,
+    request: Request,
+    response: Response,
+):
+    """無 LINE 家長以 staff 簽發的設定碼兌換裝置登入 session（passwordless）。
+
+    成功 → 找/建 parent User（link guardian.user_id）+ 發 access + 30d refresh
+    （裝置記憶）。失敗一律回通用錯誤，避免碼枚舉。
+    """
+    ip = get_client_ip(request) or "unknown"
+    _check_ip_rate_limit(ip)
+    _check_device_setup_lockout(ip)
+
+    code_hash = _hash_code(payload.code)
+    session = get_session()
+    try:
+        binding = _claim_device_setup_code_atomic(session, code_hash)
+        if binding is None:
+            session.rollback()
+            _record_device_setup_failure(ip)
+            session.add(
+                AuditLog(
+                    user_id=None,
+                    username="",
+                    action="LOGIN_FAILED",
+                    entity_type="parent_device_setup",
+                    entity_id=None,
+                    summary="裝置設定碼兌換失敗",
+                    ip_address=ip,
+                    created_at=_now(),
+                )
+            )
+            session.commit()
+            raise BusinessError(
+                code="DEVICE_SETUP_CODE_INVALID",
+                message="設定碼無效或已過期，請向園所索取新碼",
+                http_status=400,
+            )
+
+        guardian = (
+            session.query(Guardian).filter(Guardian.id == binding.guardian_id).first()
+        )
+        if guardian is None or guardian.deleted_at is not None:
+            session.rollback()
+            raise HTTPException(status_code=400, detail="此設定碼對應的監護人已不存在")
+
+        # 解析 parent User：優先 guardian.user_id；否則以 username 復用既有 device
+        # User（防 CLAUDE.md #9 GC 把 guardian.user_id 抹 NULL 但 device User 仍在，
+        # 重發碼兌換時撞 username unique 而 500）；都沒有才新建。
+        user = None
+        if guardian.user_id:
+            user = session.query(User).filter(User.id == guardian.user_id).first()
+        if user is None:
+            user = (
+                session.query(User)
+                .filter(User.username == _username_for_device(guardian.id))
+                .first()
+            )
+        if user is None:
+            user = _create_parent_user_for_device(session, guardian)
+        guardian.user_id = user.id
+
+        binding.used_by_user_id = user.id
+        user.last_login = _now()
+        _issue_refresh_token(
+            session,
+            response,
+            user_id=user.id,
+            user_agent=request.headers.get("user-agent"),
+            ip=get_client_ip(request),
+        )
+        session.add(
+            AuditLog(
+                user_id=user.id,
+                username=user.username,
+                action="LOGIN",
+                entity_type="parent_device_setup",
+                entity_id=str(guardian.id),
+                summary="家長以裝置設定碼登入",
+                ip_address=ip,
+                created_at=_now(),
+            )
+        )
+        session.commit()
+        session.refresh(user)
+        _issue_access_token(response, user)
+
+        logger.warning(
+            "[device-setup] guardian_id=%s user_id=%s ip=%s",
+            guardian.id,
+            user.id,
+            ip,
+        )
+        return {
+            "status": "ok",
+            "user": {
+                "user_id": user.id,
+                "name": resolve_parent_display_name(session, user),
+                "role": "parent",
+            },
         }
     finally:
         session.close()
