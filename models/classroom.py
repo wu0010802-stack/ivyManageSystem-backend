@@ -133,7 +133,7 @@ class Student(Base):
     __tablename__ = "students"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    student_id = Column(String(20), unique=True, nullable=False, comment="學號")
+    student_id = Column(String(20), nullable=False, index=True, comment="學號（顯示快取；身分認定見 enrollment_school_year+seq）")
     name = Column(String(50), nullable=False, comment="姓名")
     gender = Column(String(10), nullable=True)
     birthday = Column(Date, nullable=True)
@@ -154,6 +154,12 @@ class Student(Base):
         ForeignKey("recruitment_visits.id", ondelete="SET NULL"),
         nullable=True,
         comment="對應的招生訪視記錄（若透過 convert 流程建立）",
+    )
+    enrollment_school_year = Column(
+        Integer, nullable=True, comment="發號學年（民國）；身分認定鍵之一，永久不變"
+    )
+    enrollment_seq = Column(
+        Integer, nullable=True, comment="永久流水號；入學配發一次、終身不變"
     )
 
     parent_name = Column(
@@ -221,6 +227,11 @@ class Student(Base):
         Index("ix_student_classroom", "classroom_id", "is_active"),
         Index("ix_student_enrollment_grad", "enrollment_date", "graduation_date"),
         Index("ix_student_lifecycle_status", "lifecycle_status"),
+        UniqueConstraint(
+            "enrollment_school_year",
+            "enrollment_seq",
+            name="uq_students_enrollment_year_seq",
+        ),
     )
 
     created_at = Column(DateTime, default=now_taipei_naive)
