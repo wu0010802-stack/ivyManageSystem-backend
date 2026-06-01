@@ -154,11 +154,14 @@ def _create_teacher_user(
     permission_names=None,
 ) -> User:
     if permission_names is None:
+        # Phase 2.3 (permscope04)：DISMISSAL_CALLS_* 變 scope-aware，bare 代碼預設為 :all。
+        # 既有 teacher 預期沿用「只能看／處理自班」行為，故 fixture 用 :own_class 形式，
+        # 對齊 permscope04 對 prod 既有 teacher 帳號的 backfill 結果。
         permission_names = [
             "STUDENTS_READ",
             "STUDENTS_WRITE",
-            "DISMISSAL_CALLS_READ",
-            "DISMISSAL_CALLS_WRITE",
+            "DISMISSAL_CALLS_READ:own_class",
+            "DISMISSAL_CALLS_WRITE:own_class",
             "ANNOUNCEMENTS_READ",
         ]
     user = User(

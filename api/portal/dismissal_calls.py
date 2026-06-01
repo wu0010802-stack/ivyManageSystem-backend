@@ -15,6 +15,7 @@ from utils.auth import require_permission
 from utils.permissions import Permission
 from api.dismissal_calls import _call_base_dict, _DAY_START, _DAY_END
 from ._shared import _get_teacher_classroom_ids, _get_employee
+from utils.portfolio_access import is_unrestricted
 
 logger = logging.getLogger(__name__)
 
@@ -70,25 +71,30 @@ def portal_list_dismissal_calls(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
-        if not classroom_ids:
-            return []
+        # Phase 2.3：DISMISSAL_CALLS_READ:all 可跨班看全校；teacher :own_class 限自班
+        if is_unrestricted(current_user, code=Permission.DISMISSAL_CALLS_READ.value):
+            classroom_ids = None
+        else:
+            classroom_ids = _get_teacher_classroom_ids(session, emp.id)
+            if not classroom_ids:
+                return []
 
         today = today_taipei()
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 
-        calls = (
+        q = (
             session.query(StudentDismissalCall)
             .filter(
-                StudentDismissalCall.classroom_id.in_(classroom_ids),
                 StudentDismissalCall.status.in_(["pending", "acknowledged"]),
                 StudentDismissalCall.requested_at >= day_start,
                 StudentDismissalCall.requested_at <= day_end,
             )
-            .order_by(StudentDismissalCall.requested_at.desc())
-            .all()
         )
+        if classroom_ids is not None:
+            q = q.filter(StudentDismissalCall.classroom_id.in_(classroom_ids))
+
+        calls = q.order_by(StudentDismissalCall.requested_at.desc()).all()
 
         return _build_calls_out_bulk(calls, session)
     finally:
@@ -103,24 +109,27 @@ def portal_pending_count(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
-        if not classroom_ids:
-            return {"count": 0}
+        # Phase 2.3：DISMISSAL_CALLS_READ:all 可跨班看全校；teacher :own_class 限自班
+        if is_unrestricted(current_user, code=Permission.DISMISSAL_CALLS_READ.value):
+            classroom_ids = None
+        else:
+            classroom_ids = _get_teacher_classroom_ids(session, emp.id)
+            if not classroom_ids:
+                return {"count": 0}
 
         today = today_taipei()
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 
-        count = (
-            session.query(StudentDismissalCall)
-            .filter(
-                StudentDismissalCall.classroom_id.in_(classroom_ids),
-                StudentDismissalCall.status == "pending",
-                StudentDismissalCall.requested_at >= day_start,
-                StudentDismissalCall.requested_at <= day_end,
-            )
-            .count()
+        q = session.query(StudentDismissalCall).filter(
+            StudentDismissalCall.status == "pending",
+            StudentDismissalCall.requested_at >= day_start,
+            StudentDismissalCall.requested_at <= day_end,
         )
+        if classroom_ids is not None:
+            q = q.filter(StudentDismissalCall.classroom_id.in_(classroom_ids))
+
+        count = q.count()
         return {"count": count}
     finally:
         session.close()
@@ -140,7 +149,11 @@ def _db_transition_call(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        classroom_ids = _get_teacher_classroom_ids(session, emp.id)
+        # Phase 2.3：DISMISSAL_CALLS_WRITE:all 可跨班處理全校；teacher :own_class 限自班
+        if is_unrestricted(current_user, code=Permission.DISMISSAL_CALLS_WRITE.value):
+            classroom_ids = None
+        else:
+            classroom_ids = _get_teacher_classroom_ids(session, emp.id)
 
         call = (
             session.query(StudentDismissalCall)
@@ -151,7 +164,10 @@ def _db_transition_call(
         # F-006：「通知不存在」與「屬於別班」collapse 為單一 403 generic，
         # 避免透過 status code 差異枚舉 StudentDismissalCall id 存在性。
         # 422（own-class 但狀態不符）保留為合法業務流程錯誤，不算 enum oracle。
-        if not call or call.classroom_id not in classroom_ids:
+        # unrestricted=True 時跳過 classroom 比對（仍保留 not call → 403 防 enum oracle）
+        if not call or (
+            classroom_ids is not None and call.classroom_id not in classroom_ids
+        ):
             raise HTTPException(status_code=403, detail="查無此通知或無權存取")
         # 列鎖（bug sweep 2026-05-12 round 3）：兩位老師同時點 acknowledge / complete
         # 同一筆通知時，無鎖會讓 acknowledged_by / completed_by 被後贏者覆蓋稽核軌跡。
