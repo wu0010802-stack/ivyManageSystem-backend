@@ -186,6 +186,7 @@ def create_device_setup_code(
                 created_by=current_user["user_id"],
             )
         )
+        _imp_by, _imp_name = _extract_impersonation_from_header(request)
         ip = get_client_ip(request)
         session.add(
             AuditLog(
@@ -197,6 +198,8 @@ def create_device_setup_code(
                 summary="簽發無 LINE 裝置登入碼",
                 ip_address=ip,
                 created_at=now_taipei_naive(),
+                impersonated_by=_imp_by,
+                impersonated_by_name=_imp_name,
             )
         )
         session.commit()

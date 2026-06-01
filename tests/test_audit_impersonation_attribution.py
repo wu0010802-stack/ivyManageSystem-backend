@@ -316,3 +316,80 @@ def test_binding_code_audit_no_impersonation_leaves_none(binding_client):
     assert (
         row.impersonated_by is None
     ), f"非模擬呼叫 impersonated_by 應為 None，got {row.impersonated_by}"
+
+
+def test_device_setup_code_audit_stamps_impersonation(binding_client):
+    """POST /api/guardians/{id}/device-setup-code 以 write-mode 模擬 token 呼叫時，
+    AuditLog 的 impersonated_by / impersonated_by_name 應帶 admin 身份（follow-up：
+    與 binding-code 同類的 inline AuditLog 歸屬缺口）。
+    """
+    client, session_factory = binding_client
+
+    admin_user_id = 42
+    admin_name = "王小明"
+
+    with session_factory() as session:
+        hr_user = User(
+            username="hr_devsetup_imp",
+            password_hash=hash_password("Pass1234!"),
+            role="hr",
+            permission_names=["GUARDIANS_WRITE"],
+            is_active=True,
+            must_change_password=False,
+            token_version=0,
+        )
+        session.add(hr_user)
+        session.flush()
+        hr_user_id = hr_user.id
+
+        from models.classroom import Student
+
+        student = Student(
+            student_id="S9902",
+            name="測試學生2",
+            lifecycle_status="active",
+            is_active=True,
+        )
+        session.add(student)
+        session.flush()
+
+        guardian = Guardian(
+            student_id=student.id,
+            name="測試家長2",
+            relation="父親",
+        )
+        session.add(guardian)
+        session.flush()
+        guardian_id = guardian.id
+        session.commit()
+
+    token = create_access_token(
+        {
+            "user_id": hr_user_id,
+            "employee_id": None,
+            "role": "hr",
+            "name": "HR 乙",
+            "permission_names": ["GUARDIANS_WRITE"],
+            "token_version": 0,
+            "impersonated_by": admin_user_id,
+            "impersonated_by_name": admin_name,
+            "impersonation_mode": "write",
+        }
+    )
+
+    resp = client.post(
+        f"/api/guardians/{guardian_id}/device-setup-code",
+        cookies={"access_token": token},
+    )
+    assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+
+    with session_factory() as session:
+        row = (
+            session.query(AuditLog)
+            .filter(AuditLog.entity_type == "parent_device_setup")
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
+    assert row is not None, "AuditLog row 未寫入"
+    assert row.impersonated_by == admin_user_id
+    assert row.impersonated_by_name == admin_name
