@@ -689,6 +689,51 @@ async def restore_registration(
         reg.is_active = True
         reg.match_status = "pending"
         reg.pending_review = True
+
+        # 容量重檢（Task A4 超賣修正）：被拒報名的 RegistrationCourse 列在 reject
+        # 時並未清掉（仍掛 enrolled/promoted_pending），且被拒期間名額可能已被其他
+        # 報名遞補。直接翻 is_active=True 會讓占容量數超過 capacity（超賣）。
+        # 因此 restore 時重數每門課的占位，超出容量者降為 waitlist。
+        from sqlalchemy import func
+        from models.database import ActivityCourse, RegistrationCourse
+
+        rc_rows = (
+            session.query(RegistrationCourse)
+            .filter(
+                RegistrationCourse.registration_id == reg.id,
+                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+            )
+            .all()
+        )
+        for rc in rc_rows:
+            course = (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id == rc.course_id)
+                .with_for_update()
+                .first()
+            )
+            # 課程不存在或未設容量上限（沿用 _attach_courses 慣例：None → 30）
+            if not course:
+                continue
+            capacity = course.capacity if course.capacity is not None else 30
+            # 占容量 = 其他「有效報名」的 enrolled + promoted_pending（排除本筆 reg）
+            occupying = (
+                session.query(func.count(RegistrationCourse.id))
+                .join(
+                    ActivityRegistration,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
+                .filter(
+                    RegistrationCourse.course_id == rc.course_id,
+                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                    ActivityRegistration.is_active.is_(True),
+                    RegistrationCourse.registration_id != reg.id,
+                )
+                .scalar()
+            )
+            if occupying >= capacity:
+                rc.status = "waitlist"
+
         prefix = (reg.remark or "").strip()
         note = f"[已還原 by {current_user.get('username')}]"
         reg.remark = (prefix + "\n" + note).strip() if prefix else note
