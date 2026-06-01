@@ -53,3 +53,83 @@ class TestStudentEnrollmentColumns:
         )
         with pytest.raises(Exception):
             session.flush()
+
+from models.classroom import Classroom, ClassGrade
+from services.student_numbering import (
+    grade_char,
+    compute_student_display_id,
+    next_enrollment_seq,
+)
+
+
+def _grade(session, name, sort_order=1):
+    g = ClassGrade(name=name, sort_order=sort_order)
+    session.add(g)
+    session.flush()
+    return g
+
+
+def _classroom(session, *, school_year, grade=None, name="班", code="A"):
+    c = Classroom(
+        name=name, school_year=school_year, semester=1,
+        grade_id=(grade.id if grade else None), class_code=code,
+    )
+    session.add(c)
+    session.flush()
+    return c
+
+
+class TestGradeChar:
+    def test_first_char(self):
+        assert grade_char("大班") == "大"
+        assert grade_char("幼幼班") == "幼"
+    def test_blank(self):
+        assert grade_char(None) == ""
+        assert grade_char("  ") == ""
+
+
+class TestComputeDisplayId:
+    def test_in_classroom_with_grade(self, session):
+        g = _grade(session, "中班")
+        c = _classroom(session, school_year=115, grade=g)
+        stu = Student(student_id="tmp", name="A", classroom_id=c.id,
+                      enrollment_school_year=114, enrollment_seq=5)
+        session.add(stu); session.flush()
+        assert compute_student_display_id(session, stu) == "115-中-05"
+
+    def test_classroom_without_grade(self, session):
+        c = _classroom(session, school_year=115, grade=None)
+        stu = Student(student_id="tmp", name="A", classroom_id=c.id,
+                      enrollment_school_year=114, enrollment_seq=5)
+        session.add(stu); session.flush()
+        assert compute_student_display_id(session, stu) == "115-05"
+
+    def test_no_classroom_fallback(self, session):
+        stu = Student(student_id="tmp", name="A", classroom_id=None,
+                      enrollment_school_year=114, enrollment_seq=5)
+        session.add(stu); session.flush()
+        assert compute_student_display_id(session, stu) == "114-05"
+
+    def test_seq_none_returns_existing(self, session):
+        stu = Student(student_id="LEGACY", name="A", enrollment_seq=None)
+        session.add(stu); session.flush()
+        assert compute_student_display_id(session, stu) == "LEGACY"
+
+
+class TestNextEnrollmentSeq:
+    def test_first_is_one(self, session):
+        assert next_enrollment_seq(session, 114) == 1
+
+    def test_increments_within_year(self, session):
+        session.add(Student(student_id="a", name="A",
+                            enrollment_school_year=114, enrollment_seq=1))
+        session.add(Student(student_id="b", name="B",
+                            enrollment_school_year=114, enrollment_seq=2))
+        session.flush()
+        assert next_enrollment_seq(session, 114) == 3
+
+    def test_per_year_independent(self, session):
+        session.add(Student(student_id="a", name="A",
+                            enrollment_school_year=114, enrollment_seq=7))
+        session.flush()
+        assert next_enrollment_seq(session, 115) == 1
