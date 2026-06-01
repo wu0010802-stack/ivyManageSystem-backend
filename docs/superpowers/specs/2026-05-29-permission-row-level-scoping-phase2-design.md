@@ -9,11 +9,14 @@
 
 ## Why
 
-Phase 1 把 `STUDENTS_READ/WRITE/LIFECYCLE_WRITE` 3 條權限的 row-level scoping **以及對應 `portfolio_access` bridge 基礎建設**做完。Bridge（`is_unrestricted(user, code=)` + `accessible_classroom_ids(session, user, code=)`）可接受任何 permission code 字串，所以 Phase 2-4 不需新增基礎建設，只需：
+Phase 1 把 `STUDENTS_READ/WRITE/LIFECYCLE_WRITE` 3 條權限的 row-level scoping **以及對應 `portfolio_access` bridge 基礎建設的前 2 個 helper（`is_unrestricted` + `accessible_classroom_ids`）**做完。剩下 3 個高頻 helper（`assert_student_access` / `filter_student_ids_by_access` / `student_ids_in_scope`）尚未擴展 `code=` 參數 — Phase 2.2 第一個 task 即為補完此擴展，之後 Phase 2.3+ 可直接複用。
 
-1. Seed `scope_options` for 剩下 12 條 scope-aware 權限
-2. 把現有呼叫端從 `accessible_classroom_ids(session, user)` 改為 `accessible_classroom_ids(session, user, code=Permission.XXX.value)`
-3. 對少數沒有走 portfolio_access 的 router 做客製化處理
+Phase 2-4 整體只需：
+
+1. 補完 bridge helper（一次性，Phase 2.2 Task 1）
+2. Seed `scope_options` for 剩下 12 條 scope-aware 權限
+3. 把現有呼叫端從 `accessible_classroom_ids(session, user)` 改為 `accessible_classroom_ids(session, user, code=Permission.XXX.value)`
+4. 對沒走 portfolio_access 的 router 做客製化（iep.py 移除自有 scope、portal/dismissal_calls.py 加 gate）
 
 **實際業務價值：**
 
@@ -49,16 +52,18 @@ Phase 2.2 HEALTH-MEDICATION PR
     ↓ alembic upgrade head (permscope03_health_med)
 Phase 2.3 DISMISSAL PR
     ↓ alembic upgrade head (permscope04_dismissal)
-Phase 2.4 CLASSROOM-ATTENDANCE PR
-    ↓ alembic upgrade head (permscope05_classroom_attn)
+Phase 2.4a CLASSROOMS_READ PR（待 user 確認選項 D 後）
+    ↓ alembic upgrade head (permscope05a_classrooms)
+Phase 2.4b ATTENDANCE_READ PR（阻塞於業務決策 — 員工考勤 scope 語意）
+    ↓ alembic upgrade head (permscope05b_attendance)
 ```
 
 **順序選擇理由：**
 
 1. **PORTFOLIO 先做** — 全 8 文件都走 `portfolio_access`，migration 模式單純，是最安全的「驗證 Phase 1 bridge 設計合理」的測試
-2. **HEALTH 第二** — `api/student_health.py` 是核心醫療 PII router，做完後 80% 醫療資料 scope 完備（除 gov_moe/iep.py）
-3. **DISMISSAL 第三** — 只 1 個 file，但有自有 scope 邏輯需研究後才能寫 plan
-4. **CLASSROOM-ATTENDANCE 最後** — 5 files 都自有 scope，是技術上最複雜的 family；前 3 個 family 做完已驗證 pattern，最後一個 family 風險最低
+2. **HEALTH 第二** — `api/student_health.py` 是核心醫療 PII router；第一個 task 補完 3 個 bridge helper 的 `code=` 擴展（Phase 2.3+ 可直接複用）；順帶修 `iep.py` lifecycle 過濾 latent bug
+3. **DISMISSAL 第三** — portal endpoint 模式不同於 portfolio_access（用 portal-local helper），但改造模式簡單（4 endpoint 加 gate）
+4. **CLASSROOM-ATTENDANCE 最後 — 業務空白阻塞** — 調查發現現行 codebase 完全無 row scope，需業主決策後才能寫 plan；建議拆 2.4a CLASSROOMS_READ（容易）+ 2.4b ATTENDANCE_READ（待業務決策）
 
 **rollback 策略**：每 family 的 migration `downgrade()` 必須能單獨回退，不依賴後續 migration 存在。Phase 2.x 之間無強耦合。
 
@@ -82,52 +87,69 @@ Phase 2.4 CLASSROOM-ATTENDANCE PR
 
 ---
 
-## Phase 2.2 HEALTH-MEDICATION（outline）
+## Phase 2.2 HEALTH-MEDICATION
 
-**File 清單：**
+完整 implementation plan：[2026-05-29-permission-row-level-scoping-phase2.2-health-medication.md](../plans/2026-05-29-permission-row-level-scoping-phase2.2-health-medication.md)
 
-- `api/student_health.py`（755 行，9 處 portfolio_access calls）— 加 `code=`
-- `api/students.py`（部分 endpoint 用 HEALTH_READ；Task 7 已 migrate list endpoint）— 加 `code=`
-- `services/dashboard_query_service.py`（3 處 calls）— 加 `code=`
-- `api/portal/class_hub.py` `api/portal/medications.py`（用 HEALTH_READ + MEDICATION_ADMINISTER；計數待 confirm）
-- `api/gov_moe/iep.py`（408 行，**未使用** portfolio_access；自有 SPECIAL_NEEDS 邏輯需調查）
+**調查結果（2026-05-29）：**
 
-**Migration `permscope03_health_med_seed`**：5 條權限 seed
+| File | Scope 模式 | Phase 2.2 修改 |
+|------|-----------|---------------|
+| `api/student_health.py`（756 行） | ✅ 已走 `portfolio_access` bridge（8 處 `assert_student_access` / `student_ids_in_scope`） | 加 `code=` 至 8 處 |
+| `services/dashboard_query_service.py` | ✅ 已走 bridge（L333 `student_ids_in_scope`） | 加 `code=` 至 1 處 |
+| `api/portal/medications.py`（205 行） | ❌ 自有 `_get_teacher_classroom_ids`（L54-70）+ 缺 lifecycle 終態過濾 | 改 `accessible_classroom_ids(code=)` + 補 lifecycle 過濾 |
+| `api/portal/class_hub.py` | ❓ 委派下游 service — 需 pre-flight 確認 | TBD（Task 6 verify） |
+| **`api/gov_moe/iep.py`**（409 行） | ❌ 自有 `_student_ids_in_scope` (L76-105) + **缺 lifecycle 過濾**（Phase 1 latent bug） | delegate 至 portfolio_access — 順帶修 lifecycle bug |
 
-**研究項目（寫 plan 前必先回答）：**
+**Latent bug 發現**：`iep.py:_student_ids_in_scope` 用 `Employee.classroom_id` 而非 `Classroom` 三角 OR（與全系統不一致 — teacher 換班時可能 stale），且未過濾 lifecycle 終態學生（已退學/畢業學生的 IEP teacher 仍可看到 — audit 2026-05-07 P0 #5 漏網）。Phase 2.2 delegate 後一次修完。
 
-1. `api/gov_moe/iep.py` 目前如何 scope IEP 文件存取？是否有 teacher restriction？
-2. `api/portal/medications.py` 投藥 log 是否 hard-code 自班限制？
+**業務決策點（Task 7 必先 user 確認）**：iep.py 既有「主任 / 園長走 None（全放行）」hard-code，與 portfolio_access role-based 不同。是否改用自訂角色 + `:all` scope 表達（推薦），還是維持 hard-code（保守）。
 
----
-
-## Phase 2.3 DISMISSAL（outline）
-
-**File：** `api/portal/dismissal_calls.py`（單一 portal endpoint）
-
-**Migration `permscope04_dismissal_seed`**：`DISMISSAL_CALLS_READ` `DISMISSAL_CALLS_WRITE` seed
-
-**研究項目：**
-
-- portal endpoint 既有 scope 邏輯（用 `_get_employee` + 自寫 OR or 用 helper？）
-- 是否有對應 admin endpoint（搜尋 `DISMISSAL_CALLS_*` admin router）
+**Migration `permscope03_health_med`**：5 條權限 seed（仿 permscope01 結構）+ backfill teacher role bare → :own_class
 
 ---
 
-## Phase 2.4 CLASSROOM-ATTENDANCE（outline）
+## Phase 2.3 DISMISSAL
 
-**Files：**
+完整 implementation plan：[2026-05-29-permission-row-level-scoping-phase2.3-dismissal.md](../plans/2026-05-29-permission-row-level-scoping-phase2.3-dismissal.md)
 
-- `api/classrooms.py`（已知有自己的 head_teacher_id 三角 OR）
-- `api/attendance/anomalies.py` `api/attendance/records.py` `api/attendance/reports.py` `api/exports.py`
+**調查結果（2026-05-29）：**
 
-**Migration `permscope05_classroom_attn_seed`**：`CLASSROOMS_READ` `ATTENDANCE_READ` seed
+| File | Scope 模式 | Phase 2.3 修改 |
+|------|-----------|---------------|
+| `api/portal/dismissal_calls.py`（250 行，4 endpoint） | ❌ 用 portal-local `_shared.py:_get_teacher_classroom_ids` — **非** `utils/portfolio_access` | 加 `is_unrestricted(code=)` gate（不重構 helper） |
+| `api/portal/_shared.py:_get_teacher_classroom_ids` | helper 不動 — 與 portfolio_access 三角 OR 等價 | 保留 |
+| `api/dismissal_calls.py`（admin） | 走 `require_staff_permission` 無 row filter — 與 Phase 2 無關 | 不動 |
 
-**研究項目（寫 plan 前必先回答）：**
+**4 endpoint**：`GET /dismissal-calls`（L65 READ） / `GET /dismissal-calls/pending-count`（L98 READ） / `POST .../acknowledge`（L210 WRITE） / `POST .../complete`（L231 WRITE）
 
-1. `api/classrooms.py` 三角 OR 是 row filter 還是 projection（display teacher name）？
-2. `ATTENDANCE_READ` 是員工考勤還是學生考勤？scope 語意「同班同事」對員工考勤是否合理？
-3. `api/exports.py` 是匯出整體資料 — scope 怎麼套用？
+**Migration `permscope04_dismissal`**：2 條權限 seed + backfill teacher role
+
+**Phase 2.3 與 2.2 無強耦合可平行 ship**，但 migration `down_revision` 需在 permscope03 之後（避免 dual head）。
+
+---
+
+## Phase 2.4 CLASSROOM-ATTENDANCE — **業務空白，待 user 決策**
+
+詳細決策清單：[2026-05-29-permission-row-level-scoping-phase2.4-classroom-attendance-questions.md](../plans/2026-05-29-permission-row-level-scoping-phase2.4-classroom-attendance-questions.md)
+
+**調查結果（2026-05-29）— 與原 outline 假設嚴重不符：**
+
+| File | 行數 | 既有 row scope? |
+|------|------|---------------|
+| `api/classrooms.py` | 1279 | **❌ 完全無** — 所有 endpoint 回全校；三角 OR 只用於 projection（mask health 欄位）不是 row filter |
+| `api/attendance/records.py` | 522 | **❌ 完全無** — 全員考勤對所有 ATTENDANCE_READ 持有人可見 |
+| `api/attendance/anomalies.py` | 402 | **❌ 完全無**（同上） |
+| `api/attendance/reports.py` | 564 | **❌ 完全無**（同上） |
+| `api/exports.py` | 1291 | partial — 個人月報有 `enforce_self_or_full_salary` self-guard，非 row scope |
+
+**關鍵業務空白**：員工考勤的「自班 scope」目前**沒有定義**。`ATTENDANCE_READ:own_class` 對員工考勤的合理詮釋至少 4 種（同班同事 / 同園 / 同部門 / 都不對）— 需與業主決策。
+
+**推薦路徑（選項 D Hybrid）**：
+- Phase 2.4a 先做 `CLASSROOMS_READ`（已有 `accessible_classroom_ids` helper 可重用；業務語意明確）
+- Phase 2.4b 留待業主確認員工考勤 scope 語意後再寫 plan
+
+**進度阻塞**：Phase 2.4 plan 寫不出非 placeholder 版本 — questions doc 已寫，待 user 在四個選項中選定後產出 2.4a / 2.4b 完整 TDD plan。
 
 ---
 
@@ -135,9 +157,10 @@ Phase 2.4 CLASSROOM-ATTENDANCE PR
 
 1. **行為穩定性**：每 family 的 migration 都會 backfill teacher role 的對應 permissions（bare → `:own_class`）+ bump token_version。teacher 用戶每 Phase 2.x merge 後都會被踢出重 login。**緩解**：Phase 2.x 之間隔 1-2 週，避免短時間多次踢出。
 2. **per-endpoint code= 對應錯誤**：endpoint 可能 require_permission(`PORTFOLIO_READ`) 但 scope check 寫 `code=Permission.STUDENTS_READ.value`，導致錯誤 scope 套用。**緩解**：每個 migration 必寫 integration test 證明對應的 perm 確實控制 scope。
-3. **Phase 2.4 ATTENDANCE_READ 語意**：員工考勤的「自班」scope 不見得對應「同班同事」（業主可能期待「同園區同事」或「同部門」）。**緩解**：Phase 2.4 寫 plan 前先與 user 確認需求。
-4. **自訂角色未滿足需求**：Phase 2 enable `:all` `:own_class` 表達能力，但目前無業主需求建「資深老師 :all」這類角色。可能 Phase 2 ship 後實際 customisation 用量 = 0，淪為「能力 over capability」。**緩解**：Phase 2 是 Phase 1 的「補完性」工作，主軸是 Phase 1 已 ship 的權限模型一致性。
-5. **`api/gov_moe/iep.py` 為何不用 portfolio_access**：可能設計考量是 IEP 的 SPECIAL_NEEDS 是 sensitive 文件，scope 規則與普通 student access 不同（例如只有指定老師可看，而非全班三角 teacher）。Phase 2.2 寫 plan 前必詳查。
+3. **Phase 2.4 ATTENDANCE_READ 業務空白**：員工考勤目前**完全沒有** row scope，業主對「自班」期待 4 種詮釋皆有可能。**緩解**：拆 Phase 2.4a + 2.4b；2.4b 阻塞於業務決策。
+4. **iep.py 業務行為變更**：Phase 2.2 Task 7 移除「主任/園長 hard-code 全放行」改用 `:all` scope 表達，業主需重新配置主任角色（Task 7 Step 1 與 user 確認）。
+5. **自訂角色未滿足需求**：Phase 2 enable `:all` `:own_class` 表達能力，但目前無業主需求建「資深老師 :all」這類角色。可能 Phase 2 ship 後實際 customisation 用量 = 0，淪為「能力 over capability」。**緩解**：Phase 2 是 Phase 1 的「補完性」工作，主軸是 Phase 1 已 ship 的權限模型一致性 + 順帶修 `iep.py` lifecycle latent bug。
+6. **iep.py latent lifecycle bug**：current 寫法不過濾 `_TEACHER_BLOCKED_LIFECYCLE`（graduated/withdrawn/transferred），teacher 可看到已轉出/畢業學生的 IEP — Phase 2.2 delegate 至 portfolio_access 後自動修復。
 
 ---
 
