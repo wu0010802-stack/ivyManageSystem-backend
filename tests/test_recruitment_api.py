@@ -1338,22 +1338,20 @@ class TestMarketIntelligence:
 
     def test_market_intelligence_returns_raw_metrics(self, recruitment_session_factory):
         with recruitment_session_factory() as session:
+            # sample-size gate threshold=10（業主決議 85d11db）：須 ≥10 筆樣本才算
+            # deposit_rate_90d；seed 10 筆（5 has_deposit / 5 not）保留「50% 轉訂率」測試意圖。
             session.add_all(
                 [
                     RecruitmentVisit(
                         month="115.04",
-                        child_name="小安",
+                        child_name=f"幼兒{i}",
                         district="三民區",
                         address="高雄市三民區民族一路100號",
-                        has_deposit=True,
-                    ),
-                    RecruitmentVisit(
-                        month="115.04",
-                        child_name="小寶",
-                        district="三民區",
-                        address="高雄市三民區澄清路88號",
-                        has_deposit=False,
-                    ),
+                        has_deposit=(i < 5),
+                    )
+                    for i in range(10)
+                ]
+                + [
                     RecruitmentGeocodeCache(
                         address="高雄市三民區民族一路100號",
                         district="三民區",
@@ -1383,7 +1381,7 @@ class TestMarketIntelligence:
 
         assert snapshot["campus"]["campus_name"] == "本園"
         assert snapshot["districts"][0]["district"] == "三民區"
-        assert snapshot["districts"][0]["lead_count_90d"] == 2
+        assert snapshot["districts"][0]["lead_count_90d"] == 10
         assert snapshot["districts"][0]["deposit_rate_90d"] == 50.0
         assert snapshot["districts"][0]["population_density"] == 1234.5
 

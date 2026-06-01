@@ -132,11 +132,14 @@ def test_maintenance_bypasses_health_ready(monkeypatch):
 def test_read_only_blocks_post_to_non_bypass(monkeypatch):
     """READ_ONLY_MODE 期間對非 bypass endpoint 的 POST 回 503 READ_ONLY_MODE。
 
-    用 /api/employees POST（即便 auth 會擋，KillSwitch 在 Audit 外層更早執行
-    回 503，根本到不了 auth）。
+    用 /api/employees POST。須帶 Origin header：CSRF middleware 比 KillSwitch
+    更外層，對缺 Origin/Referer 的 POST 會先回 403，帶合法 Origin（dev env
+    allowlist 含 localhost:5173）才到得了 KillSwitch 回 503（模擬真實瀏覽器必帶 Origin）。
     """
     client = _client(monkeypatch, READ_ONLY_MODE="1")
-    r = client.post("/api/employees", json={})
+    r = client.post(
+        "/api/employees", json={}, headers={"Origin": "http://localhost:5173"}
+    )
     assert r.status_code == 503, r.text
     assert r.json()["detail"]["code"] == "READ_ONLY_MODE"
 
