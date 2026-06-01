@@ -80,7 +80,7 @@ async def auto_detect_milestones(
             payload = AutoDetectPayload()
         ref_date = payload.reference_date or today_taipei()
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             student = session.query(Student).filter(Student.id == student_id).first()
             if not student:
                 raise HTTPException(status_code=404, detail="學生不存在")
