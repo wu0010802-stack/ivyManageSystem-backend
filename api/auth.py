@@ -702,6 +702,26 @@ def refresh_token(request: Request):
         )
         raise
 
+    # 模擬 session 不可經任何 refresh 路徑升級或洗掉歸屬（涵蓋 staff rotation 與 fallback）。
+    _imp_tok = request.cookies.get("access_token")
+    if not _imp_tok:
+        _auth_h = request.headers.get("authorization", "")
+        if _auth_h.startswith("Bearer "):
+            _imp_tok = _auth_h.split(" ", 1)[1]
+    if _imp_tok:
+        from utils.auth import decode_token_for_audit
+
+        _imp_payload = decode_token_for_audit(_imp_tok) or {}
+        if _imp_payload.get("impersonated_by") is not None:
+            write_login_audit(
+                request,
+                action="TOKEN_REFRESH_FAILED",
+                username=_imp_payload.get("name"),
+                user_id=_imp_payload.get("user_id"),
+                extras={"reason": "impersonation_token_not_refreshable"},
+            )
+            raise HTTPException(status_code=401, detail="模擬工作階段不可刷新，請重新進入模擬")
+
     # Spec F: staff_refresh_token cookie → rotation 路徑
     staff_refresh_raw = request.cookies.get("staff_refresh_token")
     if staff_refresh_raw:
@@ -783,20 +803,6 @@ def refresh_token(request: Request):
             extras={"reason": "invalid_token"},
         )
         raise
-
-    # 模擬 session 不可經 refresh 升級或洗掉歸屬 → 直接拒絕，請 admin 重新進入模擬
-    if payload.get("impersonated_by") is not None:
-        write_login_audit(
-            request,
-            action="TOKEN_REFRESH_FAILED",
-            username=payload.get("name"),
-            user_id=payload.get("user_id"),
-            extras={"reason": "impersonation_token_not_refreshable"},
-        )
-        raise HTTPException(
-            status_code=401,
-            detail="模擬工作階段不可刷新，請重新進入模擬",
-        )
 
     # S2: absolute session lifetime — 從 original_iat 起算超過設定小時數即拒絕 refresh。
     # 缺欄位（舊 token 過渡）時不擋，待此次 refresh 後新 token 會帶上 original_iat。
