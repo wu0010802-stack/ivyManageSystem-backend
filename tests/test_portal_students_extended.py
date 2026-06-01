@@ -141,12 +141,14 @@ def _seed(sf, *, with_special_needs_perm: bool = False) -> dict:
         )
         session.add(g1)
 
-        # 本月出席（今天往回 5 天，2 出席 1 缺席 1 病假 1 遲到）
+        # 本月出席紀錄。date-robust：以本月 1 號為錨往後排、缺席固定放 1 號，
+        # 保證任何執行日（含月初當天）prod 當月窗 [本月1號, today] 內都有缺席記錄。
+        # 原本「今天往回數天 + 跨月就跳過」在月初會把唯一的缺席跳掉 → last_absent None。
         today = date.today()
-        for i, status in enumerate(["出席", "出席", "缺席", "病假", "遲到"]):
-            d = today - timedelta(days=i)
-            # 確保都在本月內
-            if d.month != today.month:
+        month_start = today.replace(day=1)
+        for i, status in enumerate(["缺席", "出席", "出席", "病假", "遲到"]):
+            d = month_start + timedelta(days=i)
+            if d > today:  # 月初當天只留 1 號的缺席，其餘超過今天的跳過
                 continue
             session.add(StudentAttendance(student_id=s.id, date=d, status=status))
 
