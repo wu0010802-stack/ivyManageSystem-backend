@@ -41,6 +41,7 @@ from models.approval import ApprovalStatus
 from models.event import Holiday
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from schemas.overtimes import (
+    BatchOvertimeCreateResultOut,
     OvertimeApproveResultOut,
     OvertimeCreateResultOut,
     OvertimeDeleteResultOut,
@@ -403,6 +404,50 @@ class OvertimeCreate(BaseModel):
             raise ValueError("加班時數必須大於 0")
         if v > MAX_OVERTIME_HOURS:
             raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS} 小時")
+        return v
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v):
+        return validate_hhmm_format(v)
+
+    @model_validator(mode="after")
+    def validate_time_order(self):
+        if self.start_time and self.end_time:
+            if self.start_time >= self.end_time:
+                raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+        return self
+
+
+class BatchOvertimeEmployeeItem(BaseModel):
+    employee_id: int
+    hours: float
+
+    @field_validator("hours")
+    @classmethod
+    def validate_hours(cls, v):
+        if v <= 0:
+            raise ValueError("加班時數必須大於 0")
+        if v > MAX_OVERTIME_HOURS:
+            raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS} 小時")
+        return v
+
+
+class BatchOvertimeCreate(BaseModel):
+    overtime_date: date
+    overtime_type: str  # weekday / weekend / holiday
+    start_time: Optional[str] = None  # HH:MM，共用，選填
+    end_time: Optional[str] = None  # HH:MM，共用，選填
+    reason: Optional[str] = None
+    use_comp_leave: bool = False
+    employees: List[BatchOvertimeEmployeeItem] = Field(..., min_length=1)
+
+    @field_validator("overtime_type")
+    @classmethod
+    def validate_overtime_type(cls, v):
+        if v not in OVERTIME_TYPE_LABELS:
+            allowed = ", ".join(OVERTIME_TYPE_LABELS.keys())
+            raise ValueError(f"無效的加班類型，允許值：{allowed}")
         return v
 
     @field_validator("start_time", "end_time")

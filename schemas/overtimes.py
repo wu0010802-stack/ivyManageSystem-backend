@@ -77,3 +77,14 @@ class OvertimeApproveResultOut(IvyBaseModel):
     comp_leave_hours_granted: Optional[float] = None
     salary_recalculated: Optional[bool] = None  # pii-allow: 觸發旗標，非個人薪資金額
     warning: Optional[str] = None
+
+
+class BatchOvertimeCreateResultOut(IvyBaseModel):
+    """POST /overtimes/batch-create 成功回傳（全部建立）。
+
+    驗證失敗時回 422，body 為 {"detail": {"message": str, "errors": list}}，
+    不走本 response_model（FastAPI HTTPException 路徑）。
+    """
+
+    message: str
+    created_ids: list[int]
