@@ -13,6 +13,7 @@ from utils.errors import raise_safe_500
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 
 from models.database import get_session, Student, Classroom, StudentClassroomTransfer
 from models.dismissal import StudentDismissalCall
@@ -166,7 +167,6 @@ router = APIRouter(prefix="/api", tags=["students"])
 
 
 class StudentCreate(BaseModel):
-    student_id: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=50)
     gender: Optional[str] = None
     birthday: Optional[date] = None
@@ -194,15 +194,6 @@ class StudentCreate(BaseModel):
     disability_level: Optional[str] = Field(None, max_length=10)
     disability_cert_no: Optional[str] = Field(None, max_length=50)
     disability_cert_expiry: Optional[date] = None
-
-    @field_validator("student_id", mode="before")
-    @classmethod
-    def strip_student_id(cls, v):
-        if isinstance(v, str):
-            v = v.strip()
-        if not v:
-            raise ValueError("學號不可為空")
-        return v
 
     @field_validator(
         "birthday",
@@ -811,14 +802,16 @@ async def create_student(
     """新增學生"""
     session = get_session()
     try:
-        # 檢查學號是否重複
-        existing = (
-            session.query(Student).filter(Student.student_id == item.student_id).first()
-        )
-        if existing:
-            raise HTTPException(status_code=400, detail="學號已存在")
-
         data = item.model_dump()
+
+        # 永久編號配發（取代手填 student_id + 唯一性檢查）。
+        # student_id 顯示快取由 before_flush listener 依當前班級自動組出。
+        from services.student_numbering import next_enrollment_seq
+
+        enroll_year, _ = resolve_current_academic_term()
+        seq = next_enrollment_seq(session, enroll_year)
+        data["enrollment_school_year"] = enroll_year
+        data["enrollment_seq"] = seq
 
         student = Student(**data)
         session.add(student)
@@ -842,6 +835,9 @@ async def create_student(
         session.add(change_log)
         session.commit()
         return {"message": "學生新增成功", "id": student.id}
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="學號配發衝突，請重試")
     except HTTPException:
         raise
     except Exception as e:
