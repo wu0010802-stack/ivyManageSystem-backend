@@ -85,7 +85,7 @@ def _require_classroom_access(session, current_user: dict, classroom_id: int) ->
 
 
 @router.get("/student-incidents")
-async def list_incidents(
+def list_incidents(
     student_id: Optional[int] = Query(None),
     classroom_id: Optional[int] = Query(None),
     incident_type: Optional[str] = Query(None),
@@ -151,7 +151,7 @@ async def list_incidents(
 
 
 @router.post("/student-incidents", status_code=201)
-async def create_incident(
+def create_incident(
     payload: IncidentCreate,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
 ):
@@ -199,7 +199,7 @@ async def create_incident(
 
 
 @router.put("/student-incidents/{incident_id}")
-async def update_incident(
+def update_incident(
     incident_id: int,
     payload: IncidentUpdate,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
@@ -259,7 +259,7 @@ async def update_incident(
 
 
 @router.delete("/student-incidents/{incident_id}")
-async def delete_incident(
+def delete_incident(
     incident_id: int,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
 ):

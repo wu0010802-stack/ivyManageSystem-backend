@@ -34,7 +34,7 @@ router = APIRouter()
 
 
 @router.get("/today")
-async def get_today_attendance_summary(
+def get_today_attendance_summary(
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """取得今日出勤即時狀態"""
@@ -85,7 +85,7 @@ async def get_today_attendance_summary(
 
 
 @router.get("/summary")
-async def get_attendance_summary(
+def get_attendance_summary(
     year: int = Query(...),
     month: int = Query(...),
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
@@ -165,7 +165,7 @@ async def get_attendance_summary(
 
 
 @router.get("/today-anomalies")
-async def get_today_anomalies(
+def get_today_anomalies(
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """今日打卡異常員工清單"""

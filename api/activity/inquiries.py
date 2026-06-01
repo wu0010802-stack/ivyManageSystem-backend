@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 @router.get("/inquiries")
-async def get_inquiries(
+def get_inquiries(
     is_read: bool = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -55,7 +55,7 @@ async def get_inquiries(
 
 
 @router.put("/inquiries/{inquiry_id}/read")
-async def mark_inquiry_read(
+def mark_inquiry_read(
     inquiry_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
@@ -81,7 +81,7 @@ async def mark_inquiry_read(
 
 
 @router.put("/inquiries/{inquiry_id}/reply")
-async def reply_inquiry(
+def reply_inquiry(
     inquiry_id: int,
     body: InquiryReply,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -110,7 +110,7 @@ async def reply_inquiry(
 
 
 @router.delete("/inquiries/{inquiry_id}")
-async def delete_inquiry(
+def delete_inquiry(
     inquiry_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):

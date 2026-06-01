@@ -64,7 +64,7 @@ def _serialize_settings(settings: ActivityRegistrationSettings | None) -> dict:
 
 
 @router.get("/settings/registration-time", response_model=ActivityRegistrationTimeOut)
-async def get_registration_time(
+def get_registration_time(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得報名開放設定與前台顯示設定（管理後台用）"""
@@ -77,7 +77,7 @@ async def get_registration_time(
 
 
 @router.post("/settings/registration-time", response_model=DeleteResultOut)
-async def update_registration_time(
+def update_registration_time(
     body: RegistrationTimeSettings,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
@@ -174,7 +174,7 @@ async def upload_activity_poster(
 
 
 @router.get("/changes", response_model=ActivityRegistrationChangeListOut)
-async def get_changes(
+def get_changes(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -208,7 +208,7 @@ async def get_changes(
 
 
 @router.get("/class-options", response_model=ActivityClassOptionsOut)
-async def get_class_options(
+def get_class_options(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """從 Classroom 表動態取得班級名稱選項"""

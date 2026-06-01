@@ -151,7 +151,7 @@ def _count_finalized_months_for_year(session, salary_year: int) -> int:
 
 
 @router.post("/insurance/import", response_model=DeleteResultOut)
-async def import_insurance_table(
+def import_insurance_table(
     data: InsuranceTableImport,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
 ):
@@ -165,7 +165,7 @@ async def import_insurance_table(
 
 
 @router.get("/insurance/calculate", response_model=InsuranceCalculationOut)
-async def calculate_insurance(
+def calculate_insurance(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
     salary: float = Query(...),
     dependents: int = Query(0),
@@ -193,7 +193,7 @@ async def calculate_insurance(
 
 
 @router.get("/insurance/brackets", response_model=InsuranceBracketListOut)
-async def list_brackets(
+def list_brackets(
     current_user: dict = Depends(_DEP_SALARY_READ),
     year: Optional[int] = Query(None, description="預設取當年；可指定歷史年度"),
 ):
@@ -248,7 +248,7 @@ async def list_brackets(
 
 
 @router.put("/insurance/brackets", response_model=InsuranceBracketUpsertResultOut)
-async def upsert_brackets(
+def upsert_brackets(
     payload: InsuranceBracketsBulkUpsert,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
@@ -385,7 +385,7 @@ async def upsert_brackets(
 
 
 @router.delete("/insurance/brackets/{bracket_id}", response_model=InsuranceBracketDeleteResultOut)
-async def delete_bracket(
+def delete_bracket(
     bracket_id: int,
     payload: InsuranceBracketDeleteRequest,
     request: Request,

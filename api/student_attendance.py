@@ -234,7 +234,7 @@ class BatchSaveRequest(BaseModel):
 
 
 @router.get("/student-attendance/overview", response_model=StudentAttendanceDailyOverviewOut)
-async def get_daily_attendance_overview(
+def get_daily_attendance_overview(
     date: str = Query(..., description="YYYY-MM-DD"),
     school_year: Optional[int] = Query(
         None, ge=100, le=200, description="學年度（民國年）"
@@ -258,7 +258,7 @@ async def get_daily_attendance_overview(
 
 
 @router.get("/student-attendance", response_model=StudentAttendanceDailyOut)
-async def get_daily_attendance(
+def get_daily_attendance(
     date: str = Query(..., description="YYYY-MM-DD"),
     classroom_id: int = Query(...),
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
@@ -312,7 +312,7 @@ async def get_daily_attendance(
 
 
 @router.post("/student-attendance/batch", response_model=StudentAttendanceBatchSaveResultOut)
-async def batch_save_attendance(
+def batch_save_attendance(
     payload: BatchSaveRequest,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
@@ -387,7 +387,7 @@ async def batch_save_attendance(
 
 
 @router.get("/student-attendance/by-student", response_model=StudentAttendanceByStudentOut)
-async def get_attendance_by_student(
+def get_attendance_by_student(
     student_id: int = Query(..., gt=0),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
@@ -446,7 +446,7 @@ async def get_attendance_by_student(
 
 
 @router.get("/student-attendance/monthly")
-async def get_monthly_summary(
+def get_monthly_summary(
     classroom_id: int = Query(...),
     year: int = Query(...),
     month: int = Query(..., ge=1, le=12),

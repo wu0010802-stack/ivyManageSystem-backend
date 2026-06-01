@@ -158,7 +158,7 @@ def _serialize_log(
 
 
 @router.get("/options")
-async def get_change_log_options(
+def get_change_log_options(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得 event_type 與對應 reason 選項（供前端下拉）"""
@@ -169,7 +169,7 @@ async def get_change_log_options(
 
 
 @router.get("/summary")
-async def get_change_logs_summary(
+def get_change_logs_summary(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     classroom_id: Optional[int] = Query(
@@ -227,7 +227,7 @@ async def get_change_logs_summary(
 
 
 @router.get("")
-async def get_change_logs(
+def get_change_logs(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     event_type: Optional[List[str]] = Query(None),
@@ -514,7 +514,7 @@ def export_change_logs(
 
 
 @router.post("", status_code=201, response_model=MutationResultOut)
-async def create_change_log(
+def create_change_log(
     item: ChangeLogCreate,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
@@ -569,7 +569,7 @@ async def create_change_log(
 
 
 @router.put("/{log_id}", response_model=MutationResultOut)
-async def update_change_log(
+def update_change_log(
     log_id: int,
     item: ChangeLogUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
@@ -612,7 +612,7 @@ async def update_change_log(
 
 
 @router.delete("/{log_id}", response_model=MutationResultOut)
-async def delete_change_log(
+def delete_change_log(
     log_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):

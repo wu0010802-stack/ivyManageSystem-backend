@@ -69,7 +69,7 @@ def _by_type_count(items: list[dict]) -> dict[str, int]:
 
 
 @router.get("")
-async def parent_get_timeline(
+def parent_get_timeline(
     student_id: int = Query(..., description="學生 id"),
     since: Optional[date] = Query(None),
     until: Optional[date] = Query(None),

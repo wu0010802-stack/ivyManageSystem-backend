@@ -24,13 +24,13 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 
 @router.get("/live", response_model=OkStatusOut)
-async def liveness():
+def liveness():
     """Liveness probe — 程序存活即回 200。"""
     return {"status": "ok"}
 
 
 @router.get("/ready")
-async def readiness():
+def readiness():
     """Readiness probe — 確認 DB 連線池可用。
 
     資安掃描 2026-05-07 P1：response 不再回傳 env 欄位（無認證端點，env 值
@@ -77,7 +77,7 @@ class SchedulersHealthOut(IvyBaseModel):
 
 
 @router.get("/schedulers", response_model=SchedulersHealthOut)
-async def schedulers_health():
+def schedulers_health():
     """檢查所有 scheduler heartbeat lag。
 
     無權限端點（UptimeRobot 公開可打）。

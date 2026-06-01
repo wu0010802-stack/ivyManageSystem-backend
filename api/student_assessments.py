@@ -111,7 +111,7 @@ def _require_classroom_access(session, current_user: dict, classroom_id: int) ->
 
 
 @router.get("/student-assessments")
-async def list_assessments(
+def list_assessments(
     student_id: Optional[int] = Query(None),
     classroom_id: Optional[int] = Query(None),
     semester: Optional[str] = Query(None),
@@ -190,7 +190,7 @@ async def list_assessments(
 
 
 @router.post("/student-assessments", status_code=201)
-async def create_assessment(
+def create_assessment(
     payload: AssessmentCreate,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
 ):
@@ -251,7 +251,7 @@ async def create_assessment(
 
 
 @router.put("/student-assessments/{assessment_id}")
-async def update_assessment(
+def update_assessment(
     assessment_id: int,
     payload: AssessmentUpdate,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
@@ -324,7 +324,7 @@ async def update_assessment(
 
 
 @router.delete("/student-assessments/{assessment_id}")
-async def delete_assessment(
+def delete_assessment(
     assessment_id: int,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_WRITE)),
 ):

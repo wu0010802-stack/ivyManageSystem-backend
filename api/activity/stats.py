@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.get("/stats")
-async def get_stats(
+def get_stats(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得儀表板統計資料（相容舊版：summary + charts）。"""
@@ -29,7 +29,7 @@ async def get_stats(
 
 
 @router.get("/stats-summary")
-async def get_stats_summary(
+def get_stats_summary(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得儀表板摘要統計資料。"""
@@ -41,7 +41,7 @@ async def get_stats_summary(
 
 
 @router.get("/stats-charts")
-async def get_stats_charts(
+def get_stats_charts(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """取得儀表板圖表資料。"""
@@ -53,7 +53,7 @@ async def get_stats_charts(
 
 
 @router.get("/dashboard-table")
-async def get_dashboard_table(
+def get_dashboard_table(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),

@@ -122,7 +122,7 @@ def _serialize(log: ParentCommunicationLog, student_name: str = "") -> dict:
 
 
 @router.get("/options")
-async def get_options(
+def get_options(
     _: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得溝通方式選項（供前端下拉）"""
@@ -130,7 +130,7 @@ async def get_options(
 
 
 @router.get("")
-async def list_communications(
+def list_communications(
     student_id: Optional[int] = Query(None, gt=0),
     classroom_id: Optional[int] = Query(None, gt=0),
     communication_type: Optional[str] = Query(None),
@@ -237,7 +237,7 @@ async def list_communications(
 
 
 @router.post("", status_code=201)
-async def create_communication(
+def create_communication(
     item: CommunicationCreate,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
@@ -279,7 +279,7 @@ async def create_communication(
 
 
 @router.put("/{log_id}")
-async def update_communication(
+def update_communication(
     log_id: int,
     item: CommunicationUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
@@ -319,7 +319,7 @@ async def update_communication(
 
 
 @router.delete("/{log_id}")
-async def delete_communication(
+def delete_communication(
     log_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):

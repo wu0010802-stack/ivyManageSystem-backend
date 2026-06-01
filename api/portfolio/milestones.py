@@ -116,7 +116,7 @@ def _milestone_to_dict(m: StudentMilestone) -> dict:
 
 
 @router.get("/{student_id}/milestones")
-async def list_milestones(
+def list_milestones(
     student_id: int,
     request: Request,
     milestone_type: Optional[str] = Query(None),
@@ -175,7 +175,7 @@ async def list_milestones(
 
 
 @router.post("/{student_id}/milestones", status_code=201)
-async def create_milestone(
+def create_milestone(
     student_id: int,
     payload: MilestoneCreate,
     request: Request,
@@ -222,7 +222,7 @@ async def create_milestone(
 
 
 @router.patch("/{student_id}/milestones/{m_id}")
-async def update_milestone(
+def update_milestone(
     student_id: int,
     m_id: int,
     payload: MilestoneUpdate,
@@ -260,7 +260,7 @@ async def update_milestone(
 
 
 @router.delete("/{student_id}/milestones/{m_id}", status_code=204)
-async def delete_milestone(
+def delete_milestone(
     student_id: int,
     m_id: int,
     request: Request,

@@ -127,7 +127,7 @@ def _measurement_to_dict(m: StudentMeasurement) -> dict:
 
 
 @router.get("/{student_id}/measurements")
-async def list_measurements(
+def list_measurements(
     student_id: int,
     request: Request,
     from_date: Optional[date] = Query(None, alias="from"),
@@ -181,7 +181,7 @@ async def list_measurements(
 
 
 @router.post("/{student_id}/measurements", status_code=201)
-async def create_measurement(
+def create_measurement(
     student_id: int,
     payload: MeasurementCreate,
     request: Request,
@@ -228,7 +228,7 @@ async def create_measurement(
 
 
 @router.patch("/{student_id}/measurements/{m_id}")
-async def update_measurement(
+def update_measurement(
     student_id: int,
     m_id: int,
     payload: MeasurementUpdate,
@@ -265,7 +265,7 @@ async def update_measurement(
 
 
 @router.delete("/{student_id}/measurements/{m_id}", status_code=204)
-async def delete_measurement(
+def delete_measurement(
     student_id: int,
     m_id: int,
     request: Request,
@@ -297,7 +297,7 @@ async def delete_measurement(
 
 
 @router.get("/{student_id}/measurements/chart-data")
-async def chart_data(
+def chart_data(
     student_id: int,
     request: Request,
     months: int = Query(24, ge=1, le=120),

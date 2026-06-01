@@ -27,7 +27,7 @@ router = APIRouter()
 
 
 @router.get("/supplies")
-async def get_supplies(
+def get_supplies(
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=500),
     school_year: Optional[int] = Query(None, ge=100, le=200),
@@ -67,7 +67,7 @@ async def get_supplies(
 
 
 @router.post("/supplies", status_code=201)
-async def create_supply(
+def create_supply(
     body: SupplyCreate,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
@@ -116,7 +116,7 @@ async def create_supply(
 
 
 @router.put("/supplies/{supply_id}")
-async def update_supply(
+def update_supply(
     supply_id: int,
     body: SupplyUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -173,7 +173,7 @@ async def update_supply(
 
 
 @router.delete("/supplies/{supply_id}")
-async def delete_supply(
+def delete_supply(
     supply_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):

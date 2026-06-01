@@ -145,7 +145,7 @@ def _upsert_one(
 
 # ─── Endpoints ───────────────────────────────────────────────────────────
 @router.get("/monthly-fixed-costs")
-async def list_monthly_fixed_costs(
+def list_monthly_fixed_costs(
     year: int = Query(..., ge=2000, le=2100),
     current_user: dict = Depends(
         require_staff_permission(Permission.VENDOR_PAYMENT_READ)
@@ -178,7 +178,7 @@ async def list_monthly_fixed_costs(
 
 
 @router.put("/monthly-fixed-costs")
-async def upsert_monthly_fixed_cost(
+def upsert_monthly_fixed_cost(
     payload: MonthlyFixedCostUpsert,
     request: Request,
     current_user: dict = Depends(
@@ -218,7 +218,7 @@ async def upsert_monthly_fixed_cost(
 
 
 @router.put("/monthly-fixed-costs/batch")
-async def batch_upsert_monthly_fixed_costs(
+def batch_upsert_monthly_fixed_costs(
     payload: MonthlyFixedCostBatchUpsert,
     request: Request,
     current_user: dict = Depends(
@@ -281,7 +281,7 @@ async def batch_upsert_monthly_fixed_costs(
 
 
 @router.delete("/monthly-fixed-costs/{cost_id}", response_model=DeleteResultOut)
-async def delete_monthly_fixed_cost(
+def delete_monthly_fixed_cost(
     cost_id: int,
     request: Request,
     current_user: dict = Depends(

@@ -71,7 +71,7 @@ MAX_EXPORT_ROWS = 5000
 
 
 @router.put("/registrations/batch-payment")
-async def batch_update_payment(
+def batch_update_payment(
     body: BatchPaymentUpdate,
     _rl=Depends(_batch_payment_limiter),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),

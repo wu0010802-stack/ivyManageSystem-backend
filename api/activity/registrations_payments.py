@@ -78,7 +78,7 @@ def _desensitize_operator(operator: Optional[str], viewer_has_approve: bool) -> 
 
 
 @router.put("/registrations/{registration_id}/payment")
-async def update_payment(
+def update_payment(
     registration_id: int,
     body: PaymentUpdate,
     request: Request,
@@ -243,7 +243,7 @@ async def update_payment(
 
 
 @router.get("/registrations/{registration_id}/payments")
-async def get_registration_payments(
+def get_registration_payments(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
@@ -302,7 +302,7 @@ _IDEMPOTENCY_WINDOW_SECONDS = 600
 
 
 @router.post("/registrations/{registration_id}/payments", status_code=201)
-async def add_registration_payment(
+def add_registration_payment(
     registration_id: int,
     body: AddPaymentRequest,
     request: Request,
@@ -607,7 +607,7 @@ async def add_registration_payment(
 
 
 @router.delete("/registrations/{registration_id}/payments/{payment_id}")
-async def delete_registration_payment(
+def delete_registration_payment(
     registration_id: int,
     payment_id: int,
     request: Request,

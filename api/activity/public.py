@@ -2,7 +2,7 @@
 api/activity/public.py — 公開前台端點（無需認證，10 個）
 """
 
-import asyncio
+import time
 import logging
 import random
 from datetime import datetime
@@ -133,7 +133,7 @@ _PUBLIC_DISPLAY_FIELDS = (
 
 
 @router.get("/public/registration-time", response_model=PublicRegistrationTimeOut)
-async def get_public_registration_time(request: Request, response: Response):
+def get_public_registration_time(request: Request, response: Response):
     """公開端點：前台查詢報名開放時間 + 顯示設定（無需認證）"""
     session = get_session()
     try:
@@ -158,7 +158,7 @@ async def get_public_registration_time(request: Request, response: Response):
 
 
 @router.get("/public/poster/{filename}")
-async def get_public_poster(filename: str, response: Response):
+def get_public_poster(filename: str, response: Response):
     """公開端點：回傳已上傳的活動海報圖。
 
     防穿越：檔名只允許純 hex + 白名單副檔名。
@@ -198,7 +198,7 @@ async def get_public_poster(filename: str, response: Response):
 
 
 @router.get("/public/courses", response_model=list[PublicCoursesItemOut])
-async def get_public_courses(request: Request, response: Response):
+def get_public_courses(request: Request, response: Response):
     """前台：取得課程列表"""
     session = get_session()
     try:
@@ -235,7 +235,7 @@ async def get_public_courses(request: Request, response: Response):
 
 
 @router.get("/public/supplies", response_model=list[PublicSuppliesItemOut])
-async def get_public_supplies(request: Request, response: Response):
+def get_public_supplies(request: Request, response: Response):
     """前台：取得用品列表"""
     session = get_session()
     try:
@@ -252,7 +252,7 @@ async def get_public_supplies(request: Request, response: Response):
 
 
 @router.get("/public/classes", response_model=list[str])
-async def get_public_classes(request: Request, response: Response):
+def get_public_classes(request: Request, response: Response):
     """前台：取得班級選項"""
     session = get_session()
     try:
@@ -312,7 +312,7 @@ def _compute_availability(session) -> dict:
 
 
 @router.get("/public/courses/availability", response_model=dict[str, int])
-async def get_public_courses_availability(request: Request, response: Response):
+def get_public_courses_availability(request: Request, response: Response):
     """前台：取得課程名額狀況（帶 10s TTL 記憶體快取降低 DB 壓力）。
 
     快取設計：
@@ -348,7 +348,7 @@ async def get_public_courses_availability(request: Request, response: Response):
 
 
 @router.get("/public/course-videos", response_model=dict[str, str])
-async def get_public_course_videos(request: Request, response: Response):
+def get_public_course_videos(request: Request, response: Response):
     """前台：取得課程介紹影片 URL"""
     session = get_session()
     try:
@@ -383,7 +383,7 @@ class _PublicQueryPayload(BaseModel):
 
 
 @router.post("/public/query", response_model=PublicRegistrationDetailOut)
-async def public_query_registration(
+def public_query_registration(
     body: _PublicQueryPayload,
     _: None = Depends(_public_query_limiter),
 ):
@@ -396,7 +396,7 @@ async def public_query_registration(
 
     LOW-3：對成功與失敗 path 加入 200~500ms 隨機延遲，提高低成本枚舉成本。
     """
-    await asyncio.sleep(random.uniform(0.2, 0.5))
+    time.sleep(random.uniform(0.2, 0.5))
     session = get_session()
     try:
         normalized_phone = _normalize_phone(body.parent_phone)
@@ -444,7 +444,7 @@ class _PublicQueryByTokenPayload(BaseModel):
 
 
 @router.post("/public/query-by-token", response_model=PublicRegistrationDetailOut)
-async def public_query_by_token(
+def public_query_by_token(
     body: _PublicQueryByTokenPayload,
     _: None = Depends(_public_query_limiter),
 ):
@@ -459,7 +459,7 @@ async def public_query_by_token(
 
     LOW-3 一致性：成功與失敗 path 都加入隨機延遲，壓低時序差。
     """
-    await asyncio.sleep(random.uniform(0.2, 0.5))
+    time.sleep(random.uniform(0.2, 0.5))
     session = get_session()
     try:
         token_hash = _hash_query_token(body.token)
@@ -492,7 +492,7 @@ async def public_query_by_token(
 
 
 @router.post("/public/register", status_code=201, response_model=PublicRegisterResultOut)
-async def public_register(
+def public_register(
     body: PublicRegistrationPayload,
     _: None = Depends(_public_register_limiter),
 ):
@@ -755,7 +755,7 @@ async def public_register(
 
 
 @router.post("/public/update", response_model=PublicRegistrationDetailOut)
-async def public_update_registration(
+def public_update_registration(
     body: PublicUpdatePayload,
     request: Request,
     _: None = Depends(_public_register_limiter),
@@ -941,7 +941,7 @@ async def public_update_registration(
                 #   status code 區分「手機已存在」與「其他驗證錯誤」）
                 # - 加入 200-500ms 隨機延遲（同 /public/query LOW-3 模式）壓低 timing oracle
                 # rate limit 仍由 _public_register_limiter 控制 5/min/IP。
-                await asyncio.sleep(random.uniform(0.2, 0.5))
+                time.sleep(random.uniform(0.2, 0.5))
                 raise HTTPException(
                     status_code=400,
                     detail="此手機號碼無法使用，請聯繫校方協助處理",
@@ -1175,7 +1175,7 @@ class _PromotionActionPayload(BaseModel):
     "/public/registrations/{registration_id}/courses/{course_id}/confirm-promotion",
     response_model=DeleteResultOut,
 )
-async def public_confirm_promotion(
+def public_confirm_promotion(
     registration_id: int,
     course_id: int,
     body: _PromotionActionPayload,
@@ -1241,7 +1241,7 @@ async def public_confirm_promotion(
     "/public/registrations/{registration_id}/courses/{course_id}/decline-promotion",
     response_model=DeleteResultOut,
 )
-async def public_decline_promotion(
+def public_decline_promotion(
     registration_id: int,
     course_id: int,
     body: _PromotionActionPayload,
@@ -1285,7 +1285,7 @@ async def public_decline_promotion(
 
 
 @router.post("/public/inquiries", status_code=201, response_model=DeleteResultOut)
-async def public_create_inquiry(
+def public_create_inquiry(
     body: PublicInquiryPayload,
     _: None = Depends(_public_inquiry_limiter),
 ):

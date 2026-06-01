@@ -185,7 +185,7 @@ def _observation_to_dict(
 
 
 @router.get("/{student_id}/observations")
-async def list_observations(
+def list_observations(
     student_id: int,
     request: Request,
     from_date: Optional[date] = Query(None, alias="from"),
@@ -257,7 +257,7 @@ async def list_observations(
 
 
 @router.post("/{student_id}/observations", status_code=201)
-async def create_observation(
+def create_observation(
     student_id: int,
     payload: ObservationCreate,
     request: Request,
@@ -302,7 +302,7 @@ async def create_observation(
 
 
 @router.patch("/{student_id}/observations/{obs_id}")
-async def update_observation(
+def update_observation(
     student_id: int,
     obs_id: int,
     payload: ObservationUpdate,
@@ -358,7 +358,7 @@ async def update_observation(
 
 
 @router.delete("/{student_id}/observations/{obs_id}")
-async def delete_observation(
+def delete_observation(
     student_id: int,
     obs_id: int,
     request: Request,

@@ -428,7 +428,7 @@ def print_pos_receipt_pdf(
 
 
 @router.get("/pos/outstanding-by-student", response_model=PosOutstandingOut)
-async def outstanding_by_student(
+def outstanding_by_student(
     q: Optional[str] = Query(
         None,
         max_length=50,
@@ -586,7 +586,7 @@ def _lock_regs(session, reg_ids: list):
 
 
 @router.post("/pos/checkout", status_code=201, response_model=PosCheckoutOut)
-async def pos_checkout(
+def pos_checkout(
     body: POSCheckoutRequest,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -1000,7 +1000,7 @@ async def pos_checkout(
 
 
 @router.get("/pos/daily-summary", response_model=PosDailySummaryOut)
-async def pos_daily_summary(
+def pos_daily_summary(
     date_: Optional[str] = Query(
         None, alias="date", description="YYYY-MM-DD，預設今日"
     ),
@@ -1046,7 +1046,7 @@ _RECEIPT_NO_RE = re.compile(r"\[(POS-\d{8}-[A-F0-9]+)\]")
 
 
 @router.get("/pos/recent-transactions", response_model=PosRecentTransactionsOut)
-async def pos_recent_transactions(
+def pos_recent_transactions(
     date_: Optional[str] = Query(
         None, alias="date", description="YYYY-MM-DD，預設今日"
     ),
@@ -1205,7 +1205,7 @@ _APPROVAL_STATUS_VALUES = {
 
 
 @router.get("/pos/semester-reconciliation", response_model=PosSemesterReconciliationOut)
-async def pos_semester_reconciliation(
+def pos_semester_reconciliation(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     classroom_name: Optional[str] = Query(None, max_length=50),

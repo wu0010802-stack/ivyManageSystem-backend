@@ -69,7 +69,7 @@ def _milestone_dedup_query(session, payload: dict):
 
 
 @router.post("/{student_id}/milestones/auto-detect")
-async def auto_detect_milestones(
+def auto_detect_milestones(
     student_id: int,
     payload: Optional[AutoDetectPayload] = Body(default=None),
     request: Request = None,

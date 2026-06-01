@@ -173,7 +173,7 @@ def _live_preview(session, target_date: date) -> dict:
 
 
 @router.get("/pos/daily-close/pending", response_model=PosPendingDailyClosesOut)
-async def pending_daily_closes(
+def pending_daily_closes(
     start_date: Optional[str] = Query(None, description="YYYY-MM-DD，預設 30 天前"),
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD，預設今日"),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -257,7 +257,7 @@ async def pending_daily_closes(
 
 
 @router.get("/pos/daily-close/{date_str}", response_model=PosDailyCloseOut)
-async def get_daily_close(
+def get_daily_close(
     date_str: str,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
@@ -281,7 +281,7 @@ async def get_daily_close(
 
 
 @router.post("/pos/daily-close/{date_str}", status_code=status.HTTP_201_CREATED, response_model=PosDailyCloseApproveOut)
-async def approve_daily_close(
+def approve_daily_close(
     date_str: str,
     body: DailyCloseCreate,
     request: Request,
@@ -419,7 +419,7 @@ async def approve_daily_close(
 
 
 @router.delete("/pos/daily-close/{date_str}", status_code=200, response_model=PosDailyCloseUnlockOut)
-async def unlock_daily_close(
+def unlock_daily_close(
     date_str: str,
     body: DailyCloseUnlock,
     request: Request,
@@ -645,7 +645,7 @@ async def unlock_daily_close(
 
 
 @router.get("/pos/reconciliation", response_model=PosReconciliationOut)
-async def pos_reconciliation(
+def pos_reconciliation(
     start_date: str = Query(..., description="YYYY-MM-DD"),
     end_date: str = Query(..., description="YYYY-MM-DD"),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -758,7 +758,7 @@ def _doc_id_to_date(doc_id: int):
 
 
 @router.get("/audit/pos-unlock-events", response_model=PosUnlockEventsOut)
-async def list_pos_unlock_events(
+def list_pos_unlock_events(
     days: int = Query(30, ge=1, le=180, description="查詢過去 N 天"),
     current_user: dict = Depends(
         require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
@@ -817,7 +817,7 @@ _OPERATOR_ACTIVITY_LIMIT = 100
 
 
 @router.get("/audit/operator-activity", response_model=PosOperatorActivityOut)
-async def list_operator_activity(
+def list_operator_activity(
     days: int = Query(30, ge=1, le=180, description="查詢過去 N 天"),
     current_user: dict = Depends(
         require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)
@@ -908,7 +908,7 @@ async def list_operator_activity(
 
 
 @router.get("/audit/pos-close-history", response_model=PosCloseHistoryOut)
-async def list_pos_close_history(
+def list_pos_close_history(
     close_date: str = Query(..., description="YYYY-MM-DD"),
     current_user: dict = Depends(
         require_staff_permission(Permission.ACTIVITY_PAYMENT_APPROVE)

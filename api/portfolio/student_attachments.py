@@ -97,7 +97,7 @@ def _owner_id_subquery(session, owner_type: str, student_id: int):
 
 
 @router.get("/{student_id}/attachments")
-async def list_student_attachments(
+def list_student_attachments(
     student_id: int,
     request: Request,
     owner_type: Optional[str] = Query(None, description="篩選單一 owner_type"),

@@ -140,7 +140,7 @@ def _serialize_pending_item(
 
 
 @router.get("/registrations/pending", response_model=PendingRegistrationListOut)
-async def list_pending_registrations(
+def list_pending_registrations(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     search: Optional[str] = None,
@@ -223,7 +223,7 @@ async def list_pending_registrations(
 
 
 @router.get("/students/search", response_model=PendingRegistrationsSearchStudentsOut)
-async def admin_search_students(
+def admin_search_students(
     q: str = Query(..., min_length=1, max_length=50),
     limit: int = Query(20, ge=1, le=50),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -278,7 +278,7 @@ async def admin_search_students(
 
 
 @router.post("/registrations/{registration_id}/match", response_model=PendingRegistrationActionResultOut)
-async def match_registration(
+def match_registration(
     registration_id: int,
     body: RegistrationMatchRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -349,7 +349,7 @@ async def match_registration(
 
 
 @router.post("/registrations/{registration_id}/reject", response_model=PendingRegistrationActionResultOut)
-async def reject_registration(
+def reject_registration(
     registration_id: int,
     body: RegistrationRejectRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -419,7 +419,7 @@ async def reject_registration(
 
 
 @router.post("/registrations/{registration_id}/rematch", response_model=PendingRegistrationRematchResultOut)
-async def rematch_registration(
+def rematch_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -543,7 +543,7 @@ async def rematch_registration(
 
 
 @router.post("/registrations/{registration_id}/force-accept", response_model=PendingRegistrationForceAcceptResultOut)
-async def force_accept_registration(
+def force_accept_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -643,7 +643,7 @@ async def force_accept_registration(
 
 
 @router.post("/registrations/{registration_id}/restore", response_model=PendingRegistrationActionResultOut)
-async def restore_registration(
+def restore_registration(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):

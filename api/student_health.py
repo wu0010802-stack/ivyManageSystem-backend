@@ -227,7 +227,7 @@ def _load_logs_for_orders(
 
 
 @router.get("/students/{student_id}/allergies", response_model=AllergyListOut)
-async def list_allergies(
+def list_allergies(
     student_id: int,
     include_inactive: bool = Query(False),
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
@@ -254,7 +254,7 @@ async def list_allergies(
 @router.post(
     "/students/{student_id}/allergies", status_code=201, response_model=AllergyOut
 )
-async def create_allergy(
+def create_allergy(
     student_id: int,
     payload: AllergyCreate,
     request: Request,
@@ -298,7 +298,7 @@ async def create_allergy(
 
 
 @router.patch("/students/{student_id}/allergies/{alg_id}", response_model=AllergyOut)
-async def update_allergy(
+def update_allergy(
     student_id: int,
     alg_id: int,
     payload: AllergyUpdate,
@@ -340,7 +340,7 @@ async def update_allergy(
 @router.delete(
     "/students/{student_id}/allergies/{alg_id}", response_model=AllergyDeleteOut
 )
-async def delete_allergy(
+def delete_allergy(
     student_id: int,
     alg_id: int,
     request: Request,
@@ -378,7 +378,7 @@ async def delete_allergy(
 @router.get(
     "/students/{student_id}/medication-orders", response_model=MedicationOrderListOut
 )
-async def list_medication_orders(
+def list_medication_orders(
     student_id: int,
     order_date: Optional[date] = Query(None, alias="date"),
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
@@ -408,7 +408,7 @@ async def list_medication_orders(
     "/students/{student_id}/medication-orders/{order_id}",
     response_model=MedicationOrderOut,
 )
-async def get_medication_order(
+def get_medication_order(
     student_id: int,
     order_id: int,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
@@ -439,7 +439,7 @@ async def get_medication_order(
     status_code=201,
     response_model=MedicationOrderOut,
 )
-async def create_medication_order(
+def create_medication_order(
     student_id: int,
     payload: MedicationOrderCreate,
     request: Request,
@@ -520,7 +520,7 @@ def _reject_if_finalized(lg: StudentMedicationLog) -> None:
 
 
 @router.post("/medication-logs/{log_id}/administer", response_model=MedicationLogOut)
-async def administer_medication(
+def administer_medication(
     log_id: int,
     payload: AdministerPayload,
     request: Request,
@@ -560,7 +560,7 @@ async def administer_medication(
 
 
 @router.post("/medication-logs/{log_id}/skip", response_model=MedicationLogOut)
-async def skip_medication(
+def skip_medication(
     log_id: int,
     payload: SkipPayload,
     request: Request,
@@ -597,7 +597,7 @@ async def skip_medication(
     status_code=201,
     response_model=MedicationLogOut,
 )
-async def correct_medication_log(
+def correct_medication_log(
     log_id: int,
     payload: CorrectPayload,
     request: Request,
@@ -672,7 +672,7 @@ async def correct_medication_log(
 
 
 @router.get("/portfolio/today-medication", response_model=TodayMedicationSummaryOut)
-async def today_medication_summary(
+def today_medication_summary(
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
 ) -> dict:
     """回傳呼叫者班級範圍內，今日所有用藥任務（pending + done）。"""
