@@ -720,7 +720,9 @@ def refresh_token(request: Request):
                 user_id=_imp_payload.get("user_id"),
                 extras={"reason": "impersonation_token_not_refreshable"},
             )
-            raise HTTPException(status_code=401, detail="模擬工作階段不可刷新，請重新進入模擬")
+            raise HTTPException(
+                status_code=401, detail="模擬工作階段不可刷新，請重新進入模擬"
+            )
 
     # Spec F: staff_refresh_token cookie → rotation 路徑
     staff_refresh_raw = request.cookies.get("staff_refresh_token")
@@ -742,6 +744,20 @@ def refresh_token(request: Request):
             )
             if _user is None:
                 raise HTTPException(status_code=401, detail="使用者已停用")
+            # 鏡像下方 access-token fallback 路徑（line ~862）：must_change_password
+            # 期間禁止 refresh，避免 staff rotation 路徑繞過強制改密碼守衛
+            # （staff 路徑 c808d7f 落地時漏了 fallback 已有的此檢查）。
+            if _user.must_change_password:
+                write_login_audit(
+                    request,
+                    action="TOKEN_REFRESH_FAILED",
+                    username=_user.username,
+                    user_id=_user.id,
+                    extras={"reason": "must_change_password"},
+                )
+                raise HTTPException(
+                    status_code=403, detail="需先修改密碼後才能使用系統"
+                )
             _emp = (
                 _session.query(Employee)
                 .filter(Employee.id == _user.employee_id)
@@ -1296,6 +1312,18 @@ def change_password(
         # 與 reset_password 對齊：密碼變更後遞增 token_version，使所有現有 session
         # 在下次 refresh 時即被拒絕；防止帳號疑似外洩後舊 token 在 grace 期內仍可用。
         user.token_version = (user.token_version or 0) + 1
+        # 同 session（與 token_version bump 同 transaction）撤銷該使用者所有 staff_refresh
+        # family，使其他裝置/session 的舊 refresh token 立即失效——補上 /auth/refresh 的
+        # staff rotation 路徑不檢查 token_version（family 僅靠 revoke 失效）的缺口。
+        # 不用 revoke_all_for_user（它另開 session 且會重複 bump token_version，使本次
+        # 重發的新 access token 反而 stale）。
+        session.query(StaffRefreshToken).filter(
+            StaffRefreshToken.user_id == user.id,
+            StaffRefreshToken.revoked_at.is_(None),
+        ).update(
+            {"revoked_at": now_taipei_naive()},
+            synchronize_session=False,
+        )
 
         # 為當事人發新 token（同步新 token_version + must_change_password=False），
         # 避免「改完密碼立刻被踢」。其他 session 的舊 token 仍會在下次 refresh 被拒。
