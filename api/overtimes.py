@@ -585,6 +585,51 @@ def get_overtimes(
         session.close()
 
 
+def _parse_hhmm_on_date(overtime_date: date, hhmm: Optional[str]) -> Optional[datetime]:
+    """將 'HH:MM' 字串組成指定日期的 datetime；None 原樣回傳。"""
+    if not hhmm:
+        return None
+    h, m = map(int, hhmm.split(":"))
+    return datetime.combine(
+        overtime_date, datetime.min.time().replace(hour=h, minute=m)
+    )
+
+
+def _validate_overtime_for_employee(
+    session,
+    employee_id: int,
+    overtime_date: date,
+    overtime_type: str,
+    start_dt: Optional[datetime],
+    end_dt: Optional[datetime],
+    hours: float,
+) -> None:
+    """單筆建立與批次建立共用的完整驗證鏈（避免驗證漂移）。
+
+    任一不通過即 raise HTTPException（overlap→409，其餘各檢查自行 raise 400/409）。
+    刻意不含 assert_months_not_finalized：與單筆建立對齊（封存守衛在 approve 路徑）。
+    """
+    overlap = _check_overtime_overlap(
+        session, employee_id, overtime_date, start_dt, end_dt
+    )
+    if overlap:
+        st = overlap.start_time.strftime("%H:%M") if overlap.start_time else "未指定"
+        et = overlap.end_time.strftime("%H:%M") if overlap.end_time else "未指定"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"該員工在 {overlap.overtime_date} 已有時間重疊的加班申請"
+                f"（ID: {overlap.id}，{st}～{et}），請勿重複申請"
+            ),
+        )
+    _check_employee_has_conflicting_leave(
+        session, employee_id, overtime_date, start_dt, end_dt
+    )
+    _check_monthly_overtime_cap(session, employee_id, overtime_date, hours)
+    _check_quarterly_overtime_cap(session, employee_id, overtime_date, hours)
+    _check_overtime_type_calendar(session, overtime_date, overtime_type)
+
+
 @router.post("/overtimes", status_code=201, response_model=OvertimeCreateResultOut)
 def create_overtime(
     data: OvertimeCreate,
@@ -604,48 +649,18 @@ def create_overtime(
             else calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
         )
 
-        start_dt = None
-        end_dt = None
-        if data.start_time:
-            h, m = map(int, data.start_time.split(":"))
-            start_dt = datetime.combine(
-                data.overtime_date, datetime.min.time().replace(hour=h, minute=m)
-            )
-        if data.end_time:
-            h, m = map(int, data.end_time.split(":"))
-            end_dt = datetime.combine(
-                data.overtime_date, datetime.min.time().replace(hour=h, minute=m)
-            )
+        start_dt = _parse_hhmm_on_date(data.overtime_date, data.start_time)
+        end_dt = _parse_hhmm_on_date(data.overtime_date, data.end_time)
 
-        overlap = _check_overtime_overlap(
-            session, data.employee_id, data.overtime_date, start_dt, end_dt
+        _validate_overtime_for_employee(
+            session,
+            data.employee_id,
+            data.overtime_date,
+            data.overtime_type,
+            start_dt,
+            end_dt,
+            data.hours,
         )
-        if overlap:
-            st = (
-                overlap.start_time.strftime("%H:%M") if overlap.start_time else "未指定"
-            )
-            et = overlap.end_time.strftime("%H:%M") if overlap.end_time else "未指定"
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"該員工在 {overlap.overtime_date} 已有時間重疊的加班申請"
-                    f"（ID: {overlap.id}，{st}～{et}），請勿重複申請"
-                ),
-            )
-
-        # 修補 2026-05-11 P1-5：跨類重疊檢查（避免同日扣款 + 加班費雙重溢付）
-        _check_employee_has_conflicting_leave(
-            session, data.employee_id, data.overtime_date, start_dt, end_dt
-        )
-
-        _check_monthly_overtime_cap(
-            session, data.employee_id, data.overtime_date, data.hours
-        )
-        _check_quarterly_overtime_cap(
-            session, data.employee_id, data.overtime_date, data.hours
-        )
-
-        _check_overtime_type_calendar(session, data.overtime_date, data.overtime_type)
 
         ot = OvertimeRecord(
             employee_id=data.employee_id,

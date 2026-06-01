@@ -891,3 +891,44 @@ class TestAdminOvertimeQuarterlyCapBoundary:
             assert (
                 refreshed.status == "pending"
             ), f"approve 失敗應 rollback，pending 仍應為 status='pending'，但現在={refreshed.status}"
+
+
+# ── _parse_hhmm_on_date / _validate_overtime_for_employee 共用 helper ──
+from api.overtimes import _parse_hhmm_on_date, _validate_overtime_for_employee
+
+
+class TestParseHhmmOnDate:
+    def test_none_returns_none(self):
+        assert _parse_hhmm_on_date(date(2026, 6, 5), None) is None
+
+    def test_parses_to_datetime_on_given_date(self):
+        dt = _parse_hhmm_on_date(date(2026, 6, 5), "14:30")
+        assert dt == datetime(2026, 6, 5, 14, 30)
+
+
+class TestValidateOvertimeForEmployee:
+    """helper 必須沿用單筆建立的驗證鏈；overlap 命中時 raise 409。"""
+
+    def test_raises_409_on_overlap(self):
+        import types as _types
+
+        existing = _types.SimpleNamespace(
+            start_time=None,
+            end_time=None,
+            status="pending",
+            id=42,
+            overtime_date=date(2026, 6, 5),
+        )
+        session = _mock_session([existing])
+        with pytest.raises(HTTPException) as exc:
+            _validate_overtime_for_employee(
+                session,
+                employee_id=1,
+                overtime_date=date(2026, 6, 5),
+                overtime_type="weekday",
+                start_dt=None,
+                end_dt=None,
+                hours=2.0,
+            )
+        assert exc.value.status_code == 409
+        assert "時間重疊" in exc.value.detail
