@@ -398,7 +398,7 @@ async def create_growth_report(
                 status_code=422, detail="period_start 必須早於 period_end"
             )
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_PUBLISH.value)
             student = session.query(Student).filter_by(id=student_id).first()
             if not student:
                 raise HTTPException(status_code=404, detail="學生不存在")
@@ -472,7 +472,7 @@ async def list_growth_reports(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
             rows = (
                 session.query(StudentGrowthReport)
                 .filter(StudentGrowthReport.student_id == student_id)
@@ -506,7 +506,7 @@ async def get_growth_report(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)
@@ -539,7 +539,7 @@ async def download_growth_report(
 ) -> FileResponse | RedirectResponse:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)
@@ -600,7 +600,7 @@ async def delete_growth_report(
 ) -> Response:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_PUBLISH.value)
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)
@@ -658,7 +658,7 @@ async def send_growth_report_to_line(
         claimed_sent_at: Optional[datetime] = None
         period_label: str = ""
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_PUBLISH.value)
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)

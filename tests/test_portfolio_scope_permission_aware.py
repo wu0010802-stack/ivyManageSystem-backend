@@ -89,3 +89,21 @@ def test_measurements_endpoints_use_both_read_and_write_codes():
     # 至少 2 個 READ (list + chart-data) + 3 個 WRITE (POST/PATCH/DELETE)
     assert source.count("code=Permission.PORTFOLIO_READ") >= 2
     assert source.count("code=Permission.PORTFOLIO_WRITE") >= 3
+
+
+def test_reports_endpoints_use_both_read_and_publish_codes():
+    """api/portfolio/reports.py 含 GET list/detail/download (READ ×3) + POST/DELETE/send-line (PUBLISH ×3)。"""
+    import inspect
+
+    import api.portfolio.reports as mod
+
+    source = inspect.getsource(mod)
+    assert (
+        "code=Permission.PORTFOLIO_READ" in source
+    ), "reports.py GET list/detail/download 端點應傳 code=PORTFOLIO_READ"
+    assert (
+        "code=Permission.PORTFOLIO_PUBLISH" in source
+    ), "reports.py POST create / DELETE / send-line 端點應傳 code=PORTFOLIO_PUBLISH"
+    # 3 個 READ (list/detail/download) + 3 個 PUBLISH (create/delete/send-line)
+    assert source.count("code=Permission.PORTFOLIO_READ") >= 3
+    assert source.count("code=Permission.PORTFOLIO_PUBLISH") >= 3
