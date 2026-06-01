@@ -191,7 +191,7 @@ async def get_timeline(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
             requested_types = _parse_types(types)
             # F-V6-03：跨模組 timeline 聚合端點補敏感讀取 audit；含 incident /
             # contact_book / communication / assessment 等高 PII 來源
