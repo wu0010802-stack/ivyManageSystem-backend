@@ -783,6 +783,20 @@ def refresh_token(request: Request):
         )
         raise
 
+    # 模擬 session 不可經 refresh 升級或洗掉歸屬 → 直接拒絕，請 admin 重新進入模擬
+    if payload.get("impersonated_by") is not None:
+        write_login_audit(
+            request,
+            action="TOKEN_REFRESH_FAILED",
+            username=payload.get("name"),
+            user_id=payload.get("user_id"),
+            extras={"reason": "impersonation_token_not_refreshable"},
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="模擬工作階段不可刷新，請重新進入模擬",
+        )
+
     # S2: absolute session lifetime — 從 original_iat 起算超過設定小時數即拒絕 refresh。
     # 缺欄位（舊 token 過渡）時不擋，待此次 refresh 後新 token 會帶上 original_iat。
     original_iat = payload.get("original_iat")
