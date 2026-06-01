@@ -15,6 +15,15 @@ Tests intentionally fail before endpoint changes; pass after mark_soft_delete is
 from __future__ import annotations
 
 import asyncio
+
+
+def _run_maybe_async(_result):
+    """B2 async→def 遷移相容：handler 轉同步 def 後不再是 coroutine；
+    僅 coroutine 才走 asyncio.run，否則直接回傳同步結果。"""
+    import inspect as _inspect
+    if _inspect.iscoroutine(_result):
+        return asyncio.run(_result)
+    return _result
 import sys
 import os
 from contextlib import contextmanager
@@ -112,7 +121,7 @@ def test_attachment_soft_delete_sets_soft_delete_summary():
     ):
         with patch("utils.portfolio_access.assert_student_access") as mock_access:
             mock_access.return_value = SimpleNamespace(id=99)
-            result = asyncio.run(
+            result = _run_maybe_async(
                 delete_attachment(
                     attachment_id=1,
                     request=request,
@@ -166,7 +175,7 @@ def test_guardian_soft_delete_sets_soft_delete_summary():
 
     with patch.object(stu_module, "get_session", return_value=fake_session):
         with patch.object(stu_module, "_sync_primary_guardian_to_student"):
-            result = asyncio.run(
+            result = _run_maybe_async(
                 delete_guardian(
                     guardian_id=5,
                     request=request,
@@ -322,7 +331,7 @@ def test_employee_deactivate_sets_soft_delete_audit():
     from api.employees import delete_employee
 
     with patch.object(emp_module, "get_session", return_value=fake_session):
-        result = asyncio.run(
+        result = _run_maybe_async(
             delete_employee(
                 employee_id=7,
                 request=request,

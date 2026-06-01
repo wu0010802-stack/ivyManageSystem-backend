@@ -11,6 +11,15 @@ tests/test_classroom_promote.py — 班級跨學年升班邏輯測試
 import os
 import sys
 import asyncio
+
+
+def _run_maybe_async(_result):
+    """B2 async→def 遷移相容：handler 轉同步 def 後不再是 coroutine；
+    僅 coroutine 才走 asyncio.run，否則直接回傳同步結果。"""
+    import inspect as _inspect
+    if _inspect.iscoroutine(_result):
+        return asyncio.run(_result)
+    return _result
 from datetime import date
 from unittest.mock import patch, MagicMock
 
@@ -256,7 +265,7 @@ class TestPromoteAcademicYear:
         current_user = {"username": "admin", "user_id": 1, "permission_names": ["*"]}
         session.close = MagicMock()
         with patch("api.classrooms.get_session", return_value=session):
-            return asyncio.run(
+            return _run_maybe_async(
                 promote_classrooms_to_academic_year(
                     item=item, current_user=current_user
                 )
@@ -312,7 +321,7 @@ class TestPromoteAcademicYear:
             )
             session.close = MagicMock()
             with patch("api.classrooms.get_session", return_value=session):
-                asyncio.run(
+                _run_maybe_async(
                     promote_classrooms_to_academic_year(
                         item=item, current_user={"username": "admin"}
                     )
