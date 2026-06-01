@@ -58,6 +58,8 @@ def visit(session):
 
 
 def test_auto_generate_student_id_when_omitted(session, classroom, visit):
+    # student_id_code=None 現在走新路徑：配發 enrollment_seq + listener 組學號。
+    # classroom 未設 grade_id，listener 組出 "{school_year}-{seq:02d}"
     result = convert_recruitment_to_student(
         session,
         recruitment_visit_id=visit.id,
@@ -65,21 +67,24 @@ def test_auto_generate_student_id_when_omitted(session, classroom, visit):
         classroom_id=classroom.id,
     )
     student = session.get(Student, result.student_id)
-    # 學號自動產出，前綴與班代碼一致
-    assert student.student_id.startswith(
-        f"{classroom.school_year}-{classroom.class_code}-"
-    )
-    assert student.student_id.endswith("-01")  # 首位
+    assert student.enrollment_seq == 1
+    assert student.enrollment_school_year is not None
+    # 學號由 listener 自動組出（無年級字時格式為 "{school_year}-{seq:02d}"）
+    assert student.student_id == f"{student.enrollment_school_year}-01"
 
 
-def test_explicit_code_still_works(session, classroom, visit):
+def test_explicit_code_is_now_ignored(session, classroom, visit):
+    # student_id_code 已廢棄 / ignored。傳入 "CUSTOM-001" 不影響學號，
+    # 學號由 enrollment_seq + listener 組出。
     result = convert_recruitment_to_student(
         session,
         recruitment_visit_id=visit.id,
         student_id_code="CUSTOM-001",
         classroom_id=classroom.id,
     )
-    assert session.get(Student, result.student_id).student_id == "CUSTOM-001"
+    stu = session.get(Student, result.student_id)
+    assert stu.student_id != "CUSTOM-001"
+    assert stu.enrollment_seq == 1
 
 
 def test_writes_event_log_converted(session, classroom, visit):
@@ -102,13 +107,16 @@ def test_writes_event_log_converted(session, classroom, visit):
     assert log.student_id is not None
 
 
-def test_classroom_required_when_auto_generating(session, visit):
-    with pytest.raises(RecruitmentConversionError) as exc:
-        convert_recruitment_to_student(
-            session,
-            recruitment_visit_id=visit.id,
-            student_id_code=None,
-            classroom_id=None,
-        )
-    msg = str(exc.value).lower()
-    assert "classroom" in msg or "班" in msg
+def test_no_classroom_still_assigns_seq(session, visit):
+    # classroom_id=None は許可される。
+    # 新ロジックではclassroom不要；enrollment_seqが配発されstudentが作成される。
+    # classroom なし → student_id は "{enrollment_school_year}-{seq:02d}"
+    result = convert_recruitment_to_student(
+        session,
+        recruitment_visit_id=visit.id,
+        student_id_code=None,
+        classroom_id=None,
+    )
+    stu = session.get(Student, result.student_id)
+    assert stu.enrollment_seq == 1
+    assert stu.classroom_id is None

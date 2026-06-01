@@ -133,3 +133,28 @@ class TestNextEnrollmentSeq:
                             enrollment_school_year=114, enrollment_seq=7))
         session.flush()
         assert next_enrollment_seq(session, 115) == 1
+
+
+# Ensure all required tables are created for conversion test
+import models.recruitment  # noqa: F401 registers RecruitmentVisit/RecruitmentEventLog
+import models.student_log  # noqa: F401 registers StudentChangeLog
+import models.guardian  # noqa: F401 registers Guardian
+
+
+def test_conversion_allocates_enrollment_seq(session, monkeypatch):
+    from models.recruitment import RecruitmentVisit
+    from services import recruitment_conversion as rc
+    monkeypatch.setattr(rc, "resolve_current_academic_term", lambda *a, **k: (114, 1))
+
+    g = _grade(session, "小班")
+    c = _classroom(session, school_year=114, grade=g)
+    visit = RecruitmentVisit(child_name="小明", month="114.09")
+    session.add(visit); session.flush()
+
+    result = rc.convert_recruitment_to_student(
+        session, recruitment_visit_id=visit.id, classroom_id=c.id,
+    )
+    stu = session.get(Student, result.student_id)
+    assert stu.enrollment_school_year == 114
+    assert stu.enrollment_seq == 1
+    assert stu.student_id == "114-小-01"

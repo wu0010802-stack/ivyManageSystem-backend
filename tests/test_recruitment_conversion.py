@@ -143,30 +143,29 @@ class TestConvertValidation:
                 classroom_id=classroom.id,
             )
 
-    def test_duplicate_student_code_rejected(self, session, visit, classroom):
-        existing = Student(
-            student_id="S2026001",
-            name="已存在",
-            lifecycle_status=LIFECYCLE_ACTIVE,
+    def test_student_id_code_param_is_ignored(self, session, visit, classroom):
+        # student_id_code 參數已 deprecated；傳入任意值不影響學號，也不再拋 RecruitmentConversionError。
+        # 學號由 enrollment_seq + 班級 listener 自動組出。
+        result = convert_recruitment_to_student(
+            session,
+            recruitment_visit_id=visit.id,
+            student_id_code="ANY-IGNORED-VALUE",
+            classroom_id=classroom.id,
         )
-        session.add(existing)
-        session.commit()
+        student = session.query(Student).filter_by(id=result.student_id).one()
+        # 學號應由 seq 組出，不應等於手填的 deprecated 值
+        assert student.student_id != "ANY-IGNORED-VALUE"
+        assert student.enrollment_seq == 1
 
-        with pytest.raises(RecruitmentConversionError, match="學號已存在"):
-            convert_recruitment_to_student(
-                session,
-                recruitment_visit_id=visit.id,
-                student_id_code="S2026001",
-                classroom_id=classroom.id,
-            )
-
-    def test_empty_code_rejected(self, session, visit):
-        with pytest.raises(RecruitmentConversionError, match="學號不可為空"):
-            convert_recruitment_to_student(
-                session,
-                recruitment_visit_id=visit.id,
-                student_id_code="   ",
-            )
+    def test_empty_code_ignored(self, session, visit):
+        # student_id_code 已廢棄；傳入空白字串不再拋錯，轉化正常進行，學號由 seq 組出。
+        result = convert_recruitment_to_student(
+            session,
+            recruitment_visit_id=visit.id,
+            student_id_code="   ",
+        )
+        student = session.query(Student).filter_by(id=result.student_id).one()
+        assert student.enrollment_seq == 1
 
     def test_invalid_initial_status_rejected(self, session, visit):
         with pytest.raises(RecruitmentConversionError):
@@ -180,25 +179,26 @@ class TestConvertValidation:
 
 class TestConvertAtomicity:
     def test_rollback_leaves_no_orphan(self, session, visit, classroom, monkeypatch):
-        """模擬中段失敗：手動 rollback 後不應有殘留 student/guardian/log。"""
+        """模擬中段失敗：手動 rollback 後不應有殘留 student/guardian/log。
+        觸發方式：重複轉化同一 recruitment_visit（此錯誤在寫入前拋出）。
+        """
         try:
-            # 強制觸發錯誤：給重複學號
-            existing = Student(
-                student_id="DUP",
-                name="x",
-                lifecycle_status=LIFECYCLE_ACTIVE,
+            # 第一次轉化成功
+            convert_recruitment_to_student(
+                session,
+                recruitment_visit_id=visit.id,
+                classroom_id=classroom.id,
             )
-            session.add(existing)
             session.commit()
+
             before_students = session.query(Student).count()
             before_guardians = session.query(Guardian).count()
             before_logs = session.query(StudentChangeLog).count()
 
-            with pytest.raises(RecruitmentConversionError):
+            with pytest.raises(RecruitmentConversionError, match="此招生訪視已轉化為學生"):
                 convert_recruitment_to_student(
                     session,
                     recruitment_visit_id=visit.id,
-                    student_id_code="DUP",
                     classroom_id=classroom.id,
                 )
             session.rollback()
