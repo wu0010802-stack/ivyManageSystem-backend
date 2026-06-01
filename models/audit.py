@@ -53,3 +53,13 @@ class AuditLog(Base):
         nullable=True,
         comment="JWT jti claim — forensic 用，stateless 無伺服端 session",
     )
+    impersonated_by = Column(
+        Integer,
+        nullable=True,
+        comment="若為模擬寫入，發起的 admin user_id（actor 仍為 user_id 老師）",
+    )
+    impersonated_by_name = Column(
+        Text,
+        nullable=True,
+        comment="若為模擬寫入，發起的 admin 顯示名",
+    )
