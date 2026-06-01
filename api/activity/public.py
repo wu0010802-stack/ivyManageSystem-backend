@@ -1141,6 +1141,9 @@ def _verify_parent_identity(
     """三欄驗證：name + birthday + parent_phone 與報名一致才回 registration。
 
     不符一律回 404 且不洩漏是哪一欄錯，維持隱私契約。
+
+    TODO(follow-up): 候補確認/放棄為破壞性 mutation，身分僅憑姓名+生日+手機三欄；
+    通知連結應帶 query token 作第二因素（spec out-of-scope）。
     """
     reg = (
         session.query(ActivityRegistration)

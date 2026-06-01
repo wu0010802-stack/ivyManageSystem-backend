@@ -55,8 +55,10 @@ def _lock_registration(session, registration_id: int):
     )
     try:
         return query.with_for_update().first()
-    except (CompileError, OperationalError, NotImplementedError):
+    except (CompileError, NotImplementedError):
+        # SQLite（單元測試）不支援 FOR UPDATE，編譯期降級為無鎖
         return query.first()
+    # OperationalError（真 DB 錯誤 / lock timeout / 連線中斷）上拋，不降級
 
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")

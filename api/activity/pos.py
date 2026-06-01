@@ -579,9 +579,10 @@ def _lock_regs(session, reg_ids: list):
     try:
         # PostgreSQL / MySQL：row-level lock
         return query.with_for_update().all()
-    except (CompileError, OperationalError, NotImplementedError):
-        # SQLite（單元測試）降級為無鎖
+    except (CompileError, NotImplementedError):
+        # SQLite（單元測試）不支援 FOR UPDATE，編譯期降級為無鎖
         return query.all()
+    # OperationalError（真 DB 錯誤 / lock timeout / 連線中斷）上拋，不降級
 
 
 @router.post("/pos/checkout", status_code=201, response_model=PosCheckoutOut)
