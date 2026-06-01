@@ -23,6 +23,21 @@ def _today_taipei() -> date:
     return datetime.now(ZoneInfo("Asia/Taipei")).date()
 
 
+# Catch-up 視窗（天）：term.start_date 當天若停機，開機後 N 天內仍補推進。
+# advance_term_to_active 只推 ENROLLED→active，對已 active 者 idempotent，重跑安全。
+TERM_ADVANCE_CATCHUP_DAYS = 7
+
+
+def term_start_date_window(today: date) -> tuple[date, date]:
+    """要處理的 term.start_date 範圍 [today - grace, today]。
+
+    原本精準 start_date == today，當天整段停機就永久錯過；改為有界區間補跑。
+    """
+    from datetime import timedelta
+
+    return today - timedelta(days=TERM_ADVANCE_CATCHUP_DAYS), today
+
+
 def scheduler_enabled() -> bool:
     return bool(get_settings().scheduler.recruitment_term_advance_enabled)
 
@@ -40,13 +55,19 @@ async def run_recruitment_term_advance_scheduler(stop_event: asyncio.Event) -> N
     )
 
     while not stop_event.is_set():
-        with scheduler_iteration("recruitment_term_advance", expected_interval_seconds=check_interval):
+        with scheduler_iteration(
+            "recruitment_term_advance", expected_interval_seconds=check_interval
+        ):
             today = _today_taipei()
             advanced = 0
             with session_scope() as session:
+                lo, hi = term_start_date_window(today)
                 terms = (
                     session.query(AcademicTerm)
-                    .filter(AcademicTerm.start_date == today)
+                    .filter(
+                        AcademicTerm.start_date >= lo,
+                        AcademicTerm.start_date <= hi,
+                    )
                     .all()
                 )
                 for term in terms:

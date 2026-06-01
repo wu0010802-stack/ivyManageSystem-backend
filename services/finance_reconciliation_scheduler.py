@@ -16,7 +16,7 @@ Why opt-in：本模組會每日推 LINE 訊息；無 LINE 設定的環境（dev 
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,17 @@ TARGET_MINUTE = 0
 
 # 巡檢週期：每分鐘檢查一次是否到目標時間（精度 1 分鐘對日報來說綽綽有餘）
 CHECK_INTERVAL_SECONDS = 60
+
+
+def should_run_reconciliation(now: datetime, last_run_date: Optional[date]) -> bool:
+    """到/過每日目標時刻且當日尚未跑 → 觸發。
+
+    原本 now.minute == TARGET_MINUTE 精準分鐘比對，重啟落在 02:01 會整天錯過；
+    改為 >= 目標時刻 + 當日去重（last_run_date）。
+    """
+    if last_run_date == now.date():
+        return False
+    return now.time() >= time(TARGET_HOUR, TARGET_MINUTE)
 
 
 def scheduler_enabled() -> bool:
@@ -127,17 +138,16 @@ async def run_finance_reconciliation_scheduler(stop_event: asyncio.Event) -> Non
         TARGET_MINUTE,
         CHECK_INTERVAL_SECONDS,
     )
-    last_run_date: Optional["__import__('datetime').date"] = None
+    last_run_date: Optional[date] = None
     while not stop_event.is_set():
         try:
             now = datetime.now(TAIPEI_TZ)
-            if (
-                now.hour == TARGET_HOUR
-                and now.minute == TARGET_MINUTE
-                and last_run_date != now.date()
-            ):
+            if should_run_reconciliation(now, last_run_date):
                 logger.warning("觸發對帳排程 date=%s", now.date().isoformat())
-                with scheduler_iteration("finance_reconciliation", expected_interval_seconds=CHECK_INTERVAL_SECONDS):
+                with scheduler_iteration(
+                    "finance_reconciliation",
+                    expected_interval_seconds=CHECK_INTERVAL_SECONDS,
+                ):
                     result = run_finance_reconciliation()
                     record_rows(
                         "finance_reconciliation",

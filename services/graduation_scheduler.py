@@ -46,6 +46,11 @@ PREVIEW_WINDOW_DAYS = settings.scheduler.auto_graduation_preview_days
 # 檢查週期：每天檢查一次即可；此處容錯用 1 小時巡檢以降低 miss 機率
 CHECK_INTERVAL_SECONDS = settings.scheduler.auto_graduation_check_interval
 
+# Catch-up 視窗（天）：畢業日當天若全天停機，開機後仍在「畢業日 + N 天」內補跑。
+# 有界（非無界 today>=target）：避免停機數週後補跑時，新學年已編入畢業班的學生
+# 被誤畢業。超過視窗改由人工處理。N 天值請依貴園「新生編入畢業班」的時程調整。
+CATCHUP_GRACE_DAYS = 7
+
 
 def _today_taipei() -> date:
     return datetime.now(TAIPEI_TZ).date()
@@ -67,6 +72,19 @@ def is_within_preview_window(today: Optional[date] = None) -> bool:
     today = today or _today_taipei()
     target = graduation_date_for_year(today.year)
     return target - timedelta(days=PREVIEW_WINDOW_DAYS) <= today <= target
+
+
+def should_run_auto_graduation(today: date, last_run_year: Optional[int]) -> bool:
+    """是否該在 today 觸發自動畢業。
+
+    觸發條件：今年畢業日 <= today <= 畢業日 + CATCHUP_GRACE_DAYS，且今年尚未跑過。
+    有界 catch-up：畢業日當天停機時，開機後 grace 天內仍補跑；超過視窗則不補
+    （避免無界補跑誤畢業新學年已編入畢業班的學生），改由人工處理。
+    """
+    if last_run_year == today.year:
+        return False
+    target = graduation_date_for_year(today.year)
+    return target <= today <= target + timedelta(days=CATCHUP_GRACE_DAYS)
 
 
 def list_upcoming_graduates(session) -> list[Student]:
@@ -180,10 +198,18 @@ async def run_auto_graduation_scheduler(stop_event: asyncio.Event) -> None:
         try:
             today = _today_taipei()
             target = graduation_date_for_year(today.year)
-            if today == target and last_run_year != today.year:
-                logger.warning("觸發自動畢業（date=%s）", today.isoformat())
-                with scheduler_iteration("auto_graduation", expected_interval_seconds=CHECK_INTERVAL_SECONDS):
-                    result = run_auto_graduation(effective_date=today)
+            if should_run_auto_graduation(today, last_run_year):
+                logger.warning(
+                    "觸發自動畢業（date=%s，畢業日=%s）",
+                    today.isoformat(),
+                    target.isoformat(),
+                )
+                with scheduler_iteration(
+                    "auto_graduation", expected_interval_seconds=CHECK_INTERVAL_SECONDS
+                ):
+                    # effective_date 用畢業日 target（非補跑當日），讓畢業日期一致記為
+                    # 7/31，且 advisory lock run_key 穩定（多 worker / 跨日補跑皆只一次）。
+                    result = run_auto_graduation(effective_date=target)
                     record_rows("auto_graduation", int(result.get("succeeded", 0) or 0))
                     last_run_year = today.year
         except Exception:

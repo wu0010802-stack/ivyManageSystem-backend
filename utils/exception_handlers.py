@@ -30,6 +30,7 @@ import uuid
 from typing import Any
 
 from fastapi import Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -132,7 +133,9 @@ async def business_error_handler(request: Request, exc: BusinessError) -> JSONRe
             code=exc.code,
             message=exc.message,
             request_id=request_id,
-            extra=exc.extra,
+            # extra 可能帶 Decimal / datetime / set 等非 JSON 物件；過 jsonable_encoder
+            # 避免 JSONResponse.render 二次拋錯變裸 500。
+            extra=jsonable_encoder(exc.extra) if exc.extra else None,
         ),
         headers={"X-Request-ID": request_id},
     )
@@ -170,13 +173,16 @@ async def validation_error_handler(
 ) -> JSONResponse:
     """422 envelope；errors list 放進 extra.errors 供前端細部顯示。Sentry 不送。"""
     request_id = _get_request_id(request)
+    # exc.errors() 的 ctx 可能含 ValueError 實例 / bytes 等非 JSON 物件（Pydantic v2
+    # custom validator 拋的 error）；過 jsonable_encoder 才不會在 render 二次拋 TypeError
+    # → 裸 500、X-Request-ID 遺失。對齊 FastAPI 原生 handler 的做法。
     return JSONResponse(
         status_code=422,
         content=_envelope(
             code="VALIDATION_ERROR",
             message=_GENERIC_422_MESSAGE,
             request_id=request_id,
-            extra={"errors": exc.errors()},
+            extra={"errors": jsonable_encoder(exc.errors())},
         ),
         headers={"X-Request-ID": request_id},
     )

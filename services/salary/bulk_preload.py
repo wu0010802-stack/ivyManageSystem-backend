@@ -40,6 +40,17 @@ class _BulkSalaryPreload:
     holiday_set: set
     makeup_set: set
     shifts_by_emp: dict
+    # BE-P2-1：批次預載消除 per-employee N+1（值與 per-employee query 等價）
+    ytd_bonus_by_emp: dict  # {emp_id: float} — query_ytd_bonus_bulk
+    appraisal_by_emp: (
+        dict  # {emp_id: Decimal} — query_appraisal_year_end_bonus_bulk（非2月為空0）
+    )
+    skip_by_emp_month: (
+        dict  # {(emp_id, y, m): bool} — should_skip_bonuses_bulk（發放月才有）
+    )
+    pending_payout_by_emp: (
+        dict  # {emp_id: [UnusedLeavePayoutLog]} — pending_payout_logs_bulk
+    )
 
 
 def _get_ytd_sick_hours_before(

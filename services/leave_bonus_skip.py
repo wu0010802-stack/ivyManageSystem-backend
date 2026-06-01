@@ -70,6 +70,51 @@ def should_skip_bonuses_for_month(
     return bool(leaves), leaves
 
 
+def should_skip_bonuses_bulk(
+    session: Session,
+    employee_ids: list[int],
+    year_month_pairs,
+    *,
+    leave_types: frozenset | set | None = None,
+) -> dict[tuple[int, int, int], bool]:
+    """批次版 should_skip_bonuses_for_month（只回 bool，不回 matched_leaves）。
+
+    一次查涵蓋所有 (year, month) 整體區間的 skip 假單，再逐 (emp, month) 以與 single
+    版完全相同的 overlap 條件（start_date <= month_end AND end_date >= month_start）判斷。
+
+    回 {(employee_id, year, month): bool}；任何未命中組合預設 False。
+    """
+    types = leave_types or SKIP_BONUS_LEAVE_TYPES
+    pairs = list(year_month_pairs)
+    result = {(eid, y, m): False for eid in employee_ids for (y, m) in pairs}
+    if not types or not employee_ids or not pairs:
+        return result
+
+    month_bounds = []
+    for y, m in pairs:
+        _, last_day = calendar.monthrange(y, m)
+        month_bounds.append((y, m, date(y, m, 1), date(y, m, last_day)))
+    overall_start = min(b[2] for b in month_bounds)
+    overall_end = max(b[3] for b in month_bounds)
+
+    leaves = (
+        session.query(LeaveRecord)
+        .filter(
+            LeaveRecord.employee_id.in_(employee_ids),
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
+            LeaveRecord.leave_type.in_(list(types)),
+            LeaveRecord.start_date <= overall_end,
+            LeaveRecord.end_date >= overall_start,
+        )
+        .all()
+    )
+    for lv in leaves:
+        for y, m, m_start, m_end in month_bounds:
+            if lv.start_date <= m_end and lv.end_date >= m_start:
+                result[(lv.employee_id, y, m)] = True
+    return result
+
+
 def format_skip_reason(leaves: list[LeaveRecord]) -> str:
     """生成可讀的跳過原因字串。"""
     if not leaves:

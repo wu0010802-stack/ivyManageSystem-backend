@@ -795,6 +795,12 @@ class AuditMiddleware(BaseHTTPMiddleware):
             changes_raw = getattr(request.state, "audit_changes", None)
             changes_json = None
             if changes_raw is not None:
+                # P0b: 遮罩 PII（與 write_audit_in_session / write_explicit_audit /
+                # write_login_audit 一致）。middleware 主路徑原本直接序列化，任一
+                # endpoint 漏遮（如 registrations 的 student_name）就明文落 audit DB。
+                from utils.audit_redact import redact_pii
+
+                changes_raw = redact_pii(changes_raw)
                 try:
                     changes_json = json.dumps(
                         changes_raw, ensure_ascii=False, default=str

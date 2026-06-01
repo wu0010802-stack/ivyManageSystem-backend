@@ -842,13 +842,12 @@ else:
         "http://127.0.0.1:3000",
     ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "If-Match"],
-)
+# 注意：CORSMiddleware 的 add 已移到下方 middleware 區塊（TrustedHost 之前），
+# 使其成為 KillSwitch / CSRF / SecurityHeaders / RequestLogging / Audit 的外層
+# wrapper。否則這些 middleware 自身短路產生的 503/403/400 回應不會回流經過
+# CORS → 缺 Access-Control-Allow-Origin → 跨來源前端收到 CORS error 而非可讀的
+# 503（打斷 MaintenanceView / 503-redirect 友善降級）。
+# CORS_ORIGINS 仍在此計算（保留 prod 未設來源時 fail-fast 的位置）。
 
 # ---------------------------------------------------------------------------
 # Service Injection
@@ -1002,6 +1001,18 @@ app.add_middleware(RequestLoggingMiddleware)
 from middleware.csrf_origin import CSRFOriginCheckMiddleware
 
 app.add_middleware(CSRFOriginCheckMiddleware)
+
+# CORS 必須在 KillSwitch / CSRF / SecurityHeaders / RequestLogging / Audit 之外層
+# （即在它們之後 add），才能讓這些 middleware 自身短路的 503/403 回應在回流時
+# 經過 CORS 補上 Access-Control-Allow-Origin，並讓 preflight OPTIONS 在維護模式下
+# 仍可成功。位於僅次於最外層 TrustedHost 之下（Host 先驗證屬安全前置）。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "If-Match"],
+)
 
 # TrustedHost 必須最後 add（成為最外層），在所有處理前先驗證 Host header。
 # 防 Host header injection / 開放重新導向 / 快取毒化。

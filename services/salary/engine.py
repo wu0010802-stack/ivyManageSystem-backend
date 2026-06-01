@@ -73,7 +73,7 @@ from .bulk_preload import (  # noqa: F401
 from utils.rounding import round_half_up
 
 
-def _pull_pending_payout_logs(session, salary_record) -> None:
+def _pull_pending_payout_logs(session, salary_record, pending_logs=None) -> None:
     """Layer 2：撈 salary_period_year/month 符合且尚未綁定的 UnusedLeavePayoutLog。
 
     scheduler（T9 expire_comp_leave_grants）在薪資月結前可能已寫入 log 但未建立
@@ -100,16 +100,19 @@ def _pull_pending_payout_logs(session, salary_record) -> None:
     if salary_record.id is None:
         session.flush()
 
-    pending_logs = (
-        session.query(UnusedLeavePayoutLog)
-        .filter(
-            UnusedLeavePayoutLog.employee_id == salary_record.employee_id,
-            UnusedLeavePayoutLog.salary_period_year == salary_record.salary_year,
-            UnusedLeavePayoutLog.salary_period_month == salary_record.salary_month,
-            UnusedLeavePayoutLog.salary_record_id.is_(None),
+    # 批次路徑注入該員工預載 pending log list（None=單筆路徑照常 query）；
+    # 預載與此處 SELECT 同條件（emp + salary_period + salary_record_id IS NULL）。
+    if pending_logs is None:
+        pending_logs = (
+            session.query(UnusedLeavePayoutLog)
+            .filter(
+                UnusedLeavePayoutLog.employee_id == salary_record.employee_id,
+                UnusedLeavePayoutLog.salary_period_year == salary_record.salary_year,
+                UnusedLeavePayoutLog.salary_period_month == salary_record.salary_month,
+                UnusedLeavePayoutLog.salary_record_id.is_(None),
+            )
+            .all()
         )
-        .all()
-    )
 
     if not pending_logs:
         return
@@ -124,7 +127,41 @@ def _pull_pending_payout_logs(session, salary_record) -> None:
         log.salary_record_id = salary_record.id
 
 
-def _fill_salary_record(salary_record, breakdown, engine, session=None):
+def pending_payout_logs_bulk(session, employee_ids, year, month) -> dict:
+    """批次版 _pull_pending_payout_logs 的 SELECT：一次撈所有員工該薪資期間尚未綁定的
+    UnusedLeavePayoutLog，回 {employee_id: [log, ...]}（缺者空 list）。
+
+    語意與單筆 SELECT 完全一致（同 salary_period_year/month + salary_record_id IS NULL）；
+    僅取代逐人 SELECT，綁定與加總仍由 _pull_pending_payout_logs 逐筆執行。
+    """
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+
+    result: dict = {eid: [] for eid in employee_ids}
+    if not employee_ids:
+        return result
+    rows = (
+        session.query(UnusedLeavePayoutLog)
+        .filter(
+            UnusedLeavePayoutLog.employee_id.in_(employee_ids),
+            UnusedLeavePayoutLog.salary_period_year == year,
+            UnusedLeavePayoutLog.salary_period_month == month,
+            UnusedLeavePayoutLog.salary_record_id.is_(None),
+        )
+        .all()
+    )
+    for log in rows:
+        result.setdefault(log.employee_id, []).append(log)
+    return result
+
+
+def _fill_salary_record(
+    salary_record,
+    breakdown,
+    engine,
+    session=None,
+    appraisal_bonus=None,
+    pending_logs=None,
+):
     """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
 
     若 SalaryRecord.manual_overrides 不為空,清單內欄位視為「人工調整鎖定」,
@@ -193,14 +230,20 @@ def _fill_salary_record(salary_record, breakdown, engine, session=None):
 
     # 考核年終獎金（2 月發放；不進 gross_salary；source of truth = special_bonus_items）
     if session is not None:
-        salary_record.appraisal_year_end_bonus = query_appraisal_year_end_bonus(
-            session,
-            salary_record.employee_id,
-            salary_record.salary_year,
-            salary_record.salary_month,
+        # 批次路徑可注入預載 appraisal（Decimal，None=單筆路徑照常 query）；型別一致。
+        salary_record.appraisal_year_end_bonus = (
+            appraisal_bonus
+            if appraisal_bonus is not None
+            else query_appraisal_year_end_bonus(
+                session,
+                salary_record.employee_id,
+                salary_record.salary_year,
+                salary_record.salary_month,
+            )
         )
         # Layer 2：撈 scheduler 已寫入但尚未綁定到本 SalaryRecord 的 pending log
-        _pull_pending_payout_logs(session, salary_record)
+        # （批次路徑注入該員工預載 list；None=單筆路徑照常 query）
+        _pull_pending_payout_logs(session, salary_record, pending_logs=pending_logs)
 
     # 成功重算 → 清除 stale 旗標(若為預載的舊 record 之前可能被標 True)
     salary_record.needs_recalc = False
@@ -2633,6 +2676,7 @@ class SalaryEngine:
         month: int,
         *,
         monthly_ctx_cache: dict | None = None,
+        skip_by_month: dict | None = None,
     ) -> tuple[Optional[float], Optional[float]]:
         """發放月時累積期間每月節慶/超額獎金，回傳 (festival_total, overtime_total)。
 
@@ -2669,7 +2713,11 @@ class SalaryEngine:
         overtime_total = 0
         for y, m in period_months:
             # 該月有產假/育嬰/流產假 → 不計入累積（業主慣例對齊 Excel 郭玟秀/陳品棻案例）
-            skip, _ = should_skip_bonuses_for_month(session, emp.id, y, m)
+            # 批次路徑注入預載 skip dict（None=單筆路徑照常 query）；同 overlap 條件。
+            if skip_by_month is not None:
+                skip = skip_by_month.get((emp.id, y, m), False)
+            else:
+                skip, _ = should_skip_bonuses_for_month(session, emp.id, y, m)
             if skip:
                 continue
             try:
@@ -2706,9 +2754,18 @@ class SalaryEngine:
                 festival_total += int(row.get("festival_bonus", 0) or 0)
                 overtime_total += int(row.get("overtime_bonus", 0) or 0)
             except Exception:
-                logger.exception(
-                    "計算期間累積失敗 emp=%s year=%s month=%s", emp.id, y, m
+                # 真實錯誤（DB 中斷、設定缺漏等）不可靜默吞成「該月 0 貢獻」→ 發放月
+                # 總額少算 → 直接覆蓋整筆獎金且以 needs_recalc=False commit → 永久少付。
+                # 改為傳播：bulk path 由 savepoint 接住標 needs_recalc=True；單筆路徑回
+                # API 錯誤。空月（期中到職前/無班級）走 eligibility 優雅回 0，不到此分支。
+                # 用 warning 保留月份 context（完整 stack 由上層 bulk handler 記，避免雙重）。
+                logger.warning(
+                    "計算期間累積失敗 emp=%s year=%s month=%s，整筆標記需重算",
+                    emp.id,
+                    y,
+                    m,
                 )
+                raise
         return festival_total, overtime_total
 
     def _adjust_period_totals_for_discipline(
@@ -3303,6 +3360,29 @@ class SalaryEngine:
             for ds in all_shifts:
                 shifts_by_emp[ds.employee_id][ds.date] = ds.shift_type_id
 
+        # ── BE-P2-1：批次預載 per-employee N+1 來源（值與 per-employee query 等價）──
+        from services.leave_bonus_skip import should_skip_bonuses_bulk
+        from services.salary.appraisal_year_end import (
+            query_appraisal_year_end_bonus_bulk,
+        )
+        from services.salary.supplementary_premium import query_ytd_bonus_bulk
+
+        from .utils import get_distribution_period_months
+
+        ytd_bonus_by_emp = query_ytd_bonus_bulk(session, employee_ids, year, month)
+        appraisal_by_emp = query_appraisal_year_end_bonus_bulk(
+            session, employee_ids, year, month
+        )
+        period_months = get_distribution_period_months(year, month)
+        skip_by_emp_month = (
+            should_skip_bonuses_bulk(session, employee_ids, period_months)
+            if period_months
+            else {}
+        )
+        pending_payout_by_emp = pending_payout_logs_bulk(
+            session, employee_ids, year, month
+        )
+
         return _BulkSalaryPreload(
             emp_map=emp_map,
             att_by_emp=att_by_emp,
@@ -3321,6 +3401,10 @@ class SalaryEngine:
             holiday_set=holiday_set,
             makeup_set=makeup_set,
             shifts_by_emp=shifts_by_emp,
+            ytd_bonus_by_emp=ytd_bonus_by_emp,
+            appraisal_by_emp=appraisal_by_emp,
+            skip_by_emp_month=skip_by_emp_month,
+            pending_payout_by_emp=pending_payout_by_emp,
         )
 
     def _acquire_locks_and_load_existing_records(
@@ -3641,6 +3725,7 @@ class SalaryEngine:
                 year,
                 month,
                 monthly_ctx_cache=monthly_ctx_cache,
+                skip_by_month=preload.skip_by_emp_month,
             )
         )
 
@@ -3673,6 +3758,8 @@ class SalaryEngine:
             month,
             self.insurance_service,
             emp.id,
+            ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
+            appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
         )
 
         breakdown.absent_count = absent_count
@@ -3700,7 +3787,14 @@ class SalaryEngine:
             )
             session.add(salary_record)
 
-        _fill_salary_record(salary_record, breakdown, self, session=session)
+        _fill_salary_record(
+            salary_record,
+            breakdown,
+            self,
+            session=session,
+            appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
+            pending_logs=preload.pending_payout_by_emp.get(emp.id, []),
+        )
         return emp, breakdown
 
     def process_bulk_salary_calculation(
