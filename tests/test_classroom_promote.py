@@ -288,7 +288,7 @@ class TestPromoteAcademicYear:
         current_user = {"username": "admin", "user_id": 1, "permission_names": ["*"]}
         session.close = MagicMock()
         with patch("api.classrooms.get_session", return_value=session):
-            return asyncio.run(
+            return _run_maybe_async(
                 preview_promote_classrooms_to_academic_year(
                     item=item, current_user=current_user
                 )
