@@ -3,9 +3,10 @@ Classroom management router
 """
 
 import logging
+from dataclasses import dataclass, field
 from typing import Optional
 from datetime import date
-from utils.taipei_time import today_taipei
+from utils.taipei_time import today_taipei, now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
@@ -15,6 +16,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 from models.database import get_session, Classroom, ClassGrade, Employee, Student
+from models.classroom import LIFECYCLE_GRADUATED
+from models.student_transfer import StudentClassroomTransfer
+from services.student_lifecycle import (
+    transition as lifecycle_transition,
+    LifecycleTransitionError,
+)
+from services.graduation_scheduler import graduation_date_for_year
 from schemas._common import MutationResultOut
 from schemas.classrooms import (
     ClassroomCloneTermResultOut,
@@ -22,6 +30,9 @@ from schemas.classrooms import (
     ClassroomEnrollmentCompositionOut,
     ClassroomListItemOut,
     ClassroomPromoteAcademicYearResultOut,
+    ClassroomPromoteConflictOut,
+    ClassroomPromotePreviewOut,
+    ClassroomPromotePreviewRowOut,
     ClassroomUpdateResultOut,
     GradeOut,
     TeacherOptionOut,
@@ -926,13 +937,241 @@ def clone_classrooms_to_term(
         session.close()
 
 
-@router.post("/classrooms/promote-academic-year", status_code=201, response_model=ClassroomPromoteAcademicYearResultOut)
+# 衝突 kind 的優先序：對齊原 execute 的 fail-fast 觸發順序。execute 取序位
+# 最前者 map 回對應 status code；改動此清單會改變多衝突 payload 回傳的 status code。
+_PROMOTE_CONFLICT_PRIORITY = (
+    "missing_source",
+    "missing_target_name",
+    "duplicate_target_name",
+    "active_name_collision",
+    "invalid_target_grade",
+    "reusable_target_has_students",
+)
+_PROMOTE_CONFLICT_STATUS = {
+    "missing_source": 404,
+    "missing_target_name": 400,
+    "duplicate_target_name": 409,
+    "active_name_collision": 409,
+    "invalid_target_grade": 400,
+    "reusable_target_has_students": 409,
+}
+
+
+@dataclass
+class _PromotionConflict:
+    kind: str
+    message: str
+    source_classroom_id: Optional[int] = None
+    target_name: Optional[str] = None
+
+
+@dataclass
+class _PromotionPreparedRow:
+    item: ClassroomPromotionItem
+    source: Classroom
+    resolved_grade_id: Optional[int]
+    will_graduate: bool
+    source_grade_name: Optional[str]
+    resolved_grade_name: Optional[str]
+    active_student_count: int
+    reusable_target: Optional[Classroom] = None  # 命中可重用停用班；None=新建
+
+    @property
+    def reuses_existing_target(self) -> bool:
+        return self.reusable_target is not None
+
+
+@dataclass
+class _PromotionPlan:
+    prepared_rows: list = field(default_factory=list)
+    conflicts: list = field(default_factory=list)
+    will_create_count: int = 0
+    will_move_student_count: int = 0
+    will_graduate_count: int = 0
+
+
+def _count_active_students(session, classroom_id: int) -> int:
+    return (
+        session.query(func.count(Student.id))
+        .filter(Student.classroom_id == classroom_id, Student.is_active == True)
+        .scalar()
+        or 0
+    )
+
+
+def _build_promotion_plan(
+    session, item: "ClassroomPromoteAcademicYear"
+) -> _PromotionPlan:
+    """純讀取試算：驗證 + 年級解析 + 衝突偵測，不寫入 session。
+
+    execute 與 preview 共用此函式以杜絕邏輯漂移。整批層級錯誤（來源=目標
+    學期相同）由 caller 於呼叫前處理；此處只收集逐班層級衝突到 plan.conflicts，
+    且本函式絕不 session.add / flush / 任何寫入。
+    """
+    plan = _PromotionPlan()
+
+    source_ids = [row.source_classroom_id for row in item.classrooms]
+    source_classrooms = (
+        session.query(Classroom)
+        .filter(
+            Classroom.id.in_(source_ids),
+            Classroom.school_year == item.source_school_year,
+            Classroom.semester == item.source_semester,
+            Classroom.is_active == True,
+        )
+        .all()
+    )
+    source_map = {classroom.id: classroom for classroom in source_classrooms}
+    missing_source_ids = [cid for cid in source_ids if cid not in source_map]
+    if missing_source_ids:
+        plan.conflicts.append(
+            _PromotionConflict(
+                kind="missing_source",
+                message=f"找不到來源班級：{missing_source_ids}",
+            )
+        )
+
+    grade_map = _get_grade_map(session)
+    for row in item.classrooms:
+        source = source_map.get(row.source_classroom_id)
+        if source is None:
+            continue  # 缺來源班已記於 conflicts
+        resolved_grade_id = row.target_grade_id or _resolve_next_grade_id(
+            source,
+            grade_map,
+            source_school_year=item.source_school_year,
+            source_semester=item.source_semester,
+            target_school_year=item.target_school_year,
+            target_semester=item.target_semester,
+        )
+        will_graduate = resolved_grade_id is None
+        if not will_graduate and not row.target_name:
+            plan.conflicts.append(
+                _PromotionConflict(
+                    kind="missing_target_name",
+                    message=f"班級「{source.name}」缺少新班名",
+                    source_classroom_id=source.id,
+                )
+            )
+        source_grade = grade_map.get(source.grade_id)
+        resolved_grade = grade_map.get(resolved_grade_id) if resolved_grade_id else None
+        plan.prepared_rows.append(
+            _PromotionPreparedRow(
+                item=row,
+                source=source,
+                resolved_grade_id=resolved_grade_id,
+                will_graduate=will_graduate,
+                source_grade_name=source_grade.name if source_grade else None,
+                resolved_grade_name=resolved_grade.name if resolved_grade else None,
+                active_student_count=_count_active_students(session, source.id),
+            )
+        )
+
+    # 目標班名重複（與原 execute 一致：大小寫敏感）
+    target_names = [
+        prep.item.target_name
+        for prep in plan.prepared_rows
+        if not prep.will_graduate and prep.item.target_name
+    ]
+    if len(target_names) != len(set(target_names)):
+        plan.conflicts.append(
+            _PromotionConflict(
+                kind="duplicate_target_name",
+                message="目標學期的班級名稱不可重複",
+            )
+        )
+
+    # 目標學期既有同名班：active → 衝突；inactive → 可重用
+    existing_targets = []
+    if target_names:
+        existing_targets = (
+            session.query(Classroom)
+            .filter(
+                Classroom.school_year == item.target_school_year,
+                Classroom.semester == item.target_semester,
+                func.lower(Classroom.name).in_([n.lower() for n in target_names]),
+            )
+            .all()
+        )
+    active_conflicts = [t for t in existing_targets if t.is_active]
+    reusable_pool = {t.name.lower(): t for t in existing_targets if not t.is_active}
+    if active_conflicts:
+        conflicted_names = "、".join(sorted({t.name for t in active_conflicts}))
+        plan.conflicts.append(
+            _PromotionConflict(
+                kind="active_name_collision",
+                message=f"目標學期已存在相同班級：{conflicted_names}",
+            )
+        )
+
+    # 逐班（非畢業）：目標年級有效性 + 可重用班是否仍有在讀學生（依原順序）
+    for prep in plan.prepared_rows:
+        if prep.will_graduate:
+            plan.will_graduate_count += prep.active_student_count
+            continue
+        if prep.resolved_grade_id not in grade_map:
+            plan.conflicts.append(
+                _PromotionConflict(
+                    kind="invalid_target_grade",
+                    message="指定的目標年級不存在或已停用",
+                    source_classroom_id=prep.source.id,
+                    target_name=prep.item.target_name,
+                )
+            )
+        reusable_target = (
+            reusable_pool.pop(prep.item.target_name.lower(), None)
+            if prep.item.target_name
+            else None
+        )
+        if reusable_target is not None:
+            prep.reusable_target = reusable_target
+            if _count_active_students(session, reusable_target.id) > 0:
+                plan.conflicts.append(
+                    _PromotionConflict(
+                        kind="reusable_target_has_students",
+                        message=(
+                            f"目標班級「{reusable_target.name}」仍有在讀學生，無法直接重用"
+                        ),
+                        source_classroom_id=prep.source.id,
+                        target_name=prep.item.target_name,
+                    )
+                )
+        plan.will_create_count += 1
+        if prep.item.move_students:
+            plan.will_move_student_count += prep.active_student_count
+
+    return plan
+
+
+def _raise_first_promotion_conflict(plan: _PromotionPlan) -> None:
+    """plan 有衝突時依優先序取第一個 raise（保留原 fail-fast 的 status code 行為）。"""
+    if not plan.conflicts:
+        return
+    first = min(plan.conflicts, key=lambda c: _PROMOTE_CONFLICT_PRIORITY.index(c.kind))
+    raise HTTPException(
+        status_code=_PROMOTE_CONFLICT_STATUS[first.kind], detail=first.message
+    )
+
+
+@router.post(
+    "/classrooms/promote-academic-year",
+    status_code=201,
+    response_model=ClassroomPromoteAcademicYearResultOut,
+)
 def promote_classrooms_to_academic_year(
     item: ClassroomPromoteAcademicYear,
+    request: Request = None,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
 ):
-    """跨學年升班：建立新班、沿用老師並搬移在讀學生。"""
+    """跨學年升班：建立新班、沿用老師並搬移在讀學生。
+
+    畢業班（無下一年級）學生改走 lifecycle 狀態機 transition() 落地：寫
+    StudentChangeLog 稽核並設 lifecycle_status=graduated（避免被 7/31 自動畢業
+    排程重複抓取）；搬班逐人寫 StudentClassroomTransfer 留歷史軌跡。畢業日對齊
+    自動畢業排程。整體為單一 transaction（任一步失敗則全部 rollback）。
+    """
     session = get_session()
+    operator_id = current_user.get("user_id")
     try:
         if (
             item.source_school_year == item.target_school_year
@@ -940,182 +1179,116 @@ def promote_classrooms_to_academic_year(
         ):
             raise HTTPException(status_code=400, detail="來源學期與目標學期不可相同")
 
-        source_ids = [row.source_classroom_id for row in item.classrooms]
-        source_classrooms = (
-            session.query(Classroom)
-            .filter(
-                Classroom.id.in_(source_ids),
-                Classroom.school_year == item.source_school_year,
-                Classroom.semester == item.source_semester,
-                Classroom.is_active == True,
-            )
-            .all()
-        )
-        source_map = {classroom.id: classroom for classroom in source_classrooms}
-        missing_source_ids = [
-            classroom_id
-            for classroom_id in source_ids
-            if classroom_id not in source_map
-        ]
-        if missing_source_ids:
-            raise HTTPException(
-                status_code=404, detail=f"找不到來源班級：{missing_source_ids}"
-            )
-
-        grade_map = _get_grade_map(session)
-        prepared_rows = []
-        for row in item.classrooms:
-            source = source_map[row.source_classroom_id]
-            resolved_grade_id = row.target_grade_id or _resolve_next_grade_id(
-                source,
-                grade_map,
-                source_school_year=item.source_school_year,
-                source_semester=item.source_semester,
-                target_school_year=item.target_school_year,
-                target_semester=item.target_semester,
-            )
-            will_graduate = resolved_grade_id is None
-            if not will_graduate and not row.target_name:
-                raise HTTPException(
-                    status_code=400, detail=f"班級「{source.name}」缺少新班名"
-                )
-            prepared_rows.append((row, source, resolved_grade_id, will_graduate))
-
-        target_names = [
-            row.target_name
-            for row, _, _, will_graduate in prepared_rows
-            if not will_graduate and row.target_name
-        ]
-        if len(target_names) != len(set(target_names)):
-            raise HTTPException(status_code=409, detail="目標學期的班級名稱不可重複")
-
-        existing_targets = []
-        if target_names:
-            existing_targets = (
-                session.query(Classroom)
-                .filter(
-                    Classroom.school_year == item.target_school_year,
-                    Classroom.semester == item.target_semester,
-                    func.lower(Classroom.name).in_(
-                        [name.lower() for name in target_names]
-                    ),
-                )
-                .all()
-            )
-        active_conflicts = [row for row in existing_targets if row.is_active]
-        reusable_targets = {
-            row.name.lower(): row for row in existing_targets if not row.is_active
-        }
-        if active_conflicts:
-            conflicted_names = "、".join(sorted({row.name for row in active_conflicts}))
-            raise HTTPException(
-                status_code=409, detail=f"目標學期已存在相同班級：{conflicted_names}"
-            )
+        plan = _build_promotion_plan(session, item)
+        _raise_first_promotion_conflict(plan)
 
         created_count = 0
         moved_student_count = 0
         graduated_count = 0
-        graduation_date = _term_start_date(
-            item.target_school_year, item.target_semester
-        )
+        # 畢業日對齊 7/31 自動畢業排程；school_year 為民國年需 +1911 轉西元年。
+        graduation_date = graduation_date_for_year(item.target_school_year + 1911)
+        now = now_taipei_naive()
 
-        for row, source, target_grade_id, will_graduate in prepared_rows:
-            if will_graduate:
-                graduated = (
+        for prep in plan.prepared_rows:
+            source = prep.source
+            if prep.will_graduate:
+                # 畢業改走 lifecycle 狀態機（寫 StudentChangeLog + 設 graduated），
+                # 不再 bulk update legacy 欄位；學生留在原畢業班但 lifecycle 已是
+                # 終態，7/31 自動畢業排程不會再重抓。
+                graduating_students = (
                     session.query(Student)
                     .filter(
                         Student.classroom_id == source.id,
                         Student.is_active == True,
                     )
-                    .update(
-                        {
-                            Student.is_active: False,
-                            Student.status: "已畢業",
-                            Student.graduation_date: graduation_date,
-                        },
-                        synchronize_session=False,
-                    )
+                    .all()
                 )
-                graduated_count += graduated or 0
+                for student in graduating_students:
+                    try:
+                        lifecycle_transition(
+                            session,
+                            student,
+                            to_status=LIFECYCLE_GRADUATED,
+                            effective_date=graduation_date,
+                            reason="升班畢業",
+                            notes=f"班級升班觸發畢業（{source.name}）",
+                            recorded_by=operator_id,
+                        )
+                        graduated_count += 1
+                    except LifecycleTransitionError as exc:
+                        logger.warning(
+                            "升班畢業略過 student_id=%s：%s", student.id, exc
+                        )
                 continue
 
-            if target_grade_id not in grade_map:
-                raise HTTPException(
-                    status_code=400, detail="指定的目標年級不存在或已停用"
+            if prep.reusable_target is not None:
+                target_classroom = prep.reusable_target
+                target_classroom.class_code = source.class_code
+                target_classroom.grade_id = prep.resolved_grade_id
+                target_classroom.capacity = source.capacity
+                target_classroom.head_teacher_id = (
+                    source.head_teacher_id if prep.item.copy_teachers else None
                 )
-
-            reusable_target = reusable_targets.pop(row.target_name.lower(), None)
-            if reusable_target:
-                existing_active_student_count = (
-                    session.query(func.count(Student.id))
-                    .filter(
-                        Student.classroom_id == reusable_target.id,
-                        Student.is_active == True,
-                    )
-                    .scalar()
-                    or 0
+                target_classroom.assistant_teacher_id = (
+                    source.assistant_teacher_id if prep.item.copy_teachers else None
                 )
-                if existing_active_student_count > 0:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"目標班級「{reusable_target.name}」仍有在讀學生，無法直接重用",
-                    )
-                reusable_target.class_code = source.class_code
-                reusable_target.grade_id = target_grade_id
-                reusable_target.capacity = source.capacity
-                reusable_target.head_teacher_id = (
-                    source.head_teacher_id if row.copy_teachers else None
+                target_classroom.art_teacher_id = (
+                    source.art_teacher_id if prep.item.copy_teachers else None
                 )
-                reusable_target.assistant_teacher_id = (
-                    source.assistant_teacher_id if row.copy_teachers else None
-                )
-                reusable_target.art_teacher_id = (
-                    source.art_teacher_id if row.copy_teachers else None
-                )
-                reusable_target.is_active = True
-                target_classroom = reusable_target
+                target_classroom.is_active = True
             else:
                 target_classroom = Classroom(
-                    name=row.target_name,
+                    name=prep.item.target_name,
                     class_code=source.class_code,
                     school_year=item.target_school_year,
                     semester=item.target_semester,
-                    grade_id=target_grade_id,
+                    grade_id=prep.resolved_grade_id,
                     capacity=source.capacity,
                     head_teacher_id=(
-                        source.head_teacher_id if row.copy_teachers else None
+                        source.head_teacher_id if prep.item.copy_teachers else None
                     ),
                     assistant_teacher_id=(
-                        source.assistant_teacher_id if row.copy_teachers else None
+                        source.assistant_teacher_id if prep.item.copy_teachers else None
                     ),
-                    art_teacher_id=source.art_teacher_id if row.copy_teachers else None,
+                    art_teacher_id=(
+                        source.art_teacher_id if prep.item.copy_teachers else None
+                    ),
                     is_active=True,
                 )
                 session.add(target_classroom)
                 session.flush()
             created_count += 1
 
-            if row.move_students:
-                moved = (
+            if prep.item.move_students:
+                # 逐人搬班並寫 StudentClassroomTransfer（重用 bulk-transfer pattern）；
+                # 不呼叫 sync_registrations_on_student_transfer（當期 scope 套用到
+                # 未來學期班級會誤改當期才藝報名）。
+                moving_students = (
                     session.query(Student)
                     .filter(
                         Student.classroom_id == source.id,
                         Student.is_active == True,
                     )
-                    .update(
-                        {Student.classroom_id: target_classroom.id},
-                        synchronize_session=False,
-                    )
+                    .all()
                 )
-                moved_student_count += moved or 0
+                for student in moving_students:
+                    session.add(
+                        StudentClassroomTransfer(
+                            student_id=student.id,
+                            from_classroom_id=student.classroom_id,
+                            to_classroom_id=target_classroom.id,
+                            transferred_at=now,
+                            transferred_by=operator_id,
+                        )
+                    )
+                    student.classroom_id = target_classroom.id
+                    moved_student_count += 1
 
         # 升班完成後同步所有受影響教師的 Employee.classroom_id：
         # 把來源班教師（取消指派）與目標班教師（新指派）一併重算。
         affected_teacher_ids: set[int] = set()
-        for row, source, _, will_graduate in prepared_rows:
-            affected_teacher_ids.update(_classroom_teacher_ids(source))
-            if will_graduate:
-                continue
+        for prep in plan.prepared_rows:
+            affected_teacher_ids.update(_classroom_teacher_ids(prep.source))
         # 目標班教師：源班教師若 copy_teachers 已重複；額外把已落地的 reusable/new
         # target classrooms 上的教師也涵蓋（包含 copy_teachers=False 時的清空案例）。
         target_teacher_rows = (
@@ -1136,6 +1309,23 @@ def promote_classrooms_to_academic_year(
                     affected_teacher_ids.add(teacher_id)
         session.flush()
         _sync_employee_classroom_id(session, sorted(affected_teacher_ids))
+
+        # audit：整批升班動作摘要（逐人 StudentChangeLog 已留痕，這層為整體軌跡，
+        # 對齊 bulk-transfer 的 request.state.audit_changes pattern）。
+        if request is not None:
+            request.state.audit_changes = {
+                "action": "promote_academic_year",
+                "source_term": _semester_label(
+                    item.source_school_year, item.source_semester
+                ),
+                "target_term": _semester_label(
+                    item.target_school_year, item.target_semester
+                ),
+                "created_count": created_count,
+                "moved_student_count": moved_student_count,
+                "graduated_count": graduated_count,
+            }
+
         session.commit()
         logger.info(
             "班級跨學年升班成功 source=%s-%s target=%s-%s created=%s moved_students=%s graduated=%s operator=%s",
@@ -1163,6 +1353,73 @@ def promote_classrooms_to_academic_year(
         session.rollback()
         logger.exception("班級跨學年升班失敗")
         raise_safe_500(e, context="升班失敗")
+    finally:
+        session.close()
+
+
+@router.post(
+    "/classrooms/promote-academic-year/preview",
+    response_model=ClassroomPromotePreviewOut,
+)
+def preview_promote_classrooms_to_academic_year(
+    item: ClassroomPromoteAcademicYear,
+    current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
+):
+    """跨學年升班試算（不寫入）：回傳逐班處置、彙總與阻擋性衝突清單。
+
+    供前端「預覽 + 確認」流程使用；與 execute 共用 _build_promotion_plan 確保
+    數字與衝突判定一致。整批層級錯誤（來源=目標學期相同）仍 raise 400，逐班
+    衝突收進 conflicts 回 200。
+    """
+    session = get_session()
+    try:
+        if (
+            item.source_school_year == item.target_school_year
+            and item.source_semester == item.target_semester
+        ):
+            raise HTTPException(status_code=400, detail="來源學期與目標學期不可相同")
+
+        plan = _build_promotion_plan(session, item)
+
+        rows = [
+            ClassroomPromotePreviewRowOut(
+                source_classroom_id=prep.source.id,
+                source_name=prep.source.name,
+                source_grade_id=prep.source.grade_id,
+                source_grade_name=prep.source_grade_name,
+                resolved_target_grade_id=prep.resolved_grade_id,
+                resolved_target_grade_name=prep.resolved_grade_name,
+                target_name=None if prep.will_graduate else prep.item.target_name,
+                will_graduate=prep.will_graduate,
+                active_student_count=prep.active_student_count,
+                reuses_existing_target=prep.reuses_existing_target,
+            )
+            for prep in plan.prepared_rows
+        ]
+        conflicts = [
+            ClassroomPromoteConflictOut(
+                kind=c.kind,
+                source_classroom_id=c.source_classroom_id,
+                target_name=c.target_name,
+                message=c.message,
+            )
+            for c in plan.conflicts
+        ]
+        return ClassroomPromotePreviewOut(
+            source_term=_semester_label(item.source_school_year, item.source_semester),
+            target_term=_semester_label(item.target_school_year, item.target_semester),
+            rows=rows,
+            will_create_count=plan.will_create_count,
+            will_move_student_count=plan.will_move_student_count,
+            will_graduate_count=plan.will_graduate_count,
+            conflicts=conflicts,
+            has_blocking_conflict=bool(plan.conflicts),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("班級跨學年升班預覽失敗")
+        raise_safe_500(e, context="升班預覽失敗")
     finally:
         session.close()
 

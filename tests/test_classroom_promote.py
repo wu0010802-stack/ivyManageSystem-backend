@@ -38,6 +38,12 @@ from models.classroom import Classroom, Student, ClassGrade
 from models.academic_term import (
     AcademicTerm,
 )  # 註冊到 Base.metadata 以建 academic_terms 表  # noqa: F401
+from models.student_log import (
+    StudentChangeLog,
+)  # 註冊 student_change_logs 表（升班畢業走 lifecycle 會寫稽核）  # noqa: F401
+from models.student_transfer import (
+    StudentClassroomTransfer,
+)  # 註冊 student_classroom_transfers 表（升班搬班逐筆寫轉班紀錄）  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -271,6 +277,23 @@ class TestPromoteAcademicYear:
                 )
             )
 
+    def _preview(self, session, payload: dict):
+        """呼叫 preview 端點（不寫入），回傳 ClassroomPromotePreviewOut。"""
+        from api.classrooms import (
+            preview_promote_classrooms_to_academic_year,
+            ClassroomPromoteAcademicYear,
+        )
+
+        item = ClassroomPromoteAcademicYear(**payload)
+        current_user = {"username": "admin", "user_id": 1, "permission_names": ["*"]}
+        session.close = MagicMock()
+        with patch("api.classrooms.get_session", return_value=session):
+            return asyncio.run(
+                preview_promote_classrooms_to_academic_year(
+                    item=item, current_user=current_user
+                )
+            )
+
     def _base_payload(
         self,
         source_classroom_id,
@@ -371,7 +394,9 @@ class TestPromoteAcademicYear:
         assert source_classrooms["s_zhong"].classroom_id == new_cls.id
 
     def test_graduates_senior_students(self, session, grade_data, source_classrooms):
-        """大班升班 → 學生畢業（is_active=False、status=已畢業）。"""
+        """大班升班 → 學生畢業：走 lifecycle 狀態機（lifecycle_status/畢業日）+ 寫 ChangeLog。"""
+        from services.graduation_scheduler import graduation_date_for_year
+
         # 大班沒有下一個年級，所以 will_graduate=True
         payload = {
             "source_school_year": 114,
@@ -393,9 +418,24 @@ class TestPromoteAcademicYear:
         assert result["graduated_count"] == 1
         assert result["created_count"] == 0
 
-        session.refresh(source_classrooms["s_da"])
-        assert source_classrooms["s_da"].is_active is False
-        assert source_classrooms["s_da"].status == "已畢業"
+        s_da = source_classrooms["s_da"]
+        session.refresh(s_da)
+        # legacy 欄位仍同步（向後相容）
+        assert s_da.is_active is False
+        assert s_da.status == "已畢業"
+        # 修 bug #1：改走 lifecycle 狀態機落地（不再只改 legacy 欄位）
+        assert s_da.lifecycle_status == "graduated"
+        # 修 bug #4：畢業日對齊 7/31 自動畢業排程（民國115 → 西元2026）
+        assert s_da.graduation_date == graduation_date_for_year(115 + 1911)
+        assert s_da.graduation_date == date(2026, 7, 31)
+        # 修 bug #1：StudentChangeLog 稽核留痕（含操作者）
+        logs = (
+            session.query(StudentChangeLog)
+            .filter(StudentChangeLog.student_id == s_da.id)
+            .all()
+        )
+        assert len(logs) >= 1
+        assert any(log.recorded_by == 1 for log in logs)
 
     def test_duplicate_target_names_in_request_raises_409(
         self, session, grade_data, source_classrooms
@@ -498,3 +538,210 @@ class TestPromoteAcademicYear:
         with pytest.raises(HTTPException) as exc_info:
             self._run(session, payload)
         assert exc_info.value.status_code == 409
+
+    def test_promotion_graduate_not_repicked_by_auto_graduation(
+        self, session, grade_data, source_classrooms
+    ):
+        """修 bug #2：升班畢業生 lifecycle=graduated，7/31 自動畢業排程不再重抓。"""
+        from services.graduation_scheduler import list_upcoming_graduates
+
+        # 把大班標為畢業班年級（自動畢業排程的篩選條件）
+        grade_data["大班"].is_graduation_grade = True
+        session.commit()
+        s_da = source_classrooms["s_da"]
+
+        # 升班前：在畢業班且 lifecycle=active → 會被排程抓到（證明查詢有效、測試有鑑別力）
+        before = list_upcoming_graduates(session)
+        assert any(s.id == s_da.id for s in before)
+
+        payload = {
+            "source_school_year": 114,
+            "source_semester": 2,
+            "target_school_year": 115,
+            "target_semester": 1,
+            "classrooms": [
+                {
+                    "source_classroom_id": source_classrooms["大班A"].id,
+                    "target_name": None,
+                    "target_grade_id": None,
+                }
+            ],
+        }
+        self._run(session, payload)
+
+        session.refresh(s_da)
+        assert s_da.lifecycle_status == "graduated"
+        # 升班後：lifecycle 已是終態 → 排程不再重抓（修好前 lifecycle 仍 active 會重抓）
+        after = list_upcoming_graduates(session)
+        assert all(s.id != s_da.id for s in after)
+
+    def test_move_writes_classroom_transfer(
+        self, session, grade_data, source_classrooms
+    ):
+        """修 bug #3：搬班逐人寫 StudentClassroomTransfer（from/to/operator）。"""
+        payload = self._base_payload(
+            source_classroom_id=source_classrooms["中班A"].id,
+            target_name="大班T",
+            grade_data=grade_data,
+            target_grade_id=grade_data["大班"].id,
+            move_students=True,
+        )
+        self._run(session, payload)
+
+        s_zhong = source_classrooms["s_zhong"]
+        new_cls = session.query(Classroom).filter(Classroom.name == "大班T").first()
+        transfers = (
+            session.query(StudentClassroomTransfer)
+            .filter(StudentClassroomTransfer.student_id == s_zhong.id)
+            .all()
+        )
+        assert len(transfers) == 1
+        assert transfers[0].from_classroom_id == source_classrooms["中班A"].id
+        assert transfers[0].to_classroom_id == new_cls.id
+        assert transfers[0].transferred_by == 1
+
+    def test_no_transfer_record_when_move_students_false(
+        self, session, grade_data, source_classrooms
+    ):
+        """move_students=False 不應產生轉班紀錄。"""
+        payload = self._base_payload(
+            source_classroom_id=source_classrooms["中班A"].id,
+            target_name="大班TF",
+            grade_data=grade_data,
+            target_grade_id=grade_data["大班"].id,
+            move_students=False,
+        )
+        self._run(session, payload)
+        assert session.query(StudentClassroomTransfer).count() == 0
+
+    def test_partial_missing_source_raises_404(
+        self, session, grade_data, source_classrooms
+    ):
+        """一有效 + 一缺失來源 → execute 仍 404（fail-fast 優先序未漂移）。"""
+        payload = {
+            "source_school_year": 114,
+            "source_semester": 2,
+            "target_school_year": 115,
+            "target_semester": 1,
+            "classrooms": [
+                {
+                    "source_classroom_id": source_classrooms["中班A"].id,
+                    "target_name": "大班M1",
+                    "target_grade_id": grade_data["大班"].id,
+                },
+                {
+                    "source_classroom_id": 99999,  # 缺失
+                    "target_name": "大班M2",
+                    "target_grade_id": grade_data["大班"].id,
+                },
+            ],
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            self._run(session, payload)
+        assert exc_info.value.status_code == 404
+
+    def test_preview_does_not_commit(self, session, grade_data, source_classrooms):
+        """預覽不寫入：DB 無新班/轉班/稽核，學生班級未變。"""
+        payload = self._base_payload(
+            source_classroom_id=source_classrooms["中班A"].id,
+            target_name="大班PV",
+            grade_data=grade_data,
+            target_grade_id=grade_data["大班"].id,
+            move_students=True,
+        )
+        result = self._preview(session, payload)
+
+        assert result.will_create_count == 1
+        assert result.will_move_student_count == 1
+        assert result.has_blocking_conflict is False
+        assert len(result.rows) == 1
+        assert result.rows[0].active_student_count == 1
+
+        # DB 完全未變
+        assert (
+            session.query(Classroom).filter(Classroom.name == "大班PV").first() is None
+        )
+        assert session.query(StudentClassroomTransfer).count() == 0
+        assert session.query(StudentChangeLog).count() == 0
+        session.refresh(source_classrooms["s_zhong"])
+        assert (
+            source_classrooms["s_zhong"].classroom_id == source_classrooms["中班A"].id
+        )
+
+    def test_preview_counts_match_execute(self, session, grade_data, source_classrooms):
+        """全員乾淨在讀下，preview 三個 count 與 execute 結果完全相等（防漂移）。"""
+        payload = {
+            "source_school_year": 114,
+            "source_semester": 2,
+            "target_school_year": 115,
+            "target_semester": 1,
+            "classrooms": [
+                {
+                    "source_classroom_id": source_classrooms["中班A"].id,
+                    "target_name": "大班X",
+                    "target_grade_id": grade_data["大班"].id,
+                },
+                {
+                    "source_classroom_id": source_classrooms["小班A"].id,
+                    "target_name": "中班X",
+                    "target_grade_id": grade_data["中班"].id,
+                },
+                {
+                    "source_classroom_id": source_classrooms["大班A"].id,
+                    "target_name": None,
+                    "target_grade_id": None,
+                },
+            ],
+        }
+        preview = self._preview(session, payload)
+        exec_result = self._run(session, payload)
+
+        assert preview.will_create_count == exec_result["created_count"]
+        assert preview.will_move_student_count == exec_result["moved_student_count"]
+        assert preview.will_graduate_count == exec_result["graduated_count"]
+        assert preview.will_create_count == 2
+        assert preview.will_move_student_count == 2
+        assert preview.will_graduate_count == 1
+
+    def test_preview_collects_all_conflicts_execute_raises_priority_first(
+        self, session, grade_data, source_classrooms
+    ):
+        """preview 收集全部衝突；execute raise 優先序第一個（missing_target_name 400 > active 409）。"""
+        existing = Classroom(
+            name="大班Q",
+            school_year=115,
+            semester=1,
+            grade_id=grade_data["大班"].id,
+            is_active=True,
+        )
+        session.add(existing)
+        session.commit()
+
+        payload = {
+            "source_school_year": 114,
+            "source_semester": 2,
+            "target_school_year": 115,
+            "target_semester": 1,
+            "classrooms": [
+                {
+                    "source_classroom_id": source_classrooms["中班A"].id,
+                    "target_name": "大班Q",  # active 同名衝突
+                    "target_grade_id": grade_data["大班"].id,
+                },
+                {
+                    "source_classroom_id": source_classrooms["小班A"].id,
+                    "target_name": None,  # 非畢業卻缺新班名 → missing_target_name
+                    "target_grade_id": grade_data["中班"].id,
+                },
+            ],
+        }
+        preview = self._preview(session, payload)
+        assert preview.has_blocking_conflict is True
+        kinds = {c.kind for c in preview.conflicts}
+        assert "active_name_collision" in kinds
+        assert "missing_target_name" in kinds
+
+        # execute 取優先序第一個：missing_target_name(400) 勝過 active_name_collision(409)
+        with pytest.raises(HTTPException) as exc_info:
+            self._run(session, payload)
+        assert exc_info.value.status_code == 400

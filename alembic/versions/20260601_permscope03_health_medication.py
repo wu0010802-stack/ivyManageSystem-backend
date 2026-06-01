@@ -62,17 +62,17 @@ def upgrade() -> None:
 
     # 2. teacher role：bare HEALTH-MEDICATION → :own_class（只改 code='teacher' AND is_core=true）
     if dialect == "postgresql":
-        op.execute(f"""
+        op.execute(sa.text(f"""
             UPDATE roles
             SET permissions = ARRAY(
                 SELECT CASE
-                    WHEN p IN ({codes_sql}) THEN p || ':own_class'
+                    WHEN p IN ({codes_sql}) THEN p || :suffix
                     ELSE p
                 END
                 FROM unnest(permissions) AS p
             )
             WHERE code = 'teacher' AND is_core = true
-        """)
+        """).bindparams(suffix=":own_class"))
     else:
         rows = bind.execute(
             sa.text(
@@ -95,11 +95,11 @@ def upgrade() -> None:
     #    （跳過 wildcard '*' 持有者；其他 code（含 STUDENTS_*:own_class / PORTFOLIO_*:own_class）
     #    原樣保留）
     if dialect == "postgresql":
-        op.execute(f"""
+        op.execute(sa.text(f"""
             UPDATE users
             SET permission_names = ARRAY(
                 SELECT CASE
-                    WHEN p IN ({codes_sql}) THEN p || ':own_class'
+                    WHEN p IN ({codes_sql}) THEN p || :suffix
                     ELSE p
                 END
                 FROM unnest(permission_names) AS p
@@ -107,7 +107,7 @@ def upgrade() -> None:
             token_version = COALESCE(token_version, 0) + 1
             WHERE role = 'teacher'
               AND NOT ('*' = ANY(permission_names))
-        """)
+        """).bindparams(suffix=":own_class"))
     else:
         rows = bind.execute(
             sa.text(

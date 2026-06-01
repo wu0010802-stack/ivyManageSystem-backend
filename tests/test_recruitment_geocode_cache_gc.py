@@ -1,8 +1,10 @@
 """RecruitmentGeocodeCache 90d GC scheduler step"""
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
+
+from utils.taipei_time import now_taipei_naive
 
 from tests.test_recruitment_api import recruitment_session_factory  # noqa: F401
 from models.recruitment import RecruitmentGeocodeCache
@@ -19,7 +21,7 @@ def test_cache_gc_removes_old_rows(recruitment_session_factory) -> None:
                 lat=25.0,
                 lng=121.5,
                 status="resolved",
-                resolved_at=datetime.utcnow() - timedelta(days=91),
+                resolved_at=now_taipei_naive() - timedelta(days=91),
             )
         )
         # 89 天前 — 保留
@@ -29,7 +31,7 @@ def test_cache_gc_removes_old_rows(recruitment_session_factory) -> None:
                 lat=25.1,
                 lng=121.6,
                 status="resolved",
-                resolved_at=datetime.utcnow() - timedelta(days=89),
+                resolved_at=now_taipei_naive() - timedelta(days=89),
             )
         )
         s.commit()
@@ -80,7 +82,7 @@ def test_cache_gc_keeps_boundary_exactly_90d(recruitment_session_factory) -> Non
                 lat=25.0,
                 lng=121.5,
                 status="resolved",
-                resolved_at=datetime.utcnow() - timedelta(days=89, hours=23),
+                resolved_at=now_taipei_naive() - timedelta(days=89, hours=23),
             )
         )
         s.commit()
