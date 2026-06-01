@@ -25,6 +25,7 @@ from config import get_settings
 from models.base import session_scope
 from utils.advisory_lock import try_scheduler_lock
 from utils.scheduler_observability import record_rows, scheduler_iteration
+from utils.taipei_time import now_taipei_naive
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,9 @@ def _gc_recruitment_geocode_cache(session) -> int:
 
     from models.recruitment import RecruitmentGeocodeCache
 
-    cutoff = datetime.utcnow() - timedelta(
+    # resolved_at 為 naive DateTime column（Column(DateTime) 無 tz）；用 now_taipei_naive()
+    # 與寫入端一致（cutover 對 naive 欄位的統一入口）並避開 DTZ003 的 utcnow()。
+    cutoff = now_taipei_naive() - timedelta(
         days=_RECRUITMENT_GEOCODE_CACHE_RETENTION_DAYS
     )
     deleted = (
