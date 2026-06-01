@@ -105,6 +105,14 @@ from schemas._common import (
 )  # noqa: E402,F401 — backward-compat re-export
 
 
+class EmployeeCreateResultOut(IvyBaseModel):
+    """POST /employees 建立員工成功回傳 — 包含自動配發的工號。"""
+
+    message: str
+    id: int
+    employee_id: str
+
+
 class ProbationAlertItem(IvyBaseModel):
     """試用期警示單筆員工。"""
 
