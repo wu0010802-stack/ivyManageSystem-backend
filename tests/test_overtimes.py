@@ -707,6 +707,10 @@ def _admin_app_client(tmp_path, monkeypatch):
     app.include_router(_auth_router)
     app.include_router(_overtimes_router)
 
+    # batch-create 沿用 _batch_approve_limiter（10/60s）；測試多次 POST 會累積觸發 429。
+    # 以 FastAPI dependency override 在測試中停用此限流（限流本身由 rate_limit 單元測試覆蓋）。
+    app.dependency_overrides[_overtimes_module._batch_approve_limiter] = lambda: None
+
     with _TestClient(app) as client:
         yield client, session_factory
 
@@ -891,3 +895,207 @@ class TestAdminOvertimeQuarterlyCapBoundary:
             assert (
                 refreshed.status == "pending"
             ), f"approve 失敗應 rollback，pending 仍應為 status='pending'，但現在={refreshed.status}"
+
+
+# ── _parse_hhmm_on_date / _validate_overtime_for_employee 共用 helper ──
+from api.overtimes import _parse_hhmm_on_date, _validate_overtime_for_employee
+
+
+class TestParseHhmmOnDate:
+    def test_none_returns_none(self):
+        assert _parse_hhmm_on_date(date(2026, 6, 5), None) is None
+
+    def test_parses_to_datetime_on_given_date(self):
+        dt = _parse_hhmm_on_date(date(2026, 6, 5), "14:30")
+        assert dt == datetime(2026, 6, 5, 14, 30)
+
+
+class TestValidateOvertimeForEmployee:
+    """helper 必須沿用單筆建立的驗證鏈；overlap 命中時 raise 409。"""
+
+    def test_raises_409_on_overlap(self):
+        import types as _types
+
+        existing = _types.SimpleNamespace(
+            start_time=None,
+            end_time=None,
+            status="pending",
+            id=42,
+            overtime_date=date(2026, 6, 5),
+        )
+        session = _mock_session([existing])
+        with pytest.raises(HTTPException) as exc:
+            _validate_overtime_for_employee(
+                session,
+                employee_id=1,
+                overtime_date=date(2026, 6, 5),
+                overtime_type="weekday",
+                start_dt=None,
+                end_dt=None,
+                hours=2.0,
+            )
+        assert exc.value.status_code == 409
+        assert "時間重疊" in exc.value.detail
+
+
+class TestBatchCreateOvertime:
+    """POST /api/overtimes/batch-create：全部或全無 + 蒐集所有失敗。"""
+
+    def _payload(self, emp_ids, hours=2.0, **kw):
+        base = {
+            "overtime_date": "2026-06-05",
+            "overtime_type": "weekday",
+            "reason": "校慶活動",
+            "use_comp_leave": False,
+            "employees": [{"employee_id": i, "hours": hours} for i in emp_ids],
+        }
+        base.update(kw)
+        return base
+
+    def test_all_pass_creates_all_pending(self, _admin_app_client):
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            e1 = _make_emp(session, "B001", "甲")
+            e2 = _make_emp(session, "B002", "乙")
+            _make_admin_user(session)
+            ids = [e1.id, e2.id]
+            session.commit()
+        _do_login(client)
+
+        resp = client.post("/api/overtimes/batch-create", json=self._payload(ids))
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(body["created_ids"]) == 2
+        with session_factory() as session:
+            rows = session.query(_OvertimeRecord).all()
+            assert len(rows) == 2
+            assert all(r.status == "pending" for r in rows)
+
+    def test_one_over_monthly_cap_aborts_whole_batch(self, _admin_app_client):
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            e1 = _make_emp(session, "B001", "甲")
+            e2 = _make_emp(session, "B002", "乙")
+            _make_admin_user(session)
+            e1_id, e2_id = e1.id, e2.id
+            ids = [e1_id, e2_id]
+            _seed_ot(session, e2_id, date(2026, 6, 1), 45.0)
+            session.commit()
+        _do_login(client)
+
+        resp = client.post("/api/overtimes/batch-create", json=self._payload(ids))
+        assert resp.status_code == 422, resp.text
+        errors = resp.json()["detail"]["errors"]
+        assert any(e["employee_id"] == e2_id for e in errors)
+        with session_factory() as session:
+            assert (
+                session.query(_OvertimeRecord)
+                .filter(_OvertimeRecord.employee_id == e1_id)
+                .count()
+                == 0
+            )
+
+    def test_collects_all_failures(self, _admin_app_client):
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            e1 = _make_emp(session, "B001", "甲")
+            e2 = _make_emp(session, "B002", "乙")
+            _make_admin_user(session)
+            e1_id, e2_id = e1.id, e2.id
+            ids = [e1_id, e2_id]
+            _seed_ot(session, e1_id, date(2026, 6, 1), 45.0)
+            _seed_ot(session, e2_id, date(2026, 6, 1), 45.0)
+            session.commit()
+        _do_login(client)
+
+        resp = client.post("/api/overtimes/batch-create", json=self._payload(ids))
+        assert resp.status_code == 422, resp.text
+        errors = resp.json()["detail"]["errors"]
+        err_ids = {e["employee_id"] for e in errors}
+        assert e1_id in err_ids and e2_id in err_ids
+
+    def test_duplicate_employee_id_reported(self, _admin_app_client):
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            e1 = _make_emp(session, "B001", "甲")
+            _make_admin_user(session)
+            eid = e1.id
+            session.commit()
+        _do_login(client)
+
+        resp = client.post(
+            "/api/overtimes/batch-create", json=self._payload([eid, eid])
+        )
+        assert resp.status_code == 422, resp.text
+        with session_factory() as session:
+            assert session.query(_OvertimeRecord).count() == 0
+
+    def test_comp_leave_zero_pay_no_grant(self, _admin_app_client):
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            e1 = _make_emp(session, "B001", "甲")
+            _make_admin_user(session)
+            eid = e1.id
+            session.commit()
+        _do_login(client)
+
+        resp = client.post(
+            "/api/overtimes/batch-create",
+            json=self._payload([eid], use_comp_leave=True),
+        )
+        assert resp.status_code == 200, resp.text
+        with session_factory() as session:
+            row = (
+                session.query(_OvertimeRecord)
+                .filter(_OvertimeRecord.employee_id == eid)
+                .first()
+            )
+            assert row.overtime_pay == 0.0
+            assert row.use_comp_leave is True
+            assert row.comp_leave_granted is False
+
+    def test_per_employee_hours(self, _admin_app_client):
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            e1 = _make_emp(session, "B001", "甲")
+            e2 = _make_emp(session, "B002", "乙")
+            _make_admin_user(session)
+            e1_id, e2_id = e1.id, e2.id
+            ids = [e1_id, e2_id]
+            session.commit()
+        _do_login(client)
+
+        payload = self._payload(ids)
+        payload["employees"][0]["hours"] = 2.0
+        payload["employees"][1]["hours"] = 3.0
+        resp = client.post("/api/overtimes/batch-create", json=payload)
+        assert resp.status_code == 200, resp.text
+        with session_factory() as session:
+            by_emp = {
+                r.employee_id: r.hours for r in session.query(_OvertimeRecord).all()
+            }
+            assert by_emp[e1_id] == 2.0
+            assert by_emp[e2_id] == 3.0
+
+    def test_requires_permission(self, _admin_app_client):
+        client, session_factory = _admin_app_client
+        with session_factory() as session:
+            e1 = _make_emp(session, "B001", "甲")
+            u = _User(
+                employee_id=None,
+                username="noperm",
+                password_hash=_hash_password("AdminPass123"),
+                role="staff",
+                permission_names=[],
+                is_active=True,
+                must_change_password=False,
+            )
+            session.add(u)
+            eid = e1.id
+            session.commit()
+        resp = client.post(
+            "/api/auth/login", json={"username": "noperm", "password": "AdminPass123"}
+        )
+        assert resp.status_code == 200
+        resp = client.post("/api/overtimes/batch-create", json=self._payload([eid]))
+        assert resp.status_code == 403

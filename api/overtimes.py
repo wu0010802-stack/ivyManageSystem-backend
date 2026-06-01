@@ -41,6 +41,7 @@ from models.approval import ApprovalStatus
 from models.event import Holiday
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from schemas.overtimes import (
+    BatchOvertimeCreateResultOut,
     OvertimeApproveResultOut,
     OvertimeCreateResultOut,
     OvertimeDeleteResultOut,
@@ -418,6 +419,50 @@ class OvertimeCreate(BaseModel):
         return self
 
 
+class BatchOvertimeEmployeeItem(BaseModel):
+    employee_id: int
+    hours: float
+
+    @field_validator("hours")
+    @classmethod
+    def validate_hours(cls, v):
+        if v <= 0:
+            raise ValueError("加班時數必須大於 0")
+        if v > MAX_OVERTIME_HOURS:
+            raise ValueError(f"單筆加班時數不得超過 {MAX_OVERTIME_HOURS} 小時")
+        return v
+
+
+class BatchOvertimeCreate(BaseModel):
+    overtime_date: date
+    overtime_type: str  # weekday / weekend / holiday
+    start_time: Optional[str] = None  # HH:MM，共用，選填
+    end_time: Optional[str] = None  # HH:MM，共用，選填
+    reason: Optional[str] = None
+    use_comp_leave: bool = False
+    employees: List[BatchOvertimeEmployeeItem] = Field(..., min_length=1)
+
+    @field_validator("overtime_type")
+    @classmethod
+    def validate_overtime_type(cls, v):
+        if v not in OVERTIME_TYPE_LABELS:
+            allowed = ", ".join(OVERTIME_TYPE_LABELS.keys())
+            raise ValueError(f"無效的加班類型，允許值：{allowed}")
+        return v
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v):
+        return validate_hhmm_format(v)
+
+    @model_validator(mode="after")
+    def validate_time_order(self):
+        if self.start_time and self.end_time:
+            if self.start_time >= self.end_time:
+                raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+        return self
+
+
 class OvertimeUpdate(BaseModel):
     overtime_date: Optional[date] = None
     overtime_type: Optional[str] = None
@@ -585,6 +630,51 @@ def get_overtimes(
         session.close()
 
 
+def _parse_hhmm_on_date(overtime_date: date, hhmm: Optional[str]) -> Optional[datetime]:
+    """將 'HH:MM' 字串組成指定日期的 datetime；None 原樣回傳。"""
+    if not hhmm:
+        return None
+    h, m = map(int, hhmm.split(":"))
+    return datetime.combine(
+        overtime_date, datetime.min.time().replace(hour=h, minute=m)
+    )
+
+
+def _validate_overtime_for_employee(
+    session,
+    employee_id: int,
+    overtime_date: date,
+    overtime_type: str,
+    start_dt: Optional[datetime],
+    end_dt: Optional[datetime],
+    hours: float,
+) -> None:
+    """單筆建立與批次建立共用的完整驗證鏈（避免驗證漂移）。
+
+    任一不通過即 raise HTTPException（overlap→409，其餘各檢查自行 raise 400/409）。
+    刻意不含 assert_months_not_finalized：與單筆建立對齊（封存守衛在 approve 路徑）。
+    """
+    overlap = _check_overtime_overlap(
+        session, employee_id, overtime_date, start_dt, end_dt
+    )
+    if overlap:
+        st = overlap.start_time.strftime("%H:%M") if overlap.start_time else "未指定"
+        et = overlap.end_time.strftime("%H:%M") if overlap.end_time else "未指定"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"該員工在 {overlap.overtime_date} 已有時間重疊的加班申請"
+                f"（ID: {overlap.id}，{st}～{et}），請勿重複申請"
+            ),
+        )
+    _check_employee_has_conflicting_leave(
+        session, employee_id, overtime_date, start_dt, end_dt
+    )
+    _check_monthly_overtime_cap(session, employee_id, overtime_date, hours)
+    _check_quarterly_overtime_cap(session, employee_id, overtime_date, hours)
+    _check_overtime_type_calendar(session, overtime_date, overtime_type)
+
+
 @router.post("/overtimes", status_code=201, response_model=OvertimeCreateResultOut)
 def create_overtime(
     data: OvertimeCreate,
@@ -604,48 +694,18 @@ def create_overtime(
             else calculate_overtime_pay(emp.base_salary, data.hours, data.overtime_type)
         )
 
-        start_dt = None
-        end_dt = None
-        if data.start_time:
-            h, m = map(int, data.start_time.split(":"))
-            start_dt = datetime.combine(
-                data.overtime_date, datetime.min.time().replace(hour=h, minute=m)
-            )
-        if data.end_time:
-            h, m = map(int, data.end_time.split(":"))
-            end_dt = datetime.combine(
-                data.overtime_date, datetime.min.time().replace(hour=h, minute=m)
-            )
+        start_dt = _parse_hhmm_on_date(data.overtime_date, data.start_time)
+        end_dt = _parse_hhmm_on_date(data.overtime_date, data.end_time)
 
-        overlap = _check_overtime_overlap(
-            session, data.employee_id, data.overtime_date, start_dt, end_dt
+        _validate_overtime_for_employee(
+            session,
+            data.employee_id,
+            data.overtime_date,
+            data.overtime_type,
+            start_dt,
+            end_dt,
+            data.hours,
         )
-        if overlap:
-            st = (
-                overlap.start_time.strftime("%H:%M") if overlap.start_time else "未指定"
-            )
-            et = overlap.end_time.strftime("%H:%M") if overlap.end_time else "未指定"
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"該員工在 {overlap.overtime_date} 已有時間重疊的加班申請"
-                    f"（ID: {overlap.id}，{st}～{et}），請勿重複申請"
-                ),
-            )
-
-        # 修補 2026-05-11 P1-5：跨類重疊檢查（避免同日扣款 + 加班費雙重溢付）
-        _check_employee_has_conflicting_leave(
-            session, data.employee_id, data.overtime_date, start_dt, end_dt
-        )
-
-        _check_monthly_overtime_cap(
-            session, data.employee_id, data.overtime_date, data.hours
-        )
-        _check_quarterly_overtime_cap(
-            session, data.employee_id, data.overtime_date, data.hours
-        )
-
-        _check_overtime_type_calendar(session, data.overtime_date, data.overtime_type)
 
         ot = OvertimeRecord(
             employee_id=data.employee_id,
@@ -681,6 +741,142 @@ def create_overtime(
             "reason": data.reason,
         }
         return {"message": "加班記錄已新增", "id": ot.id, "overtime_pay": pay}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.post(
+    "/overtimes/batch-create",
+    status_code=200,
+    response_model=BatchOvertimeCreateResultOut,
+    dependencies=[Depends(_batch_approve_limiter)],
+)
+def batch_create_overtimes(
+    data: BatchOvertimeCreate,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
+):
+    """一次為多位員工建立加班記錄（學校活動多人出席）。
+
+    全部或全無：Phase 1 對每位員工跑完整驗證並蒐集所有失敗；
+    任一失敗 → 422 整批不寫入。Phase 2 全通過才一次 commit。
+    每筆狀態 pending，不觸發薪資重算（與單筆建立一致）。
+    """
+    session = get_session()
+    try:
+        start_dt = _parse_hhmm_on_date(data.overtime_date, data.start_time)
+        end_dt = _parse_hhmm_on_date(data.overtime_date, data.end_time)
+
+        # ── Phase 1：全員驗證（不寫 DB），蒐集所有失敗 ──
+        errors: list[dict] = []
+        validated: list[tuple[Employee, float]] = []
+        seen: set[int] = set()
+
+        for item in data.employees:
+            if item.employee_id in seen:
+                errors.append(
+                    {
+                        "employee_id": item.employee_id,
+                        "name": None,
+                        "reason": "員工在批次清單中重複出現",
+                    }
+                )
+                continue
+            seen.add(item.employee_id)
+
+            emp = (
+                session.query(Employee).filter(Employee.id == item.employee_id).first()
+            )
+            if not emp:
+                errors.append(
+                    {
+                        "employee_id": item.employee_id,
+                        "name": None,
+                        "reason": EMPLOYEE_DOES_NOT_EXIST,
+                    }
+                )
+                continue
+
+            try:
+                _validate_overtime_for_employee(
+                    session,
+                    item.employee_id,
+                    data.overtime_date,
+                    data.overtime_type,
+                    start_dt,
+                    end_dt,
+                    item.hours,
+                )
+            except HTTPException as exc:
+                errors.append(
+                    {
+                        "employee_id": item.employee_id,
+                        "name": emp.name,
+                        "reason": str(exc.detail),
+                    }
+                )
+                continue
+
+            validated.append((emp, item.hours))
+
+        if errors:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "批次建立失敗，請修正下列項目後重送",
+                    "errors": errors,
+                },
+            )
+
+        # ── Phase 2：全通過 → 一次建立 + 單次 commit ──
+        records: list[OvertimeRecord] = []
+        for emp, hours in validated:
+            pay = (
+                0.0
+                if data.use_comp_leave
+                else calculate_overtime_pay(emp.base_salary, hours, data.overtime_type)
+            )
+            records.append(
+                OvertimeRecord(
+                    employee_id=emp.id,
+                    overtime_date=data.overtime_date,
+                    overtime_type=data.overtime_type,
+                    start_time=start_dt,
+                    end_time=end_dt,
+                    hours=hours,
+                    overtime_pay=pay,
+                    use_comp_leave=data.use_comp_leave,
+                    reason=data.reason,
+                    status=ApprovalStatus.PENDING.value,
+                    comp_leave_granted=False,
+                )
+            )
+        session.add_all(records)
+        session.commit()
+
+        created_ids = [r.id for r in records]
+        # NOTE: 批次建立涉及多筆，無單一 entity_id，audit_entity_id 刻意略過
+        request.state.audit_summary = (
+            f"管理端批次建立加班：{len(created_ids)} 筆 "
+            f"{data.overtime_type} {data.overtime_date}"
+        )
+        request.state.audit_changes = {
+            "action": "overtime_batch_create",
+            "overtime_date": data.overtime_date.isoformat(),
+            "overtime_type": data.overtime_type,
+            "use_comp_leave": data.use_comp_leave,
+            "employee_ids": [emp.id for emp, _ in validated],
+            "created_ids": created_ids,
+        }
+        return {
+            "message": f"已建立 {len(created_ids)} 筆加班記錄",
+            "created_ids": created_ids,
+        }
     except HTTPException:
         raise
     except Exception as e:
