@@ -176,7 +176,9 @@ class TestPriorVoidedRefundDoesNotCount:
         client, sf = cumulative_client
         with sf() as s:
             _create_admin(s, permission_names=NO_APPROVE_PERMS)
-            reg = _setup_reg(s, student_name="李測試", paid_amount=900)
+            reg = _setup_reg(
+                s, student_name="李測試", course_price=900, paid_amount=900
+            )  # course_price=900 → 0 出席建議退=900=沖帳額 → diff=0 過 diff 閘，隔離測 cumulative
             s.commit()
             reg_id = reg.id
             # 一筆「已被作廢」的舊退費 NT$600 — 不計入累積
