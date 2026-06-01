@@ -138,7 +138,7 @@ async def list_measurements(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
             query = session.query(StudentMeasurement).filter(
                 StudentMeasurement.student_id == student_id
             )
@@ -189,7 +189,7 @@ async def create_measurement(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             # created_by → employees.id；透過 User.employee_id 轉換
             user_id = current_user.get("user_id")
             employee_id: int | None = None
@@ -237,7 +237,7 @@ async def update_measurement(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             m = (
                 session.query(StudentMeasurement)
                 .filter(
@@ -273,7 +273,7 @@ async def delete_measurement(
 ) -> Response:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             m = (
                 session.query(StudentMeasurement)
                 .filter(
@@ -318,7 +318,7 @@ async def chart_data(
 
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
             since = today_taipei() - timedelta(days=30 * months)  
             rows = (
                 session.query(StudentMeasurement)
