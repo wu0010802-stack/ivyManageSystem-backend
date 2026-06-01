@@ -464,9 +464,7 @@ async def public_register(
 
     if should_silent_reject_bot(body.hp, body.ts):
         logger.warning(
-            "public_register silent-reject (honeypot/ts) name=%r phone=%r",
-            body.name,
-            body.parent_phone,
+            "public_register silent-reject (honeypot/ts)",
         )
         return {
             "message": "報名資料已送出，校方將於 1-2 個工作天確認後主動與您聯繫。",
@@ -679,9 +677,8 @@ async def public_register(
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         logger.info(
-            "新報名提交：id=%s student=%s matched=%s",
+            "新報名提交：id=%s matched=%s",
             reg.id,
-            reg.student_name,
             is_matched,
         )
 
@@ -1070,7 +1067,7 @@ async def public_update_registration(
 
         session.commit()
         _invalidate_activity_dashboard_caches(session)
-        logger.info("前台更新報名：id=%s student=%s", reg.id, reg.student_name)
+        logger.info("前台更新報名：id=%s", reg.id)
         return response_payload
     except HTTPException:
         session.rollback()
@@ -1249,9 +1246,7 @@ async def public_create_inquiry(
     """
     if should_silent_reject_bot(body.hp, body.ts):
         logger.warning(
-            "public_create_inquiry silent-reject (honeypot/ts) name=%r phone=%r",
-            body.name,
-            body.phone,
+            "public_create_inquiry silent-reject (honeypot/ts)",
         )
         return {"message": "感謝您的提問，我們會儘快回覆您！"}
     session = get_session()
