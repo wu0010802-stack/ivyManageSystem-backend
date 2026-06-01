@@ -308,9 +308,9 @@ class TestBackwardCompatibility:
             _seed(s)
         _register(client)
 
-        res = client.get(
+        res = client.post(
             "/api/activity/public/query",
-            params={
+            json={
                 "name": "王小明",
                 "birthday": "2020-05-10",
                 "parent_phone": "0912345678",
@@ -344,9 +344,9 @@ class TestBackwardCompatibility:
             )
             s.commit()
 
-        res = client.get(
+        res = client.post(
             "/api/activity/public/query",
-            params={
+            json={
                 "name": "老資料",
                 "birthday": "2019-01-01",
                 "parent_phone": "0911111111",

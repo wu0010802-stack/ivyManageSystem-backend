@@ -337,30 +337,46 @@ async def get_public_course_videos(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/query", response_model=PublicRegistrationDetailOut)
+class _PublicQueryPayload(BaseModel):
+    """POST body for /public/query — 姓名+生日+家長手機查詢報名。
+
+    改為 POST body（原 GET query params）— 避免 PII 進 access log /
+    瀏覽器歷史 / Referer（與 /public/query-by-token 同理）。
+
+    schema 不設嚴格 max_length 以免 422 vs 404 status code 差異洩漏 oracle；
+    parent_phone max_length=30 防 DoS 級超長 payload（與 _PublicQueryByTokenPayload 一致）。
+    """
+
+    name: str = Field(..., min_length=1, max_length=50)
+    birthday: str = Field(..., min_length=8, max_length=20)
+    parent_phone: str = Field(..., min_length=8, max_length=30)
+
+
+@router.post("/public/query", response_model=PublicRegistrationDetailOut)
 async def public_query_registration(
-    name: str,
-    birthday: str,
-    parent_phone: str,
+    body: _PublicQueryPayload,
     _: None = Depends(_public_query_limiter),
 ):
-    """前台：依姓名+生日+家長手機查詢報名資料
+    """前台：依姓名+生日+家長手機查詢報名資料（POST body，避免 PII 進 URL）
 
     三欄必須同時相符；任一欄不符一律回相同的通用錯誤（不洩漏是哪一欄不符）。
+
+    POST 而非 GET — 避免姓名/生日/家長手機進 access log / 瀏覽器歷史 / Referer，
+    與 /public/query-by-token 隱私契約一致。
 
     LOW-3：對成功與失敗 path 加入 200~500ms 隨機延遲，提高低成本枚舉成本。
     """
     await asyncio.sleep(random.uniform(0.2, 0.5))
     session = get_session()
     try:
-        normalized_phone = _normalize_phone(parent_phone)
+        normalized_phone = _normalize_phone(body.parent_phone)
         # 先抓 (name, birthday) 候選（同姓同生日通常極少），再統一在 Python 端
         # 比對 normalize 後的 phone；無論是否匹配都走相同程式路徑，壓低時序差。
         candidates = (
             session.query(ActivityRegistration)
             .filter(
-                ActivityRegistration.student_name == name,
-                ActivityRegistration.birthday == birthday,
+                ActivityRegistration.student_name == body.name,
+                ActivityRegistration.birthday == body.birthday,
                 ActivityRegistration.is_active.is_(True),
             )
             .all()
