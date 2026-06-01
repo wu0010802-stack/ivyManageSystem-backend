@@ -185,6 +185,20 @@ async def update_payment(
                 current_user,
                 label="標記未繳費自動沖帳累積退費總額",
             )
+            # ── 退費 diff 簽核閘（與 POST /payments 退費路徑對齊）───────────
+            # 全額沖帳的實退額 = current_paid；與 calculator 建議值比較，
+            # 偏離 > 門檻且無 ACTIVITY_PAYMENT_APPROVE 即 403（堵旁路）。
+            # current_paid=0 時跳過（無實際退費金流，diff 閘不適用）。
+            if current_paid > 0:
+                _suggestion = build_refund_suggestion(session, registration_id)
+                _suggested_total = _suggestion["total_suggested_amount"]
+                _diff = abs(current_paid - _suggested_total)
+                require_approve_for_refund_diff(
+                    diff=_diff,
+                    current_user=current_user,
+                    suggested_total=_suggested_total,
+                    actual_total=current_paid,
+                )
             if current_paid > 0:
                 rec = ActivityPaymentRecord(
                     registration_id=registration_id,
