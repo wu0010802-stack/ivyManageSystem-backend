@@ -55,3 +55,43 @@ def test_dashboard_today_medication_summary_uses_health_read_code():
     # build_today_medication_summary 必傳 code= STUDENTS_HEALTH_READ
     # （L305 _count_recent_parent_leaves 走 LEAVES/STUDENTS_READ，本 phase 不動）
     assert "code=Permission.STUDENTS_HEALTH_READ" in source
+
+
+def test_portal_medications_today_uses_health_read_scope():
+    """api/portal/medications.py 必須改用 portfolio_access bridge（accessible_classroom_ids
+    + is_unrestricted）並帶 ``code=Permission.STUDENTS_HEALTH_READ``，
+    取代既有自有 `_get_teacher_classroom_ids` + role-based `is_admin_like` 判斷。
+    """
+    import api.portal.medications as mod
+
+    source = inspect.getsource(mod)
+    assert (
+        "code=Permission.STUDENTS_HEALTH_READ" in source
+    ), "list_today_medications 應帶 code=Permission.STUDENTS_HEALTH_READ"
+    assert (
+        "accessible_classroom_ids" in source
+    ), "應 import 並使用 accessible_classroom_ids"
+    assert "is_unrestricted" in source, "應 import 並使用 is_unrestricted"
+    # 確認移除舊邏輯
+    assert (
+        "_get_teacher_classroom_ids(session, emp.id)" not in source
+    ), "應改用 accessible_classroom_ids(code=) 取代 _get_teacher_classroom_ids"
+    assert (
+        "is_admin_like" not in source
+    ), "應改用 is_unrestricted(code=) 取代自有 is_admin_like role/wildcard 判斷"
+
+
+def test_portal_class_hub_medications_gated_by_health_read():
+    """api/portal/class_hub.py 設計為單班教師工作台（resolve_teacher_classroom 取得單一班），
+    與 ClassHubTodayResponse(classroom_id) 單班 schema 綁定，無法表達跨班 `:all` 語意。
+    確認 medication 來源走 scope-aware `has_permission`（Task 2.5 後 base code 自動匹配
+    `:all`/`:own_class`），無需 router/service 層額外傳 `code=`。
+    """
+    import api.portal.class_hub as mod
+
+    source = inspect.getsource(mod)
+    # has(Permission.STUDENTS_HEALTH_READ) gate 仍在
+    assert "Permission.STUDENTS_HEALTH_READ" in source
+    # has_permission 來源確認（Task 2.5 已改成 scope-aware）
+    assert "from utils.permissions import" in source
+    assert "has_permission" in source

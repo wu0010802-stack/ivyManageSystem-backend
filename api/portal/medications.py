@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from datetime import date as date_cls
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from models.classroom import LIFECYCLE_ACTIVE
 from models.database import (
@@ -21,8 +21,9 @@ from models.database import (
 from models.portfolio import StudentMedicationLog, StudentMedicationOrder
 from utils.auth import require_permission
 from utils.permissions import Permission
+from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
 
-from ._shared import _get_employee, _get_teacher_classroom_ids
+from ._shared import _get_employee
 
 logger = logging.getLogger(__name__)
 
@@ -51,26 +52,42 @@ def list_today_medications(
     today = date_cls.today()  # noqa: DTZ011
     session = get_session()
     try:
-        emp = _get_employee(session, current_user)
-        is_admin_like = "*" in (
-            current_user.get("permission_names") or []
-        ) or current_user.get("role") in ("admin", "supervisor")
+        # 借用 portfolio_access bridge：依 STUDENTS_HEALTH_READ scope 解析可看班級
+        #   unrestricted（admin/wildcard 或自訂角色持 STUDENTS_HEALTH_READ:all）
+        #     → classroom_ids=None（不限制），帶 classroom_id 則只看該班
+        #   teacher（持 :own_class 或未持 scope）→ 僅看自任導師的班；帶他班 403
+        unrestricted = is_unrestricted(
+            current_user, code=Permission.STUDENTS_HEALTH_READ.value
+        )
+        my_classrooms = accessible_classroom_ids(
+            session, current_user, code=Permission.STUDENTS_HEALTH_READ.value
+        )
+        # _get_employee 仍呼叫一次，維持原審計（unauthorized employee → 內部 raise）
+        _get_employee(session, current_user)
 
-        if is_admin_like and classroom_id:
-            classroom_ids = [classroom_id]
+        classroom_ids: list[int] | None
+        if unrestricted:
+            classroom_ids = [classroom_id] if classroom_id else None
         else:
-            my_classrooms = _get_teacher_classroom_ids(session, emp.id)
-            if classroom_id:
-                if classroom_id not in my_classrooms:
-                    from fastapi import HTTPException
+            if classroom_id and classroom_id not in my_classrooms:
+                raise HTTPException(status_code=403, detail="此班級不屬於您")
+            classroom_ids = [classroom_id] if classroom_id else my_classrooms
+            if not classroom_ids:
+                return {"date": today.isoformat(), "groups": []}
 
-                    raise HTTPException(status_code=403, detail="此班級不屬於您")
-                classroom_ids = [classroom_id]
-            else:
-                classroom_ids = my_classrooms
+        # Student 查詢：unrestricted + 未指定 classroom_id 時不加 classroom_id filter
+        q = session.query(Student).filter(
+            Student.is_active.is_(True),
+            Student.lifecycle_status == LIFECYCLE_ACTIVE,
+        )
+        if classroom_ids is not None:
+            q = q.filter(Student.classroom_id.in_(classroom_ids))
+        students = q.all()
 
-        if not classroom_ids:
-            return {"date": today.isoformat(), "groups": []}
+        # 若 unrestricted + 未指定 classroom_id，從學生反推真實出現的班級集合
+        # （避免查全表 Classroom + 回傳空 group 噪音）
+        if classroom_ids is None:
+            classroom_ids = sorted({s.classroom_id for s in students if s.classroom_id})
 
         classrooms = {
             c.id: c
@@ -78,15 +95,6 @@ def list_today_medications(
             .filter(Classroom.id.in_(classroom_ids))
             .all()
         }
-        students = (
-            session.query(Student)
-            .filter(
-                Student.classroom_id.in_(classroom_ids),
-                Student.is_active.is_(True),
-                Student.lifecycle_status == LIFECYCLE_ACTIVE,
-            )
-            .all()
-        )
         students_by_id = {s.id: s for s in students}
         if not students:
             return {

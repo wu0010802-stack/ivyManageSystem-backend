@@ -47,10 +47,14 @@ def med_client(tmp_path):
 
 
 def _seed_two_classrooms(sf) -> dict:
-    """老師 A 帶 A 班（小明），老師 B 帶 B 班（小華）。各一張今日用藥單。"""
+    """老師 A 帶 A 班（小明），老師 B 帶 B 班（小華）。各一張今日用藥單。
+
+    Phase 2.2 起 teacher perm 使用 :own_class scope（permscope03 backfill 同步），
+    確保 portfolio_access bridge 走 own_class 路徑、僅看自己班的學生用藥。
+    """
     perm = [
-        Permission.STUDENTS_HEALTH_READ.value,
-        Permission.STUDENTS_MEDICATION_ADMINISTER.value,
+        f"{Permission.STUDENTS_HEALTH_READ.value}:own_class",
+        f"{Permission.STUDENTS_MEDICATION_ADMINISTER.value}:own_class",
     ]
     today = date.today()
     with sf() as session:
