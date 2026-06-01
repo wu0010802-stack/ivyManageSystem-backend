@@ -217,11 +217,18 @@ def test_iep_scope_班導_only_sees_own_classroom(gov_moe_client):
         s.commit()
         s.refresh(emp)
 
+        # portfolio_access 走 Classroom.head_teacher_id 三角 OR（非 Employee.classroom_id）
+        cls_a.head_teacher_id = emp.id
+        s.add(cls_a)
+        s.commit()
+
         teacher_user = User(
             username="t1",
             password_hash=hash_password("Teach123"),
             role="teacher",
-            permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE"],  # STUDENTS_SPECIAL_NEEDS_WRITE
+            # Phase 2.2 起 teacher perm 用 :own_class scope（permscope03 backfill 同步）；
+            # bare 'STUDENTS_SPECIAL_NEEDS_WRITE' 在 resolve_grant 等同 :all 會繞過 scoping
+            permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE:own_class"],
             is_active=True,
             employee_id=emp.id,
         )
@@ -301,12 +308,18 @@ def test_iep_create_rejects_cross_classroom_student(gov_moe_client):
         s.commit()
         s.refresh(emp)
 
+        # portfolio_access 走 Classroom.head_teacher_id 三角 OR
+        cls_a.head_teacher_id = emp.id
+        s.add(cls_a)
+        s.commit()
+
         s.add(
             User(
                 username="teacher_a",
                 password_hash=hash_password("Teach123"),
                 role="teacher",
-                permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE"],  # STUDENTS_SPECIAL_NEEDS_WRITE
+                # Phase 2.2 起 teacher perm 用 :own_class scope（bare 等同 :all 繞過 scoping）
+                permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE:own_class"],
                 is_active=True,
                 employee_id=emp.id,
             )
@@ -328,7 +341,8 @@ def test_iep_create_rejects_cross_classroom_student(gov_moe_client):
         headers={"Authorization": f"Bearer {tok}"},
     )
     assert r.status_code == 403, r.text
-    assert "IEP" in r.json()["detail"]
+    # Task 7 起 IEP scope 改 delegate 至 portfolio_access，403 detail 統一為「您無權存取此學生」
+    assert "無權" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

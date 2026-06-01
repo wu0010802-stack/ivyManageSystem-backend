@@ -95,3 +95,60 @@ def test_portal_class_hub_medications_gated_by_health_read():
     # has_permission 來源確認（Task 2.5 已改成 scope-aware）
     assert "from utils.permissions import" in source
     assert "has_permission" in source
+
+
+# ---------------------------------------------------------------------------
+# Task 7 regression: api/gov_moe/iep.py delegate to portfolio_access
+# ---------------------------------------------------------------------------
+
+
+def test_iep_delegates_scope_to_portfolio_access():
+    """iep.py 必移除自有 _student_ids_in_scope 邏輯，改 delegate 至
+    portfolio_access（含 lifecycle 終態學生過濾 audit 2026-05-07 P0 #5 +
+    PermissionGrant scope）。"""
+    import api.gov_moe.iep as mod
+
+    source = inspect.getsource(mod)
+    # 必 import portfolio_access helper
+    assert "from utils.portfolio_access import" in source
+    # _student_ids_in_scope 與 _assert_student_in_scope 必帶 code=
+    assert "code=Permission.STUDENTS_SPECIAL_NEEDS_WRITE" in source
+    # 既有 Employee.classroom_id 自有路徑必移除（teacher 換班 stale 風險）
+    assert (
+        "emp.classroom_id" not in source
+    ), "iep.py 不應再用 Employee.classroom_id；改走 portfolio_access 三角 OR"
+    # supervisor_role hard-code 必移除（改靠 PermissionGrant :all scope）
+    # 注意：_is_supervisor_or_above 用於 approve/close，仍保留 supervisor_role 判斷
+    # 此處只檢查 _student_ids_in_scope 函式不再硬編
+    src_lines = source.splitlines()
+    in_scope_helper = False
+    scope_helper_lines: list[str] = []
+    for line in src_lines:
+        if line.startswith("def _student_ids_in_scope"):
+            in_scope_helper = True
+            continue
+        if in_scope_helper:
+            if line.startswith("def ") or (line and not line.startswith((" ", "\t"))):
+                break
+            scope_helper_lines.append(line)
+    helper_src = "\n".join(scope_helper_lines)
+    assert (
+        "supervisor_role" not in helper_src
+    ), "_student_ids_in_scope 內不應再 hard-code supervisor_role；改走 PermissionGrant :all"
+
+
+def test_iep_no_bare_assert_student_in_scope():
+    """所有 _assert_student_in_scope 呼叫間接走 portfolio_access；
+    確保 assert_student_access call site 都帶 code=（防止 phase 2.2 漏改 regression）。"""
+    import api.gov_moe.iep as mod
+
+    source = inspect.getsource(mod)
+    lines = source.splitlines()
+    offenders: list[str] = []
+    for i, line in enumerate(lines):
+        if "assert_student_access(" in line and "def assert_student_access" not in line:
+            # 取後續 7 行以涵蓋多行 call site（含 trailing keyword arg + paren）
+            snippet = "\n".join(lines[i : i + 7])
+            if "code=" not in snippet:
+                offenders.append(f"line {i + 1}: {line.strip()}")
+    assert not offenders, "bare assert_student_access calls: " + "; ".join(offenders)
