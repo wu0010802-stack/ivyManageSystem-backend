@@ -42,4 +42,19 @@ class LeaveApproveResultOut(IvyBaseModel):
 from schemas._common import (
     ImportFailureItem as LeaveImportFailureItem,
 )  # noqa: E402,F401
-from schemas._common import ImportResultOut as LeaveImportResultOut  # noqa: E402,F401
+
+
+class LeaveImportResultOut(IvyBaseModel):
+    """POST /leaves/import Excel 批次匯入回傳（total/created/failed:int/errors）。
+
+    與 _common.ImportResultOut ({succeeded, failed:list}) 不同：本 endpoint 回
+    total/created/failed:int/errors:list[str]（與 ShiftImportResultOut 同模式，
+    saved→created），前端 LeaveView 依此 shape 取用。原別名 = _common.ImportResultOut
+    基於「leaves import 也回 {succeeded,failed}」的錯誤假設，與實際 return 不符
+    （導致 ResponseValidationError → 端點 500）。
+    """
+
+    total: int
+    created: int
+    failed: int
+    errors: list[str]
