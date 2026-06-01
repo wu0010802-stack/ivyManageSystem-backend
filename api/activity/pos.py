@@ -681,7 +681,10 @@ def pos_checkout(
         # 整張收據疑似重送，透過命中紀錄的 receipt_no 回放整張原始收據
         # （_parse_receipt_response_from_record），不再 INSERT 任何一筆。
         # 鎖已序列化同 reg 的並發；放在累積/diff 守衛之前讓合法重送 replay 為成功。
-        if not body.idempotency_key:
+        # 僅單一 item 才做無 key 去重：多 item 無 key 無法以 items[0] 安全錨定
+        # （否則 items[0] 撞舊收據會 replay 整張、靜默吞掉其餘 item → 漏帳）。
+        # 多 item 無 key 退回正常處理（不去重）；官方 UI 一律帶 key 不受影響。
+        if not body.idempotency_key and len(body.items) == 1:
             first_item = body.items[0]
             dup = _recent_duplicate_payment(
                 session,

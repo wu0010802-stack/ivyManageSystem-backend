@@ -368,6 +368,56 @@ class TestPosCheckoutNoKeyDedup:
                 reg.paid_amount == 500
             ), f"paid_amount 應只退一次到 500，實際 {reg.paid_amount}"
 
+    def test_multi_item_without_key_not_silently_dropped(self, idk_client):
+        """多 item 無 key 結帳不可因 items[0] 撞舊收據而 replay 整張、靜默吞掉其餘 item。
+        修前 → regB 漏帳（0 筆）；修後 → 多 item 跳過去重，regB 正常出帳（1 筆）。"""
+        client, sf = idk_client
+        with sf() as s:
+            _create_admin(s)
+            reg_a = _setup_reg(
+                s, student_name="多項A", course_name="課A", paid_amount=1000
+            )
+            reg_b = _setup_reg(
+                s, student_name="多項B", course_name="課B", paid_amount=1000
+            )
+            s.commit()
+            a_id, b_id = reg_a.id, reg_b.id
+
+        assert _login(client).status_code == 200
+
+        r1 = client.post(
+            "/api/activity/pos/checkout",
+            json={
+                "items": [{"registration_id": a_id, "amount": 400}],
+                "payment_method": "現金",
+                "payment_date": date.today().isoformat(),
+                "type": "refund",
+                "notes": REFUND_REASON,
+            },
+        )
+        assert r1.status_code == 201, r1.text
+
+        r2 = client.post(
+            "/api/activity/pos/checkout",
+            json={
+                "items": [
+                    {"registration_id": a_id, "amount": 400},
+                    {"registration_id": b_id, "amount": 300},
+                ],
+                "payment_method": "現金",
+                "payment_date": date.today().isoformat(),
+                "type": "refund",
+                "notes": REFUND_REASON,
+            },
+        )
+        assert r2.status_code == 201, r2.text
+
+        with sf() as s:
+            b_refunds = _active_refund_records(s, b_id)
+            assert (
+                len(b_refunds) == 1
+            ), f"多 item 無 key 時 regB 被靜默吞掉：紀錄 {len(b_refunds)}（應為 1）"
+
     def test_payment_without_key_double_submit_deduped(self, idk_client):
         """POS checkout 繳費無 key 連送兩次 → 1 筆 / paid 只加一次。"""
         client, sf = idk_client
