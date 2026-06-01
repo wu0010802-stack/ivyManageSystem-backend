@@ -17,6 +17,10 @@ unique 約束名 students_student_id_key 為 Postgres 對 Column(unique=True)
 
 downgrade 不可逆部分：student_id 顯示快取已重算為新格式
 （{學年}-{年級字}-{seq:02d}），downgrade 不會還原原始 {學年}-{班代}-{NN} 格式。
+
+本 migration 含 ORM data migration（backfill），**僅支援 online 套用**
+（`alembic upgrade head` 直連 DB）；不支援 offline `alembic upgrade --sql`
+（backfill 在 MockConnection 下無法執行）。部署 SOP 勿依賴 --sql 預演。
 """
 
 from alembic import op
@@ -61,12 +65,33 @@ def upgrade() -> None:
     bind = op.get_bind()
     sess = Session(bind=bind)
     backfill_enrollment_numbers(sess)
-    sess.commit()
+    sess.flush()
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_students_enrollment_year_seq", "students", type_="unique")
+    op.drop_constraint(
+        "uq_students_enrollment_year_seq", "students", type_="unique"
+    )
     op.drop_index("ix_students_student_id", table_name="students")
-    op.create_unique_constraint("students_student_id_key", "students", ["student_id"])
+
+    # 新 student_id 顯示格式刻意允許罕見重複（跨屆同 seq 同年同年級）。
+    # 重建舊 unique 前先偵測碰撞，有則 fail-fast 要求人工處理，
+    # 避免 ADD CONSTRAINT 拋出隱晦的 IntegrityError。
+    bind = op.get_bind()
+    dupes = bind.execute(
+        sa.text(
+            "SELECT student_id, COUNT(*) AS c FROM students "
+            "GROUP BY student_id HAVING COUNT(*) > 1"
+        )
+    ).fetchall()
+    if dupes:
+        raise RuntimeError(
+            f"downgrade 受阻：student_id 顯示快取有 {len(dupes)} 組重複值，"
+            "無法重建 students_student_id_key unique 約束。"
+            "請先人工去除重複的 student_id 再執行 downgrade。"
+        )
+    op.create_unique_constraint(
+        "students_student_id_key", "students", ["student_id"]
+    )
     op.drop_column("students", "enrollment_seq")
     op.drop_column("students", "enrollment_school_year")
