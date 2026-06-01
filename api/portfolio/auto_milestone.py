@@ -12,7 +12,7 @@ Idempotent: 對每筆 payload 先 query 看是否已存在
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from utils.taipei_time import today_taipei
 from typing import Optional
 
@@ -32,6 +32,7 @@ from services.milestone_detector import (
     detect_graduation,
     detect_perfect_attendance_months,
 )
+from services.workday_rules import classify_day, load_day_rule_maps
 from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -68,6 +69,23 @@ def _milestone_dedup_query(session, payload: dict):
     return q
 
 
+def _official_workdays_in_range(session, start: date, end: date) -> set[date]:
+    """[start, end] 內的官方工作日（排除週末 / 假日、含補班日）。
+
+    供全勤偵測算「該月應到天數」用；DB 依賴留在此層，milestone_detector 維持純函式。
+    """
+    if start > end:
+        return set()
+    holiday_map, makeup_map = load_day_rule_maps(session, start, end)
+    workdays: set[date] = set()
+    d = start
+    while d <= end:
+        if classify_day(d, holiday_map, makeup_map)["kind"] == "workday":
+            workdays.add(d)
+        d += timedelta(days=1)
+    return workdays
+
+
 @router.post("/{student_id}/milestones/auto-detect")
 async def auto_detect_milestones(
     student_id: int,
@@ -96,8 +114,20 @@ async def auto_detect_milestones(
                 .all()
             )
             att_records = [{"date": a.date, "status": a.status} for a in att_rows]
+            if att_records:
+                record_dates = [r["date"] for r in att_records]
+                # 從第一筆記錄「所在月的月初」起算，使每個月的工作日集合都是整月，
+                # 月中才有記錄的首月才能被正確判為非滿月全勤（不發章）。
+                start = min(record_dates).replace(day=1)
+                official_workdays = _official_workdays_in_range(
+                    session, start, ref_date
+                )
+            else:
+                official_workdays = set()
             all_payloads.extend(
-                detect_perfect_attendance_months(student_id, att_records, ref_date)
+                detect_perfect_attendance_months(
+                    student_id, att_records, ref_date, official_workdays
+                )
             )
 
             # created_by → employees.id；透過 User.employee_id 轉換（與 milestones router 一致）

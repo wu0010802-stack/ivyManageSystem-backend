@@ -79,31 +79,95 @@ def test_detect_graduation_active_student_returns_empty():
     assert detect_graduation(s) == []
 
 
-def test_detect_perfect_attendance_months_basic():
-    student_id = 1
-    records = [
-        {"date": date(2026, 4, 7), "status": "出席"},
-        {"date": date(2026, 4, 14), "status": "出席"},
-        {"date": date(2026, 4, 21), "status": "出席"},
-        {"date": date(2026, 5, 5), "status": "請假"},
-        {"date": date(2026, 5, 12), "status": "出席"},
-    ]
+# 全勤月 = 已結束月份中，每個官方工作日都「出席」（遲到/缺席/請假皆破功）。
+# official_workdays 由 caller 用 workday_rules 算好傳入（detector 維持純函式）。
+
+
+def _present(dates):
+    return [{"date": d, "status": "出席"} for d in dates]
+
+
+def test_perfect_attendance_awarded_when_all_official_workdays_present():
+    workdays = {date(2026, 4, 1), date(2026, 4, 2), date(2026, 4, 3)}
     out = detect_perfect_attendance_months(
-        student_id, records, reference_date=date(2026, 5, 31)
+        1,
+        _present(workdays),
+        reference_date=date(2026, 5, 1),
+        official_workdays=workdays,
     )
-    months = [o["achieved_on"] for o in out]
-    assert any(m.year == 2026 and m.month == 4 for m in months)
-    assert not any(m.year == 2026 and m.month == 5 for m in months)
+    assert [o["achieved_on"] for o in out] == [date(2026, 4, 1)]
+    assert out[0]["milestone_type"] == "perfect_attendance_month"
+    assert out[0]["source_ref_id"] == 202604
 
 
-def test_detect_perfect_attendance_months_min_3_days():
-    """少於 3 筆紀錄不算全勤（避免月初剛開學就觸發）。"""
-    student_id = 1
-    records = [
-        {"date": date(2026, 4, 7), "status": "出席"},
-        {"date": date(2026, 4, 14), "status": "出席"},
+def test_no_badge_when_a_workday_record_missing():
+    workdays = {date(2026, 4, 1), date(2026, 4, 2), date(2026, 4, 3)}
+    records = _present({date(2026, 4, 1), date(2026, 4, 2)})  # 缺 4/3
+    out = detect_perfect_attendance_months(
+        1, records, reference_date=date(2026, 5, 1), official_workdays=workdays
+    )
+    assert out == []
+
+
+def test_late_arrival_breaks_perfect_attendance():
+    workdays = {date(2026, 4, 1), date(2026, 4, 2), date(2026, 4, 3)}
+    records = _present({date(2026, 4, 1), date(2026, 4, 2)}) + [
+        {"date": date(2026, 4, 3), "status": "遲到"}
     ]
     out = detect_perfect_attendance_months(
-        student_id, records, reference_date=date(2026, 4, 30)
+        1, records, reference_date=date(2026, 5, 1), official_workdays=workdays
+    )
+    assert out == []
+
+
+def test_absence_breaks_perfect_attendance():
+    workdays = {date(2026, 4, 1), date(2026, 4, 2), date(2026, 4, 3)}
+    records = _present({date(2026, 4, 1), date(2026, 4, 2)}) + [
+        {"date": date(2026, 4, 3), "status": "缺席"}
+    ]
+    out = detect_perfect_attendance_months(
+        1, records, reference_date=date(2026, 5, 1), official_workdays=workdays
+    )
+    assert out == []
+
+
+def test_sparse_month_no_longer_false_positive():
+    """原 bug：該月 20 個工作日只記 3 天出席就拿章。修後不發。"""
+    workdays = {date(2026, 4, d) for d in range(1, 21)}
+    records = _present({date(2026, 4, 1), date(2026, 4, 8), date(2026, 4, 15)})
+    out = detect_perfect_attendance_months(
+        1, records, reference_date=date(2026, 5, 1), official_workdays=workdays
+    )
+    assert out == []
+
+
+def test_in_progress_month_not_awarded():
+    """未結束的當月不發章，即使目前每個工作日都出席。"""
+    workdays = {date(2026, 4, 1), date(2026, 4, 2), date(2026, 4, 3)}
+    out = detect_perfect_attendance_months(
+        1,
+        _present(workdays),
+        reference_date=date(2026, 4, 15),
+        official_workdays=workdays,
+    )
+    assert out == []
+
+
+def test_weekends_and_holidays_ignored():
+    """非工作日（週末/假日）無記錄不影響全勤判定。"""
+    workdays = {date(2026, 4, 1), date(2026, 4, 2), date(2026, 4, 3)}
+    out = detect_perfect_attendance_months(
+        1,
+        _present(workdays),
+        reference_date=date(2026, 5, 1),
+        official_workdays=workdays,
+    )
+    assert [o["achieved_on"] for o in out] == [date(2026, 4, 1)]
+
+
+def test_no_official_workdays_no_badge():
+    """該期間無官方工作日（空集合）不發章。"""
+    out = detect_perfect_attendance_months(
+        1, [], reference_date=date(2026, 5, 1), official_workdays=set()
     )
     assert out == []

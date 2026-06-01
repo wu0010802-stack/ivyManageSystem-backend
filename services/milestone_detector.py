@@ -10,12 +10,12 @@
 
 from __future__ import annotations
 
+import calendar
 from collections import defaultdict
 from datetime import date as _date
 from typing import Iterable
 
 # === 規則常數 ===
-PERFECT_ATTENDANCE_MIN_DAYS = 3  # 一個月至少要有 N 筆出勤紀錄才視為全勤候選
 PRESENT_STATUS = "出席"  # 與 StudentAttendance default 一致
 
 
@@ -97,35 +97,49 @@ def detect_graduation(student) -> list[dict]:
 
 
 def detect_perfect_attendance_months(
-    student_id: int, records: Iterable[dict], reference_date: _date
+    student_id: int,
+    records: Iterable[dict],
+    reference_date: _date,
+    official_workdays: Iterable[_date],
 ) -> list[dict]:
     """Records: iterable of {"date": date, "status": str}.
 
-    Rule: 一個月有 ≥ PERFECT_ATTENDANCE_MIN_DAYS 筆且全 "出席" → 全勤 milestone。
+    全勤月 = 已結束的月份中，該月每個官方工作日（``official_workdays``，由 caller
+    以 workday_rules 算好傳入）學生都有 status=="出席" 記錄。缺任一天記錄、或有
+    任何非「出席」狀態（含遲到 / 缺席 / 請假 / 病假 / 事假）→ 不發章。
+
+    只發「已結束」的月份（月底 < reference_date），未結束的當月不發；非工作日
+    （週末 / 假日）無記錄不影響判定。修前以「≥3 筆且全出席」判定，會在記錄稀疏
+    或缺席未建檔時誤發。
     """
-    by_month: dict[tuple[int, int], list[str]] = defaultdict(list)
-    for r in records:
-        d = r["date"]
-        if d > reference_date:
-            continue
-        by_month[(d.year, d.month)].append(r["status"])
+    present_dates = {r["date"] for r in records if r.get("status") == PRESENT_STATUS}
+
+    workdays_by_month: dict[tuple[int, int], set[_date]] = defaultdict(set)
+    for d in official_workdays:
+        workdays_by_month[(d.year, d.month)].add(d)
 
     out: list[dict] = []
-    for (yr, mo), statuses in by_month.items():
-        if len(statuses) < PERFECT_ATTENDANCE_MIN_DAYS:
+    for (yr, mo), wdays in sorted(workdays_by_month.items()):
+        if not wdays:
             continue
-        if all(s == PRESENT_STATUS for s in statuses):
-            out.append(
-                {
-                    "student_id": student_id,
-                    "milestone_type": "perfect_attendance_month",
-                    "achieved_on": _date(yr, mo, 1),
-                    "title": f"{yr}/{mo:02d} 滿月全勤",
-                    "description": None,
-                    "icon": "🏆",
-                    "source_type": "auto_attendance",
-                    "source_ref_type": "attendance_month",
-                    "source_ref_id": yr * 100 + mo,
-                }
-            )
+        # 只發已結束的月份（最後一個日曆日 < reference_date）
+        last_day = _date(yr, mo, calendar.monthrange(yr, mo)[1])
+        if last_day >= reference_date:
+            continue
+        # 該月每個官方工作日都必須有「出席」記錄
+        if not wdays.issubset(present_dates):
+            continue
+        out.append(
+            {
+                "student_id": student_id,
+                "milestone_type": "perfect_attendance_month",
+                "achieved_on": _date(yr, mo, 1),
+                "title": f"{yr}/{mo:02d} 滿月全勤",
+                "description": None,
+                "icon": "🏆",
+                "source_type": "auto_attendance",
+                "source_ref_type": "attendance_month",
+                "source_ref_id": yr * 100 + mo,
+            }
+        )
     return out
