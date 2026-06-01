@@ -105,8 +105,12 @@ class BatchOvertimeCreate(BaseModel):
    - `_check_monthly_overtime_cap`（含本筆 hours）
    - `_check_quarterly_overtime_cap`（含本筆 hours）
    - `_check_overtime_type_calendar`（加班類型與日曆一致）
-   - 當月薪資是否已封存（`assert_months_not_finalized`，與單筆/批次核准一致）
 4. 若 `errors` 非空 → 直接回 **422**，**完全不寫入**。
+
+> **封存月份檢查刻意省略**：單筆 `create_overtime`（L588-691）**不**呼叫
+> `assert_months_not_finalized`——`pending` 記錄不影響已封存薪資，封存守衛在「核准」路徑
+> （L1108-1146）才生效。批次建立**與單筆完全對齊**，同樣不在建立階段檢查封存，避免改動
+> 既有單筆對外行為。
 
 **Phase 2 — 一次提交（errors 為空時）：**
 
@@ -180,7 +184,6 @@ export const batchCreateOvertimes = (payload: ApiBody<'/overtimes/batch-create',
 - `use_comp_leave=True` → 各筆 `overtime_pay=0`、`comp_leave_granted=False`、**不**發補休配額。
 - 逐人時數 → 各筆 `hours`/`overtime_pay` 依各自 base_salary 正確。
 - 重複 `employee_id` → 回報重複錯誤（不靜默建立兩筆）。
-- 當月薪資已封存 → 整批 422。
 - 權限：無 `OVERTIME_WRITE` → 403。
 - **不觸發薪資重算**：建立後當月薪資未被標記 stale（與單筆一致）。
 - 單筆端點既有測試仍全綠（驗證 helper 抽出後對外行為不變）。
