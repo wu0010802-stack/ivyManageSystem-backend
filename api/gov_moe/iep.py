@@ -15,6 +15,10 @@ from models.classroom import Student
 from models.gov_moe import StudentIEPRecord
 from utils.auth import require_permission, get_current_user
 from utils.permissions import Permission
+from utils.portfolio_access import (
+    assert_student_access,
+    student_ids_in_scope,
+)
 
 router = APIRouter(prefix="/iep")
 
@@ -74,35 +78,19 @@ class IepOut(IepBase):
 
 
 def _student_ids_in_scope(db: Session, current_user: dict):
-    """回傳 caller 可存取的 student_id 集合；None 表示全部放行（admin / 園長 / 主任）。
+    """回傳 caller 可存取的 student_id 集合；None 表示全部放行（admin / :all scope）。
 
-    與 _scoped_query 共享同一條 scope 規則：班導/副班導 只看自己班級，主任以上看全部。
+    delegate 至 utils/portfolio_access.student_ids_in_scope —
+    含 PermissionGrant :all / :own_class scope 支援 + lifecycle 終態學生過濾
+    （audit 2026-05-07 P0 #5：已退學/畢業/轉出學生對 teacher 立即不可見）。
+
+    回傳值：None 表全放行；空 list 表無存取權；否則為可存取 student_id 清單。
+    既有 _scoped_query 的 ``if allowed is None`` / ``if not allowed`` / ``in allowed``
+    判斷對 list 仍正確（``in`` 對 list 線性搜尋；scope 端點預期清單大小 < 數百）。
     """
-    if current_user.get("role") == "admin":
-        return None
-
-    employee_id = current_user.get("employee_id")
-    if not employee_id:
-        return set()
-
-    from models.employee import Employee
-
-    emp = db.query(Employee).filter(Employee.id == employee_id).first()
-    if not emp:
-        return set()
-
-    if emp.supervisor_role in ("園長", "主任"):
-        return None
-
-    if emp.classroom_id:
-        return {
-            sid
-            for (sid,) in db.query(Student.id)
-            .filter(Student.classroom_id == emp.classroom_id)
-            .all()
-        }
-
-    return set()
+    return student_ids_in_scope(
+        db, current_user, code=Permission.STUDENTS_SPECIAL_NEEDS_WRITE.value
+    )
 
 
 def _assert_student_in_scope(db: Session, current_user: dict, student_id: int) -> None:
@@ -110,12 +98,17 @@ def _assert_student_in_scope(db: Session, current_user: dict, student_id: int) -
 
     沒這層守衛則持 STUDENTS_SPECIAL_NEEDS_WRITE 的班導可為跨班學生建檔，
     既污染他班 IEP、又會佔用 (student, year, semester) 唯一鍵。
+
+    delegate 至 utils/portfolio_access.assert_student_access —
+    含 PermissionGrant :all / :own_class scope + lifecycle 終態學生過濾
+    （audit 2026-05-07 P0 #5）+ 404/403 collapse 不揭露 student 是否存在。
     """
-    allowed = _student_ids_in_scope(db, current_user)
-    if allowed is None:
-        return
-    if student_id not in allowed:
-        raise HTTPException(status_code=403, detail="無權為此學生建立或操作 IEP 記錄")
+    assert_student_access(
+        db,
+        current_user,
+        student_id,
+        code=Permission.STUDENTS_SPECIAL_NEEDS_WRITE.value,
+    )
 
 
 def _is_supervisor_or_above(db: Session, current_user: dict) -> bool:

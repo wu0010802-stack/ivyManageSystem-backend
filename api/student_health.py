@@ -234,7 +234,7 @@ async def list_allergies(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
             query = session.query(StudentAllergy).filter(
                 StudentAllergy.student_id == student_id
             )
@@ -262,7 +262,7 @@ async def create_allergy(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
             if payload.severity not in ALLERGY_SEVERITIES:
                 raise HTTPException(status_code=400, detail="severity 不合法")
 
@@ -307,7 +307,7 @@ async def update_allergy(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
             a = (
                 session.query(StudentAllergy)
                 .filter(
@@ -349,7 +349,7 @@ async def delete_allergy(
     """直接刪除過敏紀錄（不做軟刪；若要保留歷史請用 PATCH active=false）。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
             a = (
                 session.query(StudentAllergy)
                 .filter(
@@ -385,7 +385,7 @@ async def list_medication_orders(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
             query = session.query(StudentMedicationOrder).filter(
                 StudentMedicationOrder.student_id == student_id
             )
@@ -415,7 +415,7 @@ async def get_medication_order(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
             o = (
                 session.query(StudentMedicationOrder)
                 .filter(
@@ -448,7 +448,7 @@ async def create_medication_order(
     """建立當日用藥單。會自動依 time_slots 預建 N 筆 pending logs。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
 
             order = create_order_with_logs(
                 session,
@@ -507,7 +507,7 @@ def _get_log_with_access(
     )
     if not o:
         raise HTTPException(status_code=500, detail="對應的用藥單不存在")
-    assert_student_access(session, current_user, o.student_id)
+    assert_student_access(session, current_user, o.student_id, code=Permission.STUDENTS_MEDICATION_ADMINISTER.value)
     return lg, o, o.student_id
 
 
@@ -679,7 +679,7 @@ async def today_medication_summary(
     try:
         today = today_taipei()
         with session_scope() as session:
-            scope = student_ids_in_scope(session, current_user)
+            scope = student_ids_in_scope(session, current_user, code=Permission.STUDENTS_HEALTH_READ.value)
             query = session.query(StudentMedicationOrder).filter(
                 StudentMedicationOrder.order_date == today
             )

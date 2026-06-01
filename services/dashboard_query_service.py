@@ -330,7 +330,7 @@ class DashboardQueryService:
             StudentMedicationOrder.order_date == today
         )
         if current_user is not None:
-            scope = student_ids_in_scope(session, current_user)
+            scope = student_ids_in_scope(session, current_user, code=Permission.STUDENTS_HEALTH_READ.value)
             if scope is None:
                 pass  # admin/hr/supervisor：不過濾
             elif not scope:

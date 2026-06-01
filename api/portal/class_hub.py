@@ -130,6 +130,11 @@ def get_class_hub_today(
         if has(Permission.STUDENTS_READ)
         else 0
     )
+    # Phase 2.2 verify (HEALTH-MEDICATION scope)：本端點為單班教師工作台
+    # （resolve_teacher_classroom 解析教師單一班；ClassHubTodayResponse.classroom_id
+    # 也僅單一），架構上即為 :own_class 語意。Task 2.5 後 has_permission 已 scope-aware
+    # （base code 自動匹配 :all / :own_class），無需在此額外傳 code=。
+    # 跨班 :all 語意請走 api/portal/medications.py /today（已支援），不在本 hub。
     medications = (
         list_pending_medications(sess, classroom_id=classroom.id, today=today)
         if has(Permission.STUDENTS_HEALTH_READ)
