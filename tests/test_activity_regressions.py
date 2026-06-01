@@ -660,9 +660,9 @@ class TestPublicUpdateRegressions:
             )
             session.commit()
 
-        res = client.get(
+        res = client.post(
             "/api/activity/public/query",
-            params={
+            json={
                 "name": "王小明",
                 "birthday": "2020-01-01",
                 "parent_phone": "0912345678",
