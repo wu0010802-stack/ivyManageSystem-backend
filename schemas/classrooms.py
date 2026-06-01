@@ -199,3 +199,53 @@ class ClassroomPromoteAcademicYearResultOut(IvyBaseModel):
     moved_student_count: int
     graduated_count: int
     target_term: str
+
+
+# ──────────────────────────────────────────────────────────────────────
+# POST /classrooms/promote-academic-year/preview → ClassroomPromotePreviewOut
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ClassroomPromotePreviewRowOut(IvyBaseModel):
+    """升班預覽：單一來源班級的處置結果（不寫入，僅試算）。"""
+
+    source_classroom_id: int
+    source_name: str
+    source_grade_id: Optional[int] = None
+    source_grade_name: Optional[str] = None
+    resolved_target_grade_id: Optional[int] = None  # None = 畢業
+    resolved_target_grade_name: Optional[str] = None
+    target_name: Optional[str] = None  # 回放使用者輸入；畢業列為 None
+    will_graduate: bool
+    active_student_count: int  # 該來源班在讀學生數
+    reuses_existing_target: bool  # 命中可重用的停用班級
+
+
+class ClassroomPromoteConflictOut(IvyBaseModel):
+    """升班預覽：逐班層級的阻擋性衝突。
+
+    kind ∈ {missing_source, missing_target_name, duplicate_target_name,
+    active_name_collision, invalid_target_grade, reusable_target_has_students}。
+    """
+
+    kind: str
+    source_classroom_id: Optional[int] = None
+    target_name: Optional[str] = None
+    message: str  # 已本地化的中文訊息
+
+
+class ClassroomPromotePreviewOut(IvyBaseModel):
+    """POST /classrooms/promote-academic-year/preview — 升班試算（不寫入）。
+
+    rows 為逐班處置；conflicts 收集所有阻擋性問題（execute 會於非空時拒絕）。
+    三個 count 與 execute 實際結果在「全員乾淨在讀」前提下相等。
+    """
+
+    source_term: str
+    target_term: str
+    rows: list[ClassroomPromotePreviewRowOut]
+    will_create_count: int
+    will_move_student_count: int
+    will_graduate_count: int
+    conflicts: list[ClassroomPromoteConflictOut]
+    has_blocking_conflict: bool
