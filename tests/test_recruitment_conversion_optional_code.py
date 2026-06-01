@@ -108,9 +108,9 @@ def test_writes_event_log_converted(session, classroom, visit):
 
 
 def test_no_classroom_still_assigns_seq(session, visit):
-    # classroom_id=None は許可される。
-    # 新ロジックではclassroom不要；enrollment_seqが配発されstudentが作成される。
-    # classroom なし → student_id は "{enrollment_school_year}-{seq:02d}"
+    # classroom_id=None 允許。
+    # 新邏輯不需 classroom；會配發 enrollment_seq 並建立 student。
+    # 無 classroom → student_id 為 "{enrollment_school_year}-{seq:02d}"
     result = convert_recruitment_to_student(
         session,
         recruitment_visit_id=visit.id,

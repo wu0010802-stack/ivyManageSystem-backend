@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from models.classroom import Student
 from repositories.base import BaseRepository
 
 
 class StudentRepository(BaseRepository[Student]):
     model = Student
-
-    def get_by_student_id(self, student_id: str) -> Optional[Student]:
-        """以學號（business key）查詢。"""
-        return (
-            self.session.query(Student).filter(Student.student_id == student_id).first()
-        )
 
     def list_active_by_classroom(self, classroom_id: int) -> list[Student]:
         return (
