@@ -221,6 +221,21 @@ def on_startup():
 
     logger.info("term.changed handlers: %s", list_handler_names())
 
+    # Phase 1 row-level scoping: startup sanity warning for missing scope_options
+    try:
+        from utils.permissions import check_scope_options_sanity
+        from models.permission_models import PermissionDefinition
+        from models.database import get_session
+
+        s = get_session()
+        try:
+            seed = {p.code: p.scope_options for p in s.query(PermissionDefinition).all()}
+        finally:
+            s.close()
+        check_scope_options_sanity(seed)
+    except Exception as e:
+        logger.warning("scope_options sanity check skipped: %s", e)
+
 
 async def _activity_waitlist_sweeper():
     """每 10 分鐘掃描候補轉正過期，發放逾期放棄與即將到期提醒。

@@ -3,10 +3,13 @@ Permission definitions for fine-grained access control
 （text[] 版本，2026-05-21 重構：脫離 64-bit IntFlag 容量限制）
 """
 
+import logging
 from enum import Enum
-from typing import List, Dict
+from typing import List, Dict, NamedTuple, Optional
 
 WILDCARD = "*"
+
+_logger = logging.getLogger(__name__)
 
 
 class Permission(str, Enum):
@@ -700,3 +703,130 @@ def get_permissions_definition(session) -> Dict:
         "roles": roles,
         "split_modules": SPLIT_MODULES,
     }
+
+
+# === PermissionGrant + resolve_grant ===
+
+
+class PermissionGrant(NamedTuple):
+    code: str
+    scope: Optional[str]  # "all" | "own_class" | None (no scope_options)
+
+
+# scope ranking: higher index = broader
+_SCOPE_BREADTH = {"own_class": 0, "all": 1}
+
+
+def resolve_grant(user, code: str) -> Optional[PermissionGrant]:
+    """解析使用者對特定權限 code 的 grant（含 scope 限定詞）。
+
+    解析規則：
+        wildcard '*'              → ('all')
+        bare 'STUDENTS_READ'      → ('all')        # 向後相容
+        'STUDENTS_READ:own_class' → ('own_class')
+        同時含 bare 與 scoped     → 取較寬鬆者（'all'）
+        多個 scoped 並存          → 取最寬鬆者
+        permission_names 為 None / 空 → None
+        所有 scope 皆無效字串     → None（fail-closed，避免誤升權）
+
+    Args:
+        user: 可為 SQLAlchemy model 物件（有 .permission_names 屬性）或 dict
+              （get_current_user 回傳的 JWT payload dict）
+        code: 權限 enum 字串值（如 'STUDENTS_READ'）
+
+    Returns:
+        PermissionGrant(code, scope) 或 None
+    """
+    if isinstance(user, dict):
+        perm_names = user.get("permission_names", [])
+    else:
+        perm_names = getattr(user, "permission_names", None)
+    names = perm_names or []
+    if WILDCARD in names:
+        return PermissionGrant(code, "all")
+
+    found_scopes: list[str] = []
+    for n in names:
+        if n == code:
+            found_scopes.append("all")
+        elif n.startswith(f"{code}:"):
+            scope = n.split(":", 1)[1]
+            found_scopes.append(scope)
+
+    if not found_scopes:
+        return None
+
+    # pick broadest valid scope; fail-closed if all scopes are invalid strings
+    valid = [s for s in found_scopes if s in _SCOPE_BREADTH]
+    if not valid:
+        return None
+    broadest = max(valid, key=lambda s: _SCOPE_BREADTH[s])
+    return PermissionGrant(code, broadest)
+
+
+def require_scoped_permission(code: "Permission"):
+    """FastAPI dependency；同 require_permission 但額外暴露 user 的 grant scope。
+
+    回傳:
+        callable，呼叫後回 (user, PermissionGrant) tuple
+
+    使用方式:
+        @router.get('/students')
+        def list_students(
+            scoped=Depends(require_scoped_permission(Permission.STUDENTS_READ))
+        ):
+            user, grant = scoped
+            clause = student_scope.filter_clause(user, grant.scope)
+            ...
+
+    若使用者未持有該權限，raise 403。
+    """
+    # local import 避循環：utils.auth → utils.permissions
+    from fastapi import Depends, HTTPException
+    from utils.auth import get_current_user
+
+    def dep(user=Depends(get_current_user)):
+        grant = resolve_grant(user, code.value)
+        if grant is None:
+            raise HTTPException(
+                status_code=403,
+                detail=f"missing permission: {code.value}",
+            )
+        return user, grant
+
+    return dep
+
+
+
+# === Startup sanity warning for missing scope_options ===
+
+# Prefixes that imply a permission SHOULD support scope_options.
+# Phase 1 only includes STUDENTS_*. Phases 2-4 expand this list.
+_SCOPE_AWARE_PREFIXES = (
+    "STUDENTS_",
+)
+_SCOPE_AWARE_EXACT: tuple = ()
+
+
+def check_scope_options_sanity(seed: dict) -> None:
+    """startup sanity warning — 若 seed 中某 permission code 名稱看起來像
+    scope-aware（前綴匹配 _SCOPE_AWARE_PREFIXES 或精確匹配 _SCOPE_AWARE_EXACT），
+    但 DB permission_definitions.scope_options 為 NULL/空，則 log WARNING。
+
+    用途：未來 Phase 2-4 新增 scope-aware 權限時，若 migration 忘了補
+    scope_options seed，此檢查能在 startup 立刻發出警告（不擋啟動）。
+
+    Args:
+        seed: dict[str, list[str] | None]，鍵為 permission code，值為 scope_options
+    """
+    for code, opts in seed.items():
+        looks_scope_aware = (
+            any(code.startswith(p) for p in _SCOPE_AWARE_PREFIXES)
+            or code in _SCOPE_AWARE_EXACT
+        )
+        if looks_scope_aware and not opts:
+            _logger.warning(
+                "permission %r looks scope-aware but scope_options is empty/NULL "
+                "in permission_definitions; consider adding a migration",
+                code,
+            )
