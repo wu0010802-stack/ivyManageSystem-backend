@@ -41,9 +41,10 @@ from models.database import (
     User,
 )
 from models.approval import ApprovalStatus
-from schemas._common import DeleteResultOut, MutationResultOut
+from schemas._common import MutationResultOut
 from schemas.leaves import (
     LeaveApproveResultOut,
+    LeaveDeleteResultOut,
     LeaveImportResultOut,
     LeaveUpdateResultOut,
 )
@@ -1106,7 +1107,7 @@ def update_leave(
         session.close()
 
 
-@router.delete("/leaves/{leave_id}", response_model=DeleteResultOut)
+@router.delete("/leaves/{leave_id}", response_model=LeaveDeleteResultOut)
 def delete_leave(
     leave_id: int,
     request: Request,

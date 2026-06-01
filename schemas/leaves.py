@@ -29,6 +29,10 @@ class LeaveUpdateResultOut(IvyBaseModel):
 
     message: str
     reset_to_pending: Optional[bool] = None
+    # 改動已核准假單觸發薪資重算；重算失敗時回降級警告（prod 設於 except，
+    # 須在 schema 宣告否則被 response_model 序列化剝掉）。
+    salary_recalculated: Optional[bool] = None
+    salary_warning: Optional[str] = None
 
 
 class LeaveApproveResultOut(IvyBaseModel):
@@ -36,6 +40,22 @@ class LeaveApproveResultOut(IvyBaseModel):
 
     message: str
     warning: Optional[str] = None
+    # 核准/退審觸發薪資重算；重算失敗時回降級警告（prod 設於 except，須在 schema
+    # 宣告否則被 response_model 序列化剝掉）。
+    salary_recalculated: Optional[bool] = None
+    salary_warning: Optional[str] = None
+
+
+class LeaveDeleteResultOut(IvyBaseModel):
+    """DELETE /leaves/{id} 回傳。
+
+    刪除已核准假單觸發薪資重算（撤銷原扣款）；重算失敗時回降級警告。
+    不共用 _common.DeleteResultOut（純 message），避免污染其他 delete 端點。
+    """
+
+    message: str
+    salary_recalculated: Optional[bool] = None
+    salary_warning: Optional[str] = None
 
 
 # Backward-compat re-export — moved to schemas._common for cross-router reuse.
