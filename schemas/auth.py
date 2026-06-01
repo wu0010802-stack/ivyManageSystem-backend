@@ -29,6 +29,7 @@ class AuthUserOut(IvyBaseModel):
     employee_id: Optional[int] = None
     name: str  # pii-allow: 員工姓名（自身 + admin 可見）
     title: Optional[str] = None
+    impersonation_mode: Optional[str] = None  # 模擬中才有：'readonly' / 'write'；非模擬為 None
 
 
 class AuthLoginResultOut(IvyBaseModel):

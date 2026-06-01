@@ -304,3 +304,98 @@ class TestImpersonateEndpointMode:
         assert (
             resp.status_code == 409
         ), f"巢狀模擬應被 409 拒絕，got {resp.status_code}: {resp.json()}"
+
+
+# ─── GET /me 回應含 impersonation_mode 欄位 ───────────────────────────────────
+
+
+class TestGetMeImpersonationMode:
+    """AuthUserOut 暴露 impersonation_mode：正常登入 None，模擬中回模式字串。"""
+
+    @pytest.fixture
+    def setup(self, app_and_client):
+        """建立 admin + teacher，供下方測試使用。"""
+        client, session_factory = app_and_client
+
+        with session_factory() as session:
+            admin_user = _make_user(
+                session,
+                username="me_admin",
+                role="admin",
+                permission_names=["*"],
+            )
+            teacher_emp = _make_employee(session, "MT001", "測試老師")
+            teacher_user = _make_user(
+                session,
+                employee_id=teacher_emp.id,
+                username="me_teacher",
+                role="teacher",
+            )
+            session.commit()
+            teacher_user_id = teacher_user.id
+            teacher_emp_id = teacher_emp.id
+
+        return client, session_factory, teacher_user_id, teacher_emp_id
+
+    def test_normal_login_get_me_impersonation_mode_is_none(self, setup):
+        """正常登入後 GET /me → impersonation_mode 為 None。"""
+        client, session_factory, teacher_user_id, teacher_emp_id = setup
+
+        r = _login(client, "me_admin")
+        assert r.status_code == 200
+
+        resp = client.get("/api/auth/me")
+        assert resp.status_code == 200, f"GET /me failed: {resp.json()}"
+        body = resp.json()
+        # 欄位存在且值為 None（非模擬情境）
+        assert "impersonation_mode" in body, "回應缺 impersonation_mode 欄位"
+        assert (
+            body["impersonation_mode"] is None
+        ), f"非模擬情境 impersonation_mode 應為 None，實際: {body['impersonation_mode']}"
+
+    def test_readonly_impersonate_get_me_impersonation_mode_is_readonly(self, setup):
+        """admin readonly 模擬後 GET /me → impersonation_mode == 'readonly'。"""
+        from utils.auth import create_access_token
+
+        client, session_factory, teacher_user_id, teacher_emp_id = setup
+
+        # 直接構造帶 impersonation_mode=readonly claim 的 token
+        impersonation_token = create_access_token(
+            {
+                "user_id": teacher_user_id,
+                "impersonation_mode": "readonly",
+                "impersonated_by": 999,  # 模擬 admin user_id
+            }
+        )
+
+        # 用此 token 打 GET /me
+        resp = client.get(
+            "/api/auth/me",
+            cookies={"access_token": impersonation_token},
+        )
+        assert resp.status_code == 200, f"GET /me failed: {resp.json()}"
+        body = resp.json()
+        assert "impersonation_mode" in body, "回應缺 impersonation_mode 欄位"
+        assert (
+            body["impersonation_mode"] == "readonly"
+        ), f"readonly 模擬 impersonation_mode 應為 'readonly'，實際: {body['impersonation_mode']}"
+
+    def test_impersonate_response_user_has_impersonation_mode(self, setup):
+        """POST /api/auth/impersonate 回應的 user dict 含 impersonation_mode。"""
+        client, session_factory, teacher_user_id, teacher_emp_id = setup
+
+        r = _login(client, "me_admin")
+        assert r.status_code == 200
+
+        resp = client.post(
+            "/api/auth/impersonate",
+            json={"employee_id": teacher_emp_id, "mode": "readonly"},
+        )
+        assert resp.status_code == 200, f"impersonate failed: {resp.json()}"
+        user_dict = resp.json().get("user", {})
+        assert (
+            "impersonation_mode" in user_dict
+        ), "impersonate 回應 user dict 缺 impersonation_mode"
+        assert (
+            user_dict["impersonation_mode"] == "readonly"
+        ), f"impersonate user.impersonation_mode 應為 'readonly'，實際: {user_dict['impersonation_mode']}"

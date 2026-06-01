@@ -517,6 +517,7 @@ def impersonate_user(
                         if target_emp.job_title_rel
                         else (target_emp.title or "")
                     ),
+                    "impersonation_mode": data.mode,
                 },
             }
         )
@@ -1226,6 +1227,7 @@ def get_me(current_user: dict = Depends(get_current_user)):
                 if emp and emp.job_title_rel
                 else (emp.title if emp else "")
             ),
+            "impersonation_mode": current_user.get("impersonation_mode"),
         }
     finally:
         session.close()
