@@ -18,6 +18,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
+from utils.cache_layer import get_cache
+
+_CACHE_NS_PUBLIC_AVAILABILITY = "public_availability"
+_CACHE_KEY_AVAILABILITY = "all"
+_CACHE_TTL_AVAILABILITY = 10  # seconds — advisory display only, true overbooking guard is register with_for_update
+
 from utils.errors import raise_safe_500
 
 _POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -262,59 +268,83 @@ async def get_public_classes(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/courses/availability", response_model=dict[str, int])
-async def get_public_courses_availability(request: Request, response: Response):
-    """前台：取得課程名額狀況"""
-    session = get_session()
-    try:
-        courses = (
-            session.query(ActivityCourse)
-            .filter(ActivityCourse.is_active.is_(True))
+def _compute_availability(session) -> dict:
+    """聚合計算各課程剩餘名額。抽成獨立函式供快取層包覆及測試 spy。
+
+    佔容量 = enrolled + promoted_pending（兩者皆已佔名額，避免超發候補通知）。
+    """
+    courses = (
+        session.query(ActivityCourse)
+        .filter(ActivityCourse.is_active.is_(True))
+        .all()
+    )
+    course_ids = [c.id for c in courses]
+    enrolled_map = (
+        dict(
+            session.query(
+                RegistrationCourse.course_id, func.count(RegistrationCourse.id)
+            )
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.course_id.in_(course_ids),
+                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                ActivityRegistration.is_active.is_(True),
+            )
+            .group_by(RegistrationCourse.course_id)
             .all()
         )
-        course_ids = [c.id for c in courses]
-        # 佔容量 = enrolled + promoted_pending（兩者皆已佔名額，避免超發候補通知）
-        enrolled_map = (
-            dict(
-                session.query(
-                    RegistrationCourse.course_id, func.count(RegistrationCourse.id)
-                )
-                .join(
-                    ActivityRegistration,
-                    RegistrationCourse.registration_id == ActivityRegistration.id,
-                )
-                .filter(
-                    RegistrationCourse.course_id.in_(course_ids),
-                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
-                    ActivityRegistration.is_active.is_(True),
-                )
-                .group_by(RegistrationCourse.course_id)
-                .all()
-            )
-            if course_ids
-            else {}
+        if course_ids
+        else {}
+    )
+    availability = {}
+    for course in courses:
+        enrolled = enrolled_map.get(course.id, 0)
+        capacity = course.capacity if course.capacity is not None else 30
+        remaining = capacity - enrolled
+        if remaining <= 0:
+            availability[course.name] = -1 if not course.allow_waitlist else 0
+        else:
+            availability[course.name] = remaining
+    return availability
+
+
+@router.get("/public/courses/availability", response_model=dict[str, int])
+async def get_public_courses_availability(request: Request, response: Response):
+    """前台：取得課程名額狀況（帶 10s TTL 記憶體快取降低 DB 壓力）。
+
+    快取設計：
+    - availability 為 advisory 顯示；真正防超賣靠 register 端點的 with_for_update
+    - bounded staleness 10s 自然過期；register/update 可選 clear_namespace 加速反映
+    - cache hit 完全跳過 DB session，節省連線 + 兩次 query 開銷
+    - ETag/304 邏輯不動，對快取結果做 md5 (md5 over small dict 可忽略)
+    """
+    cache = get_cache()
+    availability = cache.get(_CACHE_NS_PUBLIC_AVAILABILITY, _CACHE_KEY_AVAILABILITY)
+    if availability is None:
+        session = get_session()
+        try:
+            availability = _compute_availability(session)
+        finally:
+            session.close()
+        cache.set(
+            _CACHE_NS_PUBLIC_AVAILABILITY,
+            _CACHE_KEY_AVAILABILITY,
+            availability,
+            ttl=_CACHE_TTL_AVAILABILITY,
         )
-        availability = {}
-        for course in courses:
-            enrolled = enrolled_map.get(course.id, 0)
-            capacity = course.capacity if course.capacity is not None else 30
-            remaining = capacity - enrolled
-            if remaining <= 0:
-                availability[course.name] = -1 if not course.allow_waitlist else 0
-            else:
-                availability[course.name] = remaining
-        etag = (
-            '"'
-            + hashlib.md5(json.dumps(availability, sort_keys=True).encode()).hexdigest()
-            + '"'
-        )
-        response.headers["ETag"] = etag
-        response.headers["Cache-Control"] = "no-cache"
-        if request.headers.get("If-None-Match") == etag:
-            return PlainResponse(status_code=304)
-        return availability
-    finally:
-        session.close()
+    etag = (
+        '"'
+        + hashlib.md5(json.dumps(availability, sort_keys=True).encode()).hexdigest()
+        + '"'
+    )
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"
+    if request.headers.get("If-None-Match") == etag:
+        return PlainResponse(status_code=304)
+    return availability
 
 
 @router.get("/public/course-videos", response_model=dict[str, str])
