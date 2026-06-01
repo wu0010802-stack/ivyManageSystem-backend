@@ -96,41 +96,54 @@ def accessible_classroom_ids(
     return [c.id for c in classrooms]
 
 
-def assert_student_access(session, current_user: dict, student_id: int) -> Student:
+def assert_student_access(
+    session, current_user: dict, student_id: int, code: str | None = None
+) -> Student:
     """檢查 user 是否可存取該學生；不可則 403。回傳 Student 物件。
 
     - admin/hr/supervisor：一律放行（含終態學生，供事後查歷史）
     - teacher：僅可存取自己班級且 lifecycle 非終態（graduated/withdrawn/transferred）
       的學生；未分班學生一律禁
     - 學生不存在：raise 404
+
+    Args:
+        code: 若提供，以 PermissionGrant.scope 判斷 unrestricted；
+              否則回退到 role-based 判斷（向後相容 ~30 個既有 caller）。
     """
     student = session.query(Student).filter(Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="學生不存在")
-    if is_unrestricted(current_user):
+    if is_unrestricted(current_user, code=code):
         return student
     # teacher 路徑：終態學生立即失效（audit 2026-05-07 P0 #5）
     if student.lifecycle_status in _TEACHER_BLOCKED_LIFECYCLE:
         raise HTTPException(status_code=403, detail="您無權存取此學生")
     if not student.classroom_id:
         raise HTTPException(status_code=403, detail="您無權存取此學生")
-    allowed = accessible_classroom_ids(session, current_user)
+    allowed = accessible_classroom_ids(session, current_user, code=code)
     if student.classroom_id not in allowed:
         raise HTTPException(status_code=403, detail="您無權存取此學生")
     return student
 
 
 def filter_student_ids_by_access(
-    session, current_user: dict, candidate_ids: Iterable[int]
+    session,
+    current_user: dict,
+    candidate_ids: Iterable[int],
+    code: str | None = None,
 ) -> set[int]:
     """把一批 student_id 過濾掉該 user 無權存取的。用於 list 端點。
 
     對 teacher：除班級限制外，亦排除 lifecycle 終態學生
     （graduated/withdrawn/transferred；audit 2026-05-07 P0 #5）。
+
+    Args:
+        code: 若提供，以 PermissionGrant.scope 判斷 unrestricted；
+              否則回退到 role-based 判斷（向後相容 ~30 個既有 caller）。
     """
-    if is_unrestricted(current_user):
+    if is_unrestricted(current_user, code=code):
         return set(candidate_ids)
-    allowed_classrooms = accessible_classroom_ids(session, current_user)
+    allowed_classrooms = accessible_classroom_ids(session, current_user, code=code)
     if not allowed_classrooms:
         return set()
     rows = (
@@ -235,15 +248,21 @@ def get_owned_resource_or_403(
     return resource
 
 
-def student_ids_in_scope(session, current_user: dict) -> list[int] | None:
+def student_ids_in_scope(
+    session, current_user: dict, code: str | None = None
+) -> list[int] | None:
     """回傳 user 所有可存取的 student_id 清單；管理角色回傳 None（表無限制）。
 
     用於彙總端點（例：今日用藥）的 WHERE student_id IN (...) 子句。
     對 teacher：排除 lifecycle 終態學生（audit 2026-05-07 P0 #5）。
+
+    Args:
+        code: 若提供，以 PermissionGrant.scope 判斷 unrestricted；
+              否則回退到 role-based 判斷（向後相容 ~30 個既有 caller）。
     """
-    if is_unrestricted(current_user):
+    if is_unrestricted(current_user, code=code):
         return None
-    allowed_classrooms = accessible_classroom_ids(session, current_user)
+    allowed_classrooms = accessible_classroom_ids(session, current_user, code=code)
     if not allowed_classrooms:
         return []
     rows = (

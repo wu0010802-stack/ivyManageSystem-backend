@@ -109,7 +109,7 @@ async def list_student_attachments(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
             student = session.query(Student).filter_by(id=student_id).first()
             if not student:
                 raise HTTPException(status_code=404, detail="學生不存在")
