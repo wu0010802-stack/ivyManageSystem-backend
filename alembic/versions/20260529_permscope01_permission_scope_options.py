@@ -1,7 +1,7 @@
 """permission_definitions.scope_options + teacher backfill (Phase 1: STUDENTS_*)
 
 Revision ID: permscope01
-Revises: eb0d4cf88f26
+Revises: annsched01
 Create Date: 2026-05-29
 """
 
@@ -13,7 +13,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY
 
 revision = "permscope01"
-down_revision: Union[str, Sequence[str], None] = "eb0d4cf88f26"
+down_revision: Union[str, Sequence[str], None] = "annsched01"
 branch_labels = None
 depends_on = None
 
