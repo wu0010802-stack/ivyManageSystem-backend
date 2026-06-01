@@ -599,13 +599,20 @@ def has_permission(
     user_perms 應為已 resolve 完的最終 list（從 resolve_user_permissions 取得）。
     若 caller 傳 None，視為「無權限」回 False；不在 helper 內 fallback role。
     required 接受 Permission enum 或 str。
+
+    Scope-aware（2026-06-01 latent fix）：認 `:scope` 後綴的 entry。
+    例：`['STUDENTS_HEALTH_READ:own_class']` 持有 `STUDENTS_HEALTH_READ` perm
+    （只是限自班 scope）。對齊 frontend `hasPermission` 行為。
     """
     if user_perms is None:
         return False
     if WILDCARD in user_perms:
         return True
     name = required.value if isinstance(required, Permission) else required
-    return name in user_perms
+    if name in user_perms:
+        return True
+    scope_prefix = f"{name}:"
+    return any(p.startswith(scope_prefix) for p in user_perms)
 
 
 def resolve_user_permissions(user) -> List[str]:
