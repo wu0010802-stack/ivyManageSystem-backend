@@ -570,8 +570,15 @@ class TestClassroomsApi:
             )
             assert all(student.is_active is False for student in graduated_students)
             assert all(student.status == "已畢業" for student in graduated_students)
+            # 升班畢業改走 lifecycle 狀態機，lifecycle_status 同步落地為 graduated
             assert all(
-                student.graduation_date.isoformat() == "2026-08-01"
+                student.lifecycle_status == "graduated"
+                for student in graduated_students
+            )
+            # 畢業日對齊 7/31 自動畢業排程（民國115 學年結束 → 西元 2026-07-31），
+            # 不再用目標學期開始日 2026-08-01。
+            assert all(
+                student.graduation_date.isoformat() == "2026-07-31"
                 for student in graduated_students
             )
 
