@@ -123,3 +123,105 @@ class TestPartialFailureSavepoint:
 
         deleted = ass.sync_registrations_on_student_deactivate(session, student_id)
         assert deleted == 3
+
+
+def _seed_one_student_with_course_reg(session, student_name, course_id, status):
+    """為某學生建一筆當學期啟用報名，並掛一筆指定狀態的 RegistrationCourse。
+
+    回傳 (student_id, registration_id, registration_course_id)。
+    """
+    from models.database import (
+        ActivityRegistration,
+        Classroom,
+        RegistrationCourse,
+        Student,
+    )
+    from utils.academic import resolve_current_academic_term
+
+    classroom = session.query(Classroom).filter(Classroom.name == "班A").first()
+    if classroom is None:
+        classroom = Classroom(name="班A", is_active=True)
+        session.add(classroom)
+        session.flush()
+
+    student = Student(
+        student_id=f"S-{student_name}",
+        name=student_name,
+        birthday=date(2020, 5, 10),
+        classroom_id=classroom.id,
+        is_active=True,
+    )
+    session.add(student)
+    session.flush()
+
+    sy, sem = resolve_current_academic_term()
+    reg = ActivityRegistration(
+        student_name=student_name,
+        class_name="班A",
+        classroom_id=classroom.id,
+        school_year=sy,
+        semester=sem,
+        student_id=student.id,
+        is_active=True,
+        paid_amount=0,
+        match_status="matched",
+        pending_review=False,
+    )
+    session.add(reg)
+    session.flush()
+
+    rc = RegistrationCourse(
+        registration_id=reg.id,
+        course_id=course_id,
+        status=status,
+        price_snapshot=1000,
+    )
+    session.add(rc)
+    session.flush()
+    return student.id, reg.id, rc.id
+
+
+class TestDeactivateTriggersWaitlistPromotion:
+    """學生離園/退學軟刪報名後，釋出的名額應自動遞補候補。
+
+    對比 delete_registration：軟刪佔位報名後須對每門課呼叫
+    _auto_promote_first_waitlist，否則名額空出但候補卡死。
+    """
+
+    def test_deactivate_enrolled_promotes_waitlist(self, sqlite_session):
+        from models.database import ActivityCourse, RegistrationCourse
+        from services import activity_student_sync as ass
+
+        _engine, session = sqlite_session
+
+        # 一門 capacity=1 課程
+        course = ActivityCourse(
+            name="美術", price=1000, capacity=1, allow_waitlist=True
+        )
+        session.add(course)
+        session.flush()
+
+        # student_a enrolled（佔位）、student_b waitlist（候補）
+        student_a_id, _reg_a_id, _rc_a_id = _seed_one_student_with_course_reg(
+            session, "甲生", course.id, "enrolled"
+        )
+        _student_b_id, _reg_b_id, rc_b_id = _seed_one_student_with_course_reg(
+            session, "乙生", course.id, "waitlist"
+        )
+        session.commit()
+
+        # 甲生離園 → 軟刪其報名，應遞補乙生候補
+        ass.sync_registrations_on_student_deactivate(session, student_a_id)
+        session.commit()
+
+        session.expire_all()
+        rc_b = (
+            session.query(RegistrationCourse)
+            .filter(RegistrationCourse.id == rc_b_id)
+            .first()
+        )
+        assert (
+            rc_b.status == "promoted_pending"
+        ), "甲生離園軟刪後，名額應自動遞補乙生候補（修前仍為 waitlist）"
+        assert rc_b.promoted_at is not None
+        assert rc_b.confirm_deadline is not None
