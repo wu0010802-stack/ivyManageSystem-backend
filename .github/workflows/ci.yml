@@ -225,6 +225,7 @@ jobs:
         #   tests/spike_rls/                   — RLS test fixture 慣例自讀 env
         #   scripts/dump_openapi.py            — CLI 工具，獨立於 FastAPI startup
         #   scripts/dr_storage_sync.py         — DR CLI 工具，GH Actions 跑無 DB 依賴
+        #   scripts/encrypt_medical_fields.py  — 醫療欄位加密 backfill CLI，獨立讀 encryption key env
         #   alembic/env.py                     — Alembic CLI，早於 Settings init
         #   alembic/versions/                  — migration 一次性 runtime config（如 backfill 寬限期），
         #                                       migration 本身不可 import settings（runtime ordering）。
@@ -235,6 +236,7 @@ jobs:
                ':!tests/spike_rls/' \
                ':!scripts/dump_openapi.py' \
                ':!scripts/dr_storage_sync.py' \
+               ':!scripts/encrypt_medical_fields.py' \
                ':!alembic/env.py' \
                ':!alembic/versions/'; then
             echo "::error::os.getenv / os.environ.get 只能在 config/ 與明確 allow-list 內使用"
