@@ -45,12 +45,70 @@ def test_extract_impersonation_none_for_normal_token():
     assert name is None
 
 
-@pytest.mark.xfail(
-    reason="待 Task 4/5：需 impersonate 端點簽發 token + 唯讀守衛放行 write"
-)
-def test_write_under_impersonation_stamps_admin():
-    # 用 write-mode impersonation token 打「會被 audit 的」portal 寫入端點
-    # （必須是 ENTITY_PATTERNS 內有列的路徑，例如 POST /api/portal/my-overtimes，
-    #  否則 _parse_entity_type 回 None → middleware 短路 → 無 audit row）。
-    # 查最新 AuditLog row：user_id==老師、impersonated_by==admin、impersonated_by_name==admin名。
-    raise NotImplementedError
+def test_write_under_impersonation_stamps_admin(test_db_session):
+    """write-mode 模擬 token → AuditLog row 帶 impersonated_by == admin user_id。
+
+    做法：直接呼叫 write_audit_in_session（同交易同步寫入），繞過
+    AuditMiddleware fire-and-forget 背景 thread 的競態問題。
+    只要證明「impersonation token → 持久化 AuditLog row 帶 admin 歸屬」即可。
+
+    token claims：
+      user_id=10 / name="老師甲" （AuditLog.user_id / username）
+      impersonated_by=1 / impersonated_by_name="系統管理員"（AuditLog 兩個 impersonation 欄位）
+      impersonation_mode="write"（write 模式；唯讀守衛不攔 write）
+    """
+    from utils.audit import write_audit_in_session
+
+    admin_user_id = 1
+    admin_name = "系統管理員"
+    teacher_user_id = 10
+
+    token = create_access_token(
+        {
+            "user_id": teacher_user_id,
+            "employee_id": 10,
+            "role": "teacher",
+            "name": "老師甲",
+            "impersonated_by": admin_user_id,
+            "impersonated_by_name": admin_name,
+            "impersonation_mode": "write",
+        }
+    )
+
+    # 建立帶有 write-mode impersonation cookie 的最小 Starlette Request
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/portal/my-overtimes",
+        "query_string": b"",
+        "headers": [(b"cookie", f"access_token={token}".encode())],
+    }
+    request = Request(scope)
+
+    # 在測試 session 內同步寫入 AuditLog（不等背景 thread）
+    write_audit_in_session(
+        test_db_session,
+        request,
+        action="CREATE",
+        entity_type="overtime",
+        summary="新增加班（模擬寫入測試）",
+        entity_id="1",
+    )
+    test_db_session.commit()
+
+    # 查最新一筆 overtime audit row
+    row = (
+        test_db_session.query(AuditLog)
+        .filter(AuditLog.entity_type == "overtime")
+        .order_by(AuditLog.id.desc())
+        .first()
+    )
+
+    assert row is not None, "AuditLog row 未寫入"
+    assert row.user_id == teacher_user_id, f"user_id 應為老師，got {row.user_id}"
+    assert (
+        row.impersonated_by == admin_user_id
+    ), f"impersonated_by 應為 admin user_id={admin_user_id}，got {row.impersonated_by}"
+    assert (
+        row.impersonated_by_name == admin_name
+    ), f"impersonated_by_name 應為 '{admin_name}'，got {row.impersonated_by_name}"
