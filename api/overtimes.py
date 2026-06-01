@@ -750,6 +750,140 @@ def create_overtime(
         session.close()
 
 
+@router.post(
+    "/overtimes/batch-create",
+    status_code=200,
+    response_model=BatchOvertimeCreateResultOut,
+    dependencies=[Depends(_batch_approve_limiter)],
+)
+def batch_create_overtimes(
+    data: BatchOvertimeCreate,
+    request: Request,
+    current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_WRITE)),
+):
+    """一次為多位員工建立加班記錄（學校活動多人出席）。
+
+    全部或全無：Phase 1 對每位員工跑完整驗證並蒐集所有失敗；
+    任一失敗 → 422 整批不寫入。Phase 2 全通過才一次 commit。
+    每筆狀態 pending，不觸發薪資重算（與單筆建立一致）。
+    """
+    session = get_session()
+    try:
+        start_dt = _parse_hhmm_on_date(data.overtime_date, data.start_time)
+        end_dt = _parse_hhmm_on_date(data.overtime_date, data.end_time)
+
+        # ── Phase 1：全員驗證（不寫 DB），蒐集所有失敗 ──
+        errors: list[dict] = []
+        validated: list[tuple[Employee, float]] = []
+        seen: set[int] = set()
+
+        for item in data.employees:
+            if item.employee_id in seen:
+                errors.append(
+                    {
+                        "employee_id": item.employee_id,
+                        "name": None,
+                        "reason": "員工在批次清單中重複出現",
+                    }
+                )
+                continue
+            seen.add(item.employee_id)
+
+            emp = (
+                session.query(Employee).filter(Employee.id == item.employee_id).first()
+            )
+            if not emp:
+                errors.append(
+                    {
+                        "employee_id": item.employee_id,
+                        "name": None,
+                        "reason": EMPLOYEE_DOES_NOT_EXIST,
+                    }
+                )
+                continue
+
+            try:
+                _validate_overtime_for_employee(
+                    session,
+                    item.employee_id,
+                    data.overtime_date,
+                    data.overtime_type,
+                    start_dt,
+                    end_dt,
+                    item.hours,
+                )
+            except HTTPException as exc:
+                errors.append(
+                    {
+                        "employee_id": item.employee_id,
+                        "name": emp.name,
+                        "reason": exc.detail,
+                    }
+                )
+                continue
+
+            validated.append((emp, item.hours))
+
+        if errors:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "批次建立失敗，請修正下列項目後重送",
+                    "errors": errors,
+                },
+            )
+
+        # ── Phase 2：全通過 → 一次建立 + 單次 commit ──
+        records: list[OvertimeRecord] = []
+        for emp, hours in validated:
+            pay = (
+                0.0
+                if data.use_comp_leave
+                else calculate_overtime_pay(emp.base_salary, hours, data.overtime_type)
+            )
+            records.append(
+                OvertimeRecord(
+                    employee_id=emp.id,
+                    overtime_date=data.overtime_date,
+                    overtime_type=data.overtime_type,
+                    start_time=start_dt,
+                    end_time=end_dt,
+                    hours=hours,
+                    overtime_pay=pay,
+                    use_comp_leave=data.use_comp_leave,
+                    reason=data.reason,
+                    status=ApprovalStatus.PENDING.value,
+                )
+            )
+        session.add_all(records)
+        session.commit()
+
+        created_ids = [r.id for r in records]
+        request.state.audit_summary = (
+            f"管理端批次建立加班：{len(created_ids)} 筆 "
+            f"{data.overtime_type} {data.overtime_date}"
+        )
+        request.state.audit_changes = {
+            "action": "overtime_batch_create",
+            "overtime_date": data.overtime_date.isoformat(),
+            "overtime_type": data.overtime_type,
+            "use_comp_leave": data.use_comp_leave,
+            "employee_ids": [emp.id for emp, _ in validated],
+            "created_ids": created_ids,
+        }
+        return {
+            "message": f"已建立 {len(created_ids)} 筆加班記錄",
+            "created_ids": created_ids,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
 @router.put("/overtimes/{overtime_id}", response_model=OvertimeUpdateResultOut)
 def update_overtime(
     overtime_id: int,
