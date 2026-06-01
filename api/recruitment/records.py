@@ -306,7 +306,9 @@ def import_recruitment_records(
 
 
 class ConvertRecordRequest(BaseModel):
-    student_id_code: str = Field(..., min_length=1, max_length=20, description="學號")
+    student_id_code: Optional[str] = Field(
+        None, max_length=20, description="[deprecated] 已忽略；學號改自動產生"
+    )
     classroom_id: Optional[int] = None
     enrollment_date: Optional[date] = None
     gender: Optional[str] = Field(None, max_length=10)
