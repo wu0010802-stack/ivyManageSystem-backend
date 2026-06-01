@@ -56,32 +56,36 @@ class PIIRedactionFilter(logging.Filter):
     Attach 到 logging.root handler (main.py:_configure_logging) 後，所有
     logger 出來的 record 都會走過此 filter，msg 與 args 經 redact 才到 handler。
 
-    設計原則（advisor 2026-05-28）：
-    - 對 raw record.msg 跑 regex scrub，不 call getMessage()，
-      避免 format mismatch 時 try/except swallow PII
-    - args 內 dict 走 _scrub_mapping 補完整
+    設計原則（advisor 2026-06-01 修正）：
+    - 有 args 時：先 _scrub_mapping 遮 args 內 dict PII，再 getMessage() format，
+      對 formatted 結果跑 _redact_string，最後清 record.args（handler 不再 format）。
+      Why: 舊版對 raw format string redact 會把 `key=%s` 的 %s placeholder 抹掉，
+      handler `msg % args` placeholder 數 < args 數 → TypeError → 500；且 positional
+      PII（如 guardian_id=%s 的真實值）實際未遮。format 後再 redact 兩者皆解。
+    - 無 args 時：msg 為 literal，直接對 raw string redact。
     - exc_info exception args 做 string-level redaction
     - fail-safe：任何例外都不擋 record（return True 保住 log pipeline）
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        # 1. record.msg raw format string 直接 regex scrub
-        # advisor 2026-05-28：不 call getMessage() 避免 format mismatch swallow PII。
-        # 對 raw msg scrub 已 cover format string 內的 PII key（key 通常寫在 format
-        # string 而非 args 中）；args 仍 mutable 給 handler format，step 2 對
-        # args 內 dict 走 _scrub_mapping 補完整。
+        # 1+2. format → redact → clear args（advisor 2026-06-01）
+        # 先把 args 內 dict PII 遮掉，再 getMessage() format（此時 positional 值已是
+        # 真實值），對結果 string 跑 _redact_string，最後清 args 讓 handler 不再 format
+        # （避免重複 format 與 placeholder/args 數不符的 TypeError）。
         try:
             if isinstance(record.msg, str):
-                redacted = _redact_string(record.msg)
-                if redacted != record.msg:
-                    record.msg = redacted
-        except Exception:  # noqa: BLE001
-            pass
-
-        # 2. record.args 若是 dict/list 做 _scrub_mapping
-        try:
-            if record.args:
-                record.args = _redact_args(record.args)
+                if record.args:
+                    try:
+                        record.args = _redact_args(record.args)
+                        record.msg = _redact_string(record.getMessage())
+                        record.args = None
+                    except Exception:  # noqa: BLE001
+                        # getMessage() 對真正 malformed 的呼叫會 raise（與 redaction 無關）；
+                        # fallback 回 raw-msg redact + 保留 args（同既有 safe state：
+                        # handler handleError 印的是已遮的 format string，不外洩 PII）。
+                        record.msg = _redact_string(record.msg)
+                else:
+                    record.msg = _redact_string(record.msg)
         except Exception:  # noqa: BLE001
             pass
 

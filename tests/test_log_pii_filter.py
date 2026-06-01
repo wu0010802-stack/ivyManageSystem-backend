@@ -96,3 +96,24 @@ def test_filter_returns_true_does_not_block(logger_with_filter):
     log, stream = logger_with_filter
     log.warning("test message no pii")
     assert "test message no pii" in stream.getvalue()
+
+
+def test_positional_pii_args_redacted_in_final_output(logger_with_filter):
+    """logger.warning("guardian_id=%s user_id=%s", gid, uid)：
+
+    回歸 — 舊版對 raw format string 跑 redact，把 `guardian_id=%s` 的 `%s`
+    placeholder 一起抹掉，handler 做 `msg % args` 時 placeholder 數 < args 數
+    → TypeError → 端點 500（且實際 PII 未遮）。修法（format→redact→clear args）
+    須在「最終輸出字串」遮掉真實值且不 crash。
+    """
+    log, stream = logger_with_filter
+    log.warning("parent bind guardian_id=%s phone=%s done", 123456, "0912345678")
+    out = stream.getvalue()
+    # 真實值不可外洩
+    assert "123456" not in out
+    assert "0912345678" not in out
+    # PII key 的值被遮
+    assert "guardian_id=[Filtered]" in out
+    assert "phone=[Filtered]" in out
+    # 非 PII 文字保留、未 crash（有完整輸出）
+    assert "parent bind" in out and "done" in out
