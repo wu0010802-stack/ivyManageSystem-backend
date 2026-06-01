@@ -128,7 +128,7 @@ async def list_milestones(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
             query = session.query(StudentMilestone).filter(
                 StudentMilestone.student_id == student_id,
                 StudentMilestone.deleted_at.is_(None),
@@ -183,7 +183,7 @@ async def create_milestone(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             # created_by → employees.id；透過 User.employee_id 轉換
             user_id = current_user.get("user_id")
             employee_id: int | None = None
@@ -231,7 +231,7 @@ async def update_milestone(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             m = (
                 session.query(StudentMilestone)
                 .filter(
@@ -268,7 +268,7 @@ async def delete_milestone(
 ) -> Response:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             m = (
                 session.query(StudentMilestone)
                 .filter(

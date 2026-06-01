@@ -199,7 +199,7 @@ async def list_observations(
     """查詢某學生的觀察紀錄。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
 
             query = session.query(StudentObservation).filter(
                 StudentObservation.student_id == student_id,
@@ -266,7 +266,7 @@ async def create_observation(
     """新增觀察紀錄。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
 
             obs = StudentObservation(
                 student_id=student_id,
@@ -312,7 +312,7 @@ async def update_observation(
     """編輯觀察紀錄。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             obs = (
                 session.query(StudentObservation)
                 .filter(
@@ -367,7 +367,7 @@ async def delete_observation(
     """軟刪除觀察紀錄；其附件一併軟刪。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id)
+            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_WRITE.value)
             obs = (
                 session.query(StudentObservation)
                 .filter(
