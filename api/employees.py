@@ -13,6 +13,7 @@ from utils.etag import etag_response
 from utils.exceptions import BusinessError
 from utils.rounding import round_half_up
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from models.database import (
@@ -32,6 +33,7 @@ from utils.finance_guards import (
     require_not_self_edit,
 )
 from schemas.employees import (
+    EmployeeCreateResultOut,
     EmployeeOut,
     FinalSalaryPreviewOut,
     MutationResultOut,
@@ -145,7 +147,6 @@ def _format_employee_response(
 
 
 class EmployeeCreate(BaseModel):
-    employee_id: str
     name: str
     id_number: Optional[str] = None
     employee_type: str = "regular"
@@ -192,7 +193,6 @@ class EmployeeCreate(BaseModel):
 
 
 class EmployeeUpdate(BaseModel):
-    employee_id: Optional[str] = None
     name: Optional[str] = None
     id_number: Optional[str] = None
     employee_type: Optional[str] = None
@@ -396,7 +396,7 @@ async def get_employee(
         session.close()
 
 
-@router.post("/employees", status_code=201, response_model=MutationResultOut)
+@router.post("/employees", status_code=201, response_model=EmployeeCreateResultOut)
 async def create_employee(
     emp: EmployeeCreate,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
@@ -404,20 +404,6 @@ async def create_employee(
     """新增員工"""
     session = get_session()
     try:
-        # 檢查工號是否重複
-        existing = (
-            session.query(Employee)
-            .filter(Employee.employee_id == emp.employee_id)
-            .first()
-        )
-        if existing:
-            raise BusinessError(
-                "EMPLOYEE_ID_DUPLICATE",
-                f"員工編號 {emp.employee_id} 已存在，請改用其他編號",
-                400,
-                extra={"context": {"employee_id": emp.employee_id}},
-            )
-
         emp_data = emp.model_dump()
         # 處理日期欄位
         for _field in _DATE_FIELDS:
@@ -426,6 +412,13 @@ async def create_employee(
                 emp_data[_field] = parsed
             else:
                 emp_data.pop(_field, None)
+
+        # 自動配發工號（取代手填 + 重複檢查）：取 hire_date 民國年，空則用今日。
+        from datetime import date as _date
+        from services.employee_numbering import next_employee_id
+        _hire = emp_data.get("hire_date")
+        _hire_year = _hire.year if isinstance(_hire, _date) else today_taipei().year
+        emp_data["employee_id"] = next_employee_id(session, _hire_year - 1911)
 
         if not emp_data.get("supervisor_role"):
             emp_data["supervisor_role"] = None
@@ -462,7 +455,10 @@ async def create_employee(
         employee = Employee(**emp_data)
         session.add(employee)
         session.commit()
-        return {"message": "員工新增成功", "id": employee.id}
+        return {"message": "員工新增成功", "id": employee.id, "employee_id": employee.employee_id}
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="工號配發衝突，請重試")
     except (HTTPException, BusinessError):
         raise
     except Exception as e:

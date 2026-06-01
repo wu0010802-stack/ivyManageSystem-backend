@@ -50,7 +50,8 @@ def convert_recruitment_to_student(
 
     Parameters
     ----------
-    student_id_code: 使用者提供的學號（需唯一）
+    student_id_code: [deprecated / ignored] 此參數已廢棄，傳入值不影響學號。
+        學號顯示由 enrollment_seq + 當前班級經 before_flush listener 自動組出。
     initial_lifecycle_status: 建立時的生命週期狀態，預設 enrolled（已報到未開學）。
         也可為 active（已開學）。
     """
@@ -78,43 +79,23 @@ def convert_recruitment_to_student(
             f"此招生訪視已轉化為學生（student_id={existing.id}）"
         )
 
-    # 學號自動產生（caller 顯式傳 None 才走自動產生；空字串維持「學號不可為空」原行為）
-    if student_id_code is None:
-        if classroom_id is None:
-            raise RecruitmentConversionError(
-                "未指定學號時需提供 classroom_id 以自動產生學號"
-            )
-        from models.classroom import Classroom
-        from services.recruitment_funnel import next_student_id_code
+    # 永久編號配發（取代舊 next_student_id_code + 全域唯一性檢查）。
+    # student_id_code 參數已 deprecated：學號顯示由 enrollment_seq + 當前班級
+    # 經 before_flush listener 自動組出，不再接受手填。
+    from services.student_numbering import next_enrollment_seq
 
-        classroom = session.get(Classroom, classroom_id)
-        if classroom is None or not classroom.class_code:
-            raise RecruitmentConversionError(
-                f"classroom_id={classroom_id} 不存在或缺 class_code"
-            )
-        auto_year, _ = resolve_current_academic_term()
-        student_id_code = next_student_id_code(
-            session,
-            school_year=auto_year,
-            class_code=classroom.class_code,
-        )
-
-    # 學號唯一性
-    code = (student_id_code or "").strip()
-    if not code:
-        raise RecruitmentConversionError("學號不可為空")
-    dup = session.query(Student).filter(Student.student_id == code).first()
-    if dup is not None:
-        raise RecruitmentConversionError(f"學號已存在：{code}")
+    enroll_year, _ = resolve_current_academic_term()
+    seq = next_enrollment_seq(session, enroll_year)
 
     enroll_date = enrollment_date or today_taipei()
 
     student = Student(
-        student_id=code,
         name=(visit.child_name or "").strip() or "未命名",
         gender=gender,
         birthday=visit.birthday,
         classroom_id=classroom_id,
+        enrollment_school_year=enroll_year,
+        enrollment_seq=seq,
         enrollment_date=enroll_date,
         lifecycle_status=initial_lifecycle_status,
         recruitment_visit_id=visit.id,
@@ -175,7 +156,7 @@ def convert_recruitment_to_student(
         to_stage="enrolled",
         student_id=student.id,
         actor_user_id=recorded_by,
-        metadata_json={"student_id_code": code, "classroom_id": classroom_id},
+        metadata_json={"enrollment_seq": seq, "enrollment_school_year": enroll_year, "classroom_id": classroom_id},
         created_at=now_taipei_naive(),
     )
     session.add(funnel_log)

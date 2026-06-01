@@ -196,8 +196,8 @@ class TestStudentsApi:
             assert student.is_active is False
             assert student.status == "已刪除"
 
-    def test_create_student_rejects_empty_student_id(self, students_client):
-        """學號不可為空或只有空白"""
+    def test_create_student_auto_assigns_enrollment_seq(self, students_client):
+        """POST /students 不需傳 student_id，自動配發 enrollment_seq（A5 自動配號）"""
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "validation_admin_1")
@@ -206,8 +206,16 @@ class TestStudentsApi:
         login_res = _login(client, "validation_admin_1")
         assert login_res.status_code == 200
 
-        res = client.post("/api/students", json={"student_id": "   ", "name": "測試生"})
-        assert res.status_code == 422
+        res = client.post("/api/students", json={"name": "測試生"})
+        assert res.status_code == 201
+
+        new_id = res.json()["id"]
+        with session_factory() as session:
+            student = session.query(Student).filter(Student.id == new_id).first()
+            assert student is not None
+            assert student.enrollment_seq is not None
+            assert student.enrollment_seq >= 1
+            assert student.enrollment_school_year is not None
 
     def test_create_student_rejects_invalid_phone_format(self, students_client):
         """電話格式不符時應回傳 422"""
@@ -221,7 +229,7 @@ class TestStudentsApi:
 
         res = client.post(
             "/api/students",
-            json={"student_id": "V001", "name": "測試生", "parent_phone": "abc-invalid"},
+            json={"name": "測試生", "parent_phone": "abc-invalid"},
         )
         assert res.status_code == 422
 
@@ -237,6 +245,6 @@ class TestStudentsApi:
 
         res = client.post(
             "/api/students",
-            json={"student_id": "V002", "name": "日期測試生", "birthday": "2020-05-15"},
+            json={"name": "日期測試生", "birthday": "2020-05-15"},
         )
         assert res.status_code == 201

@@ -1,10 +1,13 @@
-"""tests/test_employees.py — 員工 CRUD 結構化錯誤回歸測試。
+"""tests/test_employees.py — 員工建立自動配號測試。
 
 涵蓋：
-- POST /api/employees 工號重複 → 400 with structured detail.code = EMPLOYEE_ID_DUPLICATE
+- POST /api/employees 不帶 employee_id → 成功建立，工號由 server 自動配發
+- 自動配號格式符合 {民國年:03d}{流水:03d}
+- 連續建立兩筆，工號不同
 """
 
 import os
+import re
 import sys
 
 import pytest
@@ -79,27 +82,57 @@ def _login_admin(client, session_factory):
     assert resp.status_code == 200, resp.json()
 
 
-def test_create_employee_duplicate_id_returns_structured_detail(employees_client):
-    """POST 同 employee_id 兩次 → 第二次 400 with structured detail."""
+def test_create_employee_auto_assigns_employee_id(employees_client):
+    """POST 不帶 employee_id → 建立成功，回傳自動配發的工號。"""
     client, sf = employees_client
     _login_admin(client, sf)
 
     payload = {
-        "employee_id": "DUP001",
         "name": "甲",
         "employee_type": "regular",
     }
-    resp1 = client.post("/api/employees", json=payload)
-    assert resp1.status_code == 201, resp1.json()
+    resp = client.post("/api/employees", json=payload)
+    assert resp.status_code == 201, resp.json()
+    data = resp.json()
+    assert "employee_id" in data
+    # 格式：6 位數字，前 3 碼為民國年（≥100），後 3 碼為流水
+    assert re.fullmatch(r"\d{6,}", data["employee_id"]), (
+        f"工號格式不符：{data['employee_id']!r}"
+    )
 
-    payload2 = {
-        "employee_id": "DUP001",
-        "name": "乙",
-        "employee_type": "regular",
-    }
+
+def test_create_employee_sequential_ids_are_different(employees_client):
+    """連續建立兩筆員工，工號不同且流水遞增。"""
+    client, sf = employees_client
+    _login_admin(client, sf)
+
+    payload1 = {"name": "甲", "employee_type": "regular"}
+    payload2 = {"name": "乙", "employee_type": "regular"}
+
+    resp1 = client.post("/api/employees", json=payload1)
+    assert resp1.status_code == 201, resp1.json()
     resp2 = client.post("/api/employees", json=payload2)
-    assert resp2.status_code == 400, resp2.json()
-    detail = resp2.json()["detail"]
-    assert detail["code"] == "EMPLOYEE_ID_DUPLICATE"
-    assert detail["context"]["employee_id"] == "DUP001"
-    assert "已存在" in detail["message"]
+    assert resp2.status_code == 201, resp2.json()
+
+    id1 = resp1.json()["employee_id"]
+    id2 = resp2.json()["employee_id"]
+    assert id1 != id2, "連續建立兩筆工號應不同"
+    # 同年同前綴，流水後 3 碼遞增
+    assert id1[:3] == id2[:3], "同年到職工號前綴應相同"
+    assert int(id2[3:]) == int(id1[3:]) + 1, "流水應依序遞增"
+
+
+def test_create_employee_with_hire_date_uses_roc_year(employees_client):
+    """帶 hire_date 建立員工，工號前 3 碼應為民國到職年。"""
+    client, sf = employees_client
+    _login_admin(client, sf)
+
+    payload = {
+        "name": "丙",
+        "employee_type": "regular",
+        "hire_date": "2025-09-01",  # 民國 114 年
+    }
+    resp = client.post("/api/employees", json=payload)
+    assert resp.status_code == 201, resp.json()
+    eid = resp.json()["employee_id"]
+    assert eid.startswith("114"), f"hire_date 2025-09-01 → 民國 114 年，工號應以 114 開頭，實為 {eid!r}"

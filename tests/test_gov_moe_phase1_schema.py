@@ -174,7 +174,6 @@ from api.employees import EmployeeCreate
 
 def test_employee_create_accepts_new_fields():
     payload = {
-        "employee_id": "E001",
         "name": "測試教師",
         "employee_type": "regular",
         "staff_role_category": "teacher_certified",
