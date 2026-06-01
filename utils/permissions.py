@@ -94,6 +94,10 @@ class Permission(str, Enum):
     # DB-driven 自訂權限/角色 CRUD 守衛（(b) 子專案）
     ROLES_MANAGE = "ROLES_MANAGE"
 
+    # 教師端後台檢視：預覽（唯讀）/ 代為操作（可寫）
+    PORTAL_PREVIEW = "PORTAL_PREVIEW"
+    PORTAL_IMPERSONATE = "PORTAL_IMPERSONATE"
+
 
 # 位元值凍結快照——僅供 alembic upgrade()/downgrade() backfill 使用。
 # 一旦 migration 跑過 prod，請勿變更此表（保持歷史 migration 可重跑）。
@@ -318,6 +322,7 @@ ROLE_TEMPLATES["principal"] = ROLE_TEMPLATES["supervisor"] + [
     Permission.SALARY_READ.value,
     Permission.AUDIT_LOGS.value,
     Permission.GOV_REPORTS_EXPORT.value,
+    Permission.PORTAL_PREVIEW.value,  # 園長可預覽老師教師端（唯讀）
 ]
 ROLE_LABELS["principal"] = "園長"
 
@@ -426,6 +431,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     "VENDOR_PAYMENT_WRITE": "廠商付款簽收 (編輯/簽收)",
     # DB-driven 自訂權限/角色 CRUD 守衛 ((b) 子專案)
     "ROLES_MANAGE": "角色與權限管理",
+    "PORTAL_PREVIEW": "預覽教師端",
+    "PORTAL_IMPERSONATE": "代為操作教師端",
 }
 
 # 權限分組 (供前端 UI 使用)

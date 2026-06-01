@@ -448,6 +448,26 @@ def _extract_user_from_header(request: Request):
     return payload.get("user_id"), payload.get("name")
 
 
+def _extract_impersonation_from_header(request: Request):
+    """從 access_token 靜默解出模擬歸屬：(impersonated_by, impersonated_by_name)。
+
+    一般登入 token 無此 claim → 回 (None, None)。走 decode_token_for_audit
+    （verify_exp=False、multi-key 容忍），與 _extract_user_from_header 一致。
+    """
+    token = request.cookies.get("access_token")
+    if not token:
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth.split(" ", 1)[1]
+    if not token:
+        return None, None
+
+    from utils.auth import decode_token_for_audit
+
+    payload = decode_token_for_audit(token) or {}
+    return payload.get("impersonated_by"), payload.get("impersonated_by_name")
+
+
 def _extract_session_id_from_request(request: Request) -> str | None:
     """從 Authorization Bearer JWT 取 jti claim（forensic session 識別）。
 
@@ -560,6 +580,7 @@ def write_audit_in_session(
     呼叫此 helper 後會設置 request.state.audit_skip = True，避免 middleware 二次寫入。
     """
     user_id, username = _extract_user_from_header(request)
+    impersonated_by, impersonated_by_name = _extract_impersonation_from_header(request)
     ip = get_client_ip(request)
 
     changes_json = None
@@ -589,6 +610,8 @@ def write_audit_in_session(
         user_agent_hash=_compute_ua_hash(request),
         session_id=_extract_session_id_from_request(request),
         created_at=now_taipei_naive(),
+        impersonated_by=impersonated_by,
+        impersonated_by_name=impersonated_by_name,
     )
     session.add(log)
     # 防止 AuditMiddleware 在 response 階段重複寫入同一筆稽核
@@ -620,6 +643,7 @@ def write_explicit_audit(
     """
     try:
         user_id, username = _extract_user_from_header(request)
+        impersonated_by, impersonated_by_name = _extract_impersonation_from_header(request)
         if dedup and not _should_audit_read(user_id, entity_type, entity_id):
             return
         ip = get_client_ip(request)
@@ -650,6 +674,8 @@ def write_explicit_audit(
             user_agent_hash=_compute_ua_hash(request),
             session_id=_extract_session_id_from_request(request),
             created_at=now_taipei_naive(),
+            impersonated_by=impersonated_by,
+            impersonated_by_name=impersonated_by_name,
         )
         _schedule_audit_write(payload)
     except Exception as e:
@@ -774,6 +800,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         try:
             user_id, username = _extract_user_from_header(request)
+            impersonated_by, impersonated_by_name = _extract_impersonation_from_header(request)
             # endpoint 可透過 request.state 覆寫摘要與 entity_id
             entity_id = getattr(
                 request.state, "audit_entity_id", None
@@ -825,6 +852,8 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 user_agent_hash=_compute_ua_hash(request),
                 session_id=_extract_session_id_from_request(request),
                 created_at=now_taipei_naive(),
+                impersonated_by=impersonated_by,
+                impersonated_by_name=impersonated_by_name,
             )
             _schedule_audit_write(payload)
         except Exception as e:

@@ -129,6 +129,8 @@ def get_audit_logs(
                     "summary": log.summary,
                     "changes": _parse_changes(log.changes),
                     "ip_address": log.ip_address,
+                    "impersonated_by": log.impersonated_by,
+                    "impersonated_by_name": log.impersonated_by_name,
                     "created_at": (
                         log.created_at.isoformat() if log.created_at else None
                     ),

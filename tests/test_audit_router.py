@@ -256,6 +256,47 @@ class TestAuditExport:
         assert "匯出上限" in res.json()["detail"]
 
 
+class TestAuditImpersonationFields:
+    def test_impersonated_row_exposes_fields(self, client_with_db):
+        """impersonated_by / impersonated_by_name 應出現在 GET /api/audit-logs 回傳項目中"""
+        client, session_factory = client_with_db
+        with session_factory() as s:
+            _create_audit_admin(s)
+            _insert_log(
+                s,
+                impersonated_by=99,
+                impersonated_by_name="王小明",
+                summary="代操作測試",
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+
+        res = client.get("/api/audit-logs", params={"entity_type": "employee"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["impersonated_by"] == 99
+        assert item["impersonated_by_name"] == "王小明"
+
+    def test_normal_row_returns_null_impersonation(self, client_with_db):
+        """沒有代操作的一般 row，impersonated_by / impersonated_by_name 應為 null"""
+        client, session_factory = client_with_db
+        with session_factory() as s:
+            _create_audit_admin(s)
+            _insert_log(s, summary="一般操作")
+            s.commit()
+        assert _login(client).status_code == 200
+
+        res = client.get("/api/audit-logs", params={"entity_type": "employee"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["impersonated_by"] is None
+        assert item["impersonated_by_name"] is None
+
+
 class TestMiddlewareChangesSerialize:
     def test_serializes_datetime_and_decimal(self):
         """middleware 對 audit_changes 應以 default=str 序列化非原生型別。"""

@@ -22,6 +22,7 @@ from models.database import (
     ParentRefreshToken,
     get_session,
 )
+from utils.audit import _extract_impersonation_from_header
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.request_ip import get_client_ip
@@ -106,6 +107,7 @@ def create_binding_code(
         )
         session.add(binding)
 
+        _imp_by, _imp_name = _extract_impersonation_from_header(request)
         ip = get_client_ip(request)
         session.add(
             AuditLog(
@@ -117,6 +119,8 @@ def create_binding_code(
                 summary="簽發家長綁定碼",
                 ip_address=ip,
                 created_at=now_taipei_naive(),
+                impersonated_by=_imp_by,
+                impersonated_by_name=_imp_name,
             )
         )
         session.commit()

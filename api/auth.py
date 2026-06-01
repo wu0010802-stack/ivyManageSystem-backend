@@ -9,7 +9,7 @@ from collections import defaultdict
 from datetime import datetime
 from hashlib import sha256
 from utils.taipei_time import now_taipei_naive
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from sqlalchemy import text
 
@@ -62,6 +62,7 @@ from utils.permissions import Permission
 from utils.permissions import (
     get_permissions_definition,
     get_role_default_permissions,
+    has_permission,
     resolve_user_permissions,
     ROLE_LABELS,
     WILDCARD,
@@ -376,6 +377,7 @@ class ResetPasswordRequest(BaseModel):
 
 class ImpersonateRequest(BaseModel):
     employee_id: int
+    mode: Literal["readonly", "write"] = "readonly"
 
 
 class SessionItemOut(BaseModel):
@@ -396,9 +398,20 @@ def impersonate_user(
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """切換使用者身份（管理員限定）"""
-    if current_user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="權限不足")
+    """切換使用者身份（管理員或園長限定，依 mode 分流）"""
+    # 防巢狀模擬：已在模擬中（access_token 帶 impersonated_by）要求先退出。
+    # 置於權限閘之前，回 409 比 403 語意清楚（避免用被模擬老師的權限判斷）。
+    if current_user.get("impersonated_by") is not None:
+        raise HTTPException(status_code=409, detail="請先退出目前模擬再切換")
+
+    user_perms = current_user.get("permission_names")
+    required = (
+        Permission.PORTAL_IMPERSONATE
+        if data.mode == "write"
+        else Permission.PORTAL_PREVIEW
+    )
+    if not has_permission(user_perms, required):
+        raise HTTPException(status_code=403, detail="您沒有此功能的存取權限")
 
     session = get_session()
     try:
@@ -457,6 +470,9 @@ def impersonate_user(
                 "name": target_emp.name,
                 "permission_names": permission_names,
                 "token_version": target_user.token_version,
+                "impersonated_by": current_user.get("user_id"),
+                "impersonated_by_name": current_user.get("name"),
+                "impersonation_mode": data.mode,
             }
         )
 
@@ -478,10 +494,12 @@ def impersonate_user(
             target_user.role,
             client_ip,
         )
+        _mode_label = "代操作" if data.mode == "write" else "預覽"
         request.state.audit_summary = (
-            f"[冒充] 操作者 {current_user.get('name')}（user_id={current_user.get('user_id')}）"
-            f" 切換為 {target_emp.name}（user_id={target_user.id}，"
-            f"{ROLE_LABELS.get(target_user.role, target_user.role)}）"
+            f"[{_mode_label}] 操作者 {current_user.get('name')}"
+            f"（user_id={current_user.get('user_id')}）"
+            f" {'切換為' if data.mode == 'write' else '檢視'} {target_emp.name}"
+            f"（user_id={target_user.id}）"
         )
 
         response = JSONResponse(
@@ -499,6 +517,7 @@ def impersonate_user(
                         if target_emp.job_title_rel
                         else (target_emp.title or "")
                     ),
+                    "impersonation_mode": data.mode,
                 },
             }
         )
@@ -682,6 +701,26 @@ def refresh_token(request: Request):
             extras={"reason": "ip_rate_limited", "ip": client_ip},
         )
         raise
+
+    # 模擬 session 不可經任何 refresh 路徑升級或洗掉歸屬（涵蓋 staff rotation 與 fallback）。
+    _imp_tok = request.cookies.get("access_token")
+    if not _imp_tok:
+        _auth_h = request.headers.get("authorization", "")
+        if _auth_h.startswith("Bearer "):
+            _imp_tok = _auth_h.split(" ", 1)[1]
+    if _imp_tok:
+        from utils.auth import decode_token_for_audit
+
+        _imp_payload = decode_token_for_audit(_imp_tok) or {}
+        if _imp_payload.get("impersonated_by") is not None:
+            write_login_audit(
+                request,
+                action="TOKEN_REFRESH_FAILED",
+                username=_imp_payload.get("name"),
+                user_id=_imp_payload.get("user_id"),
+                extras={"reason": "impersonation_token_not_refreshable"},
+            )
+            raise HTTPException(status_code=401, detail="模擬工作階段不可刷新，請重新進入模擬")
 
     # Spec F: staff_refresh_token cookie → rotation 路徑
     staff_refresh_raw = request.cookies.get("staff_refresh_token")
@@ -1194,6 +1233,7 @@ def get_me(current_user: dict = Depends(get_current_user)):
                 if emp and emp.job_title_rel
                 else (emp.title if emp else "")
             ),
+            "impersonation_mode": current_user.get("impersonation_mode"),
         }
     finally:
         session.close()
