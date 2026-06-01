@@ -817,7 +817,7 @@ def batch_create_overtimes(
                     {
                         "employee_id": item.employee_id,
                         "name": emp.name,
-                        "reason": exc.detail,
+                        "reason": str(exc.detail),
                     }
                 )
                 continue
@@ -853,12 +853,14 @@ def batch_create_overtimes(
                     use_comp_leave=data.use_comp_leave,
                     reason=data.reason,
                     status=ApprovalStatus.PENDING.value,
+                    comp_leave_granted=False,
                 )
             )
         session.add_all(records)
         session.commit()
 
         created_ids = [r.id for r in records]
+        # NOTE: 批次建立涉及多筆，無單一 entity_id，audit_entity_id 刻意略過
         request.state.audit_summary = (
             f"管理端批次建立加班：{len(created_ids)} 筆 "
             f"{data.overtime_type} {data.overtime_date}"

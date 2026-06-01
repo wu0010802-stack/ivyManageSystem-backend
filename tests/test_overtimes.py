@@ -707,6 +707,10 @@ def _admin_app_client(tmp_path, monkeypatch):
     app.include_router(_auth_router)
     app.include_router(_overtimes_router)
 
+    # batch-create 沿用 _batch_approve_limiter（10/60s）；測試多次 POST 會累積觸發 429。
+    # 以 FastAPI dependency override 在測試中停用此限流（限流本身由 rate_limit 單元測試覆蓋）。
+    app.dependency_overrides[_overtimes_module._batch_approve_limiter] = lambda: None
+
     with _TestClient(app) as client:
         yield client, session_factory
 
@@ -936,17 +940,6 @@ class TestValidateOvertimeForEmployee:
 
 class TestBatchCreateOvertime:
     """POST /api/overtimes/batch-create：全部或全無 + 蒐集所有失敗。"""
-
-    @pytest.fixture(autouse=True)
-    def _clear_rate_limiter(self):
-        """每個 test 前清空 _batch_approve_limiter 的記憶體計數，避免 429 誤擋。"""
-        from api.overtimes import _batch_approve_limiter
-
-        if hasattr(_batch_approve_limiter, "_timestamps"):
-            _batch_approve_limiter._timestamps.clear()
-        yield
-        if hasattr(_batch_approve_limiter, "_timestamps"):
-            _batch_approve_limiter._timestamps.clear()
 
     def _payload(self, emp_ids, hours=2.0, **kw):
         base = {
