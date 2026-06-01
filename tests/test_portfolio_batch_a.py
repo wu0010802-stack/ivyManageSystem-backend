@@ -536,8 +536,11 @@ class TestClassScope:
                 role="teacher",
                 perms=(
                     [
-                        "PORTFOLIO_READ",
-                        "PORTFOLIO_WRITE",
+                        # Phase 2.1 permscope02 後 teacher 走 :own_class scope；
+                        # bare 'PORTFOLIO_READ' 等同 ':all' → teacher 應持 :own_class 才能正確被
+                        # row-level scope 拘束（對齊 alembic permscope02 backfill 結果）。
+                        "PORTFOLIO_READ:own_class",
+                        "PORTFOLIO_WRITE:own_class",
                         "STUDENTS_HEALTH_READ",
                         "STUDENTS_MEDICATION_ADMINISTER",
                     ]

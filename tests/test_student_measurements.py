@@ -85,8 +85,17 @@ def app_client(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def _make_test_token(role: str, user_id: int, username: str) -> str:
-    """產生測試用 JWT；與 test_portfolio_batch_a 同 pattern。"""
+def _make_test_token(
+    role: str,
+    user_id: int,
+    username: str,
+    permission_names: list[str] | None = None,
+) -> str:
+    """產生測試用 JWT；與 test_portfolio_batch_a 同 pattern。
+
+    Phase 2.1：新增 permission_names 參數，用於測 row-level scope（teacher
+    持 :own_class 而非 wildcard）。預設仍為 ['*'] 維持向後相容。
+    """
     from utils.auth import create_access_token
 
     return create_access_token(
@@ -94,7 +103,9 @@ def _make_test_token(role: str, user_id: int, username: str) -> str:
             "sub": username,
             "user_id": user_id,
             "role": role,
-            "permission_names": ["*"],  # -1 = 全部權限
+            "permission_names": (
+                permission_names if permission_names is not None else ["*"]
+            ),
             "token_version": 0,
         }
     )
@@ -246,17 +257,31 @@ def test_teacher_cannot_access_other_class_student(app_client, monkeypatch):
                     username="teacher_a",
                     password_hash="$2b$12$dummy",
                     role="teacher",
-                    permission_names=["*"],
+                    # Phase 2.1 後 teacher 持 :own_class scope 才會被 row-level
+                    # scope 拘束；舊 fixture 用 wildcard '*' 利用 pre-Phase 1
+                    # role-based fallback 達到同效果，現需顯式宣告 scope
+                    # （對齊 alembic permscope02 backfill 結果）。
+                    permission_names=["PORTFOLIO_READ:own_class"],
                     is_active=True,
                     token_version=0,
                 ),
             ]
         )
         session.commit()
-    teacher_token = _make_test_token(role="teacher", user_id=10, username="teacher_a")
+    teacher_token = _make_test_token(
+        role="teacher",
+        user_id=10,
+        username="teacher_a",
+        # Phase 2.1：JWT 內的 permission_names 須對齊 DB User row，否則
+        # resolve_grant() 看 '*' 直接判 unrestricted（is_unrestricted=True），
+        # 學生 access 檢查就會跳過 classroom scope 直接放行。
+        permission_names=["PORTFOLIO_READ:own_class"],
+    )
+    # Phase 2.1 後 wrapper 簽章新增 code= 參數，monkeypatch lambda 須對齊
+    # 否則 measurements router 端 caller 傳 code=PORTFOLIO_READ 會 TypeError → 500
     monkeypatch.setattr(
         "utils.portfolio_access.accessible_classroom_ids",
-        lambda session, user: [1] if user["role"] == "teacher" else None,
+        lambda session, user, code=None: [1] if user["role"] == "teacher" else None,
     )
     client.headers.update({"Authorization": f"Bearer {teacher_token}"})
     resp = client.get("/api/students/2/measurements")
