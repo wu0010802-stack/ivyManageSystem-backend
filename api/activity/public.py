@@ -2,7 +2,7 @@
 api/activity/public.py — 公開前台端點（無需認證，10 個）
 """
 
-import asyncio
+import time
 import logging
 import random
 from datetime import datetime
@@ -17,6 +17,12 @@ from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+
+from utils.cache_layer import get_cache
+
+_CACHE_NS_PUBLIC_AVAILABILITY = "public_availability"
+_CACHE_KEY_AVAILABILITY = "all"
+_CACHE_TTL_AVAILABILITY = 10  # seconds — advisory display only, true overbooking guard is register with_for_update
 
 from utils.errors import raise_safe_500
 
@@ -127,7 +133,7 @@ _PUBLIC_DISPLAY_FIELDS = (
 
 
 @router.get("/public/registration-time", response_model=PublicRegistrationTimeOut)
-async def get_public_registration_time(request: Request, response: Response):
+def get_public_registration_time(request: Request, response: Response):
     """公開端點：前台查詢報名開放時間 + 顯示設定（無需認證）"""
     session = get_session()
     try:
@@ -152,7 +158,7 @@ async def get_public_registration_time(request: Request, response: Response):
 
 
 @router.get("/public/poster/{filename}")
-async def get_public_poster(filename: str, response: Response):
+def get_public_poster(filename: str, response: Response):
     """公開端點：回傳已上傳的活動海報圖。
 
     防穿越：檔名只允許純 hex + 白名單副檔名。
@@ -192,7 +198,7 @@ async def get_public_poster(filename: str, response: Response):
 
 
 @router.get("/public/courses", response_model=list[PublicCoursesItemOut])
-async def get_public_courses(request: Request, response: Response):
+def get_public_courses(request: Request, response: Response):
     """前台：取得課程列表"""
     session = get_session()
     try:
@@ -229,7 +235,7 @@ async def get_public_courses(request: Request, response: Response):
 
 
 @router.get("/public/supplies", response_model=list[PublicSuppliesItemOut])
-async def get_public_supplies(request: Request, response: Response):
+def get_public_supplies(request: Request, response: Response):
     """前台：取得用品列表"""
     session = get_session()
     try:
@@ -246,7 +252,7 @@ async def get_public_supplies(request: Request, response: Response):
 
 
 @router.get("/public/classes", response_model=list[str])
-async def get_public_classes(request: Request, response: Response):
+def get_public_classes(request: Request, response: Response):
     """前台：取得班級選項"""
     session = get_session()
     try:
@@ -262,63 +268,87 @@ async def get_public_classes(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/courses/availability", response_model=dict[str, int])
-async def get_public_courses_availability(request: Request, response: Response):
-    """前台：取得課程名額狀況"""
-    session = get_session()
-    try:
-        courses = (
-            session.query(ActivityCourse)
-            .filter(ActivityCourse.is_active.is_(True))
+def _compute_availability(session) -> dict:
+    """聚合計算各課程剩餘名額。抽成獨立函式供快取層包覆及測試 spy。
+
+    佔容量 = enrolled + promoted_pending（兩者皆已佔名額，避免超發候補通知）。
+    """
+    courses = (
+        session.query(ActivityCourse)
+        .filter(ActivityCourse.is_active.is_(True))
+        .all()
+    )
+    course_ids = [c.id for c in courses]
+    enrolled_map = (
+        dict(
+            session.query(
+                RegistrationCourse.course_id, func.count(RegistrationCourse.id)
+            )
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.course_id.in_(course_ids),
+                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                ActivityRegistration.is_active.is_(True),
+            )
+            .group_by(RegistrationCourse.course_id)
             .all()
         )
-        course_ids = [c.id for c in courses]
-        # 佔容量 = enrolled + promoted_pending（兩者皆已佔名額，避免超發候補通知）
-        enrolled_map = (
-            dict(
-                session.query(
-                    RegistrationCourse.course_id, func.count(RegistrationCourse.id)
-                )
-                .join(
-                    ActivityRegistration,
-                    RegistrationCourse.registration_id == ActivityRegistration.id,
-                )
-                .filter(
-                    RegistrationCourse.course_id.in_(course_ids),
-                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
-                    ActivityRegistration.is_active.is_(True),
-                )
-                .group_by(RegistrationCourse.course_id)
-                .all()
-            )
-            if course_ids
-            else {}
+        if course_ids
+        else {}
+    )
+    availability = {}
+    for course in courses:
+        enrolled = enrolled_map.get(course.id, 0)
+        capacity = course.capacity if course.capacity is not None else 30
+        remaining = capacity - enrolled
+        if remaining <= 0:
+            availability[course.name] = -1 if not course.allow_waitlist else 0
+        else:
+            availability[course.name] = remaining
+    return availability
+
+
+@router.get("/public/courses/availability", response_model=dict[str, int])
+def get_public_courses_availability(request: Request, response: Response):
+    """前台：取得課程名額狀況（帶 10s TTL 記憶體快取降低 DB 壓力）。
+
+    快取設計：
+    - availability 為 advisory 顯示；真正防超賣靠 register 端點的 with_for_update
+    - bounded staleness 10s 自然過期；register/update 可選 clear_namespace 加速反映
+    - cache hit 完全跳過 DB session，節省連線 + 兩次 query 開銷
+    - ETag/304 邏輯不動，對快取結果做 md5 (md5 over small dict 可忽略)
+    """
+    cache = get_cache()
+    availability = cache.get(_CACHE_NS_PUBLIC_AVAILABILITY, _CACHE_KEY_AVAILABILITY)
+    if availability is None:
+        session = get_session()
+        try:
+            availability = _compute_availability(session)
+        finally:
+            session.close()
+        cache.set(
+            _CACHE_NS_PUBLIC_AVAILABILITY,
+            _CACHE_KEY_AVAILABILITY,
+            availability,
+            ttl=_CACHE_TTL_AVAILABILITY,
         )
-        availability = {}
-        for course in courses:
-            enrolled = enrolled_map.get(course.id, 0)
-            capacity = course.capacity if course.capacity is not None else 30
-            remaining = capacity - enrolled
-            if remaining <= 0:
-                availability[course.name] = -1 if not course.allow_waitlist else 0
-            else:
-                availability[course.name] = remaining
-        etag = (
-            '"'
-            + hashlib.md5(json.dumps(availability, sort_keys=True).encode()).hexdigest()
-            + '"'
-        )
-        response.headers["ETag"] = etag
-        response.headers["Cache-Control"] = "no-cache"
-        if request.headers.get("If-None-Match") == etag:
-            return PlainResponse(status_code=304)
-        return availability
-    finally:
-        session.close()
+    etag = (
+        '"'
+        + hashlib.md5(json.dumps(availability, sort_keys=True).encode()).hexdigest()
+        + '"'
+    )
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"
+    if request.headers.get("If-None-Match") == etag:
+        return PlainResponse(status_code=304)
+    return availability
 
 
 @router.get("/public/course-videos", response_model=dict[str, str])
-async def get_public_course_videos(request: Request, response: Response):
+def get_public_course_videos(request: Request, response: Response):
     """前台：取得課程介紹影片 URL"""
     session = get_session()
     try:
@@ -337,30 +367,46 @@ async def get_public_course_videos(request: Request, response: Response):
         session.close()
 
 
-@router.get("/public/query", response_model=PublicRegistrationDetailOut)
-async def public_query_registration(
-    name: str,
-    birthday: str,
-    parent_phone: str,
+class _PublicQueryPayload(BaseModel):
+    """POST body for /public/query — 姓名+生日+家長手機查詢報名。
+
+    改為 POST body（原 GET query params）— 避免 PII 進 access log /
+    瀏覽器歷史 / Referer（與 /public/query-by-token 同理）。
+
+    schema 不設嚴格 max_length 以免 422 vs 404 status code 差異洩漏 oracle；
+    parent_phone max_length=30 防 DoS 級超長 payload（與 _PublicQueryByTokenPayload 一致）。
+    """
+
+    name: str = Field(..., min_length=1, max_length=50)
+    birthday: str = Field(..., min_length=8, max_length=20)
+    parent_phone: str = Field(..., min_length=8, max_length=30)
+
+
+@router.post("/public/query", response_model=PublicRegistrationDetailOut)
+def public_query_registration(
+    body: _PublicQueryPayload,
     _: None = Depends(_public_query_limiter),
 ):
-    """前台：依姓名+生日+家長手機查詢報名資料
+    """前台：依姓名+生日+家長手機查詢報名資料（POST body，避免 PII 進 URL）
 
     三欄必須同時相符；任一欄不符一律回相同的通用錯誤（不洩漏是哪一欄不符）。
 
+    POST 而非 GET — 避免姓名/生日/家長手機進 access log / 瀏覽器歷史 / Referer，
+    與 /public/query-by-token 隱私契約一致。
+
     LOW-3：對成功與失敗 path 加入 200~500ms 隨機延遲，提高低成本枚舉成本。
     """
-    await asyncio.sleep(random.uniform(0.2, 0.5))
+    time.sleep(random.uniform(0.2, 0.5))
     session = get_session()
     try:
-        normalized_phone = _normalize_phone(parent_phone)
+        normalized_phone = _normalize_phone(body.parent_phone)
         # 先抓 (name, birthday) 候選（同姓同生日通常極少），再統一在 Python 端
         # 比對 normalize 後的 phone；無論是否匹配都走相同程式路徑，壓低時序差。
         candidates = (
             session.query(ActivityRegistration)
             .filter(
-                ActivityRegistration.student_name == name,
-                ActivityRegistration.birthday == birthday,
+                ActivityRegistration.student_name == body.name,
+                ActivityRegistration.birthday == body.birthday,
                 ActivityRegistration.is_active.is_(True),
             )
             .all()
@@ -398,7 +444,7 @@ class _PublicQueryByTokenPayload(BaseModel):
 
 
 @router.post("/public/query-by-token", response_model=PublicRegistrationDetailOut)
-async def public_query_by_token(
+def public_query_by_token(
     body: _PublicQueryByTokenPayload,
     _: None = Depends(_public_query_limiter),
 ):
@@ -413,7 +459,7 @@ async def public_query_by_token(
 
     LOW-3 一致性：成功與失敗 path 都加入隨機延遲，壓低時序差。
     """
-    await asyncio.sleep(random.uniform(0.2, 0.5))
+    time.sleep(random.uniform(0.2, 0.5))
     session = get_session()
     try:
         token_hash = _hash_query_token(body.token)
@@ -446,7 +492,7 @@ async def public_query_by_token(
 
 
 @router.post("/public/register", status_code=201, response_model=PublicRegisterResultOut)
-async def public_register(
+def public_register(
     body: PublicRegistrationPayload,
     _: None = Depends(_public_register_limiter),
 ):
@@ -464,9 +510,7 @@ async def public_register(
 
     if should_silent_reject_bot(body.hp, body.ts):
         logger.warning(
-            "public_register silent-reject (honeypot/ts) name=%r phone=%r",
-            body.name,
-            body.parent_phone,
+            "public_register silent-reject (honeypot/ts)",
         )
         return {
             "message": "報名資料已送出，校方將於 1-2 個工作天確認後主動與您聯繫。",
@@ -679,9 +723,8 @@ async def public_register(
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         logger.info(
-            "新報名提交：id=%s student=%s matched=%s",
+            "新報名提交：id=%s matched=%s",
             reg.id,
-            reg.student_name,
             is_matched,
         )
 
@@ -712,7 +755,7 @@ async def public_register(
 
 
 @router.post("/public/update", response_model=PublicRegistrationDetailOut)
-async def public_update_registration(
+def public_update_registration(
     body: PublicUpdatePayload,
     request: Request,
     _: None = Depends(_public_register_limiter),
@@ -898,7 +941,7 @@ async def public_update_registration(
                 #   status code 區分「手機已存在」與「其他驗證錯誤」）
                 # - 加入 200-500ms 隨機延遲（同 /public/query LOW-3 模式）壓低 timing oracle
                 # rate limit 仍由 _public_register_limiter 控制 5/min/IP。
-                await asyncio.sleep(random.uniform(0.2, 0.5))
+                time.sleep(random.uniform(0.2, 0.5))
                 raise HTTPException(
                     status_code=400,
                     detail="此手機號碼無法使用，請聯繫校方協助處理",
@@ -1070,7 +1113,7 @@ async def public_update_registration(
 
         session.commit()
         _invalidate_activity_dashboard_caches(session)
-        logger.info("前台更新報名：id=%s student=%s", reg.id, reg.student_name)
+        logger.info("前台更新報名：id=%s", reg.id)
         return response_payload
     except HTTPException:
         session.rollback()
@@ -1098,6 +1141,9 @@ def _verify_parent_identity(
     """三欄驗證：name + birthday + parent_phone 與報名一致才回 registration。
 
     不符一律回 404 且不洩漏是哪一欄錯，維持隱私契約。
+
+    TODO(follow-up): 候補確認/放棄為破壞性 mutation，身分僅憑姓名+生日+手機三欄；
+    通知連結應帶 query token 作第二因素（spec out-of-scope）。
     """
     reg = (
         session.query(ActivityRegistration)
@@ -1129,7 +1175,7 @@ class _PromotionActionPayload(BaseModel):
     "/public/registrations/{registration_id}/courses/{course_id}/confirm-promotion",
     response_model=DeleteResultOut,
 )
-async def public_confirm_promotion(
+def public_confirm_promotion(
     registration_id: int,
     course_id: int,
     body: _PromotionActionPayload,
@@ -1195,7 +1241,7 @@ async def public_confirm_promotion(
     "/public/registrations/{registration_id}/courses/{course_id}/decline-promotion",
     response_model=DeleteResultOut,
 )
-async def public_decline_promotion(
+def public_decline_promotion(
     registration_id: int,
     course_id: int,
     body: _PromotionActionPayload,
@@ -1239,7 +1285,7 @@ async def public_decline_promotion(
 
 
 @router.post("/public/inquiries", status_code=201, response_model=DeleteResultOut)
-async def public_create_inquiry(
+def public_create_inquiry(
     body: PublicInquiryPayload,
     _: None = Depends(_public_inquiry_limiter),
 ):
@@ -1249,9 +1295,7 @@ async def public_create_inquiry(
     """
     if should_silent_reject_bot(body.hp, body.ts):
         logger.warning(
-            "public_create_inquiry silent-reject (honeypot/ts) name=%r phone=%r",
-            body.name,
-            body.phone,
+            "public_create_inquiry silent-reject (honeypot/ts)",
         )
         return {"message": "感謝您的提問，我們會儘快回覆您！"}
     session = get_session()

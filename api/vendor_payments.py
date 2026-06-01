@@ -206,7 +206,7 @@ def _load_payment(session, payment_id: int) -> VendorPayment:
 
 # ─── Endpoints ───────────────────────────────────────────────────────────
 @router.get("/vendor-payments", response_model=VendorPaymentListOut)
-async def list_vendor_payments(
+def list_vendor_payments(
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     vendor_name: Optional[str] = Query(None, max_length=120),
@@ -261,7 +261,7 @@ async def list_vendor_payments(
 
 
 @router.get("/vendor-payments/{payment_id}", response_model=VendorPaymentOut)
-async def get_vendor_payment(
+def get_vendor_payment(
     payment_id: int,
     current_user: dict = Depends(
         require_staff_permission(Permission.VENDOR_PAYMENT_READ)
@@ -275,7 +275,7 @@ async def get_vendor_payment(
 
 
 @router.post("/vendor-payments", status_code=201, response_model=MutationResultOut)
-async def create_vendor_payment(
+def create_vendor_payment(
     payload: VendorPaymentCreate,
     current_user: dict = Depends(
         require_staff_permission(Permission.VENDOR_PAYMENT_WRITE)
@@ -311,7 +311,7 @@ async def create_vendor_payment(
 
 
 @router.put("/vendor-payments/{payment_id}", response_model=DeleteResultOut)
-async def update_vendor_payment(
+def update_vendor_payment(
     payment_id: int,
     payload: VendorPaymentUpdate,
     current_user: dict = Depends(
@@ -338,7 +338,7 @@ async def update_vendor_payment(
 
 
 @router.delete("/vendor-payments/{payment_id}", response_model=DeleteResultOut)
-async def delete_vendor_payment(
+def delete_vendor_payment(
     payment_id: int,
     current_user: dict = Depends(
         require_staff_permission(Permission.VENDOR_PAYMENT_WRITE)
@@ -375,7 +375,7 @@ async def delete_vendor_payment(
 
 
 @router.post("/vendor-payments/{payment_id}/sign", response_model=DeleteResultOut)
-async def sign_vendor_payment(
+def sign_vendor_payment(
     payment_id: int,
     payload: VendorPaymentSignRequest,
     request: Request,
@@ -416,7 +416,7 @@ async def sign_vendor_payment(
 
 
 @router.get("/vendor-payments/{payment_id}/signature")
-async def get_signature_image(
+def get_signature_image(
     payment_id: int,
     current_user: dict = Depends(
         require_staff_permission(Permission.VENDOR_PAYMENT_READ)
@@ -504,7 +504,7 @@ async def upload_attachment(
 @router.delete(
     "/vendor-payments/{payment_id}/attachments", response_model=DeleteResultOut
 )
-async def delete_attachment_endpoint(
+def delete_attachment_endpoint(
     payment_id: int,
     request: Request,
     key: str = Query(..., min_length=1),
@@ -541,7 +541,7 @@ async def delete_attachment_endpoint(
 
 
 @router.get("/vendor-payments/{payment_id}/attachments/download")
-async def download_attachment(
+def download_attachment(
     payment_id: int,
     key: str = Query(..., min_length=1),
     current_user: dict = Depends(

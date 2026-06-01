@@ -332,6 +332,50 @@ def _has_any_record_for_key(session, idempotency_key: str) -> bool:
     )
 
 
+# 無 idempotency_key 時的短窗去重視窗（秒）。官方 UI 一律帶 key，靠 DB 全域
+# UNIQUE 擋重送；但外部呼叫端（curl / 腳本 / 前端 bug）若漏帶 key，advisory
+# lock 只「序列化」兩筆相同退費/繳費，兩筆仍會各自 INSERT → 重複出帳。
+# 此 fallback 在無 key 時於 lock 保護區內查最近 window 內同
+# (reg, type, amount, operator) 的有效紀錄，命中即回放不再 INSERT。
+_NO_KEY_DEDUP_WINDOW_SECONDS = 60
+
+
+def _recent_duplicate_payment(
+    session,
+    registration_id,
+    type_,
+    amount,
+    operator,
+    window_seconds=_NO_KEY_DEDUP_WINDOW_SECONDS,
+):
+    """無 idempotency_key 時的短窗去重：回最近 window 內同
+    (reg, type, amount, operator) 的有效紀錄（排除 voided），代表疑似重送。
+    None 表示可建立。
+
+    Why 用 (reg, type, amount, operator) 四元組 + 60s 窗：官方 UI 帶 key 不走
+    此路；無 key 的「同 reg、同 type、同額、同操作者、60 秒內」幾乎必然是重送
+    （網路重試 / 連點兩下），合法的第二筆同額退費極罕見且操作者可稍候再送。
+    寧可保守去重以杜絕金流重複出帳。
+
+    必須在 _lock_registration / _lock_regs 取鎖之後呼叫：鎖把同 reg 的並發請求
+    序列化，第二筆進來時第一筆已 commit/flush 可見，查詢才能命中 → 序列化轉去重。
+    """
+    cutoff = now_taipei_naive() - timedelta(seconds=window_seconds)
+    return (
+        session.query(ActivityPaymentRecord)
+        .filter(
+            ActivityPaymentRecord.registration_id == registration_id,
+            ActivityPaymentRecord.type == type_,
+            ActivityPaymentRecord.amount == amount,
+            ActivityPaymentRecord.operator == operator,
+            ActivityPaymentRecord.voided_at.is_(None),
+            ActivityPaymentRecord.created_at >= cutoff,
+        )
+        .order_by(ActivityPaymentRecord.id.asc())
+        .first()
+    )
+
+
 # ── 端點 1：依學生聚合未結清報名 ─────────────────────────────────────────
 
 
@@ -384,7 +428,7 @@ def print_pos_receipt_pdf(
 
 
 @router.get("/pos/outstanding-by-student", response_model=PosOutstandingOut)
-async def outstanding_by_student(
+def outstanding_by_student(
     q: Optional[str] = Query(
         None,
         max_length=50,
@@ -535,13 +579,14 @@ def _lock_regs(session, reg_ids: list):
     try:
         # PostgreSQL / MySQL：row-level lock
         return query.with_for_update().all()
-    except (CompileError, OperationalError, NotImplementedError):
-        # SQLite（單元測試）降級為無鎖
+    except (CompileError, NotImplementedError):
+        # SQLite（單元測試）不支援 FOR UPDATE，編譯期降級為無鎖
         return query.all()
+    # OperationalError（真 DB 錯誤 / lock timeout / 連線中斷）上拋，不降級
 
 
 @router.post("/pos/checkout", status_code=201, response_model=PosCheckoutOut)
-async def pos_checkout(
+def pos_checkout(
     body: POSCheckoutRequest,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -628,6 +673,35 @@ async def pos_checkout(
                 status_code=400,
                 detail=f"找不到或已停用的報名 ID：{missing}",
             )
+
+        # ── 無 idempotency_key 時的短窗去重 fallback（鎖之後、守衛之前）──
+        # 帶 key 的請求在函式開頭已由 DB 全域 UNIQUE 機制處理；此處只接「無 key」。
+        # 一張收據可能含多 item 但共用一個 receipt_no，idempotency_key 只落在第一
+        # 筆。去重以「第一個 item 的 (reg, type, amount, operator)」為錨：命中代表
+        # 整張收據疑似重送，透過命中紀錄的 receipt_no 回放整張原始收據
+        # （_parse_receipt_response_from_record），不再 INSERT 任何一筆。
+        # 鎖已序列化同 reg 的並發；放在累積/diff 守衛之前讓合法重送 replay 為成功。
+        # 僅單一 item 才做無 key 去重：多 item 無 key 無法以 items[0] 安全錨定
+        # （否則 items[0] 撞舊收據會 replay 整張、靜默吞掉其餘 item → 漏帳）。
+        # 多 item 無 key 退回正常處理（不去重）；官方 UI 一律帶 key 不受影響。
+        if not body.idempotency_key and len(body.items) == 1:
+            first_item = body.items[0]
+            dup = _recent_duplicate_payment(
+                session,
+                first_item.registration_id,
+                body.type,
+                first_item.amount,
+                operator,
+            )
+            if dup is not None:
+                replay = _parse_receipt_response_from_record(session, dup)
+                if replay is not None:
+                    logger.info(
+                        "POS checkout no-key dedup replay: receipt=%s operator=%s",
+                        dup.receipt_no,
+                        operator,
+                    )
+                    return replay
 
         # ── 第二道：每 reg 累積退費簽核（須在 _lock_regs 之後）─────────
         # 鎖之後才查 prior_refunded，避免兩個併發小額退費各自看到相同舊累積值；
@@ -929,7 +1003,7 @@ async def pos_checkout(
 
 
 @router.get("/pos/daily-summary", response_model=PosDailySummaryOut)
-async def pos_daily_summary(
+def pos_daily_summary(
     date_: Optional[str] = Query(
         None, alias="date", description="YYYY-MM-DD，預設今日"
     ),
@@ -975,7 +1049,7 @@ _RECEIPT_NO_RE = re.compile(r"\[(POS-\d{8}-[A-F0-9]+)\]")
 
 
 @router.get("/pos/recent-transactions", response_model=PosRecentTransactionsOut)
-async def pos_recent_transactions(
+def pos_recent_transactions(
     date_: Optional[str] = Query(
         None, alias="date", description="YYYY-MM-DD，預設今日"
     ),
@@ -1134,7 +1208,7 @@ _APPROVAL_STATUS_VALUES = {
 
 
 @router.get("/pos/semester-reconciliation", response_model=PosSemesterReconciliationOut)
-async def pos_semester_reconciliation(
+def pos_semester_reconciliation(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     classroom_name: Optional[str] = Query(None, max_length=50),

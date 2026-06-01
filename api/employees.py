@@ -289,7 +289,7 @@ def get_employees(
 
 
 @router.get("/employees/probation-alerts", response_model=ProbationAlertResponseOut)
-async def get_probation_alerts(
+def get_probation_alerts(
     days: int = 60,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
@@ -339,7 +339,7 @@ async def get_probation_alerts(
 
 
 @router.get("/employees/{employee_id}", response_model=EmployeeOut)
-async def get_employee(
+def get_employee(
     employee_id: int,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
@@ -397,7 +397,7 @@ async def get_employee(
 
 
 @router.post("/employees", status_code=201, response_model=EmployeeCreateResultOut)
-async def create_employee(
+def create_employee(
     emp: EmployeeCreate,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
 ):
@@ -540,7 +540,7 @@ def _mark_employee_salary_stale(session, employee_id: int) -> int:
 
 
 @router.put("/employees/{employee_id}", response_model=MutationResultOut)
-async def update_employee(
+def update_employee(
     employee_id: int,
     emp: EmployeeUpdate,
     request: Request,
@@ -709,7 +709,7 @@ async def update_employee(
 
 
 @router.delete("/employees/{employee_id}", response_model=MutationResultOut)
-async def delete_employee(
+def delete_employee(
     employee_id: int,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_WRITE)),
@@ -749,7 +749,7 @@ async def delete_employee(
 
 
 @router.post("/employees/{employee_id}/offboard", response_model=OffboardResultOut)
-async def offboard_employee(
+def offboard_employee(
     employee_id: int,
     req: OffboardRequest,
     request: Request,
@@ -825,7 +825,7 @@ async def offboard_employee(
     "/employees/{employee_id}/final-salary-preview",
     response_model=FinalSalaryPreviewOut,
 )
-async def final_salary_preview(
+def final_salary_preview(
     employee_id: int,
     year: int,
     month: int,
@@ -935,7 +935,7 @@ async def final_salary_preview(
 
 
 @router.get("/teachers", response_model=list[TeacherOut])
-async def get_teachers(
+def get_teachers(
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     """取得所有可作為老師的員工"""

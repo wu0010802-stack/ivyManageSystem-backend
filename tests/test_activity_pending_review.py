@@ -266,9 +266,9 @@ class TestPublicQueryPrivacy:
             _seed_base(s)
 
         # 缺 parent_phone
-        res = client.get(
+        res = client.post(
             "/api/activity/public/query",
-            params={"name": "王小明", "birthday": "2020-05-10"},
+            json={"name": "王小明", "birthday": "2020-05-10"},
         )
         assert res.status_code == 422
 
@@ -282,9 +282,9 @@ class TestPublicQueryPrivacy:
         )
         assert r1.status_code == 201
 
-        res = client.get(
+        res = client.post(
             "/api/activity/public/query",
-            params={
+            json={
                 "name": "王小明",
                 "birthday": "2020-05-10",
                 "parent_phone": "0999999999",
@@ -303,9 +303,9 @@ class TestPublicQueryPrivacy:
         )
         assert r1.status_code == 201
 
-        res = client.get(
+        res = client.post(
             "/api/activity/public/query",
-            params={
+            json={
                 "name": "王小明",
                 "birthday": "2020-05-10",
                 "parent_phone": "0912345678",
@@ -331,9 +331,9 @@ class TestPublicQueryPrivacy:
         )
         assert r1.status_code == 201
 
-        res = client.get(
+        res = client.post(
             "/api/activity/public/query",
-            params={
+            json={
                 "name": "王小明",
                 "birthday": "2020-05-10",
                 "parent_phone": "0912345678",
@@ -358,9 +358,9 @@ class TestPublicQueryPrivacy:
         )
         assert r1.status_code == 201
 
-        res = client.get(
+        res = client.post(
             "/api/activity/public/query",
-            params={
+            json={
                 "name": "王小明",
                 "birthday": "2020-05-10",
                 "parent_phone": "0912345678",

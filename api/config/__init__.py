@@ -876,7 +876,7 @@ def delete_job_title(
 
 
 @router.get("/deduction-types")
-async def get_deduction_types(
+def get_deduction_types(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
     cached = get_cache().get("config_deduction_types", "v")
@@ -908,7 +908,7 @@ async def get_deduction_types(
 
 
 @router.post("/deduction-types", status_code=201)
-async def create_deduction_type(
+def create_deduction_type(
     item: DeductionTypeCreate,
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):
@@ -927,7 +927,7 @@ async def create_deduction_type(
 
 
 @router.get("/bonus-types")
-async def get_bonus_types(
+def get_bonus_types(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
     cached = get_cache().get("config_bonus_types", "v")
@@ -958,7 +958,7 @@ async def get_bonus_types(
 
 
 @router.post("/bonus-types", status_code=201)
-async def create_bonus_type(
+def create_bonus_type(
     item: BonusTypeCreate,
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):

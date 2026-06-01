@@ -150,7 +150,7 @@ def _assert_upload_months_not_finalized(session, emp_ids: set, dates: set) -> No
 
 
 @router.get("/records", response_model=list[AttendanceRecordItemOut])
-async def get_attendance_records(
+def get_attendance_records(
     year: int = Query(...),
     month: int = Query(...),
     employee_id: Optional[int] = None,
@@ -218,7 +218,7 @@ async def get_attendance_records(
 
 
 @router.post("/record", status_code=201, response_model=AttendanceRecordUpsertResultOut)
-async def create_or_update_attendance_record(
+def create_or_update_attendance_record(
     record: AttendanceRecordUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
 ):
@@ -372,7 +372,7 @@ async def create_or_update_attendance_record(
 
 
 @router.delete("/record/{employee_id}/{date}", response_model=DeleteResultOut)
-async def delete_single_attendance_record(
+def delete_single_attendance_record(
     employee_id: int,
     date: str,
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
@@ -470,7 +470,7 @@ def delete_single_attendance(
 
 
 @router.delete("/records/{year}/{month}", response_model=DeleteResultOut)
-async def delete_attendance_records(
+def delete_attendance_records(
     year: int,
     month: int,
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),

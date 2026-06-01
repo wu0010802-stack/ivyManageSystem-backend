@@ -133,9 +133,9 @@ def _register(client, *, name="王小明", phone="0912345678", class_name="海�
 
 
 def _query(client, *, name="王小明", phone="0912345678"):
-    return client.get(
+    return client.post(
         "/api/activity/public/query",
-        params={"name": name, "birthday": "2020-05-10", "parent_phone": phone},
+        json={"name": name, "birthday": "2020-05-10", "parent_phone": phone},
     )
 
 

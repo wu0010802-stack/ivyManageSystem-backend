@@ -59,7 +59,7 @@ def _parent_row_to_dict(r: StudentGrowthReport) -> dict:
 
 
 @router.get("")
-async def parent_list_reports(
+def parent_list_reports(
     student_id: int = Query(...),
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
@@ -84,7 +84,7 @@ async def parent_list_reports(
 
 
 @router.get("/{report_id}/download")
-async def parent_download_report(
+def parent_download_report(
     report_id: int,
     request: Request,
     student_id: int = Query(...),

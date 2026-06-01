@@ -63,7 +63,7 @@ async def verify_line_signature(
 
 
 @router.post("/webhook")
-async def line_webhook(body: bytes = Depends(verify_line_signature)):
+def line_webhook(body: bytes = Depends(verify_line_signature)):
     """接收 LINE Platform 傳入的事件，依類型分發處理。
 
     Phase 5：

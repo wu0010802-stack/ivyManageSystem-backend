@@ -830,7 +830,7 @@ async def upload_attendance(
 
 
 @router.post("/upload-csv")
-async def upload_attendance_csv(
+def upload_attendance_csv(
     request: AttendanceUploadRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
 ):

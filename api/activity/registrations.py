@@ -121,7 +121,7 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
 
 
 @router.post("/registrations", status_code=201, response_model=RegistrationCreateResultOut)
-async def admin_create_registration(
+def admin_create_registration(
     body: AdminRegistrationPayload,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
@@ -274,7 +274,7 @@ async def admin_create_registration(
 
 
 @router.get("/registrations", response_model=RegistrationListOut)
-async def get_registrations(
+def get_registrations(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     search: Optional[str] = None,
@@ -433,7 +433,7 @@ async def get_registrations(
 
 
 @router.get("/registrations/{registration_id}", response_model=RegistrationDetailOut)
-async def get_registration_detail(
+def get_registration_detail(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
@@ -543,7 +543,7 @@ async def get_registration_detail(
 
 
 @router.put("/registrations/{registration_id}/remark", response_model=DeleteResultOut)
-async def update_remark(
+def update_remark(
     registration_id: int,
     body: RemarkUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -583,7 +583,7 @@ async def update_remark(
 
 
 @router.put("/registrations/{registration_id}", response_model=RegistrationBasicUpdateResultOut)
-async def update_registration_basic(
+def update_registration_basic(
     registration_id: int,
     body: AdminRegistrationBasicUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -665,7 +665,7 @@ async def update_registration_basic(
 
 
 @router.put("/registrations/{registration_id}/waitlist", response_model=DeleteResultOut)
-async def promote_waitlist(
+def promote_waitlist(
     registration_id: int,
     background_tasks: BackgroundTasks,
     course_id: int = Query(...),
@@ -727,7 +727,7 @@ async def promote_waitlist(
 
 
 @router.post("/waitlist/sweep-expired", response_model=WaitlistSweepResultOut)
-async def sweep_expired_waitlist_promotions(
+def sweep_expired_waitlist_promotions(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """管理員手動觸發候補轉正過期掃描（排程異常時備援）。"""
@@ -753,7 +753,7 @@ async def sweep_expired_waitlist_promotions(
 
 
 @router.delete("/registrations/{registration_id}", response_model=DeleteResultOut)
-async def delete_registration(
+def delete_registration(
     registration_id: int,
     request: Request,
     force_refund: bool = Query(

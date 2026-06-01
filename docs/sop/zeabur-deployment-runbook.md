@@ -206,7 +206,89 @@ DR backup 失敗會 LINE Notify ops 群；Sentry 啟用後納入監控（見 `iv
 
 ---
 
-## 8. 版本 / 維護
+## 8. 上線前 XFF / rate-limit 驗證
+
+### 8.1 風險說明
+
+本系統用 `X-Forwarded-For`（XFF）解析真實 client IP，並以此作為 per-IP 滑動視窗限流的 bucket key（`utils/request_ip.py` + `utils/rate_limit.py`）。
+
+**攻擊面**：若 Zeabur edge **不把真實 client IP append 到 XFF**，則攻擊者可自帶 `X-Forwarded-For: 1.2.3.4` header，讓後端誤判 client IP，繞過 per-IP 限流。
+
+**預設設定（`TRUSTED_PROXY_IPS="*"`）的問題**：
+- `"*"` 不是合法 CIDR，`_parse_trusted_proxies()` 會 fallback 成只信任 RFC1918（10/8, 172.16/12, 192.168/16, 127/8）。
+- 若 Zeabur edge IP 不在 RFC1918，後端不會剝除它的 XFF append → 攻擊者仍可偽造。
+- 正確做法：把 `TRUSTED_PROXY_IPS` 設為 Zeabur edge 出口 CIDR，讓後端只信任邊緣 proxy 的 XFF append。
+
+### 8.2 驗證步驟
+
+**前置**：系統已部署 prod，後端 log 可存取。
+
+**Step 1：確認 Zeabur 是否正確 append client IP 到 XFF**
+
+從兩個不同來源 IP（例如：辦公室網路、手機熱點）各執行：
+
+```bash
+# 偽造 XFF，觀察後端看到的是哪個 IP
+curl -s -H 'X-Forwarded-For: 1.2.3.4' \
+  https://<prod-host>/api/activity/public/courses | head -c 200
+
+# 同時觀察後端 log 中 audit / rate-limit bucket 記錄的 IP
+```
+
+**預期行為**（Zeabur 設定正確時）：
+- 後端 log 顯示 rate-limit bucket IP = 真實 peer IP（非 `1.2.3.4`）
+- Zeabur edge 會在 XFF chain 最右追加真實 client IP，後端剝除 edge IP 後拿到真實來源
+
+**異常行為**（需修正時）：
+- 後端 log 顯示 rate-limit bucket IP = `1.2.3.4`（偽造值）→ 攻擊者可繞過限流
+
+**Step 2：實測觸發 429 並確認 bucket 是否正確**
+
+```bash
+# 對公開報名端點連送請求，確認 429 回應的限流 bucket 是真實 IP
+for i in $(seq 1 25); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -H 'X-Forwarded-For: 1.2.3.4' \
+    -X POST https://<prod-host>/api/activity/public/register \
+    -H 'Content-Type: application/json' \
+    -d '{"course_id": 1, "student_name": "test"}'
+done
+```
+
+- 若第 21+ 次（或設定的限流閾值後）回 429 → 限流生效
+- 確認 log 中 bucket key 是真實 IP，而非 `1.2.3.4`
+
+### 8.3 修正動作
+
+若 Step 1 確認 bucket IP = 偽造值（Zeabur edge 未正確 append XFF）：
+
+1. **抓 Zeabur edge 出口 CIDR**：
+   ```bash
+   # 在後端 log 中找不帶 XFF 的請求，看 request.client.host
+   # 或在 Zeabur 文件確認 edge IP range
+   ```
+
+2. **設定 `TRUSTED_PROXY_IPS`**（Zeabur Service Variables）：
+   ```
+   TRUSTED_PROXY_IPS=<zeabur-edge-cidr-1>,<zeabur-edge-cidr-2>
+   ```
+   例如：`TRUSTED_PROXY_IPS=103.20.128.0/18,103.30.0.0/16`（依 Zeabur 實際 edge 為準）
+
+3. **重新部署**後重跑 Step 1 + Step 2 驗證。
+
+4. **確認 log 訊息不再出現** `TRUSTED_PROXY_IPS=* 解析後無有效 CIDR，fallback 成 RFC1918 預設信任`（此訊息代表設定未生效）。
+
+### 8.4 本機 dev 說明
+
+本機 dev（`TRUSTED_PROXY_IPS` 預設 `"*"`）fallback RFC1918 是 **by design**：
+- dev 環境無 LB，`request.client.host` 即是真實 IP，無需剝 XFF
+- RFC1918 預設信任讓 nginx / docker-compose 內網反代正常運作
+
+> 僅 prod 需設定 `TRUSTED_PROXY_IPS`。
+
+---
+
+## 9. 版本 / 維護
 
 - Python: 3.11+
 - Node: 22+

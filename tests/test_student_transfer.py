@@ -9,6 +9,15 @@ tests/test_student_transfer.py — 學生轉班邏輯測試
 import os
 import sys
 import asyncio
+
+
+def _run_maybe_async(_result):
+    """B2 async→def 遷移相容：handler 轉同步 def 後不再是 coroutine；
+    僅 coroutine 才走 asyncio.run，否則直接回傳同步結果。"""
+    import inspect as _inspect
+    if _inspect.iscoroutine(_result):
+        return asyncio.run(_result)
+    return _result
 from datetime import datetime, date, timedelta
 from unittest.mock import patch, MagicMock
 
@@ -257,7 +266,7 @@ class TestBulkTransferStudents:
         request = SimpleNamespace(state=SimpleNamespace())
         session.close = MagicMock()
         with patch("api.students.get_session", return_value=session):
-            return asyncio.run(
+            return _run_maybe_async(
                 bulk_transfer_students(
                     item=item, request=request, current_user=current_user
                 )

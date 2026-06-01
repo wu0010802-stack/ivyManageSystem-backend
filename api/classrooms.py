@@ -449,7 +449,7 @@ def _serialize_classroom_detail(
 
 
 @router.get("/classrooms", response_model=list[ClassroomListItemOut])
-async def get_classrooms(
+def get_classrooms(
     request: Request,
     response: Response,
     include_inactive: bool = Query(False),
@@ -588,7 +588,7 @@ async def get_classrooms(
 
 
 @router.get("/classrooms/teacher-options", response_model=list[TeacherOptionOut])
-async def get_teacher_options(
+def get_teacher_options(
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
 ):
     """取得可指派教師清單。"""
@@ -606,7 +606,7 @@ async def get_teacher_options(
 
 
 @router.get("/classrooms/{classroom_id}", response_model=ClassroomDetailOut)
-async def get_classroom(
+def get_classroom(
     classroom_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
 ):
@@ -627,7 +627,7 @@ async def get_classroom(
 
 
 @router.get("/classrooms/{classroom_id}/enrollment-composition", response_model=ClassroomEnrollmentCompositionOut)
-async def get_classroom_enrollment_composition(
+def get_classroom_enrollment_composition(
     classroom_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
 ):
@@ -673,7 +673,7 @@ async def get_classroom_enrollment_composition(
 
 
 @router.post("/classrooms", status_code=201, response_model=MutationResultOut)
-async def create_classroom(
+def create_classroom(
     item: ClassroomCreate,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
 ):
@@ -729,7 +729,7 @@ async def create_classroom(
 
 
 @router.put("/classrooms/{classroom_id}", response_model=ClassroomUpdateResultOut)
-async def update_classroom(
+def update_classroom(
     classroom_id: int,
     item: ClassroomUpdate,
     request: Request,
@@ -846,7 +846,7 @@ async def update_classroom(
 
 
 @router.post("/classrooms/clone-term", status_code=201, response_model=ClassroomCloneTermResultOut)
-async def clone_classrooms_to_term(
+def clone_classrooms_to_term(
     item: ClassroomCloneTerm,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
 ):
@@ -1158,7 +1158,7 @@ def _raise_first_promotion_conflict(plan: _PromotionPlan) -> None:
     status_code=201,
     response_model=ClassroomPromoteAcademicYearResultOut,
 )
-async def promote_classrooms_to_academic_year(
+def promote_classrooms_to_academic_year(
     item: ClassroomPromoteAcademicYear,
     request: Request = None,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
@@ -1361,7 +1361,7 @@ async def promote_classrooms_to_academic_year(
     "/classrooms/promote-academic-year/preview",
     response_model=ClassroomPromotePreviewOut,
 )
-async def preview_promote_classrooms_to_academic_year(
+def preview_promote_classrooms_to_academic_year(
     item: ClassroomPromoteAcademicYear,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
 ):
@@ -1425,7 +1425,7 @@ async def preview_promote_classrooms_to_academic_year(
 
 
 @router.delete("/classrooms/{classroom_id}", response_model=MutationResultOut)
-async def delete_classroom(
+def delete_classroom(
     classroom_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
 ):
@@ -1472,7 +1472,7 @@ async def delete_classroom(
 
 
 @router.get("/grades", response_model=list[GradeOut])
-async def get_grades(
+def get_grades(
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
 ):
     """取得所有年級"""
@@ -1503,7 +1503,7 @@ class GradeUpdate(BaseModel):
 
 
 @router.patch("/grades/{grade_id}", response_model=GradeOut)
-async def update_grade(
+def update_grade(
     grade_id: int,
     item: GradeUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),

@@ -386,7 +386,7 @@ def _resolve_pdf_path(file_path: str) -> Path:
 
 
 @router.post("/{student_id}/growth-reports", status_code=201)
-async def create_growth_report(
+def create_growth_report(
     student_id: int,
     payload: GenerateReportPayload,
     request: Request,
@@ -463,7 +463,7 @@ async def create_growth_report(
 
 
 @router.get("/{student_id}/growth-reports")
-async def list_growth_reports(
+def list_growth_reports(
     student_id: int,
     request: Request,
     skip: int = Query(0, ge=0),
@@ -498,7 +498,7 @@ async def list_growth_reports(
 
 
 @router.get("/{student_id}/growth-reports/{report_id}")
-async def get_growth_report(
+def get_growth_report(
     student_id: int,
     report_id: int,
     request: Request,
@@ -531,7 +531,7 @@ async def get_growth_report(
 
 
 @router.get("/{student_id}/growth-reports/{report_id}/download", response_model=None)
-async def download_growth_report(
+def download_growth_report(
     student_id: int,
     report_id: int,
     request: Request,
@@ -592,7 +592,7 @@ async def download_growth_report(
 
 
 @router.delete("/{student_id}/growth-reports/{report_id}", status_code=204)
-async def delete_growth_report(
+def delete_growth_report(
     student_id: int,
     report_id: int,
     request: Request,

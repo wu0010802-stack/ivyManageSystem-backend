@@ -140,7 +140,7 @@ def _serialize_pending_item(
 
 
 @router.get("/registrations/pending", response_model=PendingRegistrationListOut)
-async def list_pending_registrations(
+def list_pending_registrations(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     search: Optional[str] = None,
@@ -223,7 +223,7 @@ async def list_pending_registrations(
 
 
 @router.get("/students/search", response_model=PendingRegistrationsSearchStudentsOut)
-async def admin_search_students(
+def admin_search_students(
     q: str = Query(..., min_length=1, max_length=50),
     limit: int = Query(20, ge=1, le=50),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -278,7 +278,7 @@ async def admin_search_students(
 
 
 @router.post("/registrations/{registration_id}/match", response_model=PendingRegistrationActionResultOut)
-async def match_registration(
+def match_registration(
     registration_id: int,
     body: RegistrationMatchRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -349,7 +349,7 @@ async def match_registration(
 
 
 @router.post("/registrations/{registration_id}/reject", response_model=PendingRegistrationActionResultOut)
-async def reject_registration(
+def reject_registration(
     registration_id: int,
     body: RegistrationRejectRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -419,7 +419,7 @@ async def reject_registration(
 
 
 @router.post("/registrations/{registration_id}/rematch", response_model=PendingRegistrationRematchResultOut)
-async def rematch_registration(
+def rematch_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -543,7 +543,7 @@ async def rematch_registration(
 
 
 @router.post("/registrations/{registration_id}/force-accept", response_model=PendingRegistrationForceAcceptResultOut)
-async def force_accept_registration(
+def force_accept_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -643,7 +643,7 @@ async def force_accept_registration(
 
 
 @router.post("/registrations/{registration_id}/restore", response_model=PendingRegistrationActionResultOut)
-async def restore_registration(
+def restore_registration(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
@@ -689,6 +689,51 @@ async def restore_registration(
         reg.is_active = True
         reg.match_status = "pending"
         reg.pending_review = True
+
+        # 容量重檢（Task A4 超賣修正）：被拒報名的 RegistrationCourse 列在 reject
+        # 時並未清掉（仍掛 enrolled/promoted_pending），且被拒期間名額可能已被其他
+        # 報名遞補。直接翻 is_active=True 會讓占容量數超過 capacity（超賣）。
+        # 因此 restore 時重數每門課的占位，超出容量者降為 waitlist。
+        from sqlalchemy import func
+        from models.database import ActivityCourse, RegistrationCourse
+
+        rc_rows = (
+            session.query(RegistrationCourse)
+            .filter(
+                RegistrationCourse.registration_id == reg.id,
+                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+            )
+            .all()
+        )
+        for rc in rc_rows:
+            course = (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id == rc.course_id)
+                .with_for_update()
+                .first()
+            )
+            # 課程不存在或未設容量上限（沿用 _attach_courses 慣例：None → 30）
+            if not course:
+                continue
+            capacity = course.capacity if course.capacity is not None else 30
+            # 占容量 = 其他「有效報名」的 enrolled + promoted_pending（排除本筆 reg）
+            occupying = (
+                session.query(func.count(RegistrationCourse.id))
+                .join(
+                    ActivityRegistration,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
+                .filter(
+                    RegistrationCourse.course_id == rc.course_id,
+                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                    ActivityRegistration.is_active.is_(True),
+                    RegistrationCourse.registration_id != reg.id,
+                )
+                .scalar()
+            )
+            if occupying >= capacity:
+                rc.status = "waitlist"
+
         prefix = (reg.remark or "").strip()
         note = f"[已還原 by {current_user.get('username')}]"
         reg.remark = (prefix + "\n" + note).strip() if prefix else note

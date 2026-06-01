@@ -125,7 +125,7 @@ def _parent_owner_ids(session, owner_type: str, student_id: int) -> list[int]:
 
 
 @router.get("")
-async def parent_list_photos(
+def parent_list_photos(
     student_id: int = Query(...),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),

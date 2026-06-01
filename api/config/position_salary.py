@@ -159,7 +159,7 @@ def _get_standard_salary(config_row, key: str):
 
 
 @router.get("/position-salary")
-async def get_position_salary(
+def get_position_salary(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
     """取得職位標準底薪設定"""
@@ -217,7 +217,7 @@ async def get_position_salary(
 
 
 @router.put("/position-salary")
-async def update_position_salary(
+def update_position_salary(
     data: PositionSalaryUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_WRITE)),
 ):

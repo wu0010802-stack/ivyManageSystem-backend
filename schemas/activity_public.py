@@ -92,6 +92,9 @@ def should_silent_reject_bot(hp: str, ts: Optional[int]) -> bool:
     - 不發 LINE 推播
     - 仍回 200/201 + 正常成功訊息（不洩漏偵測）
     - log.warning 留痕方便事後分析
+
+    注意：honeypot / 時序檢查為**輔助**手段、非主要 anti-automation；
+    真正節流仰賴限流器（register 5/min、query 10/min）。
     """
     if hp:
         return True

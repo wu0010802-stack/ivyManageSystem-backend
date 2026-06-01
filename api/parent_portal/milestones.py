@@ -60,7 +60,7 @@ def _milestone_to_dict(m: StudentMilestone) -> dict:
 
 
 @router.get("")
-async def parent_list_milestones(
+def parent_list_milestones(
     student_id: int = Query(...),
     limit: int = Query(50, ge=1, le=200),
     current_user: dict = Depends(require_parent_role()),
@@ -94,7 +94,7 @@ class ReactPayload(BaseModel):
     "/{milestone_id}/react",
     dependencies=[Depends(_react_limiter.as_dependency())],
 )
-async def parent_react(
+def parent_react(
     milestone_id: int,
     payload: ReactPayload,
     student_id: int = Query(...),
@@ -142,7 +142,7 @@ async def parent_react(
 
 
 @router.post("/{milestone_id}/acknowledge")
-async def parent_acknowledge(
+def parent_acknowledge(
     milestone_id: int,
     student_id: int = Query(...),
     current_user: dict = Depends(require_parent_role()),

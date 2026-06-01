@@ -209,6 +209,7 @@ class TestPOSRefundCumulative:
                 "payment_method": "現金",
                 "payment_date": today,
                 "notes": "第一次小額退費測試（家長申請）",
+                "idempotency_key": "antitheft-refund-1",
             },
         )
         assert res1.status_code == 201, res1.text
@@ -222,6 +223,7 @@ class TestPOSRefundCumulative:
                 "payment_method": "現金",
                 "payment_date": today,
                 "notes": "第二次小額退費測試（家長申請）",
+                "idempotency_key": "antitheft-refund-2",
             },
         )
         assert res2.status_code == 201, res2.text
@@ -235,6 +237,7 @@ class TestPOSRefundCumulative:
                 "payment_method": "現金",
                 "payment_date": today,
                 "notes": "第三次小額退費觸發累積門檻（測試）",
+                "idempotency_key": "antitheft-refund-3",
             },
         )
         assert res3.status_code == 403

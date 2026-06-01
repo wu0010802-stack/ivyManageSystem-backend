@@ -416,7 +416,7 @@ class GuardianUpdate(BaseModel):
 
 
 @router.get("/students", response_model=StudentListOut)
-async def get_students(
+def get_students(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     classroom_id: Optional[int] = None,
@@ -529,7 +529,7 @@ async def get_students(
 
 
 @router.get("/students/records", response_model=StudentRecordsTimelineOut)
-async def get_student_records_timeline(
+def get_student_records_timeline(
     type: Optional[list[str]] = Query(
         None,
         description="可多選：incident / assessment / change_log。未指定代表全部。",
@@ -584,7 +584,7 @@ def _semester_date_range(school_year: int, semester: int) -> tuple[date, date]:
 @router.get(
     "/students/{student_id}/academic-summary", response_model=AcademicSummaryOut
 )
-async def get_academic_summary(
+def get_academic_summary(
     student_id: int,
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
@@ -682,7 +682,7 @@ async def get_academic_summary(
 
 
 @router.get("/students/{student_id}", response_model=StudentDetailOut)
-async def get_student(
+def get_student(
     student_id: int,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
@@ -744,7 +744,7 @@ class StudentMedicalOut(IvyBaseModel):
 
 
 @router.get("/students/{student_id}/medical", response_model=StudentMedicalOut)
-async def get_student_medical(
+def get_student_medical(
     student_id: int,
     request: Request,
     reason: str = Query(
@@ -795,7 +795,7 @@ async def get_student_medical(
 
 
 @router.post("/students", status_code=201, response_model=MutationResultOut)
-async def create_student(
+def create_student(
     item: StudentCreate,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
@@ -848,7 +848,7 @@ async def create_student(
 
 
 @router.put("/students/{student_id}", response_model=MutationResultOut)
-async def update_student(
+def update_student(
     student_id: int,
     item: StudentUpdate,
     request: Request,
@@ -1093,7 +1093,7 @@ async def graduate_student(
 
 
 @router.post("/students/bulk-transfer", response_model=BulkTransferResultOut)
-async def bulk_transfer_students(
+def bulk_transfer_students(
     item: StudentBulkTransfer,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
@@ -1222,7 +1222,7 @@ async def bulk_transfer_students(
 
 
 @router.get("/students/{student_id}/profile")
-async def get_student_profile(
+def get_student_profile(
     student_id: int,
     request: Request,
     timeline_limit: int = Query(20, ge=1, le=100),
@@ -1393,7 +1393,7 @@ def _serialize_guardian(g: Guardian) -> dict:
 
 
 @router.get("/students/{student_id}/guardians", response_model=GuardianListOut)
-async def list_guardians(
+def list_guardians(
     student_id: int,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_READ)),
@@ -1435,7 +1435,7 @@ async def list_guardians(
 @router.post(
     "/students/{student_id}/guardians", status_code=201, response_model=GuardianOut
 )
-async def create_guardian(
+def create_guardian(
     student_id: int,
     item: GuardianCreate,
     current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
@@ -1478,7 +1478,7 @@ async def create_guardian(
 
 
 @router.patch("/students/guardians/{guardian_id}", response_model=GuardianOut)
-async def update_guardian(
+def update_guardian(
     guardian_id: int,
     item: GuardianUpdate,
     current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),
@@ -1532,7 +1532,7 @@ async def update_guardian(
 
 
 @router.delete("/students/guardians/{guardian_id}", response_model=MutationResultOut)
-async def delete_guardian(
+def delete_guardian(
     guardian_id: int,
     request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.GUARDIANS_WRITE)),

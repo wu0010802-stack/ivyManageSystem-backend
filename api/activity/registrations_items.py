@@ -56,7 +56,7 @@ router = APIRouter()
 
 
 @router.post("/registrations/{registration_id}/courses", status_code=201)
-async def add_registration_course(
+def add_registration_course(
     registration_id: int,
     body: AddCourseRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -179,7 +179,7 @@ async def add_registration_course(
 
 
 @router.post("/registrations/{registration_id}/supplies", status_code=201)
-async def add_registration_supply(
+def add_registration_supply(
     registration_id: int,
     body: AddSupplyRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -259,7 +259,7 @@ async def add_registration_supply(
 
 
 @router.delete("/registrations/{registration_id}/supplies/{supply_record_id}")
-async def remove_registration_supply(
+def remove_registration_supply(
     registration_id: int,
     supply_record_id: int,
     force_refund: bool = Query(
@@ -398,7 +398,7 @@ async def remove_registration_supply(
 
 
 @router.delete("/registrations/{registration_id}/courses/{course_id}")
-async def withdraw_course(
+def withdraw_course(
     registration_id: int,
     course_id: int,
     request: Request,

@@ -78,7 +78,7 @@ def _desensitize_operator(operator: Optional[str], viewer_has_approve: bool) -> 
 
 
 @router.put("/registrations/{registration_id}/payment")
-async def update_payment(
+def update_payment(
     registration_id: int,
     body: PaymentUpdate,
     request: Request,
@@ -185,6 +185,20 @@ async def update_payment(
                 current_user,
                 label="標記未繳費自動沖帳累積退費總額",
             )
+            # ── 退費 diff 簽核閘（與 POST /payments 退費路徑對齊）───────────
+            # 全額沖帳的實退額 = current_paid；與 calculator 建議值比較，
+            # 偏離 > 門檻且無 ACTIVITY_PAYMENT_APPROVE 即 403（堵旁路）。
+            # current_paid=0 時跳過（無實際退費金流，diff 閘不適用）。
+            if current_paid > 0:
+                _suggestion = build_refund_suggestion(session, registration_id)
+                _suggested_total = _suggestion["total_suggested_amount"]
+                _diff = abs(current_paid - _suggested_total)
+                require_approve_for_refund_diff(
+                    diff=_diff,
+                    current_user=current_user,
+                    suggested_total=_suggested_total,
+                    actual_total=current_paid,
+                )
             if current_paid > 0:
                 rec = ActivityPaymentRecord(
                     registration_id=registration_id,
@@ -229,7 +243,7 @@ async def update_payment(
 
 
 @router.get("/registrations/{registration_id}/payments")
-async def get_registration_payments(
+def get_registration_payments(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
@@ -288,7 +302,7 @@ _IDEMPOTENCY_WINDOW_SECONDS = 600
 
 
 @router.post("/registrations/{registration_id}/payments", status_code=201)
-async def add_registration_payment(
+def add_registration_payment(
     registration_id: int,
     body: AddPaymentRequest,
     request: Request,
@@ -368,6 +382,37 @@ async def add_registration_payment(
         reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
+
+        # ── 無 idempotency_key 時的短窗去重 fallback（鎖之後、守衛之前）──
+        # 帶 key 的請求在函式開頭已由 DB 全域 UNIQUE 機制處理；此處只接「無 key」
+        # 的情境。鎖把同 reg 的並發請求序列化，第二筆進來時第一筆已可見 →
+        # _recent_duplicate_payment 命中即回放（不再 INSERT），避免重複出帳。
+        # 放在累積/diff/超退守衛之前：讓合法重送被 replay 為成功，而非被守衛 400。
+        if not body.idempotency_key:
+            from .pos import _recent_duplicate_payment
+
+            dup = _recent_duplicate_payment(
+                session,
+                registration_id,
+                body.type,
+                body.amount,
+                current_user.get("username", ""),
+            )
+            if dup is not None:
+                total_amount = _calc_total_amount(session, registration_id)
+                paid = reg.paid_amount or 0
+                type_label = "繳費" if dup.type == "payment" else "退費"
+                logger.info(
+                    "add_registration_payment no-key dedup replay: reg=%s type=%s amount=%s",
+                    registration_id,
+                    body.type,
+                    body.amount,
+                )
+                return {
+                    "message": f"{type_label}記錄新增成功",
+                    "paid_amount": paid,
+                    "payment_status": _derive_payment_status(paid, total_amount),
+                }
 
         # ── 累積退費簽核（必須在 _lock_registration 之後）─────────────
         # 鎖之後才查 prior_refunded，確保兩個併發小額退費不會各自看到相同舊累積值
@@ -562,7 +607,7 @@ async def add_registration_payment(
 
 
 @router.delete("/registrations/{registration_id}/payments/{payment_id}")
-async def delete_registration_payment(
+def delete_registration_payment(
     registration_id: int,
     payment_id: int,
     request: Request,

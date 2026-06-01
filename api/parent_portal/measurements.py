@@ -53,7 +53,7 @@ _HARD_ROW_LIMIT = 500
 
 
 @router.get("")
-async def parent_list_measurements(
+def parent_list_measurements(
     request: Request,
     student_id: int = Query(...),
     months: int = Query(24, ge=1, le=_MONTHS_MAX),
@@ -91,7 +91,7 @@ async def parent_list_measurements(
 
 
 @router.get("/chart-data")
-async def parent_measurement_chart(
+def parent_measurement_chart(
     request: Request,
     student_id: int = Query(...),
     months: int = Query(24, ge=1, le=_MONTHS_MAX),

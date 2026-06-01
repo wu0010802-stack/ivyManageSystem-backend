@@ -179,7 +179,7 @@ def _by_type_count(items: list[dict]) -> dict[str, int]:
 
 
 @router.get("/{student_id}/timeline")
-async def get_timeline(
+def get_timeline(
     student_id: int,
     request: Request,
     since: Optional[date] = Query(None),

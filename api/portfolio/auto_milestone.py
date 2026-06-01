@@ -87,7 +87,7 @@ def _official_workdays_in_range(session, start: date, end: date) -> set[date]:
 
 
 @router.post("/{student_id}/milestones/auto-detect")
-async def auto_detect_milestones(
+def auto_detect_milestones(
     student_id: int,
     payload: Optional[AutoDetectPayload] = Body(default=None),
     request: Request = None,

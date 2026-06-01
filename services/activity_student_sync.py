@@ -26,12 +26,13 @@ from models.database import (
     ActivityPaymentRecord,
     ActivityRegistration,
     Classroom,
+    RegistrationCourse,
     Student,
 )
 from schemas.activity_public import _normalize_phone
 from services.activity_daily_snapshot import _require_daily_close_unlocked
 from services.activity_payment_guards import has_payment_approve
-from services.activity_service import activity_service
+from services.activity_service import OCCUPYING_STATUSES, activity_service
 from utils.academic import resolve_current_academic_term
 
 logger = logging.getLogger(__name__)
@@ -262,4 +263,24 @@ def _soft_delete_single_registration(
             f"學生離園同步軟刪，系統寫退費紀錄 NT${current_paid}，請跟進實體退款",
             "system",
         )
+
+    # 軟刪前先收集本筆報名佔位（enrolled / promoted_pending）的課程，
+    # 軟刪後逐課遞補候補第一位（對齊 delete_registration 的釋放名額流程）。
+    # 先收集再遞補，避免在迭代中改狀態影響容量判定。
+    occupying_course_ids = [
+        rc.course_id
+        for rc in (
+            session.query(RegistrationCourse)
+            .filter(
+                RegistrationCourse.registration_id == reg.id,
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
+            )
+            .all()
+        )
+    ]
+
     reg.is_active = False
+    session.flush()  # 先讓 is_active=False 生效，容量查詢才看得到釋放的名額
+
+    for course_id in occupying_course_ids:
+        activity_service._auto_promote_first_waitlist(session, course_id)

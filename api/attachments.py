@@ -222,7 +222,7 @@ async def upload_attachment(
 
 
 @router.delete("/attachments/{attachment_id}", response_model=DeleteResultOut)
-async def delete_attachment(
+def delete_attachment(
     attachment_id: int,
     request: Request,
     current_user: dict = Depends(require_permission(Permission.PORTFOLIO_WRITE)),
@@ -268,7 +268,7 @@ async def delete_attachment(
 
 
 @download_router.get("/portfolio/{key:path}")
-async def download_portfolio_file(
+def download_portfolio_file(
     key: str,
     current_user: dict = Depends(get_current_user),
 ) -> Response:
