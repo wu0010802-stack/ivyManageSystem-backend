@@ -589,7 +589,12 @@ class TestClassScope:
                 "teacher_a",
                 "Pass1234",
                 role="teacher",
-                perms=(["STUDENTS_HEALTH_READ", "STUDENTS_MEDICATION_ADMINISTER"]),
+                perms=(
+                    [
+                        "STUDENTS_HEALTH_READ:own_class",
+                        "STUDENTS_MEDICATION_ADMINISTER:own_class",
+                    ]
+                ),
                 employee_id=seed["emp_a"].id,
             )
             # 兩班各一張今日 order
