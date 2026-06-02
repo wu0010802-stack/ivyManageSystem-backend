@@ -17,7 +17,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Index,
+    JSON,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -124,6 +126,65 @@ class BonusConfig(Base):
         nullable=False,
         default=0,
         comment="大過一支預設扣款（業主未定，預設 0 由個案指定）",
+    )
+
+    # 年終 E化 Phase 2 規則欄位（2026-06-02 B1）
+    # 才藝老師課時單價（float，NULL=未設定）
+    art_teacher_unit_price = Column(
+        Float,
+        nullable=True,
+        comment="才藝老師每課時單價（年終計算用，NULL=未設定）",
+    )
+    # 紅利門檻 — 舊生率
+    dividend_returning_threshold = Column(
+        Float,
+        nullable=True,
+        default=0.9,
+        comment="紅利舊生率門檻（預設 0.9 = 90%）",
+    )
+    dividend_returning_amount = Column(
+        Float,
+        nullable=True,
+        default=500,
+        comment="達到舊生率門檻的紅利獎金金額（預設 500）",
+    )
+    # 紅利門檻 — 才藝參與率
+    dividend_activity_threshold = Column(
+        Float,
+        nullable=True,
+        default=0.8,
+        comment="紅利才藝參與率門檻（預設 0.8 = 80%）",
+    )
+    dividend_activity_amount = Column(
+        Float,
+        nullable=True,
+        default=1000,
+        comment="達到才藝率門檻的紅利獎金金額（預設 1000）",
+    )
+    # 考勤費率
+    late_deduction_per_time = Column(
+        Float,
+        nullable=True,
+        default=100,
+        comment="遲到每次扣年終款（預設 100 元）",
+    )
+    personal_leave_deduction_per_day = Column(
+        Float,
+        nullable=True,
+        default=500,
+        comment="事假每日扣年終款（預設 500 元）",
+    )
+    sick_leave_deduction_per_day = Column(
+        Float,
+        nullable=True,
+        default=500,
+        comment="病假每日扣年終款（預設 500 元）",
+    )
+    # 課後才藝班年終單價（JSON：班名或年齡組 → K 單價，NULL=未設定）
+    after_class_award_unit_price = Column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+        comment="課後才藝班年終單價 JSON（班名→K 單價，NULL=未設定）",
     )
 
     is_active = Column(Boolean, default=True)

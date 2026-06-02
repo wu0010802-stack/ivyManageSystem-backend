@@ -60,6 +60,16 @@ _BONUS_FIELDS = [
     "meeting_default_hours",
     "meeting_absence_penalty",
     "art_teacher_festival",
+    # 年終 E化 Phase 2 規則欄位（2026-06-02 B1）
+    "art_teacher_unit_price",
+    "dividend_returning_threshold",
+    "dividend_returning_amount",
+    "dividend_activity_threshold",
+    "dividend_activity_amount",
+    "late_deduction_per_time",
+    "personal_leave_deduction_per_day",
+    "sick_leave_deduction_per_day",
+    "after_class_award_unit_price",
 ]
 
 
@@ -92,6 +102,18 @@ class BonusConfigUpdate(BaseModel):
     # 上限：缺席扣節慶獎金不應超過獎金本身常見上限（防扣到負值）
     meeting_absence_penalty: Optional[int] = Field(None, ge=0, le=10000)
     art_teacher_festival: Optional[float] = Field(None, ge=0)
+    # 年終 E化 Phase 2 規則欄位（2026-06-02 B1）
+    art_teacher_unit_price: Optional[float] = Field(None, ge=0)
+    dividend_returning_threshold: Optional[float] = Field(None, ge=0, le=1)
+    dividend_returning_amount: Optional[float] = Field(None, ge=0)
+    dividend_activity_threshold: Optional[float] = Field(None, ge=0, le=1)
+    dividend_activity_amount: Optional[float] = Field(None, ge=0)
+    late_deduction_per_time: Optional[float] = Field(None, ge=0)
+    personal_leave_deduction_per_day: Optional[float] = Field(None, ge=0)
+    sick_leave_deduction_per_day: Optional[float] = Field(None, ge=0)
+    after_class_award_unit_price: Optional[dict] = Field(
+        None, description="課後才藝班年終單價 JSON（班名→K 單價）"
+    )
     # 金流硬化（2026-05-16 P1-5）：BonusConfig 變動影響全員獎金基數，
     # 與 insurance.brackets PUT 對齊要求金流簽核 + 異動原因 ≥10 字。
     # 前端必須附 reason 才能呼叫此端點。
