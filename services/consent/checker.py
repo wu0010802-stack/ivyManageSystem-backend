@@ -1,0 +1,121 @@
+"""services/consent/checker.py — consent_check 純函式。
+
+個資法 §8 / GDPR Art. 7 單一數據源：所有 consent 咽喉的核心判定。
+查 ParentConsentLog 最新一筆（consented_at desc）即為現況；
+撤回一樣寫入 log（consented=False），無需軟刪除。
+
+公開 API：
+  consent_check(session, user_id, scope) -> bool
+      查個別 user 對指定 scope 的最新同意狀態。
+      - 有記錄：回最新一筆 consented 值
+      - 無記錄：回 False（未曾表態 = 未同意）
+
+  consent_check_student_scope(session, student_id, scope) -> bool
+      per-student 家庭層判定（D2 業主策略）：
+      - 有主要聯絡人（is_primary=True）且已綁 user → 以主要聯絡人 consent 為準
+      - 無主要聯絡人 → 任一已綁 guardian 同意即可（OR 語意）
+      - 無任何已綁 guardian → False
+
+      ⚠️ 策略集中在此函式一處。
+      如業主改為「所有 guardian 皆須同意」只需把 OR 改為 ALL/any→all。
+      如改為「主要聯絡人 AND 次要聯絡人皆同意」，同樣只改此函式即可。
+
+  invalidate_consent_cache(user_id, scope)
+      撤回 / opt-out task 寫入新 log 後呼叫，即時清掉 TTL cache entry，
+      避免撤回後 60 秒內仍回 True。
+"""
+
+from __future__ import annotations
+
+import logging
+
+from sqlalchemy.orm import Session
+
+from models.consent import ParentConsentLog
+from models.guardian import Guardian
+from utils.cache_layer import get_cache
+
+logger = logging.getLogger(__name__)
+
+_CACHE_NS = "consent"
+_CACHE_TTL = 60  # 秒；撤回時由 invalidate_consent_cache 立即清除
+
+
+# ── per-user ──────────────────────────────────────────────────────────────────
+
+
+def consent_check(session: Session, user_id: int, scope: str) -> bool:
+    """查 user_id 對 scope 的最新同意狀態（含快取）。
+
+    Returns:
+        True  — 最新一筆 consented=True
+        False — 最新一筆 consented=False，或無任何記錄
+    """
+    cache_key = f"{user_id}:{scope}"
+    cached = get_cache().get(_CACHE_NS, cache_key)
+    if cached is not None:
+        return bool(cached)
+
+    row = (
+        session.query(ParentConsentLog.consented)
+        .filter(
+            ParentConsentLog.user_id == user_id,
+            ParentConsentLog.scope == scope,
+        )
+        .order_by(ParentConsentLog.consented_at.desc())
+        .first()
+    )
+    result = bool(row[0]) if row is not None else False
+
+    # 快取兩種結果（True / False）；撤回後由 invalidate_consent_cache 清除
+    get_cache().set(_CACHE_NS, cache_key, result, ttl=_CACHE_TTL)
+    return result
+
+
+# ── per-student（家庭層）──────────────────────────────────────────────────────
+
+
+def consent_check_student_scope(session: Session, student_id: int, scope: str) -> bool:
+    """查學生 student_id 對 scope 的家庭層同意狀態（D2 策略：主要聯絡人優先）。
+
+    業主決策（2026-06-02）：以主要聯絡人（is_primary=True）的 consent 為準；
+    無主要聯絡人時，任一已綁 guardian 同意即可。
+
+    Returns:
+        True  — 依策略判定家庭層已同意
+        False — 未同意，或無已綁 guardian
+    """
+    guardians = (
+        session.query(Guardian)
+        .filter(
+            Guardian.student_id == student_id,
+            Guardian.user_id.isnot(None),
+            Guardian.deleted_at.is_(None),
+        )
+        .all()
+    )
+
+    if not guardians:
+        return False
+
+    primary = next((g for g in guardians if g.is_primary), None)
+    if primary is not None:
+        # 策略：以主要聯絡人 consent 為準（業主已確認）
+        # 若改為「主要 AND 次要皆同意」，在此擴充即可
+        return consent_check(session, primary.user_id, scope)
+
+    # 無主要聯絡人：任一已綁 guardian 同意即可
+    # 若改為「所有 guardian 皆同意」，把 any(...) 改成 all(...) 即可
+    return any(consent_check(session, g.user_id, scope) for g in guardians)
+
+
+# ── 快取失效（撤回時立即清除）────────────────────────────────────────────────
+
+
+def invalidate_consent_cache(user_id: int, scope: str) -> None:
+    """撤回 / opt-out 寫入新 log 後立即呼叫，確保下次查詢重新從 DB 讀取。
+
+    供 Task 3（opt-out endpoint）及後續撤回流程呼叫。
+    """
+    get_cache().delete(_CACHE_NS, f"{user_id}:{scope}")
+    logger.debug("consent cache invalidated: user_id=%s scope=%s", user_id, scope)
