@@ -239,3 +239,68 @@ class TestClassPerformanceRate:
             head_count_target=12,
         )
         assert result == Decimal("0.00")
+
+    def test_class_performance_counts_student_present_in_earlier_month_then_withdrawn(
+        self, session, classroom
+    ):
+        """迴歸測試：已退學學生（lifecycle=withdrawn）在退學前的月份仍應被計入。
+
+        設計：
+          - 4 名學生，各月底（10/31, 11/30, 12/31, 1/31, 2/28, 3/31）均在班
+          - 其中第 4 名學生：withdrawal_date = 2026-02-01（即 1 月底仍在籍，2 月起退學）
+            lifecycle_status = LIFECYCLE_WITHDRAWN（current state 已退學）
+          - 純日期 filter 應計：月份 1-4（10/31,11/30,12/31,1/31）有 4 人；月份 5-6（2/28,3/31）有 3 人
+          - avg = (4+4+4+4+3+3)/6 = 22/6 = 3.6666...
+          - target = 4；rate = 3.6666.../4*100 = 91.666... → ROUND_HALF_UP 2dp → 91.67
+
+        lifecycle_status == 'active' 的 bug 舊行為：第 4 名在任何月份都被排除
+          → avg = (3+3+3+3+3+3)/6 = 3；rate = 3/4*100 = 75.00（錯誤）
+        """
+        from decimal import Decimal
+
+        month_ends = [
+            date(2025, 10, 31),
+            date(2025, 11, 30),
+            date(2025, 12, 31),
+            date(2026, 1, 31),
+            date(2026, 2, 28),
+            date(2026, 3, 31),
+        ]
+
+        # 3 名全程在籍學生（lifecycle=active）
+        for i in range(3):
+            _make_student(
+                session,
+                name=f"在籍生{i+1:02d}",
+                classroom_id=classroom.id,
+                enrollment_date=date(2025, 9, 1),
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            )
+
+        # 第 4 名：2026-02-01 退學，current state = withdrawn
+        # withdrawal_date=2026-02-01 → withdrawal_date > d 對 10/31,11/30,12/31,1/31 成立（4 個月計入）
+        #                            → withdrawal_date > d 對 2/28,3/31 不成立（2 個月不計）
+        _make_student(
+            session,
+            name="退學生D",
+            classroom_id=classroom.id,
+            enrollment_date=date(2025, 9, 1),
+            withdrawal_date=date(2026, 2, 1),
+            lifecycle_status=LIFECYCLE_WITHDRAWN,
+        )
+
+        session.commit()
+
+        from services.year_end.enrollment_rates import class_performance_rate
+
+        result = class_performance_rate(
+            session,
+            classroom_id=classroom.id,
+            month_ends=month_ends,
+            head_count_target=4,
+        )
+
+        # 正確答案：(4+4+4+4+3+3)/6 / 4 * 100 = 22/6/4*100 = 91.666... → 91.67
+        assert result == Decimal(
+            "91.67"
+        ), f"expected Decimal('91.67') (pure-date filter), got {result!r}"
