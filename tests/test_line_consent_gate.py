@@ -26,13 +26,13 @@ def test_check_line_push_consent_user_not_bound_returns_false(test_db_session):
 
 
 def test_check_line_push_consent_consent_false_returns_false(test_db_session):
-    """User 已綁定 LINE 但 line_push_consent=False → 回傳 False。"""
+    """家長已綁定 LINE 但 line_push_consent=False → 回傳 False（家長須 explicit opt-in）。"""
     from models.auth import User
 
     user = User(
-        username="test_no_consent",
+        username="test_parent_no_consent",
         password_hash="hashed",
-        role="teacher",
+        role="parent",
         line_user_id="U_consent_false_001",
         line_push_consent=False,
     )
@@ -44,13 +44,13 @@ def test_check_line_push_consent_consent_false_returns_false(test_db_session):
 
 
 def test_check_line_push_consent_consent_true_returns_true(test_db_session):
-    """User 已綁定 LINE 且 line_push_consent=True → 回傳 True。"""
+    """家長已綁定 LINE 且 line_push_consent=True → 回傳 True。"""
     from models.auth import User
 
     user = User(
-        username="test_with_consent",
+        username="test_parent_with_consent",
         password_hash="hashed",
-        role="teacher",
+        role="parent",
         line_user_id="U_consent_true_001",
         line_push_consent=True,
     )
@@ -66,6 +66,54 @@ def test_check_line_push_consent_db_error_returns_false():
     with patch("models.base.session_scope") as mock_scope:
         mock_scope.side_effect = RuntimeError("DB connection lost")
         result = _check_line_push_consent("U_any_user_id")
+    assert result is False
+
+
+def test_check_line_push_consent_staff_exempt_returns_true(test_db_session):
+    """員工（role != 'parent'）不受家長跨境 consent gate 約束 → 一律放行（True），
+    即使 line_push_consent=False。
+
+    理由：Spec E 的跨境同意僅針對「家長推播含學生（第三方未成年）PII」；員工 LINE
+    通知傳的是員工本人工作資訊（請假/加班/薪資），非第三方 PII，且員工無 opt-in
+    途徑（Spec E 僅建家長 LIFF opt-in UI）。員工被 gate 拍掉是實作副作用，非設計意圖。
+    """
+    from models.auth import User
+
+    user = User(
+        username="staff_no_consent",
+        password_hash="hashed",
+        role="teacher",
+        line_user_id="U_staff_001",
+        line_push_consent=False,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()
+
+    result = _check_line_push_consent("U_staff_001")
+    assert result is True
+
+
+def test_check_line_push_consent_dual_role_parent_still_gated(test_db_session):
+    """teacher-parent（role='parent' 但同時是員工，employee_id 非空）的家長身分推播
+    含學生 PII，仍須受 gate（consent=False → False）。
+
+    回歸防護：確保 discriminator 用 role（而非 employee_id）。若誤用 employee_id 判定，
+    此 user 因 employee_id 非空會被當員工放行 → 在未同意下外洩學生 PII。
+    """
+    from models.auth import User
+
+    user = User(
+        username="teacher_parent_dual",
+        password_hash="hashed",
+        role="parent",
+        employee_id=12345,
+        line_user_id="U_dual_role_001",
+        line_push_consent=False,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()
+
+    result = _check_line_push_consent("U_dual_role_001")
     assert result is False
 
 
