@@ -725,6 +725,28 @@ def get_student(
             entity_id=str(student_id),
             summary=f"查看學生資料：{student_name}",
         )
+
+        # RA-MED-3：當實際回出解密醫療欄位（caller 有 health-read 且該生有醫療內容）時，
+        # 補寫 §6 medical_access_log（detail 頁無顯式 reason，用 generic 字串）。
+        from utils.portfolio_access import can_view_student_health
+
+        if can_view_student_health(current_user) and (
+            student.allergy or student.medication
+        ):
+            from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
+            from utils.request_ip import get_client_ip
+
+            session.add(
+                MedicalAccessLog(
+                    user_id=current_user.get("user_id"),
+                    student_id=student_id,
+                    field_name=MEDICAL_FIELD_BUNDLE,
+                    reason="學生詳細頁檢視（無顯式理由）",
+                    ip_address=get_client_ip(request),
+                )
+            )
+            session.commit()
+
         return mask_student_health_fields(payload, current_user)
     finally:
         session.close()
