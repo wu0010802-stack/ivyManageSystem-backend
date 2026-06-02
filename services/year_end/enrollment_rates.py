@@ -51,7 +51,12 @@ def count_enrolled_on(
     d: date,
     classroom_id: int | None = None,
 ) -> int:
-    """指定日期（及可選班級）的嚴格在籍人數。"""
+    """指定日期（及可選班級）的嚴格在籍人數。
+
+    注意：指定 classroom_id 時，使用學生目前（現態）的 classroom_id，
+    不具轉班歷史感知；若需歷史月份的「當時所在班級」人數，
+    請改用 class_performance_rate（內部走 classroom_at_month_end resolver）。
+    """
     q = db.query(func.count(Student.id)).filter(_enrolled_on_filter(d))
     if classroom_id is not None:
         q = q.filter(Student.classroom_id == classroom_id)

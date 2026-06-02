@@ -1,7 +1,7 @@
 """tests/test_year_end_enrollment_rates.py — 年終達成率純查詢測試（TDD）
 
 覆蓋：
-  1. school_achievement_rate — 全校達成率（在籍嚴格 filter：排退學 + lifecycle 非 active）
+  1. school_achievement_rate — 全校達成率（在籍嚴格 filter：純日期 filter，排退學以 withdrawal_date 判定，不依賴 lifecycle_status）
   2. class_performance_rate  — 班級經營績效（各月底在班平均 / 編制 × 100）
 """
 
