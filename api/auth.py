@@ -235,7 +235,9 @@ def _check_ip_rate_limit(ip: str) -> None:
     from utils.rate_limit_db import count_recent_attempts, record_attempt
 
     record_attempt(_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
-    count = count_recent_attempts(_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    count = count_recent_attempts(
+        _IP_SCOPE, ip, within_seconds=_IP_WINDOW, fail_closed=True
+    )
     if count > _IP_MAX_ATTEMPTS:
         logger.warning("IP 登入頻率超限: %s (count=%d)", ip, count)
         raise HTTPException(status_code=429, detail="登入嘗試次數過多，請稍後再試")
@@ -249,7 +251,7 @@ def _check_account_lockout(username: str) -> None:
     from utils.rate_limit_db import count_recent_attempts
 
     count = count_recent_attempts(
-        _ACCOUNT_SCOPE, username, within_seconds=_FAIL_LOCKOUT
+        _ACCOUNT_SCOPE, username, within_seconds=_FAIL_LOCKOUT, fail_closed=True
     )
     if count >= _FAIL_THRESHOLD:
         logger.warning("帳號已鎖定: %s (failures=%d)", username, count)
@@ -285,7 +287,9 @@ def _check_pwd_change_ip(ip: str) -> None:
     from utils.rate_limit_db import count_recent_attempts, record_attempt
 
     record_attempt(_PWD_CHANGE_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
-    count = count_recent_attempts(_PWD_CHANGE_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    count = count_recent_attempts(
+        _PWD_CHANGE_IP_SCOPE, ip, within_seconds=_IP_WINDOW, fail_closed=True
+    )
     if count > _IP_MAX_ATTEMPTS:
         logger.warning("change-password IP 頻率超限: %s (count=%d)", ip, count)
         raise HTTPException(status_code=429, detail="請求過於頻繁，請稍後再試")
@@ -301,7 +305,7 @@ def _check_pwd_change_user_lockout(user_id: int) -> None:
 
     key = f"user:{user_id}"
     count = count_recent_attempts(
-        _PWD_CHANGE_USER_SCOPE, key, within_seconds=_FAIL_LOCKOUT
+        _PWD_CHANGE_USER_SCOPE, key, within_seconds=_FAIL_LOCKOUT, fail_closed=True
     )
     if count >= _FAIL_THRESHOLD:
         logger.warning(
@@ -339,7 +343,9 @@ def _check_pwd_reset_ip(ip: str) -> None:
     from utils.rate_limit_db import count_recent_attempts, record_attempt
 
     record_attempt(_PWD_RESET_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
-    count = count_recent_attempts(_PWD_RESET_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    count = count_recent_attempts(
+        _PWD_RESET_IP_SCOPE, ip, within_seconds=_IP_WINDOW, fail_closed=True
+    )
     if count > _IP_MAX_ATTEMPTS:
         logger.warning("reset-password IP 頻率超限: %s (count=%d)", ip, count)
         raise HTTPException(status_code=429, detail="請求過於頻繁，請稍後再試")
