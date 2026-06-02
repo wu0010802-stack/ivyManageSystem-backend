@@ -905,14 +905,18 @@ class TestP1_4_5LeaveOvertimeCrossOverlap:
             conflict is not None
         ), "預先建立的 pending leave 應被 _find_overlapping_leave 偵測"
 
-        # 直接 inspect import_leaves source 確認有 _check_overlap 或 _find_overlapping_leave 呼叫
+        # 直接 inspect import 路徑 source 確認有 _check_overlap 或 _find_overlapping_leave 呼叫。
+        # 2026-06-02：import_leaves 的 parse+DB 邏輯卸載到 _import_leaves_sync（executor），
+        # overlap 檢查隨之搬入該函式，故 source 檢查涵蓋 wrapper + sync helper 兩者。
         import inspect
         from api import leaves as m
 
-        src = inspect.getsource(m.import_leaves)
+        src = inspect.getsource(m.import_leaves) + inspect.getsource(
+            m._import_leaves_sync
+        )
         assert (
             "_check_overlap" in src or "_find_overlapping_leave" in src
-        ), "import_leaves 必須呼叫 overlap 檢查（include_pending=True）"
+        ), "import_leaves 路徑必須呼叫 overlap 檢查（include_pending=True）"
 
 
 # ────────────────────────────────────────────────────────────────────────────

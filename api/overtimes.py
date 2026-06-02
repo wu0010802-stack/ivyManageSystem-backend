@@ -2,6 +2,7 @@
 Overtime management router
 """
 
+import asyncio
 import logging
 import calendar as cal_module
 from datetime import date, datetime, time as dt_time, timedelta
@@ -1780,6 +1781,12 @@ async def import_overtimes(
 ):
     """批次匯入加班申請（建立草稿加班單，status='pending'，需後續人工審核）"""
     content = await read_upload_with_size_check(file)
+    # parse + DB 迴圈為同步 CPU/IO，卸載到 executor 避免阻塞 event loop（行為不變）
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _import_overtimes_sync, content)
+
+
+def _import_overtimes_sync(content: bytes) -> dict:
     validate_file_signature(content, ".xlsx")
 
     parse_result = parse_excel(BytesIO(content), schema=OvertimeImportRow)
