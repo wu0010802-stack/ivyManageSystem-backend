@@ -2907,6 +2907,93 @@ class SalaryEngine:
             "special_bonus": rec.special_bonus or 0,
         }
 
+    def _finalize_breakdown(
+        self,
+        session,
+        emp,
+        emp_dict: dict,
+        year: int,
+        month: int,
+        *,
+        attendance_result,
+        classroom_context,
+        office_staff_context,
+        meeting_context,
+        leave_deduction: float,
+        overtime_work_pay: float,
+        personal_sick_leave_hours: float,
+        period_festival_total,
+        period_overtime_total,
+        absent_count: int,
+        absence_deduction_amount: float,
+        ytd_before: float | None = None,
+    ):
+        """single 與 bulk 共用的「計算尾段」：懲處扣減 → calculate_salary →
+        二代健保補充保費 → 曠職扣款 → net + 守衛，回傳 breakdown（不 persist）。
+
+        Why: single（_build_breakdown_for_month）與 bulk
+        （_compute_and_persist_single_employee）過去各自重寫此段，導致 F1（bulk
+        漏扣懲處）類的漂移。收斂為單一入口後計算尾段永不再分歧；兩路徑僅在
+        「輸入如何取得」（即時 query vs 預載 bundle）與 ytd_before（None=即時查
+        / 預載值）不同。callers 傳入 **raw（未扣懲處）** period totals 與已算好的
+        曠職數，且須在 config_for_month(year, month) 內呼叫（本函式不自管設定版本）。
+        """
+        # 懲處：從發放月累積扣 pending（節慶優先扣完才動超額）；非發放月 totals=None
+        # → _adjust 直接 pass-through 不查 DB。
+        period_festival_total, period_overtime_total, _disc_deducted = (
+            self._adjust_period_totals_for_discipline(
+                session, emp, year, month, period_festival_total, period_overtime_total
+            )
+        )
+
+        breakdown = self.calculate_salary(
+            employee=emp_dict,
+            year=year,
+            month=month,
+            attendance=attendance_result,
+            leave_deduction=leave_deduction,
+            classroom_context=classroom_context,
+            office_staff_context=office_staff_context,
+            meeting_context=meeting_context,
+            overtime_work_pay=overtime_work_pay,
+            personal_sick_leave_hours=personal_sick_leave_hours,
+            period_festival_override=period_festival_total,
+            period_overtime_override=period_overtime_total,
+        )
+
+        # 二代健保補充保費（獎金路徑）：年累計獎金逾 4× 投保薪資部分扣 2.11%。
+        # ytd_before=None → 函式內即時 query（single）；bulk 傳預載值避免 N+1。
+        from services.salary.supplementary_premium import (
+            apply_bonus_supplementary_to_breakdown,
+        )
+
+        apply_bonus_supplementary_to_breakdown(
+            session,
+            emp_dict,
+            breakdown,
+            year,
+            month,
+            self.insurance_service,
+            emp.id,
+            ytd_before=ytd_before,
+        )
+
+        breakdown.absent_count = absent_count
+        breakdown.absence_deduction = round_half_up(absence_deduction_amount)
+        breakdown.total_deduction = round_half_up(
+            breakdown.total_deduction + absence_deduction_amount
+        )
+        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
+
+        if breakdown.total_deduction < 0:
+            raise ValueError(
+                f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
+            )
+        if breakdown.net_salary < 0:
+            raise ValueError(f"net_salary 異常負值（含曠職）: {breakdown.net_salary}")
+
+        return breakdown
+
     def _build_breakdown_for_month(self, session, emp, year: int, month: int):
         """純計算：依員工、年月產出 SalaryBreakdown，不寫入任何 DB 記錄。
 
@@ -2967,65 +3054,26 @@ class SalaryEngine:
                 self._compute_period_accrual_totals(session, emp, year, month)
             )
 
-            # 從合計中扣減 pending 懲處（節慶優先扣完才動超額）
-            period_festival_total, period_overtime_total, _disc_deducted = (
-                self._adjust_period_totals_for_discipline(
-                    session,
-                    emp,
-                    year,
-                    month,
-                    period_festival_total,
-                    period_overtime_total,
-                )
-            )
-
-            breakdown = self.calculate_salary(
-                employee=emp_dict,
-                year=year,
-                month=month,
-                attendance=attendance_result,
-                leave_deduction=period_records["leave_deduction"],
+            # period accrual 為 raw（未扣懲處）；懲處與其後尾段由共用
+            # _finalize_breakdown 處理（與 bulk 路徑同一份計算尾段）。
+            return self._finalize_breakdown(
+                session,
+                emp,
+                emp_dict,
+                year,
+                month,
+                attendance_result=attendance_result,
                 classroom_context=classroom_context,
                 office_staff_context=office_staff_context,
                 meeting_context=period_records["meeting_context"],
+                leave_deduction=period_records["leave_deduction"],
                 overtime_work_pay=period_records["overtime_work_pay"],
                 personal_sick_leave_hours=period_records["personal_sick_leave_hours"],
-                period_festival_override=period_festival_total,
-                period_overtime_override=period_overtime_total,
+                period_festival_total=period_festival_total,
+                period_overtime_total=period_overtime_total,
+                absent_count=absent_count,
+                absence_deduction_amount=absence_deduction_amount,
             )
-
-            # 二代健保補充保費（獎金路徑）：年累計獎金逾 4× 投保薪資部分扣 2.11%
-            from services.salary.supplementary_premium import (
-                apply_bonus_supplementary_to_breakdown,
-            )
-
-            apply_bonus_supplementary_to_breakdown(
-                session,
-                emp_dict,
-                breakdown,
-                year,
-                month,
-                self.insurance_service,
-                emp.id,
-            )
-
-            breakdown.absent_count = absent_count
-            breakdown.absence_deduction = round_half_up(absence_deduction_amount)
-            breakdown.total_deduction = round_half_up(
-                breakdown.total_deduction + absence_deduction_amount
-            )
-            breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
-
-            if breakdown.total_deduction < 0:
-                raise ValueError(
-                    f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
-                )
-            if breakdown.net_salary < 0:
-                raise ValueError(
-                    f"net_salary 異常負值（含曠職）: {breakdown.net_salary}"
-                )
-
-            return breakdown
 
     def preview_salary_calculation(self, employee_id: int, year: int, month: int):
         """只算不存：GET preview 專用，保證不留下任何 SalaryRecord 副作用。
@@ -3810,65 +3858,27 @@ class SalaryEngine:
             )
         )
 
-        # 從合計中扣減 pending 懲處（節慶優先扣完才動超額）— 與 single 路徑
-        # （_build_breakdown_for_month）對齊，避免 bulk 月結漏扣懲處而多付獎金。
-        # 非發放月 totals 為 None → _adjust 直接 pass-through 不查 DB。
-        period_festival_total, period_overtime_total, _disc_deducted = (
-            self._adjust_period_totals_for_discipline(
-                session,
-                emp,
-                year,
-                month,
-                period_festival_total,
-                period_overtime_total,
-            )
-        )
-
-        # ── 計算薪資
-        breakdown = self.calculate_salary(
-            employee=emp_dict,
-            year=year,
-            month=month,
-            attendance=attendance_result,
-            leave_deduction=leave_deduction_total,
+        # period accrual 為 raw（未扣懲處）；懲處與其後尾段由共用 _finalize_breakdown
+        # 處理（與 single 路徑同一份計算尾段）。ytd_before 用預載值避免 N+1。
+        breakdown = self._finalize_breakdown(
+            session,
+            emp,
+            emp_dict,
+            year,
+            month,
+            attendance_result=attendance_result,
             classroom_context=classroom_context,
             office_staff_context=office_staff_context,
             meeting_context=meeting_context,
+            leave_deduction=leave_deduction_total,
             overtime_work_pay=overtime_work_pay_total,
             personal_sick_leave_hours=personal_sick_leave_hours,
-            period_festival_override=period_festival_total,
-            period_overtime_override=period_overtime_total,
-        )
-
-        # 二代健保補充保費（獎金路徑）：與單筆計算路徑口徑一致
-        from services.salary.supplementary_premium import (
-            apply_bonus_supplementary_to_breakdown,
-        )
-
-        apply_bonus_supplementary_to_breakdown(
-            session,
-            emp_dict,
-            breakdown,
-            year,
-            month,
-            self.insurance_service,
-            emp.id,
+            period_festival_total=period_festival_total,
+            period_overtime_total=period_overtime_total,
+            absent_count=absent_count,
+            absence_deduction_amount=absence_deduction_amount,
             ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
         )
-
-        breakdown.absent_count = absent_count
-        breakdown.absence_deduction = round_half_up(absence_deduction_amount)
-        breakdown.total_deduction = round_half_up(
-            breakdown.total_deduction + absence_deduction_amount
-        )
-        breakdown.net_salary = breakdown.gross_salary - breakdown.total_deduction
-
-        if breakdown.total_deduction < 0:
-            raise ValueError(
-                f"total_deduction 異常負值（含曠職）: {breakdown.total_deduction}"
-            )
-        if breakdown.net_salary < 0:
-            raise ValueError(f"net_salary 異常負值（含曠職）: {breakdown.net_salary}")
 
         # ── SalaryRecord upsert（延後至外層 commit）
         salary_record = salary_record_by_emp.get(emp.id)
