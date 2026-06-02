@@ -533,6 +533,39 @@ class TestBuildSettlementsGoldReconciliation:
         st = _get_settlement(db, cycle, emp)
         assert st.total_amount == frozen_total  # FINALIZED 不被覆寫
 
+    def test_build_skips_accounting_signed(self, test_db_session):
+        """ACCOUNTING_SIGNED settlement 不應被 re-build 覆寫（金額凍結）。"""
+        db = test_db_session
+        cycle, emp, _ = _seed_tsai_cycle(db)
+
+        # 第一次 build 後設為 ACCOUNTING_SIGNED
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+        st = _get_settlement(db, cycle, emp)
+        st.status = YearEndSettlementStatus.ACCOUNTING_SIGNED
+        frozen_total = st.total_amount
+        db.flush()
+
+        # 改一筆 special bonus（若重算會變動 total）
+        item = (
+            db.query(SpecialBonusItem)
+            .filter(
+                SpecialBonusItem.employee_id == emp.id,
+                SpecialBonusItem.bonus_type == SpecialBonusType.SEMESTER_DIVIDEND_FIRST,
+            )
+            .first()
+        )
+        item.amount = _D("9999")
+        db.flush()
+
+        result = sb.build_settlements(
+            db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False
+        )
+        assert result.skipped_finalized == 1
+        assert result.built == 0
+
+        st = _get_settlement(db, cycle, emp)
+        assert st.total_amount == frozen_total  # ACCOUNTING_SIGNED 不被覆寫
+
 
 # =========================================================================== #
 # (A) refresh_enrollment_rates smoke：唯一無對帳覆蓋的面，確保跑得起來       #

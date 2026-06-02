@@ -461,3 +461,84 @@ def test_manual_patch_excess_idempotent(client_with_db):
     assert items[0].amount == Decimal(
         "2000"
     ), f"預期 amount=2000，got {items[0].amount}"
+
+
+def test_manual_patch_accounting_signed_409(client_with_db):
+    """ACCOUNTING_SIGNED settlement → PATCH manual → 409（已簽核請先退回）。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, emp_id = _seed_cycle_and_employee(sf)
+    _login(client)
+
+    _build(client, cycle_id)
+
+    # 把 settlement 設為 ACCOUNTING_SIGNED
+    with sf() as s:
+        st = s.query(YearEndSettlement).filter_by(year_end_cycle_id=cycle_id).first()
+        st.status = YearEndSettlementStatus.ACCOUNTING_SIGNED
+        settlement_id = st.id
+        s.commit()
+
+    patch_res = client.patch(
+        f"/api/year_end/settlements/{settlement_id}/manual",
+        json={"deduction_disciplinary": "-1000"},
+    )
+    assert patch_res.status_code == 409, patch_res.text
+    assert "DRAFT" in patch_res.json()["detail"]
+
+
+def test_two_gate_signoff(client_with_db):
+    """兩關簽核：會計從 DRAFT 直簽 ACCOUNTING_SIGNED → 老闆 FINALIZE。"""
+    client, sf = client_with_db
+    # 種三位使用者：admin(build), accountant(sign_accounting), boss(finalize)
+    with sf() as s:
+        from models.database import User
+        from utils.auth import hash_password
+        s.add(User(
+            username="admin",
+            password_hash=hash_password("TempPass123"),
+            role="admin",
+            permission_names=["YEAR_END_WRITE", "YEAR_END_READ"],
+            is_active=True,
+        ))
+        s.add(User(
+            username="accountant",
+            password_hash=hash_password("TempPass123"),
+            role="staff",
+            permission_names=["APPRAISAL_ACCOUNTING", "YEAR_END_READ"],
+            is_active=True,
+        ))
+        s.add(User(
+            username="boss",
+            password_hash=hash_password("TempPass123"),
+            role="staff",
+            permission_names=["YEAR_END_FINALIZE", "YEAR_END_READ"],
+            is_active=True,
+        ))
+        s.commit()
+
+    cycle_id, emp_id = _seed_cycle_and_employee(sf)
+
+    # admin builds
+    _login(client)
+    res = _build(client, cycle_id)
+    assert res.status_code == 200, res.text
+
+    # 取 settlement_id（DRAFT 狀態）
+    res = client.get(f"/api/year_end/cycles/{cycle_id}/settlements")
+    settlements = res.json()
+    assert len(settlements) >= 1
+    settlement_id = settlements[0]["id"]
+    assert settlements[0]["status"] == "DRAFT"
+
+    # 會計從 DRAFT 直接簽核 → ACCOUNTING_SIGNED（跳過 supervisor）
+    _login(client, "accountant")
+    sign_res = client.post(f"/api/year_end/settlements/{settlement_id}/sign_accounting")
+    assert sign_res.status_code == 200, sign_res.text
+    assert sign_res.json()["status"] == "ACCOUNTING_SIGNED"
+
+    # 老闆 finalize
+    _login(client, "boss")
+    fin_res = client.post(f"/api/year_end/settlements/{settlement_id}/finalize")
+    assert fin_res.status_code == 200, fin_res.text
+    assert fin_res.json()["status"] == "FINALIZED"

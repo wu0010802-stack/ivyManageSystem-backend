@@ -517,7 +517,7 @@ def gather_deductions(db: Session, cycle: YearEndCycle, emp: Any) -> DeductionBr
 @dataclass
 class BuildResult:
     built: int = 0
-    skipped_finalized: int = 0
+    skipped_finalized: int = 0  # skipped because already signed or finalized (non-DRAFT)
 
 
 def _is_postgres(db: Session) -> bool:
@@ -545,7 +545,7 @@ def build_settlements(
     """跨員工跑年終 6-step 引擎 + upsert snapshot/settlement（idempotent）。
 
     參與者 = ACTIVE 員工 ∪ included_resigned_ids（對齊 appraisal_sync 慣例）。
-    已 FINALIZED 的 settlement 不覆寫（skipped_finalized += 1）。
+    非 DRAFT 的 settlement（已簽或已核定）不覆寫（skipped_finalized += 1）。
     本函式只 flush 不 commit；交由 router 層 transactional dep 與 audit middleware。
     """
     _advisory_lock_build(db, academic_year)
@@ -588,7 +588,7 @@ def build_settlements(
         )
         if (
             existing is not None
-            and existing.status == YearEndSettlementStatus.FINALIZED
+            and existing.status != YearEndSettlementStatus.DRAFT
         ):
             result.skipped_finalized += 1
             continue

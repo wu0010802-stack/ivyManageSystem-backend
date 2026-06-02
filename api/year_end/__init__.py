@@ -246,8 +246,11 @@ def sign_accounting(
     )
     if s is None:
         raise HTTPException(404)
-    if s.status != YearEndSettlementStatus.SUPERVISOR_SIGNED:
-        raise HTTPException(400, f"非主管已簽 (current={s.status.value})")
+    if s.status not in (
+        YearEndSettlementStatus.DRAFT,
+        YearEndSettlementStatus.SUPERVISOR_SIGNED,
+    ):
+        raise HTTPException(400, f"非 DRAFT/主管已簽 (current={s.status.value})")
     assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
     s.status = YearEndSettlementStatus.ACCOUNTING_SIGNED
     s.accounting_signed_by = current_user.get("user_id")
@@ -689,7 +692,7 @@ def build_settlements_endpoint(
     current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
     session: Session = Depends(get_session_dep),
 ):
-    """跨員工計算並 upsert 年終結算單（idempotent）。已 FINALIZED 的結算不覆寫。"""
+    """跨員工計算並 upsert 年終結算單（idempotent）。非 DRAFT（已簽核）的結算不覆寫。"""
     from services.year_end.settlement_builder import build_settlements
 
     cycle = session.get(YearEndCycle, cycle_id)
@@ -768,8 +771,8 @@ def manual_patch_settlement(
     settlement = session.get(YearEndSettlement, settlement_id)
     if settlement is None:
         raise HTTPException(404, "settlement 不存在")
-    if settlement.status == YearEndSettlementStatus.FINALIZED:
-        raise HTTPException(409, "已 FINALIZED，不可手動修改")
+    if settlement.status != YearEndSettlementStatus.DRAFT:
+        raise HTTPException(409, "僅 DRAFT 狀態可手動調整；已簽核請先退回")
 
     cycle = session.get(YearEndCycle, settlement.year_end_cycle_id)
     if cycle is None:
