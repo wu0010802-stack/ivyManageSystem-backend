@@ -519,3 +519,94 @@ def test_void_payouts_deletes_only_appraisal_half_bonus_items(
     assert deleted == 2
     assert len(remaining) == 1
     assert remaining[0].bonus_type == SpecialBonusType.SEMESTER_DIVIDEND_FIRST
+
+
+# === Task B3（RA-L14）：generate_payouts 後標 2 月薪資 stale ===
+
+from models.database import SalaryRecord  # noqa: E402
+
+
+def test_generate_payouts_marks_february_salary_stale(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+):
+    """改 payout 後，affected 員工當年（payout_year）2 月（及之後）未封存薪資被標 stale。
+
+    考核年終獎金進 2 月薪資、又計入二代健保補充保費年累計基底；改 payout 後若
+    不重算，2 月薪資的補充保費基底會 stale。generate_payouts 應自動標 needs_recalc。
+    """
+    # 2026/2 未封存薪資，needs_recalc 起始 False
+    sr = SalaryRecord(
+        employee_id=sample_active_employee.id,
+        salary_year=2026,
+        salary_month=2,
+        is_finalized=False,
+        needs_recalc=False,
+    )
+    test_db_session.add(sr)
+    test_db_session.flush()
+
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+
+    test_db_session.refresh(sr)
+    assert sr.needs_recalc is True, "改 payout 後 2 月薪資應被標 needs_recalc"
+
+
+def test_generate_payouts_does_not_touch_finalized_february(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+):
+    """已封存 2 月薪資不被標 stale（封存代表結帳鎖定，不可被重算覆寫）。"""
+    sr = SalaryRecord(
+        employee_id=sample_active_employee.id,
+        salary_year=2026,
+        salary_month=2,
+        is_finalized=True,
+        needs_recalc=False,
+    )
+    test_db_session.add(sr)
+    test_db_session.flush()
+
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+
+    test_db_session.refresh(sr)
+    assert sr.needs_recalc is False, "已封存薪資不該被標 stale"
+
+
+def test_generate_payouts_does_not_touch_january(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+):
+    """1 月薪資（from_month=2 之前）不被標 stale。"""
+    sr = SalaryRecord(
+        employee_id=sample_active_employee.id,
+        salary_year=2026,
+        salary_month=1,
+        is_finalized=False,
+        needs_recalc=False,
+    )
+    test_db_session.add(sr)
+    test_db_session.flush()
+
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+
+    test_db_session.refresh(sr)
+    assert sr.needs_recalc is False, "1 月薪資不在 from_month=2 範圍內"
