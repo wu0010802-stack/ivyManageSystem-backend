@@ -790,6 +790,12 @@ def get_student_medical(
     from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
     from utils.request_ip import get_client_ip
 
+    # RA-L4：min_length 不 trim，純空白可過；strip 後再驗語意長度，避免空洞 reason 架空 §6 稽核
+    if len(reason.strip()) < 10:
+        raise HTTPException(
+            status_code=422, detail="讀取醫療資訊原因需至少 10 個有意義字元"
+        )
+
     session = get_session()
     try:
         student = assert_student_access(session, current_user, student_id)
