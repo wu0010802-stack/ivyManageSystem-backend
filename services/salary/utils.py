@@ -289,6 +289,37 @@ def mark_salary_stale(session, employee_id: int, year: int, month: int) -> bool:
     return True
 
 
+def mark_salary_stale_from_month(
+    session, employee_id: int, year: int, from_month: int
+) -> int:
+    """把該員工同年、salary_month >= from_month、未封存的 SalaryRecord 標 needs_recalc=True。
+
+    用於「改某月 YTD 累計獎金欄位」場景：二代健保補充保費採 per-payment 增額制
+    （supplementary_premium.query_ytd_bonus_before 以 salary_month < month 累計），改
+    N 月獎金會使 N 月自身與同年「之後」月份的補充保費基底（ytd_before / threshold）失準。
+    本 helper 一次把「當月及之後」未封存月份標 stale，強制 finalize 前重算
+    （重算尊重 manual_overrides，手動調整的獎金值得以保留）。
+
+    排除已封存月份理由同 mark_salary_stale：封存代表結帳鎖定，不可被重算覆寫。
+    對照範本：api/insurance.py:_bulk_mark_salary_stale_for_year（級距異動標整年 stale）。
+
+    Returns:
+        被標記的 record 數（caller 自行 commit）。
+    """
+    from models.database import SalaryRecord
+
+    return (
+        session.query(SalaryRecord)
+        .filter(
+            SalaryRecord.employee_id == employee_id,
+            SalaryRecord.salary_year == year,
+            SalaryRecord.salary_month >= from_month,
+            SalaryRecord.is_finalized.is_(False),
+        )
+        .update({"needs_recalc": True}, synchronize_session=False)
+    )
+
+
 def lock_and_premark_stale(
     session, employee_id: int, months: set[tuple[int, int]]
 ) -> None:
