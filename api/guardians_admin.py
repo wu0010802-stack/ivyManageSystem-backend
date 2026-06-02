@@ -256,6 +256,7 @@ def revoke_guardian_devices(
             )
             .update({"revoked_at": now_taipei_naive()}, synchronize_session=False)
         )
+        _imp_by, _imp_name = _extract_impersonation_from_header(request)
         ip = get_client_ip(request)
         session.add(
             AuditLog(
@@ -267,6 +268,8 @@ def revoke_guardian_devices(
                 summary=f"撤銷家長裝置（{int(n or 0)} 個 session）",
                 ip_address=ip,
                 created_at=now_taipei_naive(),
+                impersonated_by=_imp_by,
+                impersonated_by_name=_imp_name,
             )
         )
         session.commit()

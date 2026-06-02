@@ -393,3 +393,104 @@ def test_device_setup_code_audit_stamps_impersonation(binding_client):
     assert row is not None, "AuditLog row 未寫入"
     assert row.impersonated_by == admin_user_id
     assert row.impersonated_by_name == admin_name
+
+
+def test_revoke_devices_audit_stamps_impersonation(binding_client):
+    """POST /api/guardians/{id}/revoke-devices 以 write-mode 模擬 token 呼叫時，
+    AuditLog 的 impersonated_by / impersonated_by_name 應帶 admin 身份（RA-L1：
+    與 binding-code / device-setup-code 同類的 inline AuditLog 歸屬缺口）。
+
+    revoke-devices 只有在 Guardian.user_id 不為 None 時才寫 AuditLog（否則早回
+    {"revoked": 0}）；故 guardian 必須掛 user_id。即使無任何 active session
+    （n=0），仍應寫出帶 impersonation 歸屬的 AuditLog row。
+    """
+    client, session_factory = binding_client
+
+    admin_user_id = 42
+    admin_name = "王小明"
+
+    with session_factory() as session:
+        hr_user = User(
+            username="hr_revoke_imp",
+            password_hash=hash_password("Pass1234!"),
+            role="hr",
+            permission_names=["GUARDIANS_WRITE"],
+            is_active=True,
+            must_change_password=False,
+            token_version=0,
+        )
+        session.add(hr_user)
+        session.flush()
+        hr_user_id = hr_user.id
+
+        # 家長 User（被撤裝置的對象）
+        parent_user = User(
+            username="parent_revoke_target",
+            password_hash=hash_password("Pass1234!"),
+            role="parent",
+            permission_names=[],
+            is_active=True,
+            must_change_password=False,
+            token_version=0,
+        )
+        session.add(parent_user)
+        session.flush()
+        parent_user_id = parent_user.id
+
+        from models.classroom import Student
+
+        student = Student(
+            student_id="S9903",
+            name="測試學生3",
+            lifecycle_status="active",
+            is_active=True,
+        )
+        session.add(student)
+        session.flush()
+
+        guardian = Guardian(
+            student_id=student.id,
+            user_id=parent_user_id,  # 必須掛 user_id，否則 endpoint 早回不寫 audit
+            name="測試家長3",
+            relation="母親",
+        )
+        session.add(guardian)
+        session.flush()
+        guardian_id = guardian.id
+        session.commit()
+
+    token = create_access_token(
+        {
+            "user_id": hr_user_id,
+            "employee_id": None,
+            "role": "hr",
+            "name": "HR 丙",
+            "permission_names": ["GUARDIANS_WRITE"],
+            "token_version": 0,
+            "impersonated_by": admin_user_id,
+            "impersonated_by_name": admin_name,
+            "impersonation_mode": "write",
+        }
+    )
+
+    resp = client.post(
+        f"/api/guardians/{guardian_id}/revoke-devices",
+        cookies={"access_token": token},
+    )
+    assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+
+    with session_factory() as session:
+        row = (
+            session.query(AuditLog)
+            .filter(AuditLog.entity_type == "parent_device_setup")
+            .filter(AuditLog.action == "UPDATE")
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
+    assert row is not None, "revoke-devices AuditLog row 未寫入"
+    assert (
+        row.impersonated_by == admin_user_id
+    ), f"impersonated_by 應為 {admin_user_id}，got {row.impersonated_by}"
+    assert (
+        row.impersonated_by_name == admin_name
+    ), f"impersonated_by_name 應為 '{admin_name}'，got {row.impersonated_by_name}"
