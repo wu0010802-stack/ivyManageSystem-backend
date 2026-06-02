@@ -816,7 +816,9 @@ def manual_patch_settlement(
 
     # 重算（idempotent）：若員工已非 active，需納入 included_resigned_ids
     emp = session.get(Employee, settlement.employee_id)
-    is_inactive = emp is None or not getattr(emp, "is_active", True)
+    if emp is None:
+        raise HTTPException(409, "員工資料不存在，無法重算結算")
+    is_inactive = not getattr(emp, "is_active", True)
     included = {settlement.employee_id} if is_inactive else set()
     actor_id = current_user.get("user_id")
     build_settlements(

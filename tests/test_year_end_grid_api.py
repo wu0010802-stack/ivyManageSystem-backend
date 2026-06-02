@@ -346,9 +346,9 @@ def test_manual_patch_hire_months_override(client_with_db):
     hire_months_before = Decimal(str(s["hire_months"]))
 
     # 第一次 build 員工全年在職 → hire_months 應為 12
-    assert hire_months_before == Decimal("12"), (
-        f"初次 build hire_months 應為 12，got {hire_months_before}"
-    )
+    assert hire_months_before == Decimal(
+        "12"
+    ), f"初次 build hire_months 應為 12，got {hire_months_before}"
 
     # PATCH hire_months_override=6 → 比例應為 6/12=0.5
     patch_res = client.patch(
@@ -359,12 +359,12 @@ def test_manual_patch_hire_months_override(client_with_db):
     updated = patch_res.json()
 
     # hire_months 覆寫為 6，proration_rate 對應 0.5
-    assert Decimal(str(updated["hire_months"])) == Decimal("6"), (
-        f"hire_months 應為 6，got {updated['hire_months']}"
-    )
-    assert Decimal(str(updated["proration_rate"])) == Decimal("0.5000"), (
-        f"proration_rate 應為 0.5000（6/12），got {updated['proration_rate']}"
-    )
+    assert Decimal(str(updated["hire_months"])) == Decimal(
+        "6"
+    ), f"hire_months 應為 6，got {updated['hire_months']}"
+    assert Decimal(str(updated["proration_rate"])) == Decimal(
+        "0.5000"
+    ), f"proration_rate 應為 0.5000（6/12），got {updated['proration_rate']}"
 
 
 def test_manual_patch_finalized_409(client_with_db):
@@ -397,3 +397,67 @@ def test_build_requires_write_permission(client_with_db):
 
     res = _build(client, cycle_id)
     assert res.status_code == 403, res.text
+
+
+def test_manual_patch_requires_write_permission(client_with_db):
+    """read-only user (YEAR_END_READ, no WRITE) 打 manual-patch → 403。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)
+
+    # 先用 admin 建立 settlement
+    _login(client)
+    _build(client, cycle_id)
+    res = client.get(f"/api/year_end/cycles/{cycle_id}/settlements")
+    settlement_id = res.json()[0]["id"]
+
+    # 切換成 read-only viewer
+    _login(client, "viewer")
+    patch_res = client.patch(
+        f"/api/year_end/settlements/{settlement_id}/manual",
+        json={"deduction_disciplinary": "-1000"},
+    )
+    assert patch_res.status_code == 403, patch_res.text
+
+
+def test_manual_patch_excess_idempotent(client_with_db):
+    """PATCH excess_amount=2000 連打兩次 → 只有 ONE EXCESS_ENROLLMENT item，金額為 2000。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, emp_id = _seed_cycle_and_employee(sf)
+    _login(client)
+
+    _build(client, cycle_id)
+
+    res = client.get(f"/api/year_end/cycles/{cycle_id}/settlements")
+    settlement_id = res.json()[0]["id"]
+
+    # 第一次 PATCH
+    r1 = client.patch(
+        f"/api/year_end/settlements/{settlement_id}/manual",
+        json={"excess_amount": "2000"},
+    )
+    assert r1.status_code == 200, r1.text
+
+    # 第二次 PATCH（相同金額 → upsert，不應再新增一筆）
+    r2 = client.patch(
+        f"/api/year_end/settlements/{settlement_id}/manual",
+        json={"excess_amount": "2000"},
+    )
+    assert r2.status_code == 200, r2.text
+
+    # DB 驗證：該 (cycle, employee) 只有一筆 EXCESS_ENROLLMENT，金額 2000
+    with sf() as s:
+        items = (
+            s.query(SpecialBonusItem)
+            .filter_by(
+                year_end_cycle_id=cycle_id,
+                employee_id=emp_id,
+                bonus_type=SpecialBonusType.EXCESS_ENROLLMENT,
+            )
+            .all()
+        )
+    assert len(items) == 1, f"預期 1 筆 EXCESS_ENROLLMENT，got {len(items)}"
+    assert items[0].amount == Decimal(
+        "2000"
+    ), f"預期 amount=2000，got {items[0].amount}"
