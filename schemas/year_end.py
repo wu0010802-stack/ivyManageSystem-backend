@@ -180,3 +180,31 @@ class PayoutItem(BaseModel):
     amount: Decimal
     source_ref: Optional[str] = None
     calc_meta: dict[str, Any]
+
+
+# ===== Task 6: build / grid / manual-patch 端點 schema =====
+
+
+class BuildSettlementsRequest(BaseModel):
+    included_resigned_employee_ids: list[int] = []
+
+
+class BuildResultOut(BaseModel):
+    built: int
+    skipped_finalized: int
+
+
+class GridRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    employee_id: int
+    employee_name: str
+    payable_amount: Decimal
+    special_bonuses: dict[str, Decimal]
+    total_amount: Decimal
+    status: str
+
+
+class ManualPatchRequest(BaseModel):
+    deduction_disciplinary: Optional[Decimal] = None
+    excess_amount: Optional[Decimal] = None
+    hire_months_override: Optional[Decimal] = None

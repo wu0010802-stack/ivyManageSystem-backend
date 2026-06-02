@@ -32,7 +32,11 @@ from models.year_end import (
     YearEndSettlementStatus,
 )
 from schemas.year_end import (
+    BuildResultOut,
+    BuildSettlementsRequest,
     ClassEnrollmentTargetOut,
+    GridRowOut,
+    ManualPatchRequest,
     OrgYearSettingsCreate,
     OrgYearSettingsOut,
     SettlementOut,
@@ -670,6 +674,163 @@ def export_summary_pdf(
             "Content-Disposition": f'inline; filename="year_end_summary_{cycle.academic_year}.pdf"'
         },
     )
+
+
+
+# ===== Task 6: build-settlements / grid / manual-patch =====
+
+
+@year_end_router.post(
+    "/cycles/{cycle_id}/build-settlements", response_model=BuildResultOut
+)
+def build_settlements_endpoint(
+    cycle_id: int,
+    payload: BuildSettlementsRequest,
+    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """跨員工計算並 upsert 年終結算單（idempotent）。已 FINALIZED 的結算不覆寫。"""
+    from services.year_end.settlement_builder import build_settlements
+
+    cycle = session.get(YearEndCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "cycle 不存在")
+
+    actor_id = current_user.get("user_id")
+    result = build_settlements(
+        session,
+        cycle.academic_year,
+        set(payload.included_resigned_employee_ids),
+        actor_id=actor_id,
+        refresh_rates=True,
+    )
+    session.commit()
+    return BuildResultOut(built=result.built, skipped_finalized=result.skipped_finalized)
+
+
+@year_end_router.get(
+    "/cycles/{cycle_id}/grid", response_model=list[GridRowOut]
+)
+def grid_endpoint(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    """回傳每位員工一列的年終結算 grid（含 special_bonuses 依 bonus_type 加總）。"""
+    if not session.get(YearEndCycle, cycle_id):
+        raise HTTPException(404, "cycle 不存在")
+
+    settlements = (
+        session.query(YearEndSettlement)
+        .filter_by(year_end_cycle_id=cycle_id)
+        .order_by(YearEndSettlement.employee_id)
+        .all()
+    )
+
+    emp_idx = {e.id: e for e in session.query(Employee).all()}
+
+    # 彙整 special_bonuses：{employee_id -> {bonus_type.value -> total}}
+    sb_map: dict[int, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    for sb in (
+        session.query(SpecialBonusItem).filter_by(year_end_cycle_id=cycle_id).all()
+    ):
+        sb_map[sb.employee_id][sb.bonus_type.value] += sb.amount
+
+    rows = []
+    for s in settlements:
+        emp = emp_idx.get(s.employee_id)
+        name = emp.name if emp else f"emp#{s.employee_id}"
+        rows.append(
+            GridRowOut(
+                employee_id=s.employee_id,
+                employee_name=name,
+                payable_amount=s.payable_amount,
+                special_bonuses=dict(sb_map.get(s.employee_id, {})),
+                total_amount=s.total_amount,
+                status=s.status.value,
+            )
+        )
+    return rows
+
+
+@year_end_router.patch(
+    "/settlements/{settlement_id}/manual", response_model=SettlementOut
+)
+def manual_patch_settlement(
+    settlement_id: int,
+    payload: ManualPatchRequest,
+    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """手動微調結算：獎懲扣項、超額獎金、在職月數覆寫。自動重算受影響的結算單。"""
+    from services.year_end.settlement_builder import build_settlements
+
+    settlement = session.get(YearEndSettlement, settlement_id)
+    if settlement is None:
+        raise HTTPException(404, "settlement 不存在")
+    if settlement.status == YearEndSettlementStatus.FINALIZED:
+        raise HTTPException(409, "已 FINALIZED，不可手動修改")
+
+    cycle = session.get(YearEndCycle, settlement.year_end_cycle_id)
+    if cycle is None:
+        raise HTTPException(404, "cycle 不存在")
+
+    # 寫入手動欄位
+    if payload.deduction_disciplinary is not None:
+        settlement.deduction_disciplinary = payload.deduction_disciplinary
+
+    if payload.excess_amount is not None:
+        # upsert SpecialBonusItem(EXCESS_ENROLLMENT)
+        period_label = str(cycle.academic_year)
+        existing_excess = (
+            session.query(SpecialBonusItem)
+            .filter_by(
+                year_end_cycle_id=cycle.id,
+                employee_id=settlement.employee_id,
+                bonus_type=SpecialBonusType.EXCESS_ENROLLMENT,
+                period_label=period_label,
+            )
+            .first()
+        )
+        if existing_excess is None:
+            session.add(
+                SpecialBonusItem(
+                    year_end_cycle_id=cycle.id,
+                    employee_id=settlement.employee_id,
+                    bonus_type=SpecialBonusType.EXCESS_ENROLLMENT,
+                    period_label=period_label,
+                    amount=payload.excess_amount,
+                    created_by=current_user.get("user_id"),
+                )
+            )
+        else:
+            existing_excess.amount = payload.excess_amount
+    session.flush()
+
+    if payload.hire_months_override is not None:
+        # merge into calc_meta without clobbering other keys
+        meta = dict(settlement.calc_meta or {})
+        meta["hire_months_override"] = str(payload.hire_months_override)
+        settlement.calc_meta = meta
+        session.flush()
+
+    # 重算（idempotent）：若員工已非 active，需納入 included_resigned_ids
+    emp = session.get(Employee, settlement.employee_id)
+    is_inactive = emp is None or not getattr(emp, "is_active", True)
+    included = {settlement.employee_id} if is_inactive else set()
+    actor_id = current_user.get("user_id")
+    build_settlements(
+        session,
+        cycle.academic_year,
+        included,
+        actor_id=actor_id,
+        refresh_rates=False,
+    )
+    session.commit()
+
+    # 重新讀回（build_settlements 已 flush+commit）
+    session.expire(settlement)
+    return session.get(YearEndSettlement, settlement_id)
 
 
 __all__ = ["year_end_router"]
