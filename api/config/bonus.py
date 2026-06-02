@@ -163,6 +163,20 @@ def get_bonus_config(
             "overtime_assistant_normal": config.overtime_assistant_normal,
             "overtime_assistant_baby": config.overtime_assistant_baby,
             "school_wide_target": config.school_wide_target,
+            # 既有欄位（之前遺漏）
+            "meeting_default_hours": config.meeting_default_hours,
+            "meeting_absence_penalty": config.meeting_absence_penalty,
+            "art_teacher_festival": config.art_teacher_festival,
+            # B1 phase2 新欄位
+            "art_teacher_unit_price": config.art_teacher_unit_price,
+            "dividend_returning_threshold": config.dividend_returning_threshold,
+            "dividend_returning_amount": config.dividend_returning_amount,
+            "dividend_activity_threshold": config.dividend_activity_threshold,
+            "dividend_activity_amount": config.dividend_activity_amount,
+            "late_deduction_per_time": config.late_deduction_per_time,
+            "personal_leave_deduction_per_day": config.personal_leave_deduction_per_day,
+            "sick_leave_deduction_per_day": config.sick_leave_deduction_per_day,
+            "after_class_award_unit_price": config.after_class_award_unit_price,
         }
         from . import _CACHE_TTL_CONFIG  # lazy back-import
 
