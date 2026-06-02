@@ -22,6 +22,7 @@ class YearEndCycleCreate(BaseModel):
     start_date: date
     end_date: date
     bonus_calc_date: date
+    clone_from_academic_year: Optional[int] = None
 
 
 class YearEndCycleOut(BaseModel):
@@ -196,6 +197,7 @@ class BuildResultOut(BaseModel):
 
 class GridRowOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    settlement_id: int
     employee_id: int
     employee_name: str
     payable_amount: Decimal
@@ -208,3 +210,15 @@ class ManualPatchRequest(BaseModel):
     deduction_disciplinary: Optional[Decimal] = None
     excess_amount: Optional[Decimal] = None
     hire_months_override: Optional[Decimal] = None
+
+
+# ===== B1: class_targets upsert 請求 schema =====
+
+
+class ClassEnrollmentTargetUpsert(BaseModel):
+    semester_first: bool
+    classroom_id: int
+    head_teacher_employee_id: Optional[int] = None
+    assistant_employee_id: Optional[int] = None
+    head_count_target: int
+    returning_student_rate: Decimal = Decimal("0")
