@@ -82,6 +82,11 @@ SCOPE_HELPER_NAMES = frozenset(
         #     accessible_classroom_ids，列此避免合規端點被誤報）---
         "_require_classroom_access",
         "_assert_classroom_owned",
+        # --- 範本庫 owner/publish ownership 葉子（contact_book_templates）---
+        "_assert_can_modify",
+        # --- 學生紀錄時間軸 scope-aware aggregator（內部以 current_user +
+        #     student_ids_in_scope 限縮；caller 須傳 current_user）---
+        "list_timeline",
     }
 )
 
@@ -130,30 +135,21 @@ EXEMPT: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Baseline 快照：目前已知「未套標準 scope 過濾」但這一輪未修補的端點。
+# Baseline 快照：已知「未套標準 scope 過濾」但暫不修補的端點（key → 分類原因）。
 # 守衛只報「不在此清單也不在 EXEMPT」的端點 → 凍結現狀 + 偵測新增漂移。
-# 修補一個就從此移除（守衛會在 lint_api_dir 偵測 stale 條目並報錯，逼迫清理）。
+# 修補一個就從此移除（守衛在 partition_violations 偵測 stale 條目並報錯，逼迫清理）。
 # 每筆標分類，作為後續 sprint 的明文待辦——不是「已驗證安全」。
+#
+# 2026-06-02：原 7 條全數收斂為 0——
+#   - students create/graduate/transition：補 require_unrestricted_role（已修）
+#   - students timeline：list_timeline 已收 current_user 做 student_ids_in_scope 限縮
+#     （endpoint 早已傳，F-024）；屬守衛 cross-file FP，加 list_timeline 葉子修正
+#   - contact_book_templates update/delete：本有 _assert_can_modify（owner/publish），
+#     屬守衛 FP，加 _assert_can_modify 葉子修正
+#   - contact_book_templates promote_to_shared：原缺 _assert_can_modify（真 IDOR），已補
+# 目前為空 = 所有 scope-aware-gated 端點都有套過濾或明文豁免。
 # ---------------------------------------------------------------------------
-KNOWN_UNSCOPED: dict[str, str] = {
-    # 跨筆學生資料但無 access 檢查 → latent fail-open（自訂 STUDENTS_*:own_class
-    # 角色可越權）。標準角色無 STUDENTS_* 故目前無 active 越權。
-    "students:get_student_records_timeline": (
-        "PER_ROW_TODO: student_id 可選，None 時跨學生；需 assert_student_access "
-        "或 student_ids_in_scope（涉及 list_timeline service 簽名，故未在本輪修）"
-    ),
-    # 範本庫 ownership IDOR（非 student-scope，另案）：只 filter(id==template_id)，
-    # 缺 owner_user_id 檢查 → 持 PORTFOLIO_WRITE 者可改/刪/promote 他人 personal 範本。
-    "contact_book_templates:update_template": (
-        "OWNER_IDOR_TODO: 缺 owner_user_id 檢查（非 student-scope）"
-    ),
-    "contact_book_templates:delete_template": (
-        "OWNER_IDOR_TODO: 缺 owner_user_id 檢查（非 student-scope）"
-    ),
-    "contact_book_templates:promote_to_shared": (
-        "OWNER_IDOR_TODO: 缺 owner_user_id 檢查（非 student-scope）"
-    ),
-}
+KNOWN_UNSCOPED: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
