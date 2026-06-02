@@ -262,6 +262,18 @@ def manual_adjust_salary(
                 detail=f"調整後淨薪資為負數（{record.net_salary} 元），請確認扣款設定是否正確",
             )
 
+        # 改到 YTD 累計獎金欄位（補充保費基底）時，把當月及同年「之後」未封存月份標
+        # needs_recalc。Why: 二代健保補充保費採 per-payment 增額制，依賴前月正確落帳；手動
+        # 改某月獎金會使當月自身與後月的補充保費基底失準（本端點只重算 total/net，不重算
+        # 補充保費）。沿用 insurance 級距異動的 stale 傳播模式，強制 finalize 前重算。
+        from services.salary.supplementary_premium import BONUS_FIELDS_FOR_YTD
+        from services.salary.utils import mark_salary_stale_from_month
+
+        if set(modified_fields) & set(BONUS_FIELDS_FOR_YTD):
+            mark_salary_stale_from_month(
+                session, record.employee_id, record.salary_year, record.salary_month
+            )
+
         operator = current_user.get("username") or current_user.get("name") or "管理員"
         audit_note = (
             f"[{now_taipei_naive().strftime('%Y-%m-%d %H:%M')}] 手動編輯："
