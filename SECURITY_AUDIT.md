@@ -428,3 +428,180 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 - 前端絕無存取 service role key 的需要（只用 anon/publishable key）
 
 **Verification:** `git grep -i "service_role\|SUPABASE_SERVICE"` 應只出現於 `.env.example`、`docs/sop/`、`SECURITY_AUDIT.md` 文件，不應有實際 key 值。
+
+---
+
+# 2026-06-02 全面 re-audit
+
+**稽核日期**：2026-06-02
+**被審基準**：後端 main（起跑 HEAD `8394f33`，過程中 user 並行推進至 `4deffcb`；新增 commit 僅動薪資補充保費檔，未觸及任何被審 authz 檔，findings 對 `4deffcb` 仍成立）；前端 main `d273c5d0`
+**範圍**：4/17 後新增攻擊面 deep-trace 深審（冒充雙模式 / 家長 device-trust 登入 / 權限 row-level scoping / DB-driven 自訂角色 / 個資法 DSR·consent·醫療加密 / 批次加班·配號·lifecycle·才藝跨班）+ 全系統標準 OWASP 類別 regression 輕掃 + 4/17 後新安全基建 regression
+**方法論**：11 個唯讀 deep-trace audit lane 平行（追實際 call chain、讀完整檔案，不靠 grep 推論）+ 專用 agent（migration / finance / cross-repo parity）+ postgres MCP 動態驗證 + High 候選 failing-test 重現。spec/plan：`docs/superpowers/specs|plans/2026-06-02-security-reaudit-*`
+**稽核者**：Claude Code + Opus 4.8
+
+## 總評
+
+新攻擊面的**機密性 access control 體質仍紮實**：標準 OWASP 輕掃（L7）0 個 High/Medium 真陽性；IDOR 五威脅模型在家長端逐端點追 call chain 皆有 student scope 綁定；薪資金流計算正確性與授權無 P0（核心加解密、補充保費、考核年終、進位、proration、N+1、portal 自助薪資 IDOR 全過）；前後端 PII denylist 與權限字串集合無單側漂移。
+
+本輪 finding 集中在三條主軸：(1) **權限 scope 設計 footgun**（非 scope-aware 權限授 `:own_class` 被當全域放行，已動態重現）；(2) **個資法合規控制的強制力落差**（consent 完全 fail-open、DSR 無決議端點故 opt-out/刪除/更正永不執行、醫療 reason-gate 對批量讀取路徑形同虛設、多項醫療級欄位仍明文、稽核表 FK 用 CASCADE 會在硬刪時連坐抹除）；(3) **限流 fail-open / 可繞過**（DB 失敗時 auth 限流歸零且 in-process backstop 是死碼；`TRUSTED_PROXY_IPS="*"` 使 per-IP 限流可能被偽造 XFF 繞過）。多數為「特權內部人誤用」或「合規完整性」性質，**非未認證外部可直接利用**；嚴重度上限為 High（條件性）。
+
+> **prod 驗證限制**：supabase prod MCP 本輪不可用（`Resource has been removed`），數項需 prod 資料/環境佐證的判定（scope grant 實際分布、醫療欄位 at-rest 是否真加密、Zeabur edge 的 XFF 行為、prod `COOKIE_SAMESITE`/`TRUSTED_PROXY_IPS` 值）標記為 **unverified-prod**，列於文末待 user 補驗。
+
+## Findings（按嚴重度）
+
+### 🔴 RA-HIGH-1：非 scope-aware 權限授 `:own_class` 被當全域放行（scope fail-open footgun）
+
+- **位置**：`utils/permissions.py:600-622`（`has_permission`）+ `api/auth.py`（`POST/PUT /api/auth/users` 原樣存 `permission_names` 不驗 code/scope）
+- **描述**：`has_permission` 對任何 code 一律 `any(p.startswith(f"{name}:"))`，**從不檢查該 code 是否真的 scope-aware**（`_SCOPE_AWARE_PREFIXES` 只用於 startup warning，runtime 不參考；真正會做 row 過濾的只有 `STUDENTS_*` / `PORTFOLIO_*` / `HEALTH` / `MEDICATION` / `DISMISSAL_*` 共 13 個 code）。把一個非 scope-aware 的敏感 code 授成 `:own_class`（例 `SALARY_READ:own_class`、`USER_MANAGEMENT_WRITE:own_class`）→ 端點完全不做 scope 過濾 → 等同授出**全域**權限。`:own_class` 後綴被靜默忽略。
+- **攻擊情境**：管理者在權限 UI 想「只讓某老師看自班薪資」存成 `SALARY_READ:own_class`，實際上該老師可讀**全園**薪資；同理 `USER_MANAGEMENT_WRITE:own_class` → 全域使用者管理。屬靜默提權（UI 看似限本班、實為全域）。
+- **嚴重度**：High（影響面＝被誤授 code 的全域權限；觸發前提為一筆 misgrant，需 `USER_MANAGEMENT_WRITE` 寫入）
+- **驗證狀態**：**confirmed-機制**（動態重現 `.scratch/security-reaudit/repro/repro_L3_1_scope_failopen.py`：`has_permission(["SALARY_READ:own_class"],"SALARY_READ")==True`）。dev DB 實測**無**任何非 13-code 帶 scope 後綴的 grant → 目前為 latent footgun 非進行中洩漏；**prod grant 分布 unverified-prod**。
+- **建議修法**：`has_permission` 對 scope 後綴 fail-closed——僅當 code ∈ 已知 scope-aware 集合才認 `:scope`，否則畸形/非預期後綴一律不放行；並在 `POST/PUT /api/auth/users` 寫入時驗證每個 entry 的 code 合法性與 scope 後綴只能掛在 scope-aware code 上。前端 `getPermissionScope` 已 fail-closed，後端對齊即可。
+
+### 🟠 RA-HIGH-2（條件性）：`TRUSTED_PROXY_IPS="*"` + XFF 解析使 per-IP 限流可被繞過
+
+- **位置**：`config/network.py:15`（預設 `TRUSTED_PROXY_IPS="*"`）+ `utils/`（`get_client_ip` 由右往左取第一個非信任 IP）
+- **描述**：`ipaddress.ip_network("*")` 解析失敗 → fallback 只信任 RFC1918。可利用性取決於 prod ingress：**passthrough 透傳 client XFF（或無 edge）** 時，輪換偽造 `X-Forwarded-For` 即繞過所有 per-IP 限流（登入 / refresh / 改密 / 公開報名）；標準 append edge 把真實 IP append 在最右則反而擋下偽造（已 Python 雙情境實測）。
+- **攻擊情境**：暴力破解者每次請求換偽造 XFF，使 per-IP 滑動視窗永不累積。
+- **嚴重度**：條件 High / 預設 Low-Med（取決於 Zeabur edge 行為）
+- **驗證狀態**：confirmed-程式路徑（Python 實測解析行為）；**prod 曝險 unverified-prod**（需 ops 佐證 edge 行為 + `TRUSTED_PROXY_IPS` 實際值）
+- **建議修法**：prod 明設 `TRUSTED_PROXY_IPS` 為實際 edge IP/網段（勿留 `"*"`）；`get_client_ip` 改信任「最右側第 N 跳」而非由右掃第一個非信任值。配合 RA-MED-2 一併處理 auth 限流韌性。
+
+### 🟠 RA-MED-1：`GUARDIANS_WRITE` 寫入端點跳過 `assert_student_access`（讀有寫沒有）
+
+- **位置**：`api/students.py`（create_guardian:1445 / update:1518 / delete:1557）；對照 GUARDIANS_READ:1404 有做 `assert_student_access`
+- **描述**：三個改家長 PII 的端點只查 bare `GUARDIANS_WRITE`，**完全不做 per-student 存取守衛**。且 `GUARDIANS_WRITE` 不在 scope-aware 集合（與 RA-HIGH-1 相同根因的另一面）。
+- **攻擊情境**：任一持 `GUARDIANS_WRITE` 的非 unrestricted 帳號可對**全園任一學生**改家長電話 / 緊急聯絡人 / email。
+- **嚴重度**：Medium
+- **驗證狀態**：confirmed-程式路徑（逐檔讀端點 body，READ 有守衛 WRITE 無）
+- **建議修法**：三個寫入端點補 `assert_student_access`；並評估把 `GUARDIANS_*` 納入 scope-aware 集合。
+
+### 🟠 RA-MED-2：DB 失敗時 auth 限流完全 fail-open，且 in-process backstop 是死碼
+
+- **位置**：`utils/rate_limit_db.py`（`count_recent_attempts` 失敗回 0 → fail-open）；`api/auth.py:221-225`（`_ip_attempts`/`_account_failures` dict 註解宣稱是 fail-open 配套，實際 production 從不讀取，只有測試 `.clear()`）
+- **描述**：login / 改密 / 重設 / 家長 bind 限流全走 DB-backed limiter；DB 一旦失敗，暴力破解防線歸零，且宣稱的 in-process backstop 並未生效。fail-open 範圍涵蓋所有 auth 端點且未縮限。
+- **攻擊情境**：攻擊者先拖慢/打掛 limiter DB 寫入，再對 auth 端點無限制暴力破解。
+- **嚴重度**：Medium（升至 High 若 RA-HIGH-2 同時成立）
+- **驗證狀態**：confirmed（grep 證 backstop dict 無 production reader + 讀 except 區塊確認 fail-open）
+- **建議修法**：auth 端點限流 DB 失敗時 **fail-closed 或降級到真正生效的 in-process backstop**（把 backstop 接回 production 路徑）；非 auth 端點維持 fail-open。
+
+### 🟠 RA-MED-3：醫療 reason-gate 對批量讀取路徑形同虛設
+
+- **位置**：`api/students.py`（`GET /students/{id}` 等透明解密欄）vs 專用 `GET /students/{id}/medical`（reason gate + `medical_access_log`）
+- **描述**：`allergy` / `medication` / `special_needs` 是 `EncryptedText` ORM 透明解密欄。持 `STUDENTS_HEALTH_READ` 者改打 `GET /students/{id}`、列表、`classrooms`、教師 portal（四條路徑已逐一確認**有 `mask_student_health_fields` 遮罩**，故非機密性破口）即拿到**相同明文**，**不需 reason、不寫 medical_access_log**。§6 特種個資取用稽核對最易濫用的批量路徑零覆蓋，專用 reason-gate 端點淪為 security theater。
+- **嚴重度**：Medium（稽核完整性 / 個資法 §6，非機密性破口）
+- **驗證狀態**：confirmed（逐檔確認 4 條讀取路徑遮罩存在 + 解密非經 gate）
+- **建議修法**：解密路徑統一收斂——批量/detail 端點對醫療欄位預設遮罩或要求 reason，把 §6 access log 下移到解密 helper 層而非單一端點。
+
+### 🟠 RA-MED-4：consent gating 完全 fail-open（零強制力）
+
+- **位置**：全 codebase（`main.py` middleware stack 無 consent gate）；`api/parent_portal/consent.py`（僅記帳）
+- **描述**：consent / policy 版本只是一本記錄帳本，**無任何 PII 讀寫被 consent 狀態擋下**。docstring 已自承 Phase 1 deferred，但對外宣稱「落地 consent」與 runtime 零強制力有落差。
+- **嚴重度**：Medium（個資法合規）
+- **驗證狀態**：confirmed（無 consent enforcement caller）
+- **建議修法**：明確標示 consent 為「記錄但未強制」現況；若需強制，於 parent_portal 寫入/讀取路徑加 consent 版本 gate（fail-closed 設計需評估 LIFF UX）。
+
+### 🟠 RA-MED-5：DSR 無 admin 決議端點 → opt-out/刪除/更正永不執行 + 提交端點漏家庭綁定
+
+- **位置**：`api/parent_portal/dsr.py`（delete/correct/opt-out 提交端點）
+- **描述**：整個 DSR 系統**沒有 admin 決議/執行端點**，申請永遠卡 pending：delete 不刪、correct 不改、opt-out 無效力（docstring 標 Phase 1 deferred）。此外 delete/correct 提交端點**不檢查 `subject_entity_id` 是否屬於該家長**——目前因無 resolver 故為 latent，一旦補上執行端點卻未加家庭綁定檢查即成跨家庭 IDOR。
+- **嚴重度**：Medium（合規；補執行端點時若漏綁定升 High）
+- **驗證狀態**：confirmed（無決議端點 + 提交端點無 ownership 檢查）
+- **建議修法**：實作 admin DSR 決議 queue + 執行邏輯；執行/提交端點一律加 `subject_entity_id ∈ 該家長學生` 綁定檢查。
+
+### 🟠 RA-MED-6：舊版 `POST /students/{id}/graduate` 繞過 lifecycle 狀態機
+
+- **位置**：`api/students.py:1003-1092`（直接寫 `status/is_active/graduation_date`，未呼叫 `set_lifecycle_status`/`transition`）；前端 `StudentListPanel.vue` 為「設定離園」主路徑、active 使用中
+- **描述**：違反 CLAUDE.md §9 不變量。單一根因兩後果：(1) `terminal_entered_at` 永遠 NULL → 家長 PII 365 天 retention GC 計時器**永不啟動**（個資法曝險：應抹除的家長 PII 永久留存）；(2) `update_student` 終態守衛只比對 `lifecycle_status`，經此路徑離園的學生仍可被任意改家長電話 / 緊急聯絡人（守衛被繞過、稽核斷鏈）。全域枚舉確認此為**唯一**轉入終態卻繞過狀態機的旁路。
+- **嚴重度**：Medium
+- **驗證狀態**：confirmed（讀端點 + 枚舉全部 lifecycle_status writer）
+- **建議修法**：graduate 端點改走 `set_lifecycle_status`/`transition()`，確保 `terminal_entered_at` 設定 + 終態守衛一致。
+
+### 🟠 RA-MED-7：家長 PII GC 未連動 token/User 生命週期 → 殭屍 device-trust token
+
+- **位置**：PII retention GC（只設 `guardians.user_id=NULL`）；`api/parent_portal/auth.py`（refresh）；`revoke_guardian_devices`
+- **描述**：GC 抹除家長 PII 時未撤銷 `ParentRefreshToken`、未停用 User、未 bump token_version。後果：device-trust token 變殭屍（`/api/parent/auth/refresh` 仍 200 並無限 rolling 續期）；且 `revoke_guardian_devices` 因 `guardian.user_id` 已 NULL 直接 `return {"revoked":0}` → admin 撤銷變靜默 no-op。另無 list-devices 端點，撤銷只能全撤、無法察覺殭屍。
+- **嚴重度**：Medium
+- **驗證狀態**：confirmed（追 GC + refresh + revoke call chain）
+- **建議修法**：GC 連動撤銷 ParentRefreshToken + 停用 User + bump token_version；補 list-devices 端點。
+
+### 🟠 RA-MED-8：device-trust refresh 無裝置/IP 綁定、30 天 rolling 永續
+
+- **位置**：`api/parent_portal/auth.py`（refresh；UA/IP 欄位明寫「不參與決策」）
+- **描述**：passwordless、30 天 rolling 永續續期，refresh 不比對 UA/IP。cookie 被竊後可換裝置、換 IP 無限期維持登入；reuse 偵測僅在合法使用者持續使用時才自癒。cookie 屬性（httpOnly/Secure/SameSite）本身正確。
+- **嚴重度**：Medium
+- **驗證狀態**：confirmed
+- **建議修法**：refresh 加裝置指紋/IP 異常偵測或縮短絕對有效期 + 提供撤銷/裝置列表（與 RA-MED-7 合併處理）。
+
+### 🟠 RA-MED-9：稽核/合規表 FK 誤用 `ON DELETE CASCADE`（硬刪連坐抹除）
+
+- **位置**：`medacc01_medical_access_log.py:43` / `models/medical_access_log.py:46`（`medical_access_log.student_id` CASCADE）；`consent01:74`、`dsrreq01:40`（`user_id` CASCADE）
+- **描述**：§6 醫療取用稽核、GDPR Art.7 同意證明、個資法 DSR 申請史皆為稽核性質，卻用 CASCADE。真實觸發點：`services/recruitment_funnel.py:253` 硬刪 student（連坐 medical_access_log）、`api/auth.py:1633 DELETE /users/{id}` 硬刪 user（連坐 consent/dsr）。同表 `user_id`(medacc)/`decided_by`(dsr) 刻意用 SET NULL「保留稽核」，且 `portalimp01` 對 audit_logs 故意不設 FK 保完整性——立場自相矛盾。
+- **嚴重度**：Medium（個資法稽核完整性；P0 from migration-reviewer）
+- **驗證狀態**：confirmed（逐 migration + 硬刪 caller 追蹤）
+- **建議修法**：三條 FK 改 `RESTRICT` 或 `SET NULL` + 反正規化關鍵識別字串；硬刪前先 cold-storage 歸檔稽核。
+
+### 🟠 RA-MED-10：多項醫療級欄位仍明文且不寫 §6 稽核
+
+- **位置**：`StudentMeasurement`（身高/體重/頭圍/視力 明文 Numeric）、contact_book 體溫、結構化過敏表 `StudentAllergy`（嚴重度/症狀/急救說明全程明文）
+- **描述**：與已加密的 `allergy`/`medication`/`special_needs` 同為特種個資，但未納入 `EncryptedText` 加密，且 `StudentAllergy` 不寫 §6 access log。
+- **嚴重度**：Medium（記憶已知部分為 follow-up，但 `StudentAllergy` 整表明文為新發現）
+- **驗證狀態**：confirmed（讀 model 定義）
+- **建議修法**：評估納入 `EncryptedText` + §6 稽核（須配 backfill script + conftest test fernet key）。
+
+### 🟡 RA-LOW（彙整）
+
+| ID | 位置 | 摘要 | 來源 |
+|----|------|------|------|
+| RA-L1 | `api/guardians_admin.py:248-258` | `revoke_guardian_devices` 直寫 AuditLog 漏 `impersonated_by` 冒充歸屬（同檔另兩端點有）；種子假設「create_device_setup_code 漏 stamp」在 main **已修**，校正記憶 | L1/L2 |
+| RA-L2 | `api/permissions_admin.py` | role/permission CRUD 無 caller-perms 子集檢查 + runtime 對 NULL-perms user 走 in-code ROLE_TEMPLATES 不讀 DB（撤權/授權失真、token_version bump 無效）；**兩者須綁一起修**，否則修後者會接成 High 提權 | L4 F-L4-01/05 |
+| RA-L3 | `utils/permissions.py` | `require_scoped_permission` 為死碼（零 call site），scope 強制靠 handler 自覺呼叫 helper，非結構性護欄 | L4 F-L4-02 |
+| RA-L4 | `medical_access_log` | reason gate `min_length=10` 不 trim，純空白可過；`student_id` CASCADE（見 RA-MED-9） | L5-08 |
+| RA-L5 | device-trust | GC 後重簽設定碼會「復活」綁定並 re-link 仍存在的 Student PII（admin 只見 `[已離校家長]`）；per-guardian 碼兌換得 per-User token，多孩家庭授予全部小孩 | L2-2/L2-4 |
+| RA-L6 | `api/students.py` | legacy null-seq 學生 `student_id` 可被竄改；display-cache 學號非 unique 可造重複 | L6-2 |
+| RA-L7 | `BatchOvertimeCreate.employees` | 無 `max_length`（對照 portal 點名有 500 上限）；admin-only + rate limit 緩解 | L6-3 |
+| RA-L8 | `utils/cookie.py` | `SameSite=None` 跨網域模式下 active-session CSRF（系統無獨立 CSRF token）；prod 值 unverified | L8-4 |
+| RA-L9 | `api/activity/public.py` | honeypot/時序門檻信任 client `_ts`，不送即繞過；silent-reject 耗時差為理論側信道 | L8-5 |
+| RA-L10 | `permscope01:129-181` | downgrade 非逆操作（無條件剝 teacher 所有權限 scope，破壞 permscope04 手動授權 + double-bump token_version） | migration P1 |
+| RA-L11 | `rcrgeoconsent01:29-33` | backfill `geocoding_consent_at=created_at` 回溯捏造同意時間戳，需法務確認 | migration P1 |
+| RA-L12 | frontend `schema.d.ts` | 落後後端契約 214 行，CI `openapi-drift` 會 fail；無 live PII 洩漏（runtime 已正確 POST），重跑 `npm run gen:api` 即解 | parity P1 |
+| RA-L13 | sentry denylist 兩端 | `special_needs`（EncryptedText 特種個資）未列入 PII denylist（**雙端對稱漏、非單側漂移**）；兩端各加 `"special_needs"` + 補測試 | parity P2 |
+| RA-L14 | `api/year_end/appraisal_payout.py` | 考核年終 payout 重生成未 wire `mark_salary_stale_from_month`，2 月補充保費基底可能 stale 後 finalize（目前靠 CLAUDE.md 人工約定） | finance P1 |
+| RA-L15 | `POST /api/internal/uptime-webhook` | prod 被 CSRF middleware 擋（fail-closed 可用性 bug，非洩漏）：UptimeRobot 告警收不到，加 `CSRF_EXEMPT_PREFIXES` 修 | L7 INFO-1 |
+| RA-L16 | `GET /api/auth/permissions` | 未認證可取權限定義 catalogue（code/label/role template，**非使用者指派**，無 PII） | L7 INFO-2 |
+
+## 未發現重大風險（正向確認）
+
+| 項目 | 評估 |
+|------|------|
+| 標準 OWASP 8 類別（authz 覆蓋 / IDOR / injection / XSS / secret / 上傳 / CSRF / mass-assignment） | ✅ L7 逐項追 call chain，0 High/Medium 真陽性 |
+| 18 個檔案上傳端點 | ✅ 一致經 magic-bytes + 白名單 + 大小 + EXIF strip + 檔名 sanitize |
+| 薪資金流計算正確性 + 授權 | ✅ 無 P0；補充保費/考核年終/進位/proration/N+1/portal 自助薪資 IDOR 全過 |
+| `breakdown.supplementary_health_employee` / `appraisal_year_end_bonus` | ✅ 已落地 column（CLAUDE.md #11 的「未 persist」前提已過時，待更新文件） |
+| PII denylist + 權限字串集合前後端同步 | ✅ 逐 token 比對零差異（除 RA-L13 雙端對稱漏） |
+| JWT blocklist（logout 寫 jti / 三處查詢拒絕 / GC 只刪已過期） | ✅ 無撤銷 token 復活窗口 |
+| 設定碼熵 + 一次性 claim + TTL + 失敗鎖 | ✅ secrets.choice 2^60 + sha256 + atomic + 24h + per-guardian cap 3，暴力不可行 |
+| 冒充防護（readonly/write token HMAC 簽名不可竄改降級 / write 僅 admin / 禁冒充 admin·停用·離職 / refresh 封死冒充洗白） | ✅ 主路徑完整（缺口僅 RA-L1 單一 inline audit） |
+| 配號競態（pg_advisory_xact_lock + unique constraint + IntegrityError 兜底） | ✅ 無重號/搶號 |
+| 才藝跨班點名 | ✅ by-design，名冊只回姓名/班級/出席，未開放醫療·家長電話·身分證 |
+| Alembic 鏈 | ✅ 單一 head、mergeheads 正確收斂、studnum01 unique-before-backfill 安全 |
+
+## 建議修復優先順序
+
+| 優先 | Finding | 主軸 | 預估 |
+|------|---------|------|------|
+| 1 | RA-HIGH-1 + RA-MED-1（scope fail-open + GUARDIANS_WRITE 漏守衛 + user CRUD 驗證） | 權限 | 半天 |
+| 2 | RA-MED-2 + RA-HIGH-2（auth 限流韌性 + 信任代理） | 限流 | 半天 |
+| 3 | RA-MED-6（graduate 走 lifecycle）+ RA-MED-7（PII GC 連動 token） | 個資法 PII 生命週期 | 半天 |
+| 4 | RA-MED-9（稽核表 FK CASCADE → RESTRICT/SET NULL，需 prod migration） | 稽核完整性 | 半天（含 migration） |
+| 5 | RA-MED-3（醫療解密收斂 §6 稽核）+ RA-L13（special_needs denylist 兩端） | 個資法醫療 | 半天 |
+| 6 | RA-L2（role CRUD 子集檢查 + runtime 讀 DB，**兩者綁一起**） | 權限 | 半天 |
+| 7 | RA-MED-4 / RA-MED-5（consent 強制 / DSR 決議端點）— 視合規時程，工程較大 | 個資法合規 | 1-2 天 |
+| 8 | RA-MED-8 / RA-MED-10 / RA-L 其餘 | 強化 | 視項目 |
+
+## 待 user 補驗（unverified-prod / 業務確認）
+
+1. **prod scope grant 分布**：查 `users.permission_names` / `roles.permissions` 是否有非 13-code 帶 `:` 後綴或畸形後綴（判定 RA-HIGH-1 是否已 live）。
+2. **prod 醫療欄位 at-rest 是否真加密**：backfill script 為手動非 migration，`decrypt_medical` 對明文 legacy passthrough；確認 prod 已跑過 backfill（否則加密層形同未啟用且不報錯）。
+3. **Zeabur edge XFF 行為 + prod `TRUSTED_PROXY_IPS` / `COOKIE_SAMESITE` 實際值**（判定 RA-HIGH-2 / RA-L8）。
+4. **業務確認**：`supervisor_dividend` 納入二代健保補充保費累計（業主 2026-05-26 決策，與健保法定義有爭議）；`rcrgeoconsent01` 回溯視為同意是否站得住（法務）。
