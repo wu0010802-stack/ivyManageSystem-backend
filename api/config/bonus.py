@@ -108,9 +108,9 @@ class BonusConfigUpdate(BaseModel):
     dividend_returning_amount: Optional[float] = Field(None, ge=0)
     dividend_activity_threshold: Optional[float] = Field(None, ge=0, le=1)
     dividend_activity_amount: Optional[float] = Field(None, ge=0)
-    late_deduction_per_time: Optional[float] = Field(None, ge=0)
-    personal_leave_deduction_per_day: Optional[float] = Field(None, ge=0)
-    sick_leave_deduction_per_day: Optional[float] = Field(None, ge=0)
+    late_deduction_per_time: Optional[float] = Field(None, ge=0, le=50000)
+    personal_leave_deduction_per_day: Optional[float] = Field(None, ge=0, le=50000)
+    sick_leave_deduction_per_day: Optional[float] = Field(None, ge=0, le=50000)
     after_class_award_unit_price: Optional[dict] = Field(
         None, description="課後才藝班年終單價 JSON（班名→K 單價）"
     )

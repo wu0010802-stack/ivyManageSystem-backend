@@ -5,8 +5,9 @@ Revises: studnum01
 Create Date: 2026-06-02
 
 說明：
-新增 bonus_configs 表下列欄位（全部 nullable，含 server_default）：
-  - art_teacher_unit_price       Float  才藝老師課時單價
+新增 bonus_configs 表下列欄位（全部 nullable）：
+
+含 server_default（現有資料列升級後自動填入預設值）：
   - dividend_returning_threshold Float  紅利舊生率門檻（預設 0.9）
   - dividend_returning_amount    Float  舊生率門檻達標獎金（預設 500）
   - dividend_activity_threshold  Float  紅利才藝率門檻（預設 0.8）
@@ -14,7 +15,10 @@ Create Date: 2026-06-02
   - late_deduction_per_time      Float  遲到每次扣年終款（預設 100）
   - personal_leave_deduction_per_day Float  事假每日扣年終款（預設 500）
   - sick_leave_deduction_per_day Float  病假每日扣年終款（預設 500）
-  - after_class_award_unit_price JSON   課後才藝班年終單價（班名→K 單價，NULL=未設定）
+
+無 server_default（NULL=尚未設定，HR 需在設定頁填入）：
+  - art_teacher_unit_price       Float  才藝老師課時單價
+  - after_class_award_unit_price JSON   課後才藝班年終單價（班名→K 單價）
 
 downgrade 完整 drop 上述 9 欄。
 """
