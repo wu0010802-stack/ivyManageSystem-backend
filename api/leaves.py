@@ -2,6 +2,7 @@
 Leave management router
 """
 
+import asyncio
 import json
 import logging
 import calendar as cal_module
@@ -2286,6 +2287,12 @@ async def import_leaves(
 ):
     """批次匯入請假申請（建立草稿假單，status='pending'，需後續人工審核）"""
     content = await read_upload_with_size_check(file)
+    # parse + DB 迴圈為同步 CPU/IO，卸載到 executor 避免阻塞 event loop（行為不變）
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _import_leaves_sync, content)
+
+
+def _import_leaves_sync(content: bytes) -> dict:
     validate_file_signature(content, ".xlsx")
 
     parse_result = parse_excel(BytesIO(content), schema=LeaveImportRow)

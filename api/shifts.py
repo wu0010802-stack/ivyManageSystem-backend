@@ -4,6 +4,7 @@
 - 每週排班指派
 """
 
+import asyncio
 import logging
 from datetime import date, timedelta
 from io import BytesIO
@@ -783,6 +784,14 @@ async def import_shifts(
 ):
     """批次匯入排班（覆蓋指定週的排班，per-employee upsert）"""
     content = await read_upload_with_size_check(file)
+    # parse + DB 迴圈為同步 CPU/IO，卸載到 executor 避免阻塞 event loop（行為不變）
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, _import_shifts_sync, content, week_start, current_user.get("username")
+    )
+
+
+def _import_shifts_sync(content: bytes, week_start: str, username: str) -> dict:
     validate_file_signature(content, ".xlsx")
     try:
         df = pd.read_excel(BytesIO(content))
@@ -872,7 +881,7 @@ async def import_shifts(
         session.commit()
         logger.info(
             "排班批次匯入：使用者 %s，週 %s，共 %d 筆，成功 %d 筆，失敗 %d 筆",
-            current_user.get("username"),
+            username,
             week_date,
             results["total"],
             results["saved"],
