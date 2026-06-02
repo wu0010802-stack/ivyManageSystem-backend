@@ -110,16 +110,18 @@ _HTTP_METHODS = frozenset(
 # 不可用來掩蓋真正漏套 filter 的 fail-open。每筆都必須附可稽核的原因。
 # ---------------------------------------------------------------------------
 EXEMPT: dict[str, str] = {
-    # 薪資獎金影響預覽 / 儀表板：以薪資引擎為單位，非學生 row-scoped 資源。
-    # 目前借用 STUDENTS_* gate（設計債）。TODO(perm-rename): 正名為
-    # SALARY_WRITE / SALARY_READ（需同步前端 ROUTE_PERMISSION_RULES + 角色模板）。
+    # 獎金影響預覽 / 儀表板：非 row-scoped（以薪資引擎/班級彙總為單位）。
+    # STUDENTS_* gate 符合使用 context——preview_bonus_impact 用於「學生轉班 dialog」、
+    # get_bonus_dashboard 用於「招生在籍頁」，使用者是學生管理者（supervisor 有
+    # STUDENTS_WRITE 但無 SALARY_WRITE）。2026-06-02 經查證決議「不正名為 SALARY_*」
+    # （正名會讓實際使用者失去預覽、反授權給不碰轉班的 hr/accountant）。非錯配。
     "bonus_preview:preview_bonus_impact": (
-        "非 row-scoped（薪資獎金預覽，以員工/薪資為單位）；借用 STUDENTS_WRITE "
-        "gate，TODO 正名 SALARY_WRITE"
+        "非 row-scoped（獎金影響預覽，學生轉班 context）；STUDENTS_WRITE gate 符合"
+        "使用者（學生管理者）"
     ),
     "bonus_preview:get_bonus_dashboard": (
-        "非 row-scoped（薪資獎金儀表板彙總）；借用 STUDENTS_READ gate，"
-        "TODO 正名 SALARY_READ"
+        "非 row-scoped（獎金儀表板彙總，招生在籍 context）；STUDENTS_READ gate 符合"
+        "使用者（學生管理者）"
     ),
     # 選項端點：回傳常數選項清單（reason / type enum），不含任何學生資料。
     "student_change_logs:get_change_log_options": "回傳常數選項清單，無學生 PII",
