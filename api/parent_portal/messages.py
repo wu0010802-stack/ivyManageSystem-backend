@@ -59,6 +59,7 @@ from utils.file_upload import (
 )
 
 from ._dependencies import get_parent_db
+from services.consent.checker import enforce_student_cross_border
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +405,11 @@ def list_messages(
     return {"items": items, "next_cursor": next_cursor}
 
 
-@router.post("/threads/{thread_id}/messages", status_code=201, response_model=ParentPortalMessageReplyOut)
+@router.post(
+    "/threads/{thread_id}/messages",
+    status_code=201,
+    response_model=ParentPortalMessageReplyOut,
+)
 def post_reply(
     thread_id: int,
     payload: ReplyMessage,
@@ -488,6 +493,7 @@ async def attach_to_message(
     if msg.deleted_at is not None:
         raise HTTPException(status_code=400, detail="已撤回的訊息不可附加附件")
 
+    enforce_student_cross_border(session, t.student_id)
     storage = get_portfolio_storage()
     stored = storage.put_attachment(content, ext)
     att = Attachment(

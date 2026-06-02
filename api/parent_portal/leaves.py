@@ -52,6 +52,7 @@ from utils.portfolio_storage import (
 
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
+from services.consent.checker import enforce_student_cross_border
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,7 @@ async def upload_leave_attachment(
             detail="請假已成立或已開始，無法新增/刪除附件",
         )
 
+    enforce_student_cross_border(session, item.student_id)
     storage = get_portfolio_storage()
     stored = storage.put_attachment(content, ext)
 

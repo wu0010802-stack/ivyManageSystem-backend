@@ -326,3 +326,172 @@ def test_upload_photo_allowed_when_enforcement_disabled(gate_client, monkeypatch
         resp = _do_upload(client, entry_id, token)
 
     assert resp.status_code == 201, f"預期 201，實際 {resp.status_code}: {resp.text}"
+
+
+# ── Case 4：leaves upload — enforcement on + 未同意 → 403 ─────────────────────
+
+
+def test_leave_attachment_blocked_when_no_consent(gate_client, monkeypatch):
+    """家長上傳請假附件：consent flag on + 主要 guardian 未同意 → 403。"""
+    from datetime import date, timedelta
+
+    from config import reset_for_tests
+    from models.database import StudentLeaveRequest
+
+    monkeypatch.setenv("CONSENT_ENFORCEMENT_ENABLED", "true")
+    reset_for_tests()
+
+    client, sf = gate_client
+    with sf() as session:
+        _emp, _teacher_user, _classroom, student, parent_user = _seed(session)
+        # 建立 approved + 未來日期的假單（upload guard 條件）
+        future_date = date.today() + timedelta(days=3)
+        lr = StudentLeaveRequest(
+            student_id=student.id,
+            applicant_user_id=parent_user.id,
+            leave_type="病假",
+            start_date=future_date,
+            end_date=future_date,
+            status="approved",
+        )
+        session.add(lr)
+        session.commit()
+        leave_id = lr.id
+        parent_token = create_access_token(
+            {
+                "user_id": parent_user.id,
+                "employee_id": None,
+                "role": "parent",
+                "name": parent_user.username,
+                "permission_names": [],
+                "token_version": parent_user.token_version or 0,
+            }
+        )
+
+    with patch(
+        "utils.portfolio_storage.get_portfolio_storage", return_value=_fake_storage()
+    ):
+        resp = client.post(
+            f"/api/parent/student-leaves/{leave_id}/attachments",
+            headers={"Authorization": f"Bearer {parent_token}"},
+            files={"file": ("doc.png", _MIN_PNG, "image/png")},
+        )
+
+    assert resp.status_code == 403, f"預期 403，實際 {resp.status_code}: {resp.text}"
+    detail_str = str(resp.json()).lower()
+    assert (
+        "consent" in detail_str or "同意" in detail_str
+    ), f"回應應含 consent 字眼：{resp.json()}"
+
+
+# ── Case 5：medications upload — enforcement on + 未同意 → 403 ────────────────
+
+
+def test_medication_photo_blocked_when_no_consent(gate_client, monkeypatch):
+    """家長上傳用藥照：consent flag on + 主要 guardian 未同意 → 403。"""
+    from datetime import date
+
+    from config import reset_for_tests
+    from models.portfolio import MEDICATION_SOURCE_PARENT, StudentMedicationOrder
+
+    monkeypatch.setenv("CONSENT_ENFORCEMENT_ENABLED", "true")
+    reset_for_tests()
+
+    client, sf = gate_client
+    with sf() as session:
+        _emp, _teacher_user, _classroom, student, parent_user = _seed(session)
+        order = StudentMedicationOrder(
+            student_id=student.id,
+            order_date=date.today(),
+            medication_name="感冒藥",
+            dose="1 顆",
+            time_slots=["12:00"],
+            source=MEDICATION_SOURCE_PARENT,
+            created_by=parent_user.id,
+        )
+        session.add(order)
+        session.commit()
+        order_id = order.id
+        parent_token = create_access_token(
+            {
+                "user_id": parent_user.id,
+                "employee_id": None,
+                "role": "parent",
+                "name": parent_user.username,
+                "permission_names": [],
+                "token_version": parent_user.token_version or 0,
+            }
+        )
+
+    with patch(
+        "utils.portfolio_storage.get_portfolio_storage", return_value=_fake_storage()
+    ):
+        resp = client.post(
+            f"/api/parent/medication-orders/{order_id}/photos",
+            headers={"Authorization": f"Bearer {parent_token}"},
+            files={"file": ("doc.png", _MIN_PNG, "image/png")},
+        )
+
+    assert resp.status_code == 403, f"預期 403，實際 {resp.status_code}: {resp.text}"
+    detail_str = str(resp.json()).lower()
+    assert (
+        "consent" in detail_str or "同意" in detail_str
+    ), f"回應應含 consent 字眼：{resp.json()}"
+
+
+# ── Case 6：messages attach — enforcement on + 未同意 → 403 ──────────────────
+
+
+def test_message_attach_blocked_when_no_consent(gate_client, monkeypatch):
+    """家長訊息附件上傳：consent flag on + 主要 guardian 未同意 → 403。"""
+    from config import reset_for_tests
+    from models.database import ParentMessage, ParentMessageThread
+
+    monkeypatch.setenv("CONSENT_ENFORCEMENT_ENABLED", "true")
+    reset_for_tests()
+
+    client, sf = gate_client
+    with sf() as session:
+        _emp, teacher_user, _classroom, student, parent_user = _seed(session)
+        thread = ParentMessageThread(
+            parent_user_id=parent_user.id,
+            teacher_user_id=teacher_user.id,
+            student_id=student.id,
+        )
+        session.add(thread)
+        session.flush()
+        msg = ParentMessage(
+            thread_id=thread.id,
+            sender_user_id=parent_user.id,
+            sender_role="parent",
+            body="測試訊息",
+        )
+        session.add(msg)
+        session.commit()
+        thread_id = thread.id
+        msg_id = msg.id
+        parent_token = create_access_token(
+            {
+                "user_id": parent_user.id,
+                "employee_id": None,
+                "role": "parent",
+                "name": parent_user.username,
+                "permission_names": [],
+                "token_version": parent_user.token_version or 0,
+            }
+        )
+
+    with patch(
+        "utils.portfolio_storage.get_portfolio_storage", return_value=_fake_storage()
+    ):
+        resp = client.post(
+            f"/api/parent/messages/threads/{thread_id}/messages/{msg_id}/attach",
+            headers={"Authorization": f"Bearer {parent_token}"},
+            files={"file": ("doc.png", _MIN_PNG, "image/png")},
+        )
+
+    assert resp.status_code == 403, f"預期 403，實際 {resp.status_code}: {resp.text}"
+    detail_str = str(resp.json()).lower()
+    assert (
+        "consent" in detail_str or "同意" in detail_str
+    ), f"回應應含 consent 字眼：{resp.json()}"
