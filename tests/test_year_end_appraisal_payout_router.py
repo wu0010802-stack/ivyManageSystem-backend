@@ -106,23 +106,25 @@ def _seed_users(sf):
 
 
 def _seed_cycles_and_summaries(sf):
-    """建兩個 AppraisalCycle + 1 ACTIVE 員工 + finalized summary（兩 cycle 各一筆）。"""
+    """建兩個 AppraisalCycle + 1 ACTIVE 員工 + finalized summary（兩 cycle 各一筆）。
+    決策②：抓前一完整學年 113上(FIRST) + 113下(SECOND)。
+    """
     with sf() as s:
         earlier = AppraisalCycle(
+            academic_year=113,
+            semester=Semester.FIRST,
+            start_date=date(2024, 8, 1),
+            end_date=date(2025, 1, 31),
+            base_score_calc_date=date(2024, 9, 15),
+            base_score=Decimal("100"),
+            status=CycleStatus.CLOSED,
+        )
+        later = AppraisalCycle(
             academic_year=113,
             semester=Semester.SECOND,
             start_date=date(2025, 2, 1),
             end_date=date(2025, 7, 31),
             base_score_calc_date=date(2025, 2, 15),
-            base_score=Decimal("100"),
-            status=CycleStatus.CLOSED,
-        )
-        later = AppraisalCycle(
-            academic_year=114,
-            semester=Semester.FIRST,
-            start_date=date(2025, 8, 1),
-            end_date=date(2026, 1, 31),
-            base_score_calc_date=date(2025, 9, 15),
             base_score=Decimal("100"),
             status=CycleStatus.CLOSED,
         )
