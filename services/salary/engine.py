@@ -52,7 +52,6 @@ from .utils import (
 from . import festival as _festival
 from .totals import recompute_record_totals
 from services.student_enrollment import count_students_active_on
-from services.salary.appraisal_year_end import query_appraisal_year_end_bonus
 
 logger = logging.getLogger(__name__)
 
@@ -273,19 +272,10 @@ def _fill_salary_record(
             + breakdown.supervisor_dividend
         )
 
-    # 考核年終獎金（2 月發放；不進 gross_salary；source of truth = special_bonus_items）
+    # 決策⑥B：考核已併入年終獨立轉帳，月薪不再帶考核年終獎金（避免重複發 + 二代健保表外）
+    # engine 一律填 0；appraisal_year_end.py 函式保留但 runtime 不再呼叫。
     if session is not None:
-        # 批次路徑可注入預載 appraisal（Decimal，None=單筆路徑照常 query）；型別一致。
-        salary_record.appraisal_year_end_bonus = (
-            appraisal_bonus
-            if appraisal_bonus is not None
-            else query_appraisal_year_end_bonus(
-                session,
-                salary_record.employee_id,
-                salary_record.salary_year,
-                salary_record.salary_month,
-            )
-        )
+        salary_record.appraisal_year_end_bonus = 0  # Decimal(0) 等價，避免在 _fill_salary_record 作用域缺 Decimal import
         # Layer 2：撈 scheduler 已寫入但尚未綁定到本 SalaryRecord 的 pending log
         # （批次路徑注入該員工預載 list；None=單筆路徑照常 query）
         _pull_pending_payout_logs(session, salary_record, pending_logs=pending_logs)
@@ -3378,17 +3368,13 @@ class SalaryEngine:
 
         # ── BE-P2-1：批次預載 per-employee N+1 來源（值與 per-employee query 等價）──
         from services.leave_bonus_skip import should_skip_bonuses_bulk
-        from services.salary.appraisal_year_end import (
-            query_appraisal_year_end_bonus_bulk,
-        )
         from services.salary.supplementary_premium import query_ytd_bonus_bulk
 
         from .utils import get_distribution_period_months
 
         ytd_bonus_by_emp = query_ytd_bonus_bulk(session, employee_ids, year, month)
-        appraisal_by_emp = query_appraisal_year_end_bonus_bulk(
-            session, employee_ids, year, month
-        )
+        # 決策⑥B：engine 不再 query 考核獎金，appraisal_by_emp 恆為空 dict（填 0 by .get() default）
+        appraisal_by_emp: dict = {}
         period_months = get_distribution_period_months(year, month)
         skip_by_emp_month = (
             should_skip_bonuses_bulk(session, employee_ids, period_months)
