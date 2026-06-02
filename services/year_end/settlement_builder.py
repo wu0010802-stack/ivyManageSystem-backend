@@ -60,7 +60,7 @@ _FESTIVAL_FIELD: dict[str, str] = {
 # --------------------------------------------------------------------------- #
 
 
-def festival_base_for_role(db: Session, role_key: str) -> Decimal:
+def festival_base_for_role(db: Session, role_key: "str | None") -> Decimal:
     """查最新 BonusConfig（is_active + id DESC）取角色對應節慶基數。
 
     Args:
@@ -162,9 +162,9 @@ def resolve_org_achievement_rate(
         Decimal（小數 1 位）。
     """
     rates: list[Decimal] = []
-    if worked_first:
+    if worked_first and first is not None:
         rates.append(Decimal(str(first)))
-    if worked_second:
+    if worked_second and second is not None:
         rates.append(Decimal(str(second)))
 
     if not rates:
@@ -226,14 +226,17 @@ def _bonus_grade_of(emp: Any) -> str:
     return "c"
 
 
-def role_key_of(emp: Any) -> str:
-    """員工 → 節慶獎金角色 key（_FESTIVAL_FIELD 之 key）。
+def role_key_of(emp: Any) -> "str | None":
+    """員工 → 節慶獎金角色 key（_FESTIVAL_FIELD 之 key），或 None（無節慶基數）。
 
     與 services/salary/engine._resolve_standard_base 的職位分流保持一致，
     確保節慶基數查表（festival_base_for_role）與底薪解析用同一套角色判定。
 
     班導/副班導以 ab（a 或 b 等級合併）與 c 兩檔；領導職、行政、司機、
-    美師、美編各自對應。無法分類者回 "admin"（保守取行政節慶基數）。
+    美師、美編各自對應。廚房/護理/美語等無對應節慶欄位的角色，以及任何
+    無法分類者，回 None → festival_base_for_role 自動回 Decimal("0")。
+
+    # TODO(phase1.5): 理想上復用月薪 festival 模組的 role→base 對應以完全一致
     """
     title = (
         emp.job_title_rel.name
@@ -252,8 +255,8 @@ def role_key_of(emp: Any) -> str:
     if "司機" in title:
         return "driver"
     if "廚" in title:
-        # 廚房無對應節慶 key（_FESTIVAL_FIELD 無 kitchen）→ 回 admin 兜底
-        return "admin"
+        # 廚房無對應節慶欄位 → 節慶基數 0（對齊 Excel 廚工=0，不以 admin 兜底）
+        return None
     if "美師" in title or "藝術" in title:
         return "art_teacher"
     if "美編" in title or "設計" in title:
@@ -267,13 +270,15 @@ def role_key_of(emp: Any) -> str:
         return f"head_teacher_{ab}"
     if position in ("副班導", "副班導師"):
         return f"assistant_teacher_{ab}"
-    return "admin"
+    return None
 
 
 def _has_class_role(emp: Any) -> bool:
     """是否為帶班角色（班導/副班導）— 決定 class_* 績效是否參與平均。"""
     rk = role_key_of(emp)
-    return rk.startswith("head_teacher_") or rk.startswith("assistant_teacher_")
+    return rk is not None and (
+        rk.startswith("head_teacher_") or rk.startswith("assistant_teacher_")
+    )
 
 
 # --------------------------------------------------------------------------- #

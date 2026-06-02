@@ -115,6 +115,37 @@ class TestFestivalBaseForRole:
         _bonus_config(session, head_teacher_ab=2000)
         assert sb.festival_base_for_role(session, "head_teacher_ab") == Decimal("2000")
 
+    def test_festival_base_zero_for_kitchen_and_unmapped(self, session):
+        """廚房/無法分類角色 → role_key_of 回 None → festival 基數 0。
+
+        用 admin_festival=2000 的 BonusConfig 確保測試有鑑別力：
+        如果廚房錯誤 fallback 到 admin，應得 2000 而非 0。
+        對齊 Excel 王麗慧（廚工）festival = 0。
+        """
+        _bonus_config(session, admin_festival=2000)
+
+        # 廚房員工
+        kitchen_emp = SimpleNamespace(
+            job_title_rel=None,
+            title="廚工",
+            position="廚房",
+        )
+        key = sb.role_key_of(kitchen_emp)
+        assert key is None, f"廚房應回 None，got {key!r}"
+        assert sb.festival_base_for_role(session, key) == Decimal("0"), (
+            "廚房 festival 基數應為 0（對齊 Excel 廚工=0），不應 fallback 到 admin 2000"
+        )
+
+        # 未知/無法分類角色
+        unknown_emp = SimpleNamespace(
+            job_title_rel=None,
+            title="護理師",
+            position="護理",
+        )
+        key2 = sb.role_key_of(unknown_emp)
+        assert key2 is None, f"未知角色應回 None，got {key2!r}"
+        assert sb.festival_base_for_role(session, key2) == Decimal("0")
+
 
 # ============ Test: compute_hire_months ============
 
@@ -228,6 +259,34 @@ class TestResolveOrgAchievementRate:
             worked_second=True,
         )
         assert result == Decimal("80.6")
+
+    def test_org_rate_none_safe_missing_semester(self):
+        """worked=True 但該學期 OrgYearSettings 缺列（rate=None）時不崩潰。
+
+        情境：員工上下學期皆在職，但上學期 OrgYearSettings 尚未建立（rate=None）。
+        應只平均非 None 的學期；全部 None 時回 Decimal("0.0")。
+        """
+        # worked_first=True, first=None → 跳過上學期；only second=91.5 納入
+        result = sb.resolve_org_achievement_rate(
+            None,
+            Decimal("91.5"),
+            worked_first=True,
+            worked_second=True,
+        )
+        assert result == Decimal("91.5"), (
+            "上學期 rate=None 應跳過，只取下學期 91.5"
+        )
+
+        # 兩學期 rate 皆 None → 回 Decimal("0.0")（而非 crash）
+        result2 = sb.resolve_org_achievement_rate(
+            None,
+            None,
+            worked_first=True,
+            worked_second=True,
+        )
+        assert result2 == Decimal("0.0"), (
+            "兩學期 rate 皆 None 應回 Decimal('0.0')，不應 crash"
+        )
 
 
 # =========================================================================== #
