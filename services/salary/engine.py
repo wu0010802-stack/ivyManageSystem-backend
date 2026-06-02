@@ -203,7 +203,6 @@ def _fill_salary_record(
     breakdown,
     engine,
     session=None,
-    appraisal_bonus=None,
     pending_logs=None,
 ):
     """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
@@ -211,7 +210,7 @@ def _fill_salary_record(
     若 SalaryRecord.manual_overrides 不為空,清單內欄位視為「人工調整鎖定」,
     跳過 breakdown 覆寫,並從 record 重算 gross/total/net 確保總額一致。
 
-    session: SQLAlchemy Session，供 appraisal_year_end_bonus plugin query 用；
+    session: SQLAlchemy Session，供 pending payout log query 用；
              None 時跳過 plugin（向下相容既有 unit test）。
     """
     overrides = set(salary_record.manual_overrides or [])
@@ -3761,7 +3760,7 @@ class SalaryEngine:
             self.insurance_service,
             emp.id,
             ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
-            appraisal_bonus=preload.appraisal_by_emp.get(emp.id, 0),  # 決策⑥B：0 跳過 per-employee query
+
         )
 
         breakdown.absent_count = absent_count
@@ -3794,7 +3793,6 @@ class SalaryEngine:
             breakdown,
             self,
             session=session,
-            appraisal_bonus=preload.appraisal_by_emp.get(emp.id, 0),  # 決策⑥B：0 跳過 per-employee query
             pending_logs=preload.pending_payout_by_emp.get(emp.id, []),
         )
         return emp, breakdown

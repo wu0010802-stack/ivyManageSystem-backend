@@ -236,8 +236,7 @@ def test_engine_does_not_pull_appraisal_in_february(
         breakdown,
         mock_engine,
         session=test_db_session,  # 真實 session，含 APPRAISAL 資料
-        appraisal_bonus=None,      # 單筆路徑；舊行為：此時會 query → 決策⑥B 後不再 query
-        pending_logs=[],
+        pending_logs=[],           # 決策⑥B 後已無 appraisal_bonus 參數
     )
 
     # 比較前轉 Decimal 確保 int/float/Decimal 皆一致（Money column 在 transient object 可能為 int）

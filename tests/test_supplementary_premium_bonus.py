@@ -4,7 +4,7 @@
 1. 公式正確性（per-payment incremental，basis = max(ytd_before, threshold)）
 2. 跨月累進（第一次破門檻 vs 累計已破門檻）
 3. 跨年度歸零
-4. 多獎金來源加總（festival + appraisal_year_end）
+4. 多獎金來源加總（festival + 其他非經常性獎金）
 5. 投保薪資跨月變動（threshold 用當月值）
 6. supervisor_dividend 列入累計（業主分類）
 7. birthday_bonus / overtime_pay 不入累計
@@ -39,14 +39,6 @@ def _add_salary_record(session, *, year, month, **bonus_fields):
     return rec
 
 
-@pytest.fixture
-def _no_appraisal_bonus():
-    """預設 mock：appraisal_year_end_bonus query 回 0（非 2 月情境）。"""
-    with patch(
-        "services.salary.supplementary_premium.query_appraisal_year_end_bonus",
-        return_value=0,
-    ) as m:
-        yield m
 
 
 class TestQueryYtdBonusBefore:
@@ -63,9 +55,9 @@ class TestQueryYtdBonusBefore:
             performance_bonus=3000,
             special_bonus=1000,
             supervisor_dividend=500,
-            appraisal_year_end_bonus=20000,
+            appraisal_year_end_bonus=20000,  # 決策⑥B：考核不列入累計，不影響本函式
         )
-        # 不含 birthday_bonus / overtime_pay / base_salary
+        # 不含 birthday_bonus / overtime_pay / base_salary / appraisal_year_end_bonus
         rec = test_db_session.query(SalaryRecord).first()
         rec.birthday_bonus = 500
         rec.overtime_pay = 8000
@@ -73,7 +65,7 @@ class TestQueryYtdBonusBefore:
         test_db_session.flush()
 
         ytd = query_ytd_bonus_before(test_db_session, EMP_ID, 2026, 6)
-        assert ytd == 36500  # 10000+2000+3000+1000+500+20000
+        assert ytd == 16500  # 10000+2000+3000+1000+500（考核 20000 決策⑥B 不計入）
 
     def test_excludes_current_and_future_months(self, test_db_session):
         _add_salary_record(test_db_session, year=2026, month=1, festival_bonus=5000)
@@ -89,7 +81,7 @@ class TestQueryYtdBonusBefore:
 
 
 class TestCalculateBonusSupplementaryFee:
-    def test_below_threshold_no_fee(self, test_db_session, _no_appraisal_bonus):
+    def test_below_threshold_no_fee(self, test_db_session):
         # ytd_after=80000, threshold=4×30000=120000 → excess=0
         fee = calculate_bonus_supplementary_fee(
             test_db_session,
@@ -101,7 +93,7 @@ class TestCalculateBonusSupplementaryFee:
         )
         assert fee == 0
 
-    def test_at_threshold_no_fee(self, test_db_session, _no_appraisal_bonus):
+    def test_at_threshold_no_fee(self, test_db_session):
         # ytd_after=120000, threshold=120000 → excess=0
         fee = calculate_bonus_supplementary_fee(
             test_db_session,
@@ -114,7 +106,7 @@ class TestCalculateBonusSupplementaryFee:
         assert fee == 0
 
     def test_first_breach_charges_only_excess(
-        self, test_db_session, _no_appraisal_bonus
+        self, test_db_session
     ):
         # threshold=120000, prior=100000, this_month=80000 → ytd_after=180000
         # basis = max(100000, 120000) = 120000 → excess=60000 → 60000×0.0211=1266
@@ -129,7 +121,7 @@ class TestCalculateBonusSupplementaryFee:
         )
         assert fee == 1266
 
-    def test_subsequent_payment_full_amount(self, test_db_session, _no_appraisal_bonus):
+    def test_subsequent_payment_full_amount(self, test_db_session):
         # prior 已破門檻：prior=180000 > threshold=120000，本月 40000 全額扣
         # basis = max(180000, 120000) = 180000 → excess=40000 → 844
         _add_salary_record(test_db_session, year=2026, month=6, festival_bonus=180000)
@@ -143,7 +135,7 @@ class TestCalculateBonusSupplementaryFee:
         )
         assert fee == 844  # 40000 × 0.0211 = 844
 
-    def test_year_resets(self, test_db_session, _no_appraisal_bonus):
+    def test_year_resets(self, test_db_session):
         # 前一年累計 999999 不計入本年
         _add_salary_record(test_db_session, year=2025, month=12, festival_bonus=999999)
         # 本年 ytd_before=0，threshold=120000，this_month=80000 → excess=0
@@ -158,7 +150,7 @@ class TestCalculateBonusSupplementaryFee:
         assert fee == 0
 
     def test_threshold_uses_current_month_insured_salary(
-        self, test_db_session, _no_appraisal_bonus
+        self, test_db_session
     ):
         # 同一 prior_ytd=100K + this_month=80K=180K
         # 6 月投保 30K → threshold=120K → excess=60K → 1266
@@ -183,7 +175,7 @@ class TestCalculateBonusSupplementaryFee:
         assert fee_june == 1266
         assert fee_sept == round(34800 * 0.0211)  # 734
 
-    def test_supervisor_dividend_counted(self, test_db_session, _no_appraisal_bonus):
+    def test_supervisor_dividend_counted(self, test_db_session):
         # 業主分類：supervisor_dividend 列入累計
         _add_salary_record(
             test_db_session, year=2026, month=3, supervisor_dividend=120000
@@ -200,7 +192,7 @@ class TestCalculateBonusSupplementaryFee:
         )
         assert fee == 211
 
-    def test_no_insured_salary_skips(self, test_db_session, _no_appraisal_bonus):
+    def test_no_insured_salary_skips(self, test_db_session):
         fee = calculate_bonus_supplementary_fee(
             test_db_session,
             EMP_ID,
@@ -211,7 +203,7 @@ class TestCalculateBonusSupplementaryFee:
         )
         assert fee == 0
 
-    def test_no_current_bonus_skips(self, test_db_session, _no_appraisal_bonus):
+    def test_no_current_bonus_skips(self, test_db_session):
         # 即便 prior 已破門檻，當月無獎金不扣
         _add_salary_record(test_db_session, year=2026, month=6, festival_bonus=500000)
         fee = calculate_bonus_supplementary_fee(
@@ -224,23 +216,50 @@ class TestCalculateBonusSupplementaryFee:
         )
         assert fee == 0
 
-    def test_appraisal_year_end_bonus_counted_in_february(self, test_db_session):
-        # 2 月情境：appraisal_year_end_bonus 進入當月累計
-        # ytd_before=0, breakdown_bonus_total=80000, appraisal=60000 → ytd_after=140000
-        # threshold=120000 → excess=20000 → 422
-        with patch(
-            "services.salary.supplementary_premium.query_appraisal_year_end_bonus",
-            return_value=60000,
-        ):
-            fee = calculate_bonus_supplementary_fee(
-                test_db_session,
-                EMP_ID,
-                2026,
-                2,
-                breakdown_bonus_total=80000,
-                health_insured_salary=30000,
-            )
-        assert fee == 422
+    def test_appraisal_year_end_bonus_NOT_counted_in_february(self, test_db_session):
+        # 決策⑥B：考核年終移至表外獨立轉帳，不應計入補充保費。
+        # 2 月情境：ytd_before=0, breakdown_bonus_total=80000（不含考核）
+        # threshold = 4×30000 = 120000，ytd_after=80000 → excess=0 → fee=0
+        # 即便 DB 中有考核特別獎金紀錄 (60000)，本函式不再 query 或加入。
+        # 以下確認：fee 不受考核影響
+        fee = calculate_bonus_supplementary_fee(
+            test_db_session,
+            EMP_ID,
+            2026,
+            2,
+            breakdown_bonus_total=80000,
+            health_insured_salary=30000,
+        )
+        assert fee == 0  # 考核 60000 不計，ytd_after=80000 < threshold=120000
+
+    def test_appraisal_year_end_bonus_NOT_counted_single_vs_bulk_parity(
+        self, test_db_session
+    ):
+        # 單筆路徑與批次路徑應給出相同補充保費（兩者皆不計考核）。
+        # 場景：2 月，festival_bonus=150000 超門檻；考核=60000 不計。
+        # ytd_before=0, breakdown_bonus_total=150000, threshold=4×30000=120000
+        # excess=150000-120000=30000 → fee=30000×0.0211=633
+        fee_single = calculate_bonus_supplementary_fee(
+            test_db_session,
+            EMP_ID,
+            2026,
+            2,
+            breakdown_bonus_total=150000,  # festival_bonus only
+            health_insured_salary=30000,
+        )
+        # 批次路徑：呼叫時不傳 appraisal_bonus kwarg（已移除），結果應相同
+        fee_bulk = calculate_bonus_supplementary_fee(
+            test_db_session,
+            EMP_ID,
+            2026,
+            2,
+            breakdown_bonus_total=150000,
+            health_insured_salary=30000,
+            ytd_before=0,  # 批次路徑預注入 ytd_before（但兩者語意一致）
+        )
+        assert fee_single == 633
+        assert fee_bulk == 633
+        assert fee_single == fee_bulk, "單筆與批次路徑補充保費必須一致（考核均不計）"
 
 
 class TestApplyBonusSupplementaryToBreakdown:
@@ -268,7 +287,7 @@ class TestApplyBonusSupplementaryToBreakdown:
             setattr(bd, k, v)
         return bd
 
-    def test_no_bonus_no_change(self, test_db_session, _no_appraisal_bonus):
+    def test_no_bonus_no_change(self, test_db_session):
         bd = self._make_breakdown()
         bd_before = (
             bd.health_insurance,
@@ -298,7 +317,7 @@ class TestApplyBonusSupplementaryToBreakdown:
         ) == bd_before
 
     def test_first_breach_mutates_four_fields(
-        self, test_db_session, _no_appraisal_bonus
+        self, test_db_session
     ):
         _add_salary_record(test_db_session, year=2026, month=2, festival_bonus=100000)
         bd = self._make_breakdown(festival_bonus=80000)
@@ -324,7 +343,7 @@ class TestApplyBonusSupplementaryToBreakdown:
         assert bd.net_salary == bd.gross_salary - bd.total_deduction
 
     def test_explicit_health_insured_salary_overrides_emp_dict_insurance(
-        self, test_db_session, _no_appraisal_bonus
+        self, test_db_session
     ):
         # health_insured_salary 設 45800 覆寫 insurance_salary 30000
         _add_salary_record(test_db_session, year=2026, month=2, festival_bonus=100000)
@@ -351,7 +370,7 @@ class TestApplyBonusSupplementaryToBreakdown:
         assert fee == 776
 
     def test_preserves_existing_supplementary_health_from_hourly_path(
-        self, test_db_session, _no_appraisal_bonus
+        self, test_db_session
     ):
         # 模擬 hourly 路徑已設了 supplementary_health_employee=622
         # 加上獎金路徑應 += 不是 overwrite
