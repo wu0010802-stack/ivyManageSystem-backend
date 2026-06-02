@@ -272,15 +272,17 @@ def _db_create_dismissal_call(
 @router.post("", status_code=201)
 async def create_dismissal_call(
     body: DismissalCallCreate,
-    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.DISMISSAL_CALLS_WRITE)
+    ),
 ):
     """建立接送通知。同一學生若已有 pending/acknowledged 通知則拋 409。"""
     # 管理端為管理者全園操作（teacher 走 portal 端的自班 scope 路徑）；鎖 :all
-    # 擋住持 STUDENTS_WRITE:own_class 的自訂角色越權建立。
+    # 擋住持 DISMISSAL_CALLS_WRITE:own_class 的自訂角色越權建立。
     # TODO(scope): 理想改 per-row（依 student→classroom 限自班），列 follow-up。
     assert_all_scope(
         current_user,
-        Permission.STUDENTS_WRITE.value,
+        Permission.DISMISSAL_CALLS_WRITE.value,
         action_label="建立接送通知",
     )
     user_id = current_user.get("user_id")
@@ -311,14 +313,16 @@ def list_dismissal_calls(
         None, description="pending/acknowledged/completed/cancelled"
     ),
     classroom_id: Optional[int] = Query(None),
-    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.DISMISSAL_CALLS_READ)
+    ),
 ):
     """列出接送通知（預設今日）。"""
-    # 全園接送通知列表：鎖 :all，擋住持 STUDENTS_READ:own_class 的自訂角色
+    # 全園接送通知列表：鎖 :all，擋住持 DISMISSAL_CALLS_READ:own_class 的自訂角色
     # 看到全園接送名單（teacher 自班檢視走 portal 端）。
     assert_all_scope(
         current_user,
-        Permission.STUDENTS_READ.value,
+        Permission.DISMISSAL_CALLS_READ.value,
         action_label="檢視全園接送通知",
     )
     session = get_session()
@@ -419,17 +423,19 @@ def _db_cancel_dismissal_call(call_id: int, current_user: dict) -> tuple[dict, i
 @router.post("/{call_id}/cancel")
 async def cancel_dismissal_call(
     call_id: int,
-    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.DISMISSAL_CALLS_WRITE)
+    ),
 ):
     """取消接送通知（僅 pending/acknowledged 狀態可取消）。
 
     F-044：僅原建立者或 admin/hr/supervisor 可取消，避免他人改寫線下流程。
     """
-    # 鎖 :all 擋持 STUDENTS_WRITE:own_class 的自訂角色（_db_cancel 內另有
+    # 鎖 :all 擋持 DISMISSAL_CALLS_WRITE:own_class 的自訂角色（_db_cancel 內另有
     # F-044 建立者/管理角色檢查）。TODO(scope): 理想 per-row，列 follow-up。
     assert_all_scope(
         current_user,
-        Permission.STUDENTS_WRITE.value,
+        Permission.DISMISSAL_CALLS_WRITE.value,
         action_label="取消接送通知",
     )
     loop = asyncio.get_running_loop()
