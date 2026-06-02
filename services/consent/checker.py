@@ -31,7 +31,8 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from models.consent import ParentConsentLog
+from config import get_settings
+from models.consent import CONSENT_SCOPE_CROSS_BORDER_TRANSFER, ParentConsentLog
 from models.guardian import Guardian
 from utils.cache_layer import get_cache
 
@@ -107,6 +108,47 @@ def consent_check_student_scope(session: Session, student_id: int, scope: str) -
     # 無主要聯絡人：任一已綁 guardian 同意即可
     # 若改為「所有 guardian 皆同意」，把 any(...) 改成 all(...) 即可
     return any(consent_check(session, g.user_id, scope) for g in guardians)
+
+
+# ── 上傳咽喉（cross_border）──────────────────────────────────────────────────
+
+
+def enforce_student_cross_border(session: Session, student_id: int) -> None:
+    """上傳含學生 PII 前呼叫的 cross_border_transfer consent 守門員。
+
+    - flag off（get_settings().consent.enforcement_enabled is False）→ no-op，直接 return。
+    - flag on：
+        - 查詢出錯 → fail-closed（記 warning，raise ConsentRequired）
+        - 未同意 → raise ConsentRequired
+        - 已同意 → return（允許上傳）
+
+    設計原則：
+    - 此函式只做 consent 判定，不觸碰 storage 邏輯。
+    - fail-closed：查詢異常一律視為「未同意」，防止異常被繞過成為後門。
+    - 例外：寫入 warning log 供 Sentry / ops 告警追蹤。
+
+    caller 在「取得 entry.student_id 之後、呼叫 storage.put_attachment 之前」插入：
+        enforce_student_cross_border(session, entry.student_id)
+    """
+    if not get_settings().consent.enforcement_enabled:
+        return
+
+    from services.business_errors.parent import ConsentRequired
+
+    try:
+        ok = consent_check_student_scope(
+            session, student_id, CONSENT_SCOPE_CROSS_BORDER_TRANSFER
+        )
+    except Exception as exc:
+        logger.warning(
+            "enforce_student_cross_border 查詢異常，fail-closed；student_id=%s exc=%s",
+            student_id,
+            exc,
+        )
+        raise ConsentRequired("家長尚未同意學生資料跨境傳輸，無法上傳含個資的檔案")
+
+    if not ok:
+        raise ConsentRequired("家長尚未同意學生資料跨境傳輸，無法上傳含個資的檔案")
 
 
 # ── 快取失效（撤回時立即清除）────────────────────────────────────────────────
