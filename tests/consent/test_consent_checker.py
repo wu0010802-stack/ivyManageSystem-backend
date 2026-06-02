@@ -6,6 +6,7 @@
 - 無任何記錄 → False
 - per-student：主要聯絡人不同意、次要同意 → False（以主要為準）
 - 快取：set 後 get 命中；invalidate 後 miss
+- write_consent 寫入後快取 invalidate（P2-1 P0-1）
 """
 
 from __future__ import annotations
@@ -221,3 +222,69 @@ def test_invalidate_consent_cache_clears_entry(test_db_session):
     invalidate_consent_cache(2, "line_push")
     val = cache.get("consent", cache_key)
     assert val is None, "invalidate 後 cache 應 miss（None）"
+
+
+# ── write_consent 快取失效測試（P2-1 review P0-1）────────────────────────────
+
+
+def test_write_consent_invalidates_cache_on_revoke(test_db_session):
+    """write_consent 寫入撤回後，consent_check 不再回 stale True（P2-1 P0-1）。
+
+    流程：
+    1. seed consented=True log → consent_check 暖快取（回 True，並快取 True）
+    2. 呼叫 write_consent 寫入 consented=False 撤回
+    3. 再次呼叫 consent_check → 應回 False（快取已被 invalidate，重新讀 DB）
+
+    若 write_consent 未呼叫 invalidate_consent_cache，第 3 步仍回快取的 True。
+    """
+    from starlette.requests import Request as StarletteRequest
+
+    from api.parent_portal.consent import ConsentEventIn, write_consent
+    from models.consent import CONSENT_SCOPE_PHOTO_PUBLISH
+    from services.consent.checker import consent_check
+
+    session = test_db_session
+    scope = CONSENT_SCOPE_PHOTO_PUBLISH
+
+    # 1. seed：先有一筆 consented=True
+    pv = _make_policy(session)
+    user = _make_parent_user(session, "parent_write_consent_invalidate")
+
+    _make_consent_log(session, user, pv, scope, consented=True)
+
+    # 暖快取（此時 cache 存 True）
+    result_before = consent_check(session, user.id, scope)
+    assert result_before is True, "前置：快取應為 True"
+
+    # 2. 呼叫 write_consent 寫入撤回（consented=False）
+    payload = ConsentEventIn(
+        policy_version_id=pv.id,
+        scope=scope,
+        consented=False,
+        note="撤回測試",
+    )
+    current_user = {"role": "parent", "user_id": user.id}
+    # 建立最小化 ASGI scope 以通過 Request 初始化
+    scope_asgi = {
+        "type": "http",
+        "method": "POST",
+        "path": "/me/consent",
+        "query_string": b"",
+        "headers": [(b"user-agent", b"test")],
+        "client": ("127.0.0.1", 0),
+    }
+    request = StarletteRequest(scope_asgi)
+
+    write_consent(
+        payload=payload,
+        request=request,
+        current_user=current_user,
+        session=session,
+    )
+
+    # 3. 再次查詢 → 快取應已 invalidate，重新讀 DB 應得 False
+    result_after = consent_check(session, user.id, scope)
+    assert result_after is False, (
+        "write_consent 寫入撤回後 consent_check 應回 False；"
+        "若仍回 True 表示 write_consent 未呼叫 invalidate_consent_cache"
+    )
