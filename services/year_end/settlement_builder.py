@@ -98,7 +98,7 @@ def festival_base_for_role(db: Session, role_key: str) -> Decimal:
 def compute_hire_months(emp: Any, cycle_start: date, cycle_end: date) -> Decimal:
     """計算員工在 [cycle_start, cycle_end] 週期內的在職月數。
 
-    月數採 inclusive 計算（start.m 到 end.m 均算一個月）。
+    月數採 calendar-month inclusive 計算（只看年/月，忽略日；start.m 到 end.m 均算一個月）。
     結果 clamp 在 [0, 12]。
 
     Args:

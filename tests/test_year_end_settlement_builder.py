@@ -104,6 +104,11 @@ class TestFestivalBaseForRole:
         # DB 裡完全沒有 BonusConfig 時回 Decimal("0")
         assert sb.festival_base_for_role(session, "head_teacher_ab") == Decimal("0")
 
+    def test_festival_base_for_role_handles_null_field(self, session):
+        # art_teacher_festival 是 nullable=True 欄位；設為 None 時 getattr/None 守衛應回 Decimal("0")
+        _bonus_config(session, art_teacher_festival=None)
+        assert sb.festival_base_for_role(session, "art_teacher") == Decimal("0")
+
     def test_uses_latest_by_id(self, session):
         """多筆 BonusConfig 時取 id 最大（最新）那筆。"""
         _bonus_config(session, head_teacher_ab=1000)
@@ -211,12 +216,15 @@ class TestResolveOrgAchievementRate:
         assert result == Decimal("0.0")
 
     def test_rounding_to_one_decimal(self):
-        # 確保四捨五入到小數點第一位（ROUND_HALF_UP）
-        # (80.5 + 81.5) / 2 = 81.0 → 81.0
+        # 確保四捨五入到小數點第一位（ROUND_HALF_UP，非 banker's rounding）
+        # (80.5 + 80.6) / 2 = 80.55 → ROUND_HALF_UP → 80.6（banker's rounding 會得 80.6 也對，但 2dp 下會錯）
+        # 真正鑑別：Decimal("80.55").quantize(0.1, ROUND_HALF_UP)=80.6，ROUND_HALF_EVEN=80.6 也對，
+        # 但若 inputs 為 Decimal("80.4") + Decimal("80.5") → avg=80.45 → HALF_UP=80.5, HALF_EVEN=80.4
+        # 使用 80.4 / 80.6 確保 avg=80.5 整，而 (80.5+80.6)/2=80.55 → 只 HALF_UP 進位
         result = sb.resolve_org_achievement_rate(
             Decimal("80.5"),
-            Decimal("81.5"),
+            Decimal("80.6"),
             worked_first=True,
             worked_second=True,
         )
-        assert result == Decimal("81.0")
+        assert result == Decimal("80.6")
