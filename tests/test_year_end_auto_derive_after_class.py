@@ -406,6 +406,60 @@ def test_after_class_award_ignores_soft_deleted(seed):
     assert report.unmatched_count == 0
 
 
+def test_after_class_award_art_teacher_segment(seed):
+    """才藝老師段：每位列名老師各得「全校總人次 × art_teacher_unit_price」。
+
+    全校總人次 = 天堂鳥 25 + 牡丹 13 = 38；art_teacher_unit_price=30
+    → 每位才藝老師各得 38 × 30 = 1140（各得全額，非均分）。
+    """
+    db = seed["db"]
+    cycle = seed["cycle"]
+
+    # 兩位才藝老師
+    art1 = _mk_employee(db, "E_ART_1", "才藝師甲")
+    art2 = _mk_employee(db, "E_ART_2", "才藝師乙")
+
+    # 在最新 active BonusConfig 設單價 + 收款人 list
+    cfg = aca._latest_active_bonus_config(db)
+    cfg.art_teacher_unit_price = 30
+    cfg.art_teacher_employee_ids = [art1.id, art2.id]
+    db.commit()
+
+    aca.derive_after_class_award(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.AFTER_CLASS_AWARD)
+    assert _amount_for(items, art1.id) == Decimal("1140")
+    assert _amount_for(items, art2.id) == Decimal("1140")
+    # 每位老師各一筆（period_label=...上-ART，與班導每班 label 區隔）
+    art_label = aca._art_teacher_period_label(cycle)
+    art_items = [it for it in items if it.period_label == art_label]
+    assert len(art_items) == 2
+    assert all(it.classroom_id is None for it in art_items)
+    # 班導金額不受才藝老師段影響
+    assert _amount_for(items, seed["emp_lin"].id) == Decimal("1875")
+    assert _amount_for(items, seed["emp_chen"].id) == Decimal("1105")
+
+
+def test_after_class_award_art_teacher_segment_skipped_when_no_ids(seed):
+    """art_teacher_employee_ids 空/未設 → 不寫才藝老師筆（即使有單價）。"""
+    db = seed["db"]
+    cycle = seed["cycle"]
+
+    cfg = aca._latest_active_bonus_config(db)
+    cfg.art_teacher_unit_price = 30
+    cfg.art_teacher_employee_ids = []  # 空 list → 跳過
+    db.commit()
+
+    aca.derive_after_class_award(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.AFTER_CLASS_AWARD)
+    art_label = aca._art_teacher_period_label(cycle)
+    art_items = [it for it in items if it.period_label == art_label]
+    assert len(art_items) == 0
+
+
 def test_after_class_award_reupsert_is_idempotent(seed):
     """連跑兩次：auto 筆 UPDATE 而非新增重複筆。"""
     db = seed["db"]

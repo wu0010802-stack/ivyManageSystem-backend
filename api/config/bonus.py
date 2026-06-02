@@ -70,6 +70,7 @@ _BONUS_FIELDS = [
     "personal_leave_deduction_per_day",
     "sick_leave_deduction_per_day",
     "after_class_award_unit_price",
+    "art_teacher_employee_ids",
 ]
 
 
@@ -113,6 +114,9 @@ class BonusConfigUpdate(BaseModel):
     sick_leave_deduction_per_day: Optional[float] = Field(None, ge=0, le=50000)
     after_class_award_unit_price: Optional[dict] = Field(
         None, description="課後才藝班年終單價 JSON（班名→K 單價）"
+    )
+    art_teacher_employee_ids: Optional[list[int]] = Field(
+        None, description="才藝老師年終收款人 employee id list（每位得全校總人次×單價）"
     )
     # 金流硬化（2026-05-16 P1-5）：BonusConfig 變動影響全員獎金基數，
     # 與 insurance.brackets PUT 對齊要求金流簽核 + 異動原因 ≥10 字。
@@ -177,6 +181,7 @@ def get_bonus_config(
             "personal_leave_deduction_per_day": config.personal_leave_deduction_per_day,
             "sick_leave_deduction_per_day": config.sick_leave_deduction_per_day,
             "after_class_award_unit_price": config.after_class_award_unit_price,
+            "art_teacher_employee_ids": config.art_teacher_employee_ids,
         }
         from . import _CACHE_TTL_CONFIG  # lazy back-import
 

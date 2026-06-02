@@ -186,6 +186,13 @@ class BonusConfig(Base):
         nullable=True,
         comment="課後才藝班年終單價 JSON（班名→K 單價，NULL=未設定）",
     )
+    # 才藝老師年終收款人（JSON：employee id list，每位得「全校總人次×art_teacher_unit_price」）
+    # NULL/空 list = 未指定才藝老師 → 跳過才藝老師段（不報錯）
+    art_teacher_employee_ids = Column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+        comment="才藝老師年終收款人 employee id list（JSON，NULL/空=未指定）",
+    )
 
     is_active = Column(Boolean, default=True)
 
