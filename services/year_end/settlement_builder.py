@@ -286,7 +286,7 @@ def _has_class_role(emp: Any) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def year_end_base_salary(db: Session, emp: Any) -> Decimal:
+def year_end_base_salary(db: Session, emp: Any, standards: dict | None = None) -> Decimal:
     """年終底薪 == 月薪底薪（決策①A）。
 
     複用 SalaryEngine._resolve_standard_base，但**用傳入的 db** 載入職位標準
@@ -300,7 +300,7 @@ def year_end_base_salary(db: Session, emp: Any) -> Decimal:
     回 Decimal（小數 2 位）。
     """
     engine = SalaryEngine(load_from_db=False)
-    engine._position_salary_standards = load_position_salary_standards(db)
+    engine._position_salary_standards = standards if standards is not None else load_position_salary_standards(db)
     resolved = engine._resolve_standard_base(emp)
     return _q2(resolved)
 
@@ -576,6 +576,9 @@ def build_settlements(
 
     result = BuildResult()
 
+    # Fix 3: 職位薪資標準只載入一次，避免每位員工重建 SalaryEngine + 查一次 DB
+    _standards = load_position_salary_standards(db)
+
     for emp in employees:
         existing = db.scalar(
             select(YearEndSettlement).where(
@@ -590,9 +593,15 @@ def build_settlements(
             result.skipped_finalized += 1
             continue
 
-        base = year_end_base_salary(db, emp)
+        base = year_end_base_salary(db, emp, standards=_standards)
         festival = festival_base_for_role(db, role_key_of(emp))
-        hire_months = compute_hire_months(emp, cycle.start_date, cycle.end_date)
+        # Fix 1 (CRITICAL): 年終比例計算以民國曆年（Jan 1–Dec 31）為基準，非學年 Aug–Jul
+        proration_start = date(cycle.academic_year + 1911, 1, 1)
+        proration_end = date(cycle.academic_year + 1911, 12, 31)
+        auto_months = compute_hire_months(emp, proration_start, proration_end)
+        # Fix 2: 若已有人工覆寫值（Task 6 手動設定），優先採用；否則使用自動計算值
+        _override = (existing.calc_meta or {}).get("hire_months_override") if existing else None
+        hire_months = Decimal(str(_override)) if _override is not None else auto_months
         worked_first, worked_second = worked_semesters(emp, cycle)
         rates = gather_performance_rates(db, cycle, emp)
         org_rate = resolve_org_achievement_rate(

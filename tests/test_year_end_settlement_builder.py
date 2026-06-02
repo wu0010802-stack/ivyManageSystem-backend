@@ -587,3 +587,149 @@ class TestRefreshEnrollmentRatesSmoke:
         )
         assert ct.class_performance_rate == _D("10.00")
         assert ct.avg_monthly_enrollment is not None
+
+
+# =========================================================================== #
+# Bug fix tests: Fix 1 (民國曆年) + Fix 2 (hire_months_override)              #
+# =========================================================================== #
+
+
+class TestProrationCivilCalendarYear:
+    """Fix 1 驗證：年終比例計算以民國曆年（Jan 1–Dec 31）為基準，非學年 Aug–Jul。
+
+    郭玟秀情境：2025 年 1 月至 10 月在職（辭職 2025-10-31）
+    - 正確：民國 114 年 = 西元 2025 Jan–Dec → 在職 10 個月
+    - 舊 bug：學年 2025/08–2026/07 → 在職 Aug–Oct = 3 個月
+    """
+
+    def test_proration_uses_civil_calendar_year(self, test_db_session):
+        db = test_db_session
+
+        # 種最小必要資料：cycle (academic_year=114) + OrgYearSettings + employee
+        db.add(
+            PositionSalaryConfig(
+                head_teacher_a=39240, head_teacher_b=36160, head_teacher_c=33000
+            )
+        )
+        db.add(
+            BonusConfig(
+                config_year=2025,
+                version=1,
+                is_active=True,
+                head_teacher_ab=2000,
+                head_teacher_c=1500,
+                assistant_teacher_ab=1200,
+                assistant_teacher_c=1200,
+                principal_festival=6500,
+                director_festival=3500,
+                leader_festival=2000,
+                driver_festival=1000,
+                designer_festival=1000,
+                admin_festival=2000,
+                art_teacher_festival=2000,
+            )
+        )
+        db.flush()
+
+        cycle = YearEndCycle(
+            academic_year=ACADEMIC_YEAR,  # 114 → 西元 2025
+            start_date=CYCLE_START,       # 2025-08-01（學年開始）
+            end_date=CYCLE_END,           # 2026-07-31（學年結束）
+            bonus_calc_date=BONUS_CALC_DATE,
+        )
+        db.add(cycle)
+        db.flush()
+
+        # OrgYearSettings：兩學期（不然 org_rate crash）
+        db.add(
+            OrgYearSettings(
+                year_end_cycle_id=cycle.id,
+                semester_first=True,
+                enrollment_target=160,
+                school_achievement_rate=_D("80.0"),
+                org_achievement_rate=_D("0"),
+            )
+        )
+        db.add(
+            OrgYearSettings(
+                year_end_cycle_id=cycle.id,
+                semester_first=False,
+                enrollment_target=160,
+                school_achievement_rate=_D("80.0"),
+                org_achievement_rate=_D("0"),
+            )
+        )
+
+        # 員工：hired 在 2025-01-01（民國年首），辭職 2025-10-31（民國年第 10 月底）
+        # 在職 1–10 月 = 10 個月；但學年 Aug–Jul 下只有 Aug–Oct = 3 個月
+        emp = Employee(
+            employee_id="E_GUO",
+            name="郭玟秀",
+            position="班導",
+            bonus_grade="b",
+            title="幼兒園教師",
+            base_salary=36160,
+            bypass_standard_base=False,
+            is_active=True,  # 必須 True 才進迴圈（或 included_resigned_ids）
+            hire_date=date(2025, 1, 1),
+            resign_date=date(2025, 10, 31),
+        )
+        db.add(emp)
+        db.flush()
+
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+
+        st = _get_settlement(db, cycle, emp)
+
+        # 民國 114 年 = 2025-01-01 .. 2025-12-31
+        # hire_date=2025-01-01, resign_date=2025-10-31 → effective Jan–Oct = 10 個月
+        assert st.hire_months == _D("10"), (
+            f"民國曆年基準應得 10 個月，舊 bug（學年）會得 3。got={st.hire_months}"
+        )
+        # proration = 10/12 = 0.8333
+        assert st.proration_rate == _D("0.8333"), (
+            f"proration_rate 應為 0.8333，got={st.proration_rate}"
+        )
+        # payable 應以 10/12 比例計算（不為 0）
+        assert st.payable_amount > _D("0"), "payable_amount 不應為 0"
+
+
+class TestHireMonthsOverrideHonoredAndPreserved:
+    """Fix 2 驗證：build_settlements 讀取並保留 calc_meta.hire_months_override。
+
+    流程：
+      1. 第一次 build → auto_months = 12（滿年）
+      2. 模擬 Task 6 手動設定：settlement.calc_meta["hire_months_override"] = "4.5"
+      3. 第二次 re-build → hire_months 應採覆寫值 4.5，proration = 4.5/12 = 0.3750
+      4. override key 在 re-build 後仍保留於 calc_meta（不被蓋掉）
+    """
+
+    def test_hire_months_override_honored_and_preserved(self, test_db_session):
+        db = test_db_session
+        cycle, emp, _ = _seed_tsai_cycle(db)
+
+        # 第一次 build（蔡宜倩滿年，auto = 12）
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+        st = _get_settlement(db, cycle, emp)
+        assert st.hire_months == _D("12"), f"第一次 build 應為 12 個月，got={st.hire_months}"
+
+        # 模擬 Task 6 手動 patch：將 hire_months_override 寫入 calc_meta
+        # 用字串值確保 JSON serialization 不炸（Decimal 不可直接 JSON serialize）
+        st.calc_meta = {**(st.calc_meta or {}), "hire_months_override": "4.5"}
+        db.flush()
+
+        # 第二次 re-build：應讀取覆寫值 4.5
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+        db.expire(st)  # 強制 re-read from DB
+        st = _get_settlement(db, cycle, emp)
+
+        assert st.hire_months == _D("4.5"), (
+            f"覆寫後 re-build 應得 4.5 個月，got={st.hire_months}"
+        )
+        assert st.proration_rate == _D("0.3750"), (
+            f"proration_rate 應為 0.3750（4.5/12），got={st.proration_rate}"
+        )
+        # override key 應被保留（不被 re-build 蓋掉）
+        assert st.calc_meta.get("hire_months_override") == "4.5", (
+            f"calc_meta.hire_months_override 應被保留，got calc_meta={st.calc_meta}"
+        )
