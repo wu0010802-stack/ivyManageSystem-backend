@@ -223,9 +223,9 @@ def test_single_vs_bulk_february_parity_distinct_values(salary_engine_db):
     assert single_a == bulk_a, f"A 路徑不一致 single={single_a} bulk={bulk_a}"
     assert single_b == bulk_b, f"B 路徑不一致 single={single_b} bulk={bulk_b}"
 
-    # 防「同值掩蓋交叉接線」：兩人 appraisal 必須不同且各自正確
-    assert bulk_a["appraisal_year_end_bonus"] == Decimal("13600")
-    assert bulk_b["appraisal_year_end_bonus"] == Decimal("8000")
+    # 決策⑥B：engine 不再 pull 考核獎金（由年終模組獨立發放），兩人皆 0
+    assert bulk_a["appraisal_year_end_bonus"] == 0
+    assert bulk_b["appraisal_year_end_bonus"] == 0
     # skip 生效：B 產假橫跨兩 period 月 → festival/overtime 歸 0；A 正常 > 0
     assert bulk_a["festival_bonus"] > 0
     assert bulk_b["festival_bonus"] == 0
@@ -245,7 +245,6 @@ def test_bulk_does_not_invoke_per_employee_n_plus_1(salary_engine_db, monkeypatc
     import services.salary.engine as eng_mod
     import services.salary.supplementary_premium as sup_mod
     from services.leave_bonus_skip import should_skip_bonuses_for_month as _skip
-    from services.salary.appraisal_year_end import query_appraisal_year_end_bonus as _ap
     from services.salary.supplementary_premium import query_ytd_bonus_before as _ytd
 
     engine, session_factory = salary_engine_db
@@ -270,17 +269,10 @@ def test_bulk_does_not_invoke_per_employee_n_plus_1(salary_engine_db, monkeypatc
         ids = [a.id, b.id]
 
     spies = {
-        "engine.query_appraisal": MagicMock(wraps=_ap),
-        "sup.query_appraisal": MagicMock(wraps=_ap),
+        # 決策⑥B：query_appraisal_year_end_bonus 已從 supplementary_premium 移除，無需 spy
         "sup.query_ytd_before": MagicMock(wraps=_ytd),
         "skip.should_skip_for_month": MagicMock(wraps=_skip),
     }
-    monkeypatch.setattr(
-        eng_mod, "query_appraisal_year_end_bonus", spies["engine.query_appraisal"]
-    )
-    monkeypatch.setattr(
-        sup_mod, "query_appraisal_year_end_bonus", spies["sup.query_appraisal"]
-    )
     monkeypatch.setattr(
         sup_mod, "query_ytd_bonus_before", spies["sup.query_ytd_before"]
     )

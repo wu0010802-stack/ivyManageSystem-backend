@@ -66,8 +66,8 @@ class SpecialBonusType(str, enum.Enum):
     """9 種特別獎金 + 1 通用類型。
 
     對應 Excel「年終獎金總表」B 欄各列：
-      APPRAISAL_HALF_BONUS_FIRST  : 較早那一筆（年終發放時對應「上學年下學期 = N-1.下」）— 來自 appraisal_summaries
-      APPRAISAL_HALF_BONUS_SECOND : 較晚那一筆（年終發放時對應「本學年上學期 = N.上」）— 來自 appraisal_summaries
+      APPRAISAL_HALF_BONUS_FIRST  : 較早那一筆（前一完整學年上學期）— 來自 appraisal_summaries
+      APPRAISAL_HALF_BONUS_SECOND : 較晚那一筆（前一完整學年下學期）— 來自 appraisal_summaries
       SEMESTER_DIVIDEND_FIRST     : N上學期紅利（舊生 500 + 才藝 1000）
       SEMESTER_DIVIDEND_SECOND    : N下學期紅利
       AFTER_CLASS_AWARD           : N上鼓勵推動才藝班獎金（按班級人數）
@@ -76,8 +76,8 @@ class SpecialBonusType(str, enum.Enum):
       FESTIVAL_DIFF               : N.8-N+1.01 節慶獎金差額（多退少補，可為負）
       CUSTOM                      : 其他客製化（保留擴充用）
 
-    ⚠️ APPRAISAL_HALF_BONUS_FIRST/SECOND 的 FIRST/SECOND 是「時間順序」（FIRST=較早=前一學年下學期，SECOND=較晚=本學年上學期），
-    與 AppraisalCycle.Semester.FIRST/SECOND（學期上下）正好相反。由 services/year_end/appraisal_sync.py 依 calendar payout year 自動 map。
+    FIRST=較早=前一完整學年上學期（Semester.FIRST=上），SECOND=較晚=前一完整學年下學期（Semester.SECOND=下）；
+    兩者方向一致（無反轉）。由 services/year_end/appraisal_sync.py 依 calendar payout year 自動 map。
     """
 
     APPRAISAL_HALF_BONUS_FIRST = "APPRAISAL_HALF_BONUS_FIRST"

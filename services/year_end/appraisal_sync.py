@@ -5,12 +5,11 @@ APPRAISAL_HALF_BONUS_FIRST/SECOND slot，供 salary engine 2 月 calculate 時 p
 
 業務規則：
 - payout 發放於 civil_year N 的 2/5
-- 含「上學年下學期 (N-1.下)」+「本學年上學期 (N.上)」兩筆
-- target year_end_cycles.academic_year = N - 1911 - 1（本學年，民國）
+- 含「前一完整學年上學期 (N-1.上)」+「前一完整學年下學期 (N-1.下)」兩筆
+- appraisal source academic_year = N - 1911 - 2（前一學年，民國），year_end 容器 academic_year = N - 1911 - 1
 - bonus_type 對 period_label 的 mapping：
-    FIRST  = 較早 = N-1.下 → period_label = f"{N-1-1911}下"
-    SECOND = 較晚 = N.上   → period_label = f"{N-1911-1}上"
-  ⚠️ SpecialBonusType 的 FIRST/SECOND 與 AppraisalCycle.Semester.FIRST/SECOND 反向（前者時間順序、後者學期上下）。
+    FIRST  = 較早 = 前一學年上學期 → period_label = f"{N-1911-2}上"
+    SECOND = 較晚 = 前一學年下學期 → period_label = f"{N-1911-2}下"
 """
 
 from __future__ import annotations
@@ -51,11 +50,11 @@ def civil_year_to_target_academic_year(civil_year: int) -> int:
 def map_bonus_type_to_period_label(
     bonus_type: SpecialBonusType, target_academic_year: int
 ) -> str:
-    """FIRST → 前一學年下學期；SECOND → 本學年上學期。"""
+    """FIRST → 前一學年上學期；SECOND → 前一學年下學期。"""
     if bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST:
-        return f"{target_academic_year - 1}下"
+        return f"{target_academic_year - 1}上"
     if bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND:
-        return f"{target_academic_year}上"
+        return f"{target_academic_year - 1}下"
     raise ValueError(
         f"map_bonus_type_to_period_label 僅支援 APPRAISAL_HALF_BONUS_*；got {bonus_type}"
     )
@@ -80,28 +79,29 @@ class PayoutPreviewRow:
 def resolve_target_cycles(
     db: Session, payout_year: int
 ) -> tuple[AppraisalCycle, AppraisalCycle]:
-    """payout_year (civil 2026) → (earlier_cycle 113下, later_cycle 114上)。"""
+    """payout_year (civil 2026) → (earlier_cycle 113上, later_cycle 113下)。"""
     target_academic_year = civil_year_to_target_academic_year(payout_year)
+    source_academic_year = target_academic_year - 1  # 前一完整學年
     earlier = db.scalar(
         select(AppraisalCycle).where(
-            AppraisalCycle.academic_year == target_academic_year - 1,
-            AppraisalCycle.semester == Semester.SECOND,
+            AppraisalCycle.academic_year == source_academic_year,
+            AppraisalCycle.semester == Semester.FIRST,
         )
     )
     if earlier is None:
         raise LookupError(
-            f"appraisal_cycle academic_year={target_academic_year - 1} SECOND 不存在；"
+            f"appraisal_cycle academic_year={source_academic_year} FIRST 不存在；"
             "請先在考核管理建立此 cycle"
         )
     later = db.scalar(
         select(AppraisalCycle).where(
-            AppraisalCycle.academic_year == target_academic_year,
-            AppraisalCycle.semester == Semester.FIRST,
+            AppraisalCycle.academic_year == source_academic_year,
+            AppraisalCycle.semester == Semester.SECOND,
         )
     )
     if later is None:
         raise LookupError(
-            f"appraisal_cycle academic_year={target_academic_year} FIRST 不存在；"
+            f"appraisal_cycle academic_year={source_academic_year} SECOND 不存在；"
             "請先在考核管理建立此 cycle"
         )
     return earlier, later
@@ -369,7 +369,7 @@ def generate_payouts(
                 if summary_id
                 else "appraisal_summary:none"
             )
-            # partition 對應的 appraisal cycle（earlier=N-1.下, later=N.上）
+            # partition 對應的 appraisal cycle（earlier=前一學年上, later=前一學年下）
             appraisal_cycle_id = (
                 earlier_cycle.id if partition == "earlier" else later_cycle.id
             )

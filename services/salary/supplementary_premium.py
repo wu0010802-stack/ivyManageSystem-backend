@@ -14,9 +14,9 @@
 - performance_bonus    績效獎金
 - special_bonus        特別獎金/紅利
 - supervisor_dividend  主管紅利（業主視為非經常性獎金性質）
-- appraisal_year_end_bonus  考核年終（2 月發放）
 
 不入累計：
+- appraisal_year_end_bonus  考核年終（決策⑥B：已移至年終獨立轉帳，表外，不計入補充保費）
 - birthday_bonus       生日禮金（福利金性質）
 - overtime_pay / meeting_overtime_pay  加班費（經常性給予）
 - base_salary / 各 deduction
@@ -28,7 +28,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models.salary import SalaryRecord
-from services.salary.appraisal_year_end import query_appraisal_year_end_bonus
 from services.salary.breakdown import SalaryBreakdown
 from services.salary.insurance_salary import resolve_insurance_salary_raw
 from utils.rounding import round_half_up
@@ -40,7 +39,6 @@ BONUS_FIELDS_FOR_YTD = (
     "performance_bonus",
     "special_bonus",
     "supervisor_dividend",
-    "appraisal_year_end_bonus",
 )
 
 
@@ -101,13 +99,11 @@ def calculate_bonus_supplementary_fee(
     health_insured_salary: float,
     rate: float = 0.0211,
     ytd_before: float | None = None,
-    appraisal_bonus=None,
 ) -> float:
     """計算本月應扣的「獎金補充保費」。
 
     公式（per-payment incremental）：
-        appraisal  = query_appraisal_year_end_bonus(session, ...)  # 僅 2 月有
-        current_month_total = breakdown_bonus_total + appraisal
+        current_month_total = breakdown_bonus_total  # 不含 appraisal（決策⑥B）
         ytd_before = ∑ SalaryRecord(bonus_fields) WHERE year==year AND month<this_month
         ytd_after  = ytd_before + current_month_total
         threshold  = 4 × health_insured_salary
@@ -124,7 +120,7 @@ def calculate_bonus_supplementary_fee(
         breakdown_bonus_total: 當月 breakdown 已算的列入累計獎金合計
             = festival_bonus + overtime_bonus + performance_bonus
             + special_bonus + supervisor_dividend
-            （不含 appraisal_year_end_bonus；本函式內部 query 加進來）
+            （不含 appraisal_year_end_bonus；決策⑥B 已移至年終獨立轉帳，不計入補充保費）
         health_insured_salary: 當月健保投保薪資（NULL 時由 caller 用 fallback 算好傳入）
         rate: 補充保費費率，預設 0.0211（115 年）
 
@@ -134,16 +130,7 @@ def calculate_bonus_supplementary_fee(
     if health_insured_salary <= 0 or rate <= 0:
         return 0
 
-    # 批次路徑可注入預載值（None=單筆路徑，照常 query）；語意完全一致。
-    appraisal = float(
-        (
-            appraisal_bonus
-            if appraisal_bonus is not None
-            else query_appraisal_year_end_bonus(session, employee_id, year, month)
-        )
-        or 0
-    )
-    current_month_total = float(breakdown_bonus_total) + appraisal
+    current_month_total = float(breakdown_bonus_total)
     if current_month_total <= 0:
         return 0
 
@@ -189,7 +176,6 @@ def apply_bonus_supplementary_to_breakdown(
     insurance_service,
     employee_pk: int,
     ytd_before: float | None = None,
-    appraisal_bonus=None,
 ) -> int:
     """計算獎金補充保費並 mutates breakdown 四個欄位：
     health_insurance / supplementary_health_employee / total_deduction / net_salary。
@@ -222,7 +208,6 @@ def apply_bonus_supplementary_to_breakdown(
         health_insured_salary=health_insured_salary,
         rate=rate,
         ytd_before=ytd_before,
-        appraisal_bonus=appraisal_bonus,
     )
     if fee <= 0:
         return 0

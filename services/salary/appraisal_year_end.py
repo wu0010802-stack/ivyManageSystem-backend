@@ -1,5 +1,8 @@
 """Salary engine plugin：2 月 calculate 時拉考核年終獎金。
 
+DEPRECATED (決策⑥B 2026-06-02): salary engine 不再呼叫此模組；考核年終已併入
+year_end_settlements 獨立轉帳。函式保留避免外部 import 爆，runtime 不再使用。
+
 source of truth = special_bonus_items（FIRST+SECOND 兩筆）；每月 calculate 重新 query。
 2 月份以外 return 0；不進 gross_salary、不影響勞健保 / 應發合計。
 """
@@ -19,6 +22,9 @@ def query_appraisal_year_end_bonus(
     db: Session, employee_id: int, year: int, month: int
 ) -> Decimal:
     """2 月份 query special_bonus_items 兩筆 APPRAISAL_HALF_BONUS_* 的 SUM。
+
+    DEPRECATED (決策⑥B 2026-06-02): salary engine 不再呼叫；考核年終已併入
+    year_end_settlements 獨立轉帳。函式保留避免外部 import 爆，runtime 不再使用。
 
     其他月份 return Decimal(0)。
     target_academic_year = year - 1911 - 1 (e.g., 2026 → 114)。
@@ -47,6 +53,9 @@ def query_appraisal_year_end_bonus_bulk(
     db: Session, employee_ids: list[int], year: int, month: int
 ) -> dict[int, Decimal]:
     """批次版 query_appraisal_year_end_bonus：回 {employee_id: Decimal}。
+
+    DEPRECATED (決策⑥B 2026-06-02): salary engine 不再呼叫；考核年終已併入
+    year_end_settlements 獨立轉帳。函式保留避免外部 import 爆，runtime 不再使用。
 
     語意與 per-employee 版一致：非 2 月或無資料者回 Decimal(0)。回傳 Decimal（直接
     寫進 SalaryRecord.appraisal_year_end_bonus 並進下月累計，型別不可降為 float）。

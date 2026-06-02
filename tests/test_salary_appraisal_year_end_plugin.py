@@ -1,6 +1,11 @@
 """Salary engine plugin: appraisal_year_end query helper。
 
 Plugin layer 測試（不跑完整 salary engine pipeline，只測 query helper 正確性）。
+
+注意：決策⑥B (2026-06-02) 後，query_appraisal_year_end_bonus / bulk 函式本身仍正確
+（standalone 測試繼續存在）；但 engine 不再呼叫它們。
+engine 行為守衛測試見本檔最下方 test_salary_engine_does_not_call_appraisal_year_end_plugin
+與 test_engine_does_not_pull_appraisal_in_february。
 """
 
 from datetime import date
@@ -43,14 +48,14 @@ def cycle_with_two_payouts(test_db_session, sample_active_employee_t5):
                 year_end_cycle_id=cycle.id,
                 employee_id=sample_active_employee_t5.id,
                 bonus_type=SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
-                period_label="113下",
+                period_label="113上",
                 amount=Decimal("6400"),
             ),
             SpecialBonusItem(
                 year_end_cycle_id=cycle.id,
                 employee_id=sample_active_employee_t5.id,
                 bonus_type=SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
-                period_label="114上",
+                period_label="113下",
                 amount=Decimal("7200"),
             ),
         ]
@@ -129,7 +134,7 @@ def test_query_correct_academic_year_mapping(
             year_end_cycle_id=cycle_114.id,
             employee_id=sample_active_employee_t5.id,
             bonus_type=SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
-            period_label="113下",
+            period_label="113上",
             amount=Decimal("9999"),
         )
     )
@@ -138,7 +143,7 @@ def test_query_correct_academic_year_mapping(
             year_end_cycle_id=cycle_113.id,
             employee_id=sample_active_employee_t5.id,
             bonus_type=SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
-            period_label="112下",
+            period_label="112上",
             amount=Decimal("3000"),
         )
     )
@@ -153,24 +158,89 @@ def test_query_correct_academic_year_mapping(
     assert result_2026 == Decimal("9999")
 
 
-# === Integration test: salary engine 確實呼叫 plugin ===
+# === 決策⑥B regression guard: salary engine 不再呼叫 appraisal_year_end plugin ===
 
 
-def test_salary_engine_hook_invokes_appraisal_year_end_plugin():
-    """確認 services/salary/engine.py 在 _fill_salary_record
-    （或對應 function）的程式碼中含 query_appraisal_year_end_bonus 呼叫。
+def test_salary_engine_does_not_call_appraisal_year_end_plugin():
+    """決策⑥B 守衛：確認 engine.py 不再 import 或呼叫 query_appraisal_year_end_bonus。
 
-    這是「煙霧測試」確認 Task 5 step 5 的 1 行 hook 確實加進去。
-    不跑整個 calculate pipeline（太複雜、需大量 fixtures）。
+    engine.py 仍會寫 SalaryRecord.appraisal_year_end_bonus（值恆為 0）；
+    但不可再出現 query_appraisal_year_end_bonus 的呼叫引用（避免重複發放 + 二代健保表外）。
     """
     from pathlib import Path
 
     engine_src = Path(__file__).parent.parent / "services" / "salary" / "engine.py"
     code = engine_src.read_text()
-    assert "query_appraisal_year_end_bonus" in code, (
-        "engine.py 未呼叫 query_appraisal_year_end_bonus；"
-        "Task 5 step 5 的 hook 未到位"
+    # 決策⑥B：engine 不應再引用 query_appraisal_year_end_bonus
+    assert "query_appraisal_year_end_bonus" not in code, (
+        "engine.py 仍含 query_appraisal_year_end_bonus 引用；"
+        "決策⑥B 要求 engine 不再從 appraisal_year_end 拉值（改由年終獨立轉帳）"
     )
+    # column 寫入仍保留（向後相容），值恆 0
     assert (
         "appraisal_year_end_bonus" in code
-    ), "engine.py 未寫入 SalaryRecord.appraisal_year_end_bonus column"
+    ), "engine.py 不應刪除 SalaryRecord.appraisal_year_end_bonus 的欄位寫入（向後相容）"
+
+
+def test_engine_does_not_pull_appraisal_in_february(
+    test_db_session, sample_active_employee_t5, cycle_with_two_payouts
+):
+    """決策⑖B 功能守衛：即使 APPRAISAL_HALF_BONUS 資料存在，engine 2 月薪資計算
+    也應將 appraisal_year_end_bonus 填 Decimal("0")，而非拉 special_bonus_items。
+
+    以直接呼叫 _fill_salary_record 搭配 mock session 驗證，不跑完整 pipeline。
+    """
+    from decimal import Decimal
+    from unittest.mock import MagicMock
+
+    from models.salary import SalaryRecord
+    from services.salary.engine import _fill_salary_record, SalaryEngine
+    from services.salary.breakdown import SalaryBreakdown
+
+    # cycle_with_two_payouts fixture 已建立 APPRAISAL 兩筆 (6400+7200=13600)
+    # 若 engine 仍拉資料則 appraisal_year_end_bonus == 13600；決策⑥B 後應為 0。
+
+    salary_record = SalaryRecord(
+        employee_id=sample_active_employee_t5.id,
+        salary_year=2026,
+        salary_month=2,
+        appraisal_year_end_bonus=Decimal("0"),
+        manual_overrides=[],
+    )
+
+    breakdown = SalaryBreakdown(
+        employee_name="林老師",
+        employee_id=str(sample_active_employee_t5.id),
+        year=2026,
+        month=2,
+    )
+    # 最小化 breakdown 以免觸碰無關欄位
+    breakdown.base_salary = Decimal("40000")
+    breakdown.festival_bonus = Decimal("0")
+    breakdown.overtime_bonus = Decimal("0")
+    breakdown.supervisor_dividend = Decimal("0")
+    breakdown.performance_bonus = Decimal("0")
+    breakdown.special_bonus = Decimal("0")
+    breakdown.birthday_bonus = Decimal("0")
+    breakdown.gross_salary = Decimal("40000")
+    breakdown.total_deduction = Decimal("0")
+    breakdown.net_salary = Decimal("40000")
+
+    # 最小化 engine mock（只需 bonus_config_id / attendance_policy_id）
+    mock_engine = MagicMock(spec=SalaryEngine)
+    mock_engine._bonus_config_id = None
+    mock_engine._attendance_policy_id = None
+
+    _fill_salary_record(
+        salary_record,
+        breakdown,
+        mock_engine,
+        session=test_db_session,  # 真實 session，含 APPRAISAL 資料
+        pending_logs=[],           # 決策⑥B 後已無 appraisal_bonus 參數
+    )
+
+    # 比較前轉 Decimal 確保 int/float/Decimal 皆一致（Money column 在 transient object 可能為 int）
+    assert Decimal(str(salary_record.appraisal_year_end_bonus or 0)) == Decimal("0"), (
+        f"engine 仍在 2 月填入非 0 的 appraisal_year_end_bonus="
+        f"{salary_record.appraisal_year_end_bonus}；決策⑥B 要求恆為 0"
+    )

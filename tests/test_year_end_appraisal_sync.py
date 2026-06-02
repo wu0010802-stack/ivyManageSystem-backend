@@ -43,24 +43,24 @@ def test_civil_year_to_target_academic_year(civil_year, expected_academic_year):
 
 
 def test_map_bonus_type_to_period_label_first_is_earlier():
-    """FIRST = 較早 = 前一學年下學期 → label 'N-1下'"""
+    """FIRST = 較早 = 前一學年上學期 → label 'N-1上'（決策②）"""
     assert (
         map_bonus_type_to_period_label(
             SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
             target_academic_year=114,
         )
-        == "113下"
+        == "113上"
     )
 
 
 def test_map_bonus_type_to_period_label_second_is_later():
-    """SECOND = 較晚 = 本學年上學期 → label 'N上'"""
+    """SECOND = 較晚 = 前一學年下學期 → label 'N-1下'（決策②）"""
     assert (
         map_bonus_type_to_period_label(
             SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
             target_academic_year=114,
         )
-        == "114上"
+        == "113下"
     )
 
 
@@ -92,22 +92,22 @@ def sample_active_employee(test_db_session):
 
 @pytest.fixture
 def two_appraisal_cycles(test_db_session):
-    """建 academic_year=113 SECOND + academic_year=114 FIRST 兩 cycle 都 CLOSED。"""
+    """建 academic_year=113 FIRST(上) + academic_year=113 SECOND(下) 兩 cycle 都 CLOSED（決策②）。"""
     earlier = AppraisalCycle(
+        academic_year=113,
+        semester=Semester.FIRST,
+        start_date=date(2024, 8, 1),
+        end_date=date(2025, 1, 31),
+        base_score_calc_date=date(2024, 9, 15),
+        base_score=Decimal("100"),
+        status=CycleStatus.CLOSED,
+    )
+    later = AppraisalCycle(
         academic_year=113,
         semester=Semester.SECOND,
         start_date=date(2025, 2, 1),
         end_date=date(2025, 7, 31),
         base_score_calc_date=date(2025, 2, 15),
-        base_score=Decimal("100"),
-        status=CycleStatus.CLOSED,
-    )
-    later = AppraisalCycle(
-        academic_year=114,
-        semester=Semester.FIRST,
-        start_date=date(2025, 8, 1),
-        end_date=date(2026, 1, 31),
-        base_score_calc_date=date(2025, 9, 15),
         base_score=Decimal("100"),
         status=CycleStatus.CLOSED,
     )
@@ -122,18 +122,54 @@ def test_resolve_target_cycles_returns_earlier_then_later(
     earlier_expected, later_expected = two_appraisal_cycles
     earlier, later = resolve_target_cycles(test_db_session, payout_year=2026)
     assert earlier.id == earlier_expected.id
-    assert earlier.semester == Semester.SECOND
+    assert earlier.semester == Semester.FIRST
     assert earlier.academic_year == 113
     assert later.id == later_expected.id
-    assert later.semester == Semester.FIRST
-    assert later.academic_year == 114
+    assert later.semester == Semester.SECOND
+    assert later.academic_year == 113
 
 
 def test_resolve_target_cycles_raises_when_cycle_missing(test_db_session):
-    """113.下 或 114.上 不存在 → LookupError。"""
+    """113.上 或 113.下 不存在 → LookupError（決策②）。"""
     with pytest.raises(LookupError) as exc:
         resolve_target_cycles(test_db_session, payout_year=2026)
-    assert "113" in str(exc.value) or "114" in str(exc.value)
+    assert "113" in str(exc.value)
+
+
+def test_resolve_target_cycles_prev_full_year(test_db_session):
+    """決策②：payout 2026 → 前一完整學年 113上(FIRST) + 113下(SECOND)，不含 114。"""
+    # Seed 前一完整學年 113上 + 113下
+    c1 = AppraisalCycle(
+        academic_year=113,
+        semester=Semester.FIRST,
+        start_date=date(2024, 8, 1),
+        end_date=date(2025, 1, 31),
+        base_score_calc_date=date(2024, 9, 15),
+        base_score=Decimal("100"),
+        status=CycleStatus.CLOSED,
+    )
+    c2 = AppraisalCycle(
+        academic_year=113,
+        semester=Semester.SECOND,
+        start_date=date(2025, 2, 1),
+        end_date=date(2025, 7, 31),
+        base_score_calc_date=date(2025, 2, 15),
+        base_score=Decimal("100"),
+        status=CycleStatus.CLOSED,
+    )
+    test_db_session.add_all([c1, c2])
+    test_db_session.flush()
+
+    earlier, later = resolve_target_cycles(test_db_session, payout_year=2026)
+
+    # earlier = 113上（FIRST），later = 113下（SECOND）
+    assert earlier.academic_year == 113
+    assert earlier.semester == Semester.FIRST
+    assert later.academic_year == 113
+    assert later.semester == Semester.SECOND
+    # 兩者都是 113，不包含 114
+    assert earlier.academic_year != 114
+    assert later.academic_year != 114
 
 
 def test_preview_payout_returns_active_employee_with_both_summaries(

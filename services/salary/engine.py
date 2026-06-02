@@ -52,7 +52,6 @@ from .utils import (
 from . import festival as _festival
 from .totals import recompute_record_totals
 from services.student_enrollment import count_students_active_on
-from services.salary.appraisal_year_end import query_appraisal_year_end_bonus
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +60,51 @@ def _get_db_session():
     from models.database import get_session
 
     return get_session()
+
+
+# 職位標準底薪預設值（DB 無 PositionSalaryConfig 列時的 fallback）。
+_POSITION_SALARY_DEFAULTS = {
+    "head_teacher_a": 39240,
+    "head_teacher_b": 37160,
+    "head_teacher_c": 33000,
+    "assistant_teacher_a": 35240,
+    "assistant_teacher_b": 33000,
+    "assistant_teacher_c": 29500,
+    "admin_staff": 37160,
+    "english_teacher": 32500,
+    "art_teacher": 30000,
+    "designer": 30000,
+    "nurse": 29800,
+    "driver": 30000,
+    "kitchen_staff": 29700,
+}
+
+
+def load_position_salary_standards(session) -> dict:
+    """從傳入 session 讀取職位標準底薪（key: 'head_teacher_b'/'driver'/… → float|None）。
+
+    模組層 helper，供 SalaryEngine.load_config_from_db 與年終 builder
+    (services/year_end/settlement_builder.year_end_base_salary) 共用，確保兩處
+    底薪解析來源一致，不會各自漂移。
+
+    - 取 PositionSalaryConfig 最新一列（id desc）；無列時全用 _POSITION_SALARY_DEFAULTS。
+    - director / principal 允許為 None（留空表示不套標準，回個人 emp.base_salary）。
+    """
+    from models.database import PositionSalaryConfig
+
+    pos_cfg = (
+        session.query(PositionSalaryConfig)
+        .order_by(PositionSalaryConfig.id.desc())
+        .first()
+    )
+    standards = {
+        k: float(getattr(pos_cfg, k, None) or v) if pos_cfg else float(v)
+        for k, v in _POSITION_SALARY_DEFAULTS.items()
+    }
+    for _role in ("director", "principal"):
+        _val = getattr(pos_cfg, _role, None) if pos_cfg else None
+        standards[_role] = float(_val) if _val else None
+    return standards
 
 
 # F4 第一階段：dataclass + 年度病假累計 helper 抽到 services/salary/bulk_preload.py。
@@ -159,7 +203,6 @@ def _fill_salary_record(
     breakdown,
     engine,
     session=None,
-    appraisal_bonus=None,
     pending_logs=None,
 ):
     """將 SalaryBreakdown 的欄位填入 SalaryRecord（供正常路徑與 IntegrityError retry 共用）。
@@ -167,7 +210,7 @@ def _fill_salary_record(
     若 SalaryRecord.manual_overrides 不為空,清單內欄位視為「人工調整鎖定」,
     跳過 breakdown 覆寫,並從 record 重算 gross/total/net 確保總額一致。
 
-    session: SQLAlchemy Session，供 appraisal_year_end_bonus plugin query 用；
+    session: SQLAlchemy Session，供 pending payout log query 用；
              None 時跳過 plugin（向下相容既有 unit test）。
     """
     overrides = set(salary_record.manual_overrides or [])
@@ -228,19 +271,10 @@ def _fill_salary_record(
             + breakdown.supervisor_dividend
         )
 
-    # 考核年終獎金（2 月發放；不進 gross_salary；source of truth = special_bonus_items）
+    # 決策⑥B：考核已併入年終獨立轉帳，月薪不再帶考核年終獎金（避免重複發 + 二代健保表外）
+    # engine 一律填 0；appraisal_year_end.py 函式保留但 runtime 不再呼叫。
     if session is not None:
-        # 批次路徑可注入預載 appraisal（Decimal，None=單筆路徑照常 query）；型別一致。
-        salary_record.appraisal_year_end_bonus = (
-            appraisal_bonus
-            if appraisal_bonus is not None
-            else query_appraisal_year_end_bonus(
-                session,
-                salary_record.employee_id,
-                salary_record.salary_year,
-                salary_record.salary_month,
-            )
-        )
+        salary_record.appraisal_year_end_bonus = 0  # Decimal(0) 等價，避免在 _fill_salary_record 作用域缺 Decimal import
         # Layer 2：撈 scheduler 已寫入但尚未綁定到本 SalaryRecord 的 pending log
         # （批次路徑注入該員工預載 list；None=單筆路徑照常 query）
         _pull_pending_payout_logs(session, salary_record, pending_logs=pending_logs)
@@ -760,37 +794,8 @@ class SalaryEngine:
                         "shared_assistant": t.overtime_shared,
                     }
 
-            # 載入職位標準底薪
-            from models.database import PositionSalaryConfig
-
-            pos_cfg = (
-                session.query(PositionSalaryConfig)
-                .order_by(PositionSalaryConfig.id.desc())
-                .first()
-            )
-            _pos_defaults = {
-                "head_teacher_a": 39240,
-                "head_teacher_b": 37160,
-                "head_teacher_c": 33000,
-                "assistant_teacher_a": 35240,
-                "assistant_teacher_b": 33000,
-                "assistant_teacher_c": 29500,
-                "admin_staff": 37160,
-                "english_teacher": 32500,
-                "art_teacher": 30000,
-                "designer": 30000,
-                "nurse": 29800,
-                "driver": 30000,
-                "kitchen_staff": 29700,
-            }
-            self._position_salary_standards = {
-                k: float(getattr(pos_cfg, k, None) or v) if pos_cfg else float(v)
-                for k, v in _pos_defaults.items()
-            }
-            # director / principal 允許為 None（留空表示不套標準）
-            for _role in ("director", "principal"):
-                _val = getattr(pos_cfg, _role, None) if pos_cfg else None
-                self._position_salary_standards[_role] = float(_val) if _val else None
+            # 載入職位標準底薪（抽到模組層 load_position_salary_standards 與年終 builder 共用）
+            self._position_salary_standards = load_position_salary_standards(session)
 
             session.close()
             logger.info("SalaryEngine: 已從資料庫載入設定")
@@ -3362,17 +3367,13 @@ class SalaryEngine:
 
         # ── BE-P2-1：批次預載 per-employee N+1 來源（值與 per-employee query 等價）──
         from services.leave_bonus_skip import should_skip_bonuses_bulk
-        from services.salary.appraisal_year_end import (
-            query_appraisal_year_end_bonus_bulk,
-        )
         from services.salary.supplementary_premium import query_ytd_bonus_bulk
 
         from .utils import get_distribution_period_months
 
         ytd_bonus_by_emp = query_ytd_bonus_bulk(session, employee_ids, year, month)
-        appraisal_by_emp = query_appraisal_year_end_bonus_bulk(
-            session, employee_ids, year, month
-        )
+        # 決策⑥B：engine 不再 query 考核獎金，appraisal_by_emp 恆為空 dict（填 0 by .get() default）
+        appraisal_by_emp: dict = {}
         period_months = get_distribution_period_months(year, month)
         skip_by_emp_month = (
             should_skip_bonuses_bulk(session, employee_ids, period_months)
@@ -3759,7 +3760,7 @@ class SalaryEngine:
             self.insurance_service,
             emp.id,
             ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
-            appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
+
         )
 
         breakdown.absent_count = absent_count
@@ -3792,7 +3793,6 @@ class SalaryEngine:
             breakdown,
             self,
             session=session,
-            appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
             pending_logs=preload.pending_payout_by_emp.get(emp.id, []),
         )
         return emp, breakdown
