@@ -209,6 +209,48 @@ jobs:
         working-directory: ivy-frontend
         run: npm run gen:api:check
 
+  pii-denylist-parity:
+    name: PII Denylist Parity Gate (FE/BE)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # CLAUDE.md §8：utils/sentry_init._PII_KEY_SUBSTRINGS 與 ivy-frontend
+    # src/utils/sentry.ts PII_KEY_SUBSTRINGS 必須同步，否則 prod 單側洩漏。
+    # test_pii_denylist_parity.py 在缺前端 sibling 時會 skip；過去後端 Tests job
+    # 無前端 sibling → 此守衛在 CI 永遠 silent skip。本 job 以 sibling layout 讓它真正跑。
+
+    steps:
+      - name: Checkout ivy-backend
+        uses: actions/checkout@v4
+        with:
+          path: ivy-backend
+
+      - name: Checkout ivy-frontend (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
+          path: ivy-frontend
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ivy-backend/requirements.txt
+
+      - name: Install backend deps
+        working-directory: ivy-backend
+        run: pip install -r requirements.txt
+
+      - name: Run FE/BE PII denylist parity test
+        working-directory: ivy-backend
+        env:
+          # 缺前端 sibling 時 fail 而非 skip——確保此 gate 真的會跑（見測試 _requires_frontend）。
+          PII_PARITY_REQUIRE_FRONTEND: "1"
+          ENV: development
+          DATABASE_URL: postgresql://dummy:dummy@localhost:5432/dummy
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+        run: pytest tests/test_pii_denylist_parity.py -v
+
   config-gate:
     name: Centralized Settings Gate
     runs-on: ubuntu-latest
@@ -229,11 +271,14 @@ jobs:
         #   alembic/env.py                     — Alembic CLI，早於 Settings init
         #   alembic/versions/                  — migration 一次性 runtime config（如 backfill 寬限期），
         #                                       migration 本身不可 import settings（runtime ordering）。
+        #   tests/test_pii_denylist_parity.py  — 讀 CI-only flag PII_PARITY_REQUIRE_FRONTEND
+        #                                       （缺前端 sibling 時 fail 而非 skip），非 app runtime config。
         run: |
           if git grep -nE 'os\.(getenv|environ)' -- '*.py' \
                ':!config/' \
                ':!tests/conftest.py' \
                ':!tests/spike_rls/' \
+               ':!tests/test_pii_denylist_parity.py' \
                ':!scripts/dump_openapi.py' \
                ':!scripts/dr_storage_sync.py' \
                ':!scripts/encrypt_medical_fields.py' \

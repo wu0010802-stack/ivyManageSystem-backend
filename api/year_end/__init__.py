@@ -138,7 +138,7 @@ def create_cycle(
                     year_end_cycle_id=cycle.id,
                     semester_first=src_org.semester_first,
                     enrollment_target=src_org.enrollment_target,
-                    enrollment_actual=None,            # 重置：實際值待新週期填入
+                    enrollment_actual=None,  # 重置：實際值待新週期填入
                     school_achievement_rate=Decimal("0"),  # 重置
                     org_achievement_rate=src_org.org_achievement_rate,
                     meeting_absence_deduction=src_org.meeting_absence_deduction,
@@ -161,7 +161,7 @@ def create_cycle(
                     head_count_target=src_ct.head_count_target,
                     returning_student_rate=src_ct.returning_student_rate,
                     avg_monthly_enrollment=Decimal("0"),  # 重置：build_settlements 重算
-                    class_performance_rate=Decimal("0"),   # 重置
+                    class_performance_rate=Decimal("0"),  # 重置
                 )
             )
 
@@ -780,7 +780,6 @@ def export_summary_pdf(
     )
 
 
-
 # ===== Task 6: build-settlements / grid / manual-patch =====
 
 
@@ -809,12 +808,12 @@ def build_settlements_endpoint(
         refresh_rates=True,
     )
     session.commit()
-    return BuildResultOut(built=result.built, skipped_finalized=result.skipped_finalized)
+    return BuildResultOut(
+        built=result.built, skipped_finalized=result.skipped_finalized
+    )
 
 
-@year_end_router.get(
-    "/cycles/{cycle_id}/grid", response_model=list[GridRowOut]
-)
+@year_end_router.get("/cycles/{cycle_id}/grid", response_model=list[GridRowOut])
 def grid_endpoint(
     cycle_id: int,
     current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
@@ -926,12 +925,14 @@ def manual_patch_settlement(
     is_inactive = not getattr(emp, "is_active", True)
     included = {settlement.employee_id} if is_inactive else set()
     actor_id = current_user.get("user_id")
+    # 只重算這位被 patch 的員工：避免單筆手調觸發整個 cycle 全員重算與版本 churn
     build_settlements(
         session,
         cycle.academic_year,
         included,
         actor_id=actor_id,
         refresh_rates=False,
+        only_employee_ids={settlement.employee_id},
     )
     session.commit()
 
