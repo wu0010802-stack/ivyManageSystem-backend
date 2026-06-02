@@ -63,6 +63,51 @@ def _get_db_session():
     return get_session()
 
 
+# 職位標準底薪預設值（DB 無 PositionSalaryConfig 列時的 fallback）。
+_POSITION_SALARY_DEFAULTS = {
+    "head_teacher_a": 39240,
+    "head_teacher_b": 37160,
+    "head_teacher_c": 33000,
+    "assistant_teacher_a": 35240,
+    "assistant_teacher_b": 33000,
+    "assistant_teacher_c": 29500,
+    "admin_staff": 37160,
+    "english_teacher": 32500,
+    "art_teacher": 30000,
+    "designer": 30000,
+    "nurse": 29800,
+    "driver": 30000,
+    "kitchen_staff": 29700,
+}
+
+
+def load_position_salary_standards(session) -> dict:
+    """從傳入 session 讀取職位標準底薪（key: 'head_teacher_b'/'driver'/… → float|None）。
+
+    模組層 helper，供 SalaryEngine.load_config_from_db 與年終 builder
+    (services/year_end/settlement_builder.year_end_base_salary) 共用，確保兩處
+    底薪解析來源一致，不會各自漂移。
+
+    - 取 PositionSalaryConfig 最新一列（id desc）；無列時全用 _POSITION_SALARY_DEFAULTS。
+    - director / principal 允許為 None（留空表示不套標準，回個人 emp.base_salary）。
+    """
+    from models.database import PositionSalaryConfig
+
+    pos_cfg = (
+        session.query(PositionSalaryConfig)
+        .order_by(PositionSalaryConfig.id.desc())
+        .first()
+    )
+    standards = {
+        k: float(getattr(pos_cfg, k, None) or v) if pos_cfg else float(v)
+        for k, v in _POSITION_SALARY_DEFAULTS.items()
+    }
+    for _role in ("director", "principal"):
+        _val = getattr(pos_cfg, _role, None) if pos_cfg else None
+        standards[_role] = float(_val) if _val else None
+    return standards
+
+
 # F4 第一階段：dataclass + 年度病假累計 helper 抽到 services/salary/bulk_preload.py。
 # 本檔保留 re-export 維持 tests/test_salary_*.py 與內部 caller 既有 import surface。
 from .bulk_preload import (  # noqa: F401
@@ -760,37 +805,8 @@ class SalaryEngine:
                         "shared_assistant": t.overtime_shared,
                     }
 
-            # 載入職位標準底薪
-            from models.database import PositionSalaryConfig
-
-            pos_cfg = (
-                session.query(PositionSalaryConfig)
-                .order_by(PositionSalaryConfig.id.desc())
-                .first()
-            )
-            _pos_defaults = {
-                "head_teacher_a": 39240,
-                "head_teacher_b": 37160,
-                "head_teacher_c": 33000,
-                "assistant_teacher_a": 35240,
-                "assistant_teacher_b": 33000,
-                "assistant_teacher_c": 29500,
-                "admin_staff": 37160,
-                "english_teacher": 32500,
-                "art_teacher": 30000,
-                "designer": 30000,
-                "nurse": 29800,
-                "driver": 30000,
-                "kitchen_staff": 29700,
-            }
-            self._position_salary_standards = {
-                k: float(getattr(pos_cfg, k, None) or v) if pos_cfg else float(v)
-                for k, v in _pos_defaults.items()
-            }
-            # director / principal 允許為 None（留空表示不套標準）
-            for _role in ("director", "principal"):
-                _val = getattr(pos_cfg, _role, None) if pos_cfg else None
-                self._position_salary_standards[_role] = float(_val) if _val else None
+            # 載入職位標準底薪（抽到模組層 load_position_salary_standards 與年終 builder 共用）
+            self._position_salary_standards = load_position_salary_standards(session)
 
             session.close()
             logger.info("SalaryEngine: 已從資料庫載入設定")

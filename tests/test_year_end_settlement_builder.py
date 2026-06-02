@@ -228,3 +228,303 @@ class TestResolveOrgAchievementRate:
             worked_second=True,
         )
         assert result == Decimal("80.6")
+
+
+# =========================================================================== #
+# Task 3：build_settlements 端到端對帳（金標準：蔡宜倩 40106.71）           #
+# =========================================================================== #
+
+from decimal import Decimal as _D  # noqa: E402
+
+from models.classroom import Classroom  # noqa: E402
+from models.config import PositionSalaryConfig  # noqa: E402
+from models.employee import Employee  # noqa: E402
+from models.year_end import (  # noqa: E402
+    ClassEnrollmentTarget,
+    OrgYearSettings,
+    SpecialBonusItem,
+    SpecialBonusType,
+    YearEndCycle,
+    YearEndSettlement,
+    YearEndSettlementStatus,
+)
+
+ACADEMIC_YEAR = 114
+CYCLE_START = date(2025, 8, 1)  # 114 學年 = 西元 2025/8 ～ 2026/7
+CYCLE_END = date(2026, 7, 31)
+BONUS_CALC_DATE = date(2026, 1, 15)
+
+
+def _seed_tsai_cycle(db):
+    """種一個 114 cycle + 蔡宜倩（班導 head_teacher_ab，base 36160）+ 全套 stored rates。
+
+    rates 直接種「成分值」（不依賴在籍計算）：
+      全校達成率 75.6 / 91.5（兩學期，平均 83.55 = org_rate 83.6）
+      班舊生率 0.929 / 1.000（→ 92.9 / 100，平均 96.45）
+      班經營績效 106.4 / 115.3（平均 110.85）
+      → avg_performance = (83.55+96.45+110.85)/3 = 96.95 → 1dp → 97.0
+    special_bonus_items 合計 11062。
+    回 (cycle, employee, classroom)。
+    """
+    # 職位標準底薪：head_teacher_b = 36160
+    db.add(
+        PositionSalaryConfig(
+            head_teacher_a=39240, head_teacher_b=36160, head_teacher_c=33000
+        )
+    )
+    # 節慶獎金基數：head_teacher_ab = 2000
+    db.add(
+        BonusConfig(
+            config_year=2025,
+            version=1,
+            is_active=True,
+            head_teacher_ab=2000,
+            head_teacher_c=1500,
+            assistant_teacher_ab=1200,
+            assistant_teacher_c=1200,
+            principal_festival=6500,
+            director_festival=3500,
+            leader_festival=2000,
+            driver_festival=1000,
+            designer_festival=1000,
+            admin_festival=2000,
+            art_teacher_festival=2000,
+        )
+    )
+    db.flush()
+
+    cycle = YearEndCycle(
+        academic_year=ACADEMIC_YEAR,
+        start_date=CYCLE_START,
+        end_date=CYCLE_END,
+        bonus_calc_date=BONUS_CALC_DATE,
+    )
+    db.add(cycle)
+    db.flush()
+
+    classroom = Classroom(name="大班A", school_year=114, semester=1)
+    db.add(classroom)
+    db.flush()
+
+    emp = Employee(
+        employee_id="E_TSAI",
+        name="蔡宜倩",
+        position="班導",
+        bonus_grade="b",
+        title="幼兒園教師",
+        base_salary=30000,  # 不等於職位標準，驗證確實走 PositionSalaryConfig → 36160
+        bypass_standard_base=False,
+        is_active=True,
+        classroom_id=classroom.id,
+        hire_date=date(2020, 1, 1),  # 滿年在職
+    )
+    db.add(emp)
+    db.flush()
+
+    # 全校達成率：上 91.5 / 下 75.6（順序不影響平均）
+    db.add(
+        OrgYearSettings(
+            year_end_cycle_id=cycle.id,
+            semester_first=True,
+            enrollment_target=160,
+            school_achievement_rate=_D("91.5"),
+            org_achievement_rate=_D("0"),
+        )
+    )
+    db.add(
+        OrgYearSettings(
+            year_end_cycle_id=cycle.id,
+            semester_first=False,
+            enrollment_target=160,
+            school_achievement_rate=_D("75.6"),
+            org_achievement_rate=_D("0"),
+        )
+    )
+    # 班級兩學期：經營績效 106.4 / 115.3，舊生率 0.929 / 1.000
+    db.add(
+        ClassEnrollmentTarget(
+            year_end_cycle_id=cycle.id,
+            semester_first=True,
+            classroom_id=classroom.id,
+            head_teacher_employee_id=emp.id,
+            head_count_target=30,
+            class_performance_rate=_D("106.4"),
+            returning_student_rate=_D("0.929"),
+        )
+    )
+    db.add(
+        ClassEnrollmentTarget(
+            year_end_cycle_id=cycle.id,
+            semester_first=False,
+            classroom_id=classroom.id,
+            head_teacher_employee_id=emp.id,
+            head_count_target=30,
+            class_performance_rate=_D("115.3"),
+            returning_student_rate=_D("1.000"),
+        )
+    )
+    # special_bonus_items 合計 11062
+    specials = [
+        (SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST, "113下", _D("3312")),
+        (SpecialBonusType.SEMESTER_DIVIDEND_FIRST, "114上", _D("1500")),
+        (SpecialBonusType.SEMESTER_DIVIDEND_SECOND, "114下", _D("1000")),
+        (SpecialBonusType.AFTER_CLASS_AWARD, "114上", _D("1275")),
+        (SpecialBonusType.EXCESS_ENROLLMENT, "114上", _D("2000")),
+        (SpecialBonusType.FESTIVAL_DIFF, "114", _D("1975")),
+    ]
+    for bonus_type, label, amount in specials:
+        db.add(
+            SpecialBonusItem(
+                year_end_cycle_id=cycle.id,
+                employee_id=emp.id,
+                bonus_type=bonus_type,
+                period_label=label,
+                amount=amount,
+            )
+        )
+    db.flush()
+    return cycle, emp, classroom
+
+
+def _get_settlement(db, cycle, emp):
+    return (
+        db.query(YearEndSettlement)
+        .filter(
+            YearEndSettlement.year_end_cycle_id == cycle.id,
+            YearEndSettlement.employee_id == emp.id,
+        )
+        .one()
+    )
+
+
+class TestBuildSettlementsGoldReconciliation:
+    """金標準對帳：蔡宜倩 total == 40106.71（Excel 40106.7072）。"""
+
+    def test_tsai_reconciles_exactly(self, test_db_session):
+        db = test_db_session
+        cycle, emp, _ = _seed_tsai_cycle(db)
+
+        # 第一次 build：扣項尚為 0（refresh_rates=False，用種好的 stored rates）
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+        st = _get_settlement(db, cycle, emp)
+        # 此時 total = payable(30944.71) + special(11062) = 42006.71（扣項 0）
+        assert st.total_amount == _D("42006.71")
+
+        # 種人工扣項：機構會議 -1000、遲到早退 -900（合計 -1900）
+        st.deduction_meeting = _D("-1000")
+        st.deduction_late = _D("-900")
+        db.flush()
+
+        # 第二次 build：gather_deductions 讀回手動扣項 → 應對齊 Excel
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+        st = _get_settlement(db, cycle, emp)
+
+        assert st.avg_performance_rate == _D("97.0")
+        assert st.gross_amount == _D("37015.20")
+        assert st.org_achievement_rate == _D("83.6")
+        assert st.subtotal_amount == _D("30944.71")
+        assert st.deduction_total == _D("-1900.00")
+        assert st.payable_amount == _D("29044.71")
+        assert st.special_bonus_total == _D("11062.00")
+        assert st.total_amount == _D("40106.71")
+
+    def test_build_idempotent(self, test_db_session):
+        db = test_db_session
+        cycle, emp, _ = _seed_tsai_cycle(db)
+
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+
+        rows = (
+            db.query(YearEndSettlement)
+            .filter(YearEndSettlement.employee_id == emp.id)
+            .all()
+        )
+        assert len(rows) == 1  # 重跑不重複建列
+
+    def test_build_skips_finalized(self, test_db_session):
+        db = test_db_session
+        cycle, emp, _ = _seed_tsai_cycle(db)
+
+        # 第一次 build 後 finalize
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+        st = _get_settlement(db, cycle, emp)
+        st.status = YearEndSettlementStatus.FINALIZED
+        frozen_total = st.total_amount
+        db.flush()
+
+        # 改一筆 special bonus（若重算會變動 total）
+        item = (
+            db.query(SpecialBonusItem)
+            .filter(
+                SpecialBonusItem.employee_id == emp.id,
+                SpecialBonusItem.bonus_type == SpecialBonusType.SEMESTER_DIVIDEND_FIRST,
+            )
+            .first()
+        )
+        item.amount = _D("9999")
+        db.flush()
+
+        result = sb.build_settlements(
+            db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False
+        )
+        assert result.skipped_finalized == 1
+        assert result.built == 0
+
+        st = _get_settlement(db, cycle, emp)
+        assert st.total_amount == frozen_total  # FINALIZED 不被覆寫
+
+
+# =========================================================================== #
+# (A) refresh_enrollment_rates smoke：唯一無對帳覆蓋的面，確保跑得起來       #
+# =========================================================================== #
+
+from models.classroom import Student  # noqa: E402
+
+
+class TestRefreshEnrollmentRatesSmoke:
+    """refresh_enrollment_rates 由在籍回填 stored rates；其餘金標準測試皆 refresh_rates=False，
+    此 smoke 確保 refresh path 不炸且確實寫入非空 rate。"""
+
+    def test_refresh_writes_rates(self, test_db_session):
+        db = test_db_session
+        cycle, emp, classroom = _seed_tsai_cycle(db)
+
+        # 種幾個在籍學生（enrollment_date 早於 bonus_calc_date，classroom 指向 emp 帶的班）
+        for i in range(3):
+            db.add(
+                Student(
+                    student_id=f"114-A-{i:03d}",
+                    name=f"幼生{i}",
+                    classroom_id=classroom.id,
+                    enrollment_date=date(2025, 8, 1),
+                )
+            )
+        db.flush()
+
+        # refresh_rates=True 觸發 refresh_enrollment_rates（part A）
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=True)
+
+        # OrgYearSettings.school_achievement_rate 應由在籍回填（3 / 160 × 100 ≈ 1.88）
+        org = (
+            db.query(OrgYearSettings)
+            .filter(
+                OrgYearSettings.year_end_cycle_id == cycle.id,
+                OrgYearSettings.semester_first == True,  # noqa: E712
+            )
+            .one()
+        )
+        assert org.enrollment_actual == 3
+        assert org.school_achievement_rate == _D("1.88")
+
+        # ClassEnrollmentTarget.class_performance_rate 應由在籍回填（3 人 / 30 編制 × 100 = 10.00）
+        ct = (
+            db.query(ClassEnrollmentTarget)
+            .filter(
+                ClassEnrollmentTarget.year_end_cycle_id == cycle.id,
+                ClassEnrollmentTarget.semester_first == True,  # noqa: E712
+            )
+            .one()
+        )
+        assert ct.class_performance_rate == _D("10.00")
+        assert ct.avg_monthly_enrollment is not None
