@@ -57,7 +57,10 @@ def _check_line_push_consent(line_user_id: str) -> bool:
                 return False
             if user.role != "parent":
                 return True
-            return bool(user.line_push_consent)
+            # 家長：查 ParentConsentLog 單一數據源（退役 user.line_push_consent）
+            from services.consent.checker import consent_check
+
+            return consent_check(session, user.id, "line_push")
     except Exception as e:
         logger.warning(
             "check_line_push_consent failed for %s...: %s",
