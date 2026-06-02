@@ -274,7 +274,9 @@ def _fill_salary_record(
     # 決策⑥B：考核已併入年終獨立轉帳，月薪不再帶考核年終獎金（避免重複發 + 二代健保表外）
     # engine 一律填 0；appraisal_year_end.py 函式保留但 runtime 不再呼叫。
     if session is not None:
-        salary_record.appraisal_year_end_bonus = 0  # Decimal(0) 等價，避免在 _fill_salary_record 作用域缺 Decimal import
+        salary_record.appraisal_year_end_bonus = (
+            0  # Decimal(0) 等價，避免在 _fill_salary_record 作用域缺 Decimal import
+        )
         # Layer 2：撈 scheduler 已寫入但尚未綁定到本 SalaryRecord 的 pending log
         # （批次路徑注入該員工預載 list；None=單筆路徑照常 query）
         _pull_pending_payout_logs(session, salary_record, pending_logs=pending_logs)
@@ -2699,18 +2701,13 @@ class SalaryEngine:
         if not period_months:
             return None, None
 
-        # 預先把 period_months 收攏為唯一 term，避免單員工迴圈內每月各跑 1 次
-        # _resolve_classroom_for_employee_in_term（同 term 內班級不會變）。
-        # Audit A.P0.2：3 個 period 月通常 ≤ 2 個 term，從 6 query 砍到 1-2 query。
+        # term-keyed 班級解析 memo（lazy）：批次路徑（process_bulk）已由
+        # _build_period_monthly_context 預載 cache["classroom_for_emp"]，命中即不進
+        # 此 memo。僅「批次未命中」者（需跨學期 fallback、或單筆路徑 cache=None）才
+        # lazily 呼叫 _resolve_classroom_for_employee_in_term，同 term 內只解析一次。
+        # 改 lazy 是消除發放月 N+1 的關鍵：原 eager 迴圈無條件逐員工呼叫 resolver、
+        # 繞過預載 cache（Audit A.P0.2 的 term 收攏仍保留於下方 on-miss 快取）。
         term_classroom_cache: dict[tuple[int, int], object] = {}
-        for y, m in period_months:
-            term_key = resolve_current_academic_term(date(y, m, 1))
-            if term_key not in term_classroom_cache:
-                term_classroom_cache[term_key] = (
-                    self._resolve_classroom_for_employee_in_term(
-                        session, emp.id, term_key[0], term_key[1]
-                    )
-                )
 
         from services.leave_bonus_skip import should_skip_bonuses_for_month
 
@@ -2747,10 +2744,16 @@ class SalaryEngine:
                 if cached_classroom is not None:
                     ctx["classroom"] = cached_classroom
                 else:
-                    # 用本函式預先建好的 term-keyed cache
-                    ctx["classroom"] = term_classroom_cache[
-                        resolve_current_academic_term(date(y, m, 1))
-                    ]
+                    # 批次未命中（fallback 員工 / 單筆路徑 cache=None）：lazily 解析，
+                    # 同 term 內只解析一次。
+                    _tk = resolve_current_academic_term(date(y, m, 1))
+                    if _tk not in term_classroom_cache:
+                        term_classroom_cache[_tk] = (
+                            self._resolve_classroom_for_employee_in_term(
+                                session, emp.id, _tk[0], _tk[1]
+                            )
+                        )
+                    ctx["classroom"] = term_classroom_cache[_tk]
                 # 期間累積每月用該月份對應的 BonusConfig/AttendancePolicy/InsuranceRate,
                 # 而非「目前最新」設定;與 _build_breakdown_for_month 同一語意,
                 # 但這裡是 per-iteration swap(因為要為每個歷史月份各自挑版本)。
@@ -3481,28 +3484,105 @@ class SalaryEngine:
         year: int,
         month: int,
         classroom_map: dict,
+        employee_ids: list | None = None,
     ) -> dict:
         """process_bulk_salary_calculation Phase 2：預載期間每月班級/學生快照。
 
         節慶/超額累積期間涵蓋多個月（_compute_period_accrual_totals 內部會
-        逐月計算）。為避免 N×期間月 重覆查詢學生數，提前在這層把每個 (y, m)
-        對應月底的學生快照載好，下游從 cache 取即可。
+        逐月計算）。為避免 N×期間月 重覆查詢，提前在這層把每個 (y, m) 對應月底
+        的學生快照、會議缺席數、以及該學期的班級反查表載好，下游從 cache 取即可。
+
+        employee_ids 提供時額外預載（消除發放月 N+1）：
+          - meeting_absent_count_map：{emp_id: 該月缺席會議數}（每月 1 次 GROUP BY，
+            取代 calculate_period_accrual_row 逐員工 MeetingRecord.count()）。
+          - classroom_for_emp：{emp_id: 主要班級}，以該月對應學期解析（每學期 1 次
+            查詢，與 _resolve_classroom_for_employee_in_term 同 filter/排序/
+            _pick_primary_classroom，確保同值）。僅納入「該學期有班級」者；無班級者
+            留空 → 下游 fall through 至逐筆 resolver 取跨學期 fallback。
         """
         from .utils import get_distribution_period_months as _gdpm
         from services.student_enrollment import (
             count_students_active_on as _csa,
             classroom_student_count_map as _csm,
         )
+        from utils.academic import resolve_current_academic_term
+
+        emp_id_list = list(employee_ids or [])
+        # 以學期為單位快取班級反查表（同學期共用，避免逐月重查）
+        _term_classroom_cache: dict[tuple[int, int], dict] = {}
+
+        def _classroom_for_emp_in_term(term_key: tuple[int, int]) -> dict:
+            if term_key in _term_classroom_cache:
+                return _term_classroom_cache[term_key]
+            mapping: dict = {}
+            if emp_id_list:
+                from models.database import Classroom as _Classroom
+
+                sy, sem = term_key
+                # 與 _resolve_classroom_for_employee_in_term 同 filter（is_active +
+                # 該學期）與排序（id.asc()），逐員工套同一 _pick_primary_classroom。
+                term_classrooms = (
+                    session.query(_Classroom)
+                    .options(joinedload(_Classroom.grade))
+                    .filter(
+                        _Classroom.is_active == True,  # noqa: E712
+                        _Classroom.school_year == sy,
+                        _Classroom.semester == sem,
+                    )
+                    .order_by(_Classroom.id.asc())
+                    .all()
+                )
+                for eid in emp_id_list:
+                    emp_classes = [
+                        c
+                        for c in term_classrooms
+                        if eid
+                        in (
+                            c.head_teacher_id,
+                            c.assistant_teacher_id,
+                            c.art_teacher_id,
+                        )
+                    ]
+                    if emp_classes:
+                        mapping[eid] = self._pick_primary_classroom(emp_classes, eid)
+            _term_classroom_cache[term_key] = mapping
+            return mapping
+
+        def _meeting_absent_map(_first, _last) -> dict:
+            if not emp_id_list:
+                return {}
+            from sqlalchemy import func as _func
+            from models.database import MeetingRecord as _MeetingRecord
+
+            rows = (
+                session.query(
+                    _MeetingRecord.employee_id, _func.count(_MeetingRecord.id)
+                )
+                .filter(
+                    _MeetingRecord.employee_id.in_(emp_id_list),
+                    _MeetingRecord.meeting_date >= _first,
+                    _MeetingRecord.meeting_date <= _last,
+                    _MeetingRecord.attended == False,  # noqa: E712
+                )
+                .group_by(_MeetingRecord.employee_id)
+                .all()
+            )
+            return {eid: int(cnt) for eid, cnt in rows}
 
         monthly_ctx_cache: dict[tuple[int, int], dict] = {}
         for _y, _m in _gdpm(year, month):
             _, _last = calendar.monthrange(_y, _m)
             _ref = date(_y, _m, _last)
+            _first = date(_y, _m, 1)
             monthly_ctx_cache[(_y, _m)] = {
                 "month_end": _ref,
                 "school_active": _csa(session, _ref),
                 "cls_count_map": _csm(session, _ref),
                 "classroom_map": classroom_map,
+                "classroom_for_emp": _classroom_for_emp_in_term(
+                    resolve_current_academic_term(_first)
+                ),
+                "meeting_absent_count_map": _meeting_absent_map(_first, _ref),
             }
         return monthly_ctx_cache
 
@@ -3730,6 +3810,20 @@ class SalaryEngine:
             )
         )
 
+        # 從合計中扣減 pending 懲處（節慶優先扣完才動超額）— 與 single 路徑
+        # （_build_breakdown_for_month）對齊，避免 bulk 月結漏扣懲處而多付獎金。
+        # 非發放月 totals 為 None → _adjust 直接 pass-through 不查 DB。
+        period_festival_total, period_overtime_total, _disc_deducted = (
+            self._adjust_period_totals_for_discipline(
+                session,
+                emp,
+                year,
+                month,
+                period_festival_total,
+                period_overtime_total,
+            )
+        )
+
         # ── 計算薪資
         breakdown = self.calculate_salary(
             employee=emp_dict,
@@ -3760,7 +3854,6 @@ class SalaryEngine:
             self.insurance_service,
             emp.id,
             ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
-
         )
 
         breakdown.absent_count = absent_count
@@ -3795,6 +3888,11 @@ class SalaryEngine:
             session=session,
             pending_logs=preload.pending_payout_by_emp.get(emp.id, []),
         )
+        # 發放月：record 寫入後標記 pending 懲處為已抵扣（與 single 路徑對齊）。
+        # flush 取得 salary_record.id；非發放月 _mark_discipline_applied 自動 no-op。
+        # 在 SAVEPOINT 內執行，失敗時隨該員工 rollback。
+        session.flush()
+        self._mark_discipline_applied(session, emp.id, year, month, salary_record.id)
         return emp, breakdown
 
     def process_bulk_salary_calculation(
@@ -3837,7 +3935,7 @@ class SalaryEngine:
             # 發放月：預載期間每月的班級/學生快照，供 _compute_period_accrual_totals
             # 使用，避免 N×期間月 重覆查詢
             monthly_ctx_cache = self._build_period_monthly_context(
-                session, year, month, classroom_map
+                session, year, month, classroom_map, employee_ids
             )
 
             results = []
