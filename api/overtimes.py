@@ -441,7 +441,9 @@ class BatchOvertimeCreate(BaseModel):
     end_time: Optional[str] = None  # HH:MM，共用，選填
     reason: Optional[str] = None
     use_comp_leave: bool = False
-    employees: List[BatchOvertimeEmployeeItem] = Field(..., min_length=1)
+    employees: List[BatchOvertimeEmployeeItem] = Field(
+        ..., min_length=1, max_length=500
+    )
 
     @field_validator("overtime_type")
     @classmethod

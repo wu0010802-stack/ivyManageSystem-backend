@@ -24,6 +24,7 @@ UNSAFE_METHODS = frozenset({"POST", "PATCH", "PUT", "DELETE"})
 CSRF_EXEMPT_PREFIXES: tuple[str, ...] = (
     "/api/line/webhook",  # LINE webhook signature 驗證不靠 cookie
     "/api/activity/public/",  # 家長公開報名 by design 接受跨站 POST
+    "/api/internal/uptime-webhook",  # server-to-server，自帶 token query 驗證，無 cookie/Origin（RA-L15）
 )
 
 

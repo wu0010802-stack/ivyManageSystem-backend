@@ -20,11 +20,31 @@ from schemas.permissions_admin import (
     RoleOut,
 )
 from utils.auth import require_permission
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["permissions-admin"])
+
+
+def _assert_can_grant(current_user: dict, requested: list[str]) -> None:
+    """RA-L2：caller 不得授出超過自身持有的權限（防經自訂角色自我提權）。
+
+    wildcard caller 不受限；其餘 caller 要授的每個權限，其 base code 必須為 caller
+    持有（含 scope grant）。授 '*' 一律僅限 wildcard caller。
+    """
+    caller_perms = current_user.get("permission_names") or []
+    if "*" in caller_perms:
+        return
+    over = [
+        code
+        for code in requested
+        if code == "*" or not has_permission(caller_perms, code.split(":", 1)[0])
+    ]
+    if over:
+        raise HTTPException(
+            status_code=403, detail=f"不可授出超過自身持有的權限：{over}"
+        )
 
 
 # ============================================================
@@ -54,7 +74,7 @@ class RoleUpdate(BaseModel):
 def create_role(
     payload: RoleIn,
     session: Session = Depends(get_session_dep),
-    _: dict = Depends(require_permission(Permission.ROLES_MANAGE)),
+    current_user: dict = Depends(require_permission(Permission.ROLES_MANAGE)),
 ):
     existing = session.query(Role).filter_by(code=payload.code).first()
     if existing is not None:
@@ -75,6 +95,8 @@ def create_role(
         raise HTTPException(
             status_code=422, detail=f"以下 permission code 不存在：{invalid}"
         )
+
+    _assert_can_grant(current_user, payload.permissions)
 
     role = Role(
         code=payload.code,
@@ -100,7 +122,7 @@ def update_role(
     code: str,
     payload: RoleUpdate,
     session: Session = Depends(get_session_dep),
-    _: dict = Depends(require_permission(Permission.ROLES_MANAGE)),
+    current_user: dict = Depends(require_permission(Permission.ROLES_MANAGE)),
 ):
     role = session.query(Role).filter_by(code=code).first()
     if role is None:
@@ -126,6 +148,7 @@ def update_role(
             raise HTTPException(
                 status_code=422, detail=f"以下 permission code 不存在：{invalid}"
             )
+        _assert_can_grant(current_user, payload.permissions)
         role.permissions = list(payload.permissions)
 
         # bump token_version for users 依此 role 預設（permission_names IS NULL）
