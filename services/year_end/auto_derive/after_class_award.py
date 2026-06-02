@@ -152,6 +152,7 @@ def _count_enrollments(db: Session, *, classroom_id: int, academic_year: int) ->
                 RegistrationCourse.registration_id == ActivityRegistration.id,
             )
             .where(
+                ActivityRegistration.is_active.is_(True),
                 ActivityRegistration.classroom_id == classroom_id,
                 ActivityRegistration.school_year == academic_year,
                 ActivityRegistration.semester == _FIRST_SEMESTER,
@@ -176,6 +177,7 @@ def _count_unmatched(db: Session, *, academic_year: int) -> int:
                 RegistrationCourse.registration_id == ActivityRegistration.id,
             )
             .where(
+                ActivityRegistration.is_active.is_(True),
                 ActivityRegistration.school_year == academic_year,
                 ActivityRegistration.semester == _FIRST_SEMESTER,
                 RegistrationCourse.status.in_(_COUNTED_STATUSES),

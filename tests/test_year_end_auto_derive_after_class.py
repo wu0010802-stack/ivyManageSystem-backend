@@ -320,6 +320,45 @@ def test_after_class_award_skips_manual(seed):
     assert _amount_for(items, seed["emp_chen"].id) == Decimal("1105")
 
 
+def test_after_class_award_ignores_soft_deleted(seed):
+    """軟刪除報名(is_active=False)即使課程仍 enrolled 也不計入 J / unmatched。"""
+    db = seed["db"]
+    cycle = seed["cycle"]
+    course = seed["course"]
+    sy, sem = seed["sy"], seed["sem"]
+
+    # 天堂鳥一筆已軟刪除報名（course 仍 enrolled）→ 不得讓 1875 變動
+    reg_del = _mk_registration(
+        db,
+        classroom_id=seed["cls_bird"].id,
+        school_year=sy,
+        semester=sem,
+        match_status="matched",
+        student_name="bird_deleted",
+    )
+    reg_del.is_active = False
+    _enroll(db, reg_del, course, status="enrolled")
+    # 一筆軟刪除的未配對報名 → 不得讓 unmatched_count 變動
+    reg_del_unmatched = _mk_registration(
+        db,
+        classroom_id=None,
+        school_year=sy,
+        semester=sem,
+        match_status="pending",
+        student_name="orphan_deleted",
+    )
+    reg_del_unmatched.is_active = False
+    _enroll(db, reg_del_unmatched, course, status="enrolled")
+    db.commit()
+
+    report = aca.derive_after_class_award(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.AFTER_CLASS_AWARD)
+    assert _amount_for(items, seed["emp_lin"].id) == Decimal("1875")
+    assert report.unmatched_count == 0
+
+
 def test_after_class_award_reupsert_is_idempotent(seed):
     """連跑兩次：auto 筆 UPDATE 而非新增重複筆。"""
     db = seed["db"]
