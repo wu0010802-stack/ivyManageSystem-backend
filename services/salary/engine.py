@@ -3761,7 +3761,7 @@ class SalaryEngine:
             self.insurance_service,
             emp.id,
             ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
-            appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
+            appraisal_bonus=preload.appraisal_by_emp.get(emp.id, 0),  # 決策⑥B：0 跳過 per-employee query
         )
 
         breakdown.absent_count = absent_count
@@ -3794,7 +3794,7 @@ class SalaryEngine:
             breakdown,
             self,
             session=session,
-            appraisal_bonus=preload.appraisal_by_emp.get(emp.id),
+            appraisal_bonus=preload.appraisal_by_emp.get(emp.id, 0),  # 決策⑥B：0 跳過 per-employee query
             pending_logs=preload.pending_payout_by_emp.get(emp.id, []),
         )
         return emp, breakdown
