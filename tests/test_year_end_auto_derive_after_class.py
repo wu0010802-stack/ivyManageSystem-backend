@@ -475,3 +475,69 @@ def test_after_class_award_reupsert_is_idempotent(seed):
     assert len(bird_items) == 1
     assert bird_items[0].amount == Decimal("1875")
     assert bird_items[0].source_ref == "auto:after_class_award"
+
+
+def test_after_class_award_zero_enrollment_writes_zero_row(test_db_session):
+    """J=0 時仍寫一筆 amount=0.00 的 AFTER_CLASS_AWARD（stale-safe 決策）。
+
+    理由：若改成 skip，當報名後來被移除、re-run 時舊的正數 auto 筆會殘留變 stale；
+    0 元無金額影響，grid 顯示層可自行過濾。controller 2026-06-02 決策：always-write。
+    """
+    db = test_db_session
+    sy, sem = 114, 1
+
+    cycle = YearEndCycle(
+        academic_year=114,
+        start_date=date(2025, 8, 1),
+        end_date=date(2026, 7, 31),
+        bonus_calc_date=date(2026, 1, 15),
+    )
+    db.add(cycle)
+    db.flush()
+
+    # 班導
+    emp = _mk_employee(db, "E_ZERO_TES", "零人次老師")
+
+    # 班級（有單價、有班導，但 0 筆成功報名）
+    cls = Classroom(name="零人次班", school_year=sy, semester=sem)
+    db.add(cls)
+    db.flush()
+
+    db.add(
+        ClassEnrollmentTarget(
+            year_end_cycle_id=cycle.id,
+            semester_first=True,
+            classroom_id=cls.id,
+            head_teacher_employee_id=emp.id,
+            head_count_target=30,
+        )
+    )
+    db.flush()
+
+    # BonusConfig：有單價
+    cfg = BonusConfig(
+        config_year=114,
+        is_active=True,
+        after_class_award_unit_price={"零人次班": 75},
+        art_teacher_unit_price=None,
+    )
+    db.add(cfg)
+    db.commit()
+
+    # 無任何 ActivityRegistration → J = 0
+    aca.derive_after_class_award(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.AFTER_CLASS_AWARD)
+    emp_items = [it for it in items if it.employee_id == emp.id]
+
+    # 斷言：J=0 仍寫一筆（not skipped）
+    assert (
+        len(emp_items) == 1
+    ), "J=0 時應寫一筆 AFTER_CLASS_AWARD（stale-safe always-write）"
+    assert emp_items[0].amount == Decimal(
+        "0.00"
+    ), f"J=0 金額應為 0.00，實際={emp_items[0].amount}"
+    assert (
+        emp_items[0].calc_meta["J"] == 0
+    ), f"calc_meta J 應為 0，實際={emp_items[0].calc_meta}"

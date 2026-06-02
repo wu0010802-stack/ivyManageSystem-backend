@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
@@ -35,6 +34,7 @@ from models.year_end import (
     SpecialBonusType,
     YearEndCycle,
 )
+from utils.taipei_time import now_taipei_naive
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ def _upsert_auto_item(
     existing.classroom_id = classroom_id
     existing.calc_meta = calc_meta
     existing.source_ref = _SOURCE_REF
-    existing.updated_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+    existing.updated_at = now_taipei_naive()
     return True
 
 
