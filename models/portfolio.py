@@ -31,6 +31,7 @@ from sqlalchemy import (
 )
 
 from models.base import Base
+from utils.medical_field_type import EncryptedText
 
 # ── Attachment owner_type 枚舉 ────────────────────────────────────────────
 ATTACHMENT_OWNER_OBSERVATION = "observation"
@@ -164,16 +165,24 @@ class StudentAllergy(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    # RA-MED-10：§6 特種個資（醫療）— ORM 透明 Fernet 加密（DB 仍 Text）。
+    # legacy 明文 passthrough（decrypt_medical 對非 Fernet token 原樣回）。
     allergen = Column(
-        String(100), nullable=False, comment="過敏原，如 花生 / 乳製品 / 塵蟎"
+        EncryptedText, nullable=False, comment="過敏原，如 花生 / 乳製品 / 塵蟎（加密）"
     )
+    # severity 維持明文：parent_portal/profile.py 以 DB-level ORDER BY severity.desc()
+    # 排序（severe>moderate>mild 字母序剛好對），加密會破壞此功能且為低敏感 3 值列舉。
     severity = Column(
         String(10),
         nullable=False,
-        comment="mild / moderate / severe",
+        comment="mild / moderate / severe（明文，DB 排序需求）",
     )
-    reaction_symptom = Column(String(200), nullable=True, comment="過敏反應症狀")
-    first_aid_note = Column(Text, nullable=True, comment="急救處置說明")
+    reaction_symptom = Column(
+        EncryptedText, nullable=True, comment="過敏反應症狀（加密）"
+    )
+    first_aid_note = Column(
+        EncryptedText, nullable=True, comment="急救處置說明（加密）"
+    )
     active = Column(Boolean, nullable=False, default=True, server_default="true")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 

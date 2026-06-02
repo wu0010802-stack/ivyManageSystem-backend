@@ -229,6 +229,7 @@ def _load_logs_for_orders(
 @router.get("/students/{student_id}/allergies", response_model=AllergyListOut)
 def list_allergies(
     student_id: int,
+    request: Request,
     include_inactive: bool = Query(False),
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
 ) -> dict:
@@ -241,6 +242,25 @@ def list_allergies(
             if not include_inactive:
                 query = query.filter(StudentAllergy.active.is_(True))
             rows = query.order_by(StudentAllergy.id.asc()).all()
+            # RA-MED-10：實際回出解密過敏內容時補寫 §6 medical_access_log
+            # （對齊 /medical 與 students detail 模式；無顯式 reason，list 端點不做
+            # reason gate，用 generic 字串標示）。無資料則不寫（避免噪音）。
+            if rows:
+                from models.medical_access_log import (
+                    MEDICAL_FIELD_ALLERGY,
+                    MedicalAccessLog,
+                )
+                from utils.request_ip import get_client_ip
+
+                session.add(
+                    MedicalAccessLog(
+                        user_id=current_user.get("user_id"),
+                        student_id=student_id,
+                        field_name=MEDICAL_FIELD_ALLERGY,
+                        reason="過敏清單檢視（無顯式理由）",
+                        ip_address=get_client_ip(request),
+                    )
+                )
             return {
                 "items": [_allergy_to_dict(a) for a in rows],
                 "total": len(rows),
