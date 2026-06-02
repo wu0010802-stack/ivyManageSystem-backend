@@ -90,6 +90,20 @@ def publish_entry(
 
     guardian_user_ids = _gather_guardian_user_ids(session, entry.student_id)
 
+    # photo_publish 廣播咽喉（spec §3.1b）：
+    # flag on 時，過濾掉未同意 photo_publish 的 guardian，再 fan-out。
+    # flag off 時 no-op，全部 guardian 皆收到。
+    from config import get_settings
+    from models.consent import CONSENT_SCOPE_PHOTO_PUBLISH
+    from services.consent.checker import consent_check
+
+    if get_settings().consent.enforcement_enabled:
+        guardian_user_ids = [
+            uid
+            for uid in guardian_user_ids
+            if consent_check(session, uid, CONSENT_SCOPE_PHOTO_PUBLISH)
+        ]
+
     # 廣播 payload — 同 event 內含足夠 metadata 讓前端決定刷新範圍。
     # 與 dispatch ws channel 共存：本 payload 用 'type' key（entity refresh），
     # dispatch 用 'event_type' key（inbox 通知），前端依 key 分流。
