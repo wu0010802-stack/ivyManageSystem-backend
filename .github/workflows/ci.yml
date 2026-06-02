@@ -66,6 +66,26 @@ jobs:
       - name: Run ruff DTZ check
         run: ruff check .
 
+  scope-filter-gate:
+    name: Scope-Filter Guard (row-level fail-open)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run scope-filter guard
+        # 確保每個 gate 用 row-level scope-aware 權限的 API 端點都有套 scope 過濾
+        # （portfolio_access helper / assert_all_scope / 明文豁免），堵「gate 放行
+        # :own_class 但忘了過濾 → 回全園」的 fail-open。純 stdlib（ast）免裝依賴。
+        # 邏輯與 tests/test_scope_filter_guard.py 共用同一支 lint script。
+        run: python scripts/lint_scope_filter_guard.py
+
   test:
     name: Tests (TZ=${{ matrix.container_tz }})
     runs-on: ubuntu-latest
