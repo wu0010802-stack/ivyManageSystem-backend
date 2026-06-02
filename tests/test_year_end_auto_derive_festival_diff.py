@@ -512,6 +512,51 @@ def test_supervisor_on_class_roster_gated_to_schoolwide(seed):
         assert mrow["target"] == 40  # 全校 target，非 per-class 10
 
 
+def test_empty_position_no_windfall(seed):
+    """**position gate 對稱（修 windfall）**：position 為空的 司機/美師/美編 應領全 0。
+
+    payroll「已發」對 `not position`（None 或空字串）的員工 gate festival=0
+    （engine.py:2004 `if not position: is_eligible = False`，「無職位資料(不發放)」）。
+    但 role_key_of 對 司機/美師/美編 只憑 *title* 關鍵字即回非-None（driver_festival
+    default=1000 > 0，不被 festival_base<=0 guard 排除）。若「應領」不套相同 position
+    gate → 一名 position 為空的司機會算出 due>0 而 payroll「已發」=0 → 正向 windfall。
+
+    seed 司機老王 position=None、title="司機"（role_key driver，festival_base=1000）；
+    非帶班 → 走全校（在園 20 / 全校目標 40）。hire_date 遠早於本期（_mk_employee 預設
+    2024-08-01）故 hire 資格恆滿，隔離出 position gate 為唯一變因。
+      - 有 gate（正確）：position 空 → 各月應領 due=0、已發 paid=0 → diff=0 → 總額 0。
+      - sabotage（移掉 position gate）：應領=1000×20/40=500/月、payroll 仍 0 → diff 500/月
+        × 6 = 3000 windfall → 總額 3000 ≠ 0。本斷言（amount==0 + 各月 due/paid/diff 皆 0）
+        鎖死 gate；移掉 `not position_eligible` 條件會使 amount==0 斷言 FAIL（變 3000）。
+
+    Option A：仍寫一筆 0 額 item（idempotent cleanup + 反映 payroll 不一致），故 item
+    必存在；per-month 斷言 paid==0 同時實證 payroll 確實對 not-position gate festival=0。
+    """
+    db, cycle = seed["db"], seed["cycle"]
+
+    # position=None（非帶班、無職位）但 title 含「司機」→ role_key driver、base 1000>0。
+    emp_drv = _mk_employee(db, "E_DRV_001", "司機老王", position=None, title="校車司機")
+    db.commit()
+
+    fd.derive_festival_diff(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
+    item = _item_for(items, emp_drv.id)  # Option A：0 額 item 仍寫入，必存在
+    assert item.amount == Decimal("0")  # 無 windfall（移 gate 會變 3000 → FAIL）
+    assert item.classroom_id is None  # 非帶班
+
+    months = item.calc_meta["months"]
+    assert len(months) == 6
+    for mrow in months:
+        assert mrow["eligible"] is False
+        assert mrow["eligible_reason"] == "no_position"
+        assert Decimal(mrow["due"]) == Decimal("0")
+        assert Decimal(mrow["paid"]) == Decimal("0")  # 實證 payroll not-position gate
+        assert Decimal(mrow["diff"]) == Decimal("0")  # 無 windfall
+        assert mrow["enrolled"] is None  # gate 前 short-circuit，未查 count
+
+
 def test_new_hire_early_months_gated_no_windfall(seed):
     """**新人 eligibility 對稱（修 P1 windfall）**：未滿 3 個月的月份「應領」=0。
 

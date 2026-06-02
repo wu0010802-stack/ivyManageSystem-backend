@@ -374,6 +374,19 @@ def derive_festival_diff(db: Session, cycle: YearEndCycle) -> FestivalDiffReport
             else None
         )
 
+        # ── position gate（對稱 payroll engine.py:2004-2006，修 windfall）──
+        # payroll「已發」對 `not position`（None 或空字串）的員工 gate festival=0
+        # （engine.py:2004 `if not position: is_eligible = False`，「無職位資料(不發放)」）。
+        # 但 role_key_of 對 司機/美師/美編 只憑 *title* 關鍵字即回非-None（festival_base>0、
+        # 不被上方 festival_base<=0 guard 排除）→ 一名 position 為空的 司機/美師/美編，
+        # 「應領」若不跟進就會算出 due>0 而 payroll「已發」=0 → 正向 windfall（多發）。
+        # 故「應領」端套**完全相同**的判定：position 空 → 該員工全部月應領 due=0
+        # （與 hire_date eligibility 同走下方 gated 分支，保留 diff=due-paid 不硬寫 0：
+        # 若 payroll 異常仍發非 0 會反映在負差額，不被遮蔽）。position 為員工層屬性
+        # （非逐月變），迴圈外判一次即可。`not emp.position` 逐字鏡像 engine（不 strip：
+        # whitespace-only position 在 engine 為 truthy 會發放，此處同樣不 gate，避免反向不一致）。
+        position_eligible = bool(emp.position)
+
         total_diff = Decimal("0")
         months_meta: list[dict] = []
         skip_emp = False
@@ -409,14 +422,18 @@ def derive_festival_diff(db: Session, cycle: YearEndCycle) -> FestivalDiffReport
             # 的月份 true-up（憑空發給未滿資格者 = windfall）。**先 gate 再算 target**：
             # 避免「資格未到月份」誤觸下方 target 缺漏的 skip_emp/break（那會連同該員工
             # 後段已滿資格月份的正常 true-up 一併丟棄）；也省一次 count_enrolled_on。
-            if not engine.is_eligible_for_festival_bonus(
+            # position gate（員工層，迴圈外算）與 hire_date eligibility（逐月）合判：
+            # 任一不滿足 → 該月應領 due=0（與 payroll「已發」對該月 gate festival=0 對稱）。
+            hire_eligible = engine.is_eligible_for_festival_bonus(
                 emp.hire_date, reference_date=month_end
-            ):
+            )
+            if not position_eligible or not hire_eligible:
                 # paid 與 due 走同一 gate；保留 diff = due - paid 而非硬寫 0：
                 # 若 paid 異常非 0（payroll 不一致）會反映在 diff，不被遮蔽。
                 due = Decimal("0")
                 diff = due - paid
                 total_diff += diff
+                gate_reason = "no_position" if not position_eligible else "under_tenure"
                 months_meta.append(
                     {
                         "month": f"{y}-{m:02d}",
@@ -425,6 +442,7 @@ def derive_festival_diff(db: Session, cycle: YearEndCycle) -> FestivalDiffReport
                         "enrolled": None,
                         "target": None,
                         "eligible": False,
+                        "eligible_reason": gate_reason,
                         "due": str(due),
                         "paid": str(paid),
                         "diff": str(diff),
