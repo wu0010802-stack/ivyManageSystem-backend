@@ -23,6 +23,7 @@ from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.portfolio_access import (
     accessible_classroom_ids,
+    assert_all_scope,
     assert_student_access,
     filter_student_ids_by_access,
     is_unrestricted,
@@ -233,7 +234,9 @@ class BatchSaveRequest(BaseModel):
 # ============ Routes ============
 
 
-@router.get("/student-attendance/overview", response_model=StudentAttendanceDailyOverviewOut)
+@router.get(
+    "/student-attendance/overview", response_model=StudentAttendanceDailyOverviewOut
+)
 def get_daily_attendance_overview(
     date: str = Query(..., description="YYYY-MM-DD"),
     school_year: Optional[int] = Query(
@@ -243,6 +246,11 @@ def get_daily_attendance_overview(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得指定日期的各班學生出席總覽。school_year/semester 不傳時使用目前學期。"""
+    assert_all_scope(
+        current_user,
+        Permission.STUDENTS_READ.value,
+        action_label="檢視全園各班出席總覽",
+    )
     try:
         target_date = datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError:
@@ -311,7 +319,9 @@ def get_daily_attendance(
         session.close()
 
 
-@router.post("/student-attendance/batch", response_model=StudentAttendanceBatchSaveResultOut)
+@router.post(
+    "/student-attendance/batch", response_model=StudentAttendanceBatchSaveResultOut
+)
 def batch_save_attendance(
     payload: BatchSaveRequest,
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
@@ -386,7 +396,9 @@ def batch_save_attendance(
         session.close()
 
 
-@router.get("/student-attendance/by-student", response_model=StudentAttendanceByStudentOut)
+@router.get(
+    "/student-attendance/by-student", response_model=StudentAttendanceByStudentOut
+)
 def get_attendance_by_student(
     student_id: int = Query(..., gt=0),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),

@@ -1233,6 +1233,12 @@ def get_student_profile(
     """學生完整檔案聚合（basic + lifecycle + health + guardians + 各種 summary）。"""
     session = get_session()
     try:
+        # 逐筆 PII：限自班——持 STUDENTS_READ:own_class 者不得讀跨班學生完整檔案
+        # （含監護人電話/生日）。標準角色（admin/supervisor :all）照常放行；不存在
+        # 的 student_id raise 404。
+        assert_student_access(
+            session, current_user, student_id, code=Permission.STUDENTS_READ.value
+        )
         profile = assemble_profile(
             session,
             student_id,
@@ -1580,6 +1586,10 @@ def get_student_lifecycle_overview(
 ):
     session = get_session()
     try:
+        # 逐筆：限自班——持 STUDENTS_READ:own_class 者不得查跨班學生生命週期。
+        assert_student_access(
+            session, current_user, student_id, code=Permission.STUDENTS_READ.value
+        )
         overview = build_lifecycle_overview(session, student_id)
         return LifecycleOverviewOut(
             student_id=overview.student_id,

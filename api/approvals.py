@@ -13,6 +13,7 @@ from services.dashboard_query_service import (
 )
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.portfolio_access import assert_all_scope
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,11 @@ def get_student_attendance_summary(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得今日全園學生出勤摘要（供儀表板使用）"""
+    assert_all_scope(
+        current_user,
+        Permission.STUDENTS_READ.value,
+        action_label="檢視全園學生出勤摘要",
+    )
     session = get_session()
     try:
         return dashboard_query_service.build_student_attendance_summary(session)
