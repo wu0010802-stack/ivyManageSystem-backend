@@ -95,3 +95,16 @@ def test_student_detail_endpoints_assert_per_row_access():
     assert "assert_student_access" in inspect.getsource(
         m.get_student_lifecycle_overview
     )
+
+
+def test_student_master_write_endpoints_require_unrestricted_role():
+    """學生主資料寫入（建立/畢業/生命週期轉移）限 admin/hr/supervisor，
+    對齊 PUT/DELETE/bulk-transfer 既有 policy（擋自訂 :own_class 角色越權寫入）。"""
+    import api.students as m
+
+    for fn in (
+        m.create_student,
+        m.graduate_student,
+        m.transition_student_lifecycle,
+    ):
+        assert "require_unrestricted_role" in inspect.getsource(fn)

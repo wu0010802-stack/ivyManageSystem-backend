@@ -136,21 +136,11 @@ EXEMPT: dict[str, str] = {
 # 每筆標分類，作為後續 sprint 的明文待辦——不是「已驗證安全」。
 # ---------------------------------------------------------------------------
 KNOWN_UNSCOPED: dict[str, str] = {
-    # 逐筆 / 跨筆學生資料但無 access 檢查 → latent fail-open（自訂
-    # STUDENTS_*:own_class 角色可越權）。標準角色無 STUDENTS_* 故目前無 active 越權。
+    # 跨筆學生資料但無 access 檢查 → latent fail-open（自訂 STUDENTS_*:own_class
+    # 角色可越權）。標準角色無 STUDENTS_* 故目前無 active 越權。
     "students:get_student_records_timeline": (
         "PER_ROW_TODO: student_id 可選，None 時跨學生；需 assert_student_access "
         "或 student_ids_in_scope（涉及 list_timeline service 簽名，故未在本輪修）"
-    ),
-    "students:create_student": (
-        "WRITE_SCOPE_TODO: 建立學生的班級 scope 語意待業務確認"
-        "（自訂 STUDENTS_WRITE:own_class 角色可建到任意班）"
-    ),
-    "students:graduate_student": (
-        "PER_ROW_TODO: 單筆 lifecycle write 無 assert_student_access"
-    ),
-    "students:transition_student_lifecycle": (
-        "PER_ROW_TODO: 單筆 lifecycle write 無 assert_student_access"
     ),
     # 範本庫 ownership IDOR（非 student-scope，另案）：只 filter(id==template_id)，
     # 缺 owner_user_id 檢查 → 持 PORTFOLIO_WRITE 者可改/刪/promote 他人 personal 範本。
