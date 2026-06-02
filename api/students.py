@@ -949,6 +949,11 @@ def update_student(
             )
 
         update_data = item.model_dump(exclude_unset=True)
+        # B1（RA-L6）：student_id 是 server 端顯示快取（由 models/student_events
+        # before_flush listener 依 enrollment_seq 重算），不該由 client 設值。
+        # listener 對 legacy（enrollment_seq IS NULL）學生跳過重算，client 傳入的
+        # 偽造 student_id 會被直接持久化。一律忽略 client 傳入的 student_id。
+        update_data.pop("student_id", None)
         old_classroom_id = student.classroom_id
 
         # 變更前 snapshot — 只取會被 update_data 影響的欄位，避免 dict 過大
