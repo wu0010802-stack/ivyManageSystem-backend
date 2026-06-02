@@ -287,6 +287,53 @@ def test_after_class_award_reports_unmatched(seed):
     assert _amount_for(items, seed["emp_lin"].id) == Decimal("1875")
 
 
+def test_after_class_award_clean_partition_manual_vs_pending(seed):
+    """J / unmatched 乾淨互斥（成功集 = {'matched','manual'}）。
+
+    - manual + classroom_id=bird → 計入該班 J（bird 25 → 26），不進 unmatched。
+    - pending + classroom_id=bird → 進 unmatched，不進 J（bird 仍 26）。
+    pending 帶 classroom_id 才能驗證 _count_enrollments 的 match_status 過濾
+    （NULL-classroom 的 pending 無法觸發此分支）。
+    """
+    db = seed["db"]
+    cycle = seed["cycle"]
+    course = seed["course"]
+    sy, sem = seed["sy"], seed["sem"]
+
+    # manual 人工綁定（合法在班）→ 計入 bird J
+    reg_manual = _mk_registration(
+        db,
+        classroom_id=seed["cls_bird"].id,
+        school_year=sy,
+        semester=sem,
+        match_status="manual",
+        student_name="bird_manual",
+    )
+    _enroll(db, reg_manual, course, status="enrolled")
+    # pending 帶 bird classroom_id → 只進 unmatched，不得灌進 bird J
+    reg_pending = _mk_registration(
+        db,
+        classroom_id=seed["cls_bird"].id,
+        school_year=sy,
+        semester=sem,
+        match_status="pending",
+        student_name="bird_pending",
+    )
+    _enroll(db, reg_pending, course, status="enrolled")
+    db.commit()
+
+    report = aca.derive_after_class_award(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.AFTER_CLASS_AWARD)
+    # bird J = 25 + 1(manual) = 26 → 26 × 75 = 1950（pending 不計）
+    assert _amount_for(items, seed["emp_lin"].id) == Decimal("1950")
+    # 牡丹未受影響
+    assert _amount_for(items, seed["emp_chen"].id) == Decimal("1105")
+    # pending 進 unmatched，manual 不進 unmatched
+    assert report.unmatched_count == 1
+
+
 def test_after_class_award_skips_manual(seed):
     """已有一筆 manual 的 AFTER_CLASS_AWARD（source_ref 非 auto:）→ 不被覆寫。"""
     db = seed["db"]
