@@ -66,8 +66,8 @@ class SpecialBonusType(str, enum.Enum):
     """9 種特別獎金 + 1 通用類型。
 
     對應 Excel「年終獎金總表」B 欄各列：
-      APPRAISAL_HALF_BONUS_FIRST  : 較早那一筆（年終發放時對應「前一學年上學期 = N-2.上」）— 來自 appraisal_summaries
-      APPRAISAL_HALF_BONUS_SECOND : 較晚那一筆（年終發放時對應「前一學年下學期 = N-2.下」）— 來自 appraisal_summaries
+      APPRAISAL_HALF_BONUS_FIRST  : 較早那一筆（前一完整學年上學期）— 來自 appraisal_summaries
+      APPRAISAL_HALF_BONUS_SECOND : 較晚那一筆（前一完整學年下學期）— 來自 appraisal_summaries
       SEMESTER_DIVIDEND_FIRST     : N上學期紅利（舊生 500 + 才藝 1000）
       SEMESTER_DIVIDEND_SECOND    : N下學期紅利
       AFTER_CLASS_AWARD           : N上鼓勵推動才藝班獎金（按班級人數）

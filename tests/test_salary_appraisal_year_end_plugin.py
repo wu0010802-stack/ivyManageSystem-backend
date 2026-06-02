@@ -43,14 +43,14 @@ def cycle_with_two_payouts(test_db_session, sample_active_employee_t5):
                 year_end_cycle_id=cycle.id,
                 employee_id=sample_active_employee_t5.id,
                 bonus_type=SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
-                period_label="113下",
+                period_label="113上",
                 amount=Decimal("6400"),
             ),
             SpecialBonusItem(
                 year_end_cycle_id=cycle.id,
                 employee_id=sample_active_employee_t5.id,
                 bonus_type=SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
-                period_label="114上",
+                period_label="113下",
                 amount=Decimal("7200"),
             ),
         ]
@@ -129,7 +129,7 @@ def test_query_correct_academic_year_mapping(
             year_end_cycle_id=cycle_114.id,
             employee_id=sample_active_employee_t5.id,
             bonus_type=SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
-            period_label="113下",
+            period_label="113上",
             amount=Decimal("9999"),
         )
     )
@@ -138,7 +138,7 @@ def test_query_correct_academic_year_mapping(
             year_end_cycle_id=cycle_113.id,
             employee_id=sample_active_employee_t5.id,
             bonus_type=SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
-            period_label="112下",
+            period_label="112上",
             amount=Decimal("3000"),
         )
     )
