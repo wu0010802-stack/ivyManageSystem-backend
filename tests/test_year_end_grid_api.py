@@ -542,3 +542,245 @@ def test_two_gate_signoff(client_with_db):
     fin_res = client.post(f"/api/year_end/settlements/{settlement_id}/finalize")
     assert fin_res.status_code == 200, fin_res.text
     assert fin_res.json()["status"] == "FINALIZED"
+
+
+# ============================================================
+# B0: settlement_id in grid rows
+# ============================================================
+
+
+def test_grid_endpoint_has_settlement_id(client_with_db):
+    """grid 每列應包含 settlement_id，且與 DB 中的 settlement.id 一致。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, emp_id = _seed_cycle_and_employee(sf)
+    _login(client)
+
+    _build(client, cycle_id)
+
+    # 取 settlement_id from /settlements
+    res = client.get(f"/api/year_end/cycles/{cycle_id}/settlements")
+    assert res.status_code == 200
+    settlements = res.json()
+    assert len(settlements) >= 1
+    expected_settlement_id = settlements[0]["id"]
+
+    # grid 應含 settlement_id，且與 settlements 列表的 id 對應
+    grid_res = client.get(f"/api/year_end/cycles/{cycle_id}/grid")
+    assert grid_res.status_code == 200, grid_res.text
+    rows = grid_res.json()
+    assert len(rows) >= 1
+    row = rows[0]
+    assert "settlement_id" in row, f"settlement_id 不在 grid row: {row.keys()}"
+    assert (
+        row["settlement_id"] == expected_settlement_id
+    ), f"grid settlement_id={row['settlement_id']} 不等於 settlements[0].id={expected_settlement_id}"
+
+
+# ============================================================
+# B1: POST /cycles/{cycle_id}/class_targets upsert
+# ============================================================
+
+
+def _seed_classroom(sf, cycle_id: int) -> tuple[int, int]:
+    """新建一個不與預設 fixture 衝突的 classroom，回傳 (classroom_id, emp_id)。
+    注意：不建 ClassEnrollmentTarget（讓 upsert 測試自己建）。
+    """
+    with sf() as s:
+        classroom = Classroom(name="小班B", school_year=ACADEMIC_YEAR + 1, semester=1)
+        s.add(classroom)
+        s.flush()
+        emp = Employee(
+            employee_id="E_CT_001",
+            name="李老師",
+            position="班導",
+            bonus_grade="b",
+            title="幼兒園教師",
+            base_salary=36160,
+            bypass_standard_base=False,
+            is_active=True,
+            classroom_id=classroom.id,
+            hire_date=date(2021, 1, 1),
+        )
+        s.add(emp)
+        s.commit()
+        return classroom.id, emp.id
+
+
+def test_upsert_class_target(client_with_db):
+    """POST class_targets → 200 + 正確值寫入。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)
+    classroom_id, emp_id = _seed_classroom(sf, cycle_id)
+    _login(client)
+
+    payload = {
+        "semester_first": True,
+        "classroom_id": classroom_id,
+        "head_teacher_employee_id": emp_id,
+        "head_count_target": 25,
+        "returning_student_rate": "0.850",
+    }
+    res = client.post(f"/api/year_end/cycles/{cycle_id}/class_targets", json=payload)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["classroom_id"] == classroom_id
+    assert body["head_count_target"] == 25
+    assert Decimal(str(body["returning_student_rate"])) == Decimal("0.850")
+    assert body["head_teacher_employee_id"] == emp_id
+    # 計算欄位應為 0（build_settlements 才重算）
+    assert Decimal(str(body["avg_monthly_enrollment"])) == Decimal("0")
+    assert Decimal(str(body["class_performance_rate"])) == Decimal("0")
+
+
+def test_upsert_class_target_idempotent(client_with_db):
+    """repeat upsert → 仍只有 1 列，值以最後一次為準。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)
+    classroom_id, emp_id = _seed_classroom(sf, cycle_id)
+    _login(client)
+
+    base_payload = {
+        "semester_first": False,
+        "classroom_id": classroom_id,
+        "head_teacher_employee_id": emp_id,
+        "head_count_target": 20,
+        "returning_student_rate": "0.800",
+    }
+    r1 = client.post(f"/api/year_end/cycles/{cycle_id}/class_targets", json=base_payload)
+    assert r1.status_code == 200, r1.text
+
+    # 第二次：更新 head_count_target
+    updated_payload = dict(base_payload)
+    updated_payload["head_count_target"] = 22
+    r2 = client.post(f"/api/year_end/cycles/{cycle_id}/class_targets", json=updated_payload)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["head_count_target"] == 22
+
+    # DB 應只有一列
+    with sf() as s:
+        rows = (
+            s.query(ClassEnrollmentTarget)
+            .filter_by(
+                year_end_cycle_id=cycle_id,
+                semester_first=False,
+                classroom_id=classroom_id,
+            )
+            .all()
+        )
+    assert len(rows) == 1, f"預期 1 列，got {len(rows)}"
+    assert rows[0].head_count_target == 22
+
+
+def test_upsert_class_target_requires_write(client_with_db):
+    """read-only user → POST class_targets → 403。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)
+    classroom_id, emp_id = _seed_classroom(sf, cycle_id)
+    _login(client, "viewer")
+
+    payload = {
+        "semester_first": True,
+        "classroom_id": classroom_id,
+        "head_count_target": 18,
+        "returning_student_rate": "0.700",
+    }
+    res = client.post(f"/api/year_end/cycles/{cycle_id}/class_targets", json=payload)
+    assert res.status_code == 403, res.text
+
+
+# ============================================================
+# B2: create_cycle with clone_from_academic_year
+# ============================================================
+
+FINALIZE_PERMS = ["YEAR_END_FINALIZE", "YEAR_END_WRITE", "YEAR_END_READ"]
+
+
+def _seed_finalize_user(sf):
+    """種具 YEAR_END_FINALIZE 權限的 admin2 帳號（避免與 _seed_users admin 衝突）。"""
+    with sf() as s:
+        s.add(
+            User(
+                username="admin2",
+                password_hash=hash_password("TempPass123"),
+                role="admin",
+                permission_names=FINALIZE_PERMS,
+                is_active=True,
+            )
+        )
+        s.commit()
+
+
+def test_create_cycle_clone_previous(client_with_db):
+    """clone_from_academic_year → 新 cycle 複製 org_settings + class_targets，
+    且 enrollment_actual=None、school_achievement_rate=0、avg_monthly_enrollment=0。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    _seed_finalize_user(sf)
+    cycle_id, emp_id = _seed_cycle_and_employee(sf)  # seeds cycle 114
+    _login(client, "admin2")
+
+    # 建新 cycle 115，從 114 clone
+    new_cycle_payload = {
+        "academic_year": 115,
+        "start_date": "2026-08-01",
+        "end_date": "2027-07-31",
+        "bonus_calc_date": "2027-01-15",
+        "clone_from_academic_year": ACADEMIC_YEAR,  # 114
+    }
+    res = client.post("/api/year_end/cycles", json=new_cycle_payload)
+    assert res.status_code == 200, res.text
+    new_cycle_id = res.json()["id"]
+
+    # 新 cycle 的 org_settings 應有兩筆（複製自 114）
+    org_res = client.get(f"/api/year_end/cycles/{new_cycle_id}/org_settings")
+    assert org_res.status_code == 200
+    org_settings = org_res.json()
+    assert len(org_settings) == 2, f"預期 2 筆 org_settings，got {len(org_settings)}"
+    for o in org_settings:
+        assert o["enrollment_actual"] is None, f"enrollment_actual 應 reset 為 None"
+        assert Decimal(str(o["school_achievement_rate"])) == Decimal(
+            "0"
+        ), f"school_achievement_rate 應 reset 為 0"
+        # org_achievement_rate 應從來源複製（114 的兩筆都是 0，但至少欄位存在）
+        assert "org_achievement_rate" in o
+
+    # 新 cycle 的 class_targets 應有兩筆（上下學期各一，複製自 114）
+    ct_res = client.get(f"/api/year_end/cycles/{new_cycle_id}/class_targets")
+    assert ct_res.status_code == 200
+    class_targets = ct_res.json()
+    assert len(class_targets) == 2, f"預期 2 筆 class_targets，got {len(class_targets)}"
+    for ct in class_targets:
+        assert Decimal(str(ct["avg_monthly_enrollment"])) == Decimal(
+            "0"
+        ), f"avg_monthly_enrollment 應 reset 為 0"
+        assert Decimal(str(ct["class_performance_rate"])) == Decimal(
+            "0"
+        ), f"class_performance_rate 應 reset 為 0"
+        # head_count_target 應從來源複製
+        assert ct["head_count_target"] == 30
+
+
+def test_create_cycle_clone_missing_source_422(client_with_db):
+    """clone_from_academic_year 指向不存在的學年 → 422。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    _seed_finalize_user(sf)
+    _seed_cycle_and_employee(sf)  # seed cycle 114
+    _login(client, "admin2")
+
+    res = client.post(
+        "/api/year_end/cycles",
+        json={
+            "academic_year": 116,
+            "start_date": "2027-08-01",
+            "end_date": "2028-07-31",
+            "bonus_calc_date": "2028-01-15",
+            "clone_from_academic_year": 999,  # 不存在
+        },
+    )
+    assert res.status_code == 422, res.text

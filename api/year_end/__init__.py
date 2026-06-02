@@ -35,6 +35,7 @@ from schemas.year_end import (
     BuildResultOut,
     BuildSettlementsRequest,
     ClassEnrollmentTargetOut,
+    ClassEnrollmentTargetUpsert,
     GridRowOut,
     ManualPatchRequest,
     OrgYearSettingsCreate,
@@ -100,6 +101,20 @@ def create_cycle(
         .first()
     ):
         raise HTTPException(409, "年度週期已存在")
+
+    # B2: 若指定 clone_from_academic_year，先驗證來源 cycle 存在
+    source_cycle = None
+    if payload.clone_from_academic_year is not None:
+        source_cycle = (
+            session.query(YearEndCycle)
+            .filter_by(academic_year=payload.clone_from_academic_year)
+            .first()
+        )
+        if source_cycle is None:
+            raise HTTPException(
+                422, f"clone 來源學年 {payload.clone_from_academic_year} 不存在"
+            )
+
     cycle = YearEndCycle(
         academic_year=payload.academic_year,
         start_date=payload.start_date,
@@ -109,6 +124,47 @@ def create_cycle(
         created_by=current_user.get("user_id"),
     )
     session.add(cycle)
+    session.flush()  # 取得 cycle.id 才能建子rows
+
+    if source_cycle is not None:
+        # 複製 OrgYearSettings（兩學期）：保留設定欄位，重置實際值
+        for src_org in (
+            session.query(OrgYearSettings)
+            .filter_by(year_end_cycle_id=source_cycle.id)
+            .all()
+        ):
+            session.add(
+                OrgYearSettings(
+                    year_end_cycle_id=cycle.id,
+                    semester_first=src_org.semester_first,
+                    enrollment_target=src_org.enrollment_target,
+                    enrollment_actual=None,            # 重置：實際值待新週期填入
+                    school_achievement_rate=Decimal("0"),  # 重置
+                    org_achievement_rate=src_org.org_achievement_rate,
+                    meeting_absence_deduction=src_org.meeting_absence_deduction,
+                    festival_bonus_meta=dict(src_org.festival_bonus_meta or {}),
+                )
+            )
+        # 複製 ClassEnrollmentTarget：保留手動欄位，重置計算欄位
+        for src_ct in (
+            session.query(ClassEnrollmentTarget)
+            .filter_by(year_end_cycle_id=source_cycle.id)
+            .all()
+        ):
+            session.add(
+                ClassEnrollmentTarget(
+                    year_end_cycle_id=cycle.id,
+                    semester_first=src_ct.semester_first,
+                    classroom_id=src_ct.classroom_id,
+                    head_teacher_employee_id=src_ct.head_teacher_employee_id,
+                    assistant_employee_id=src_ct.assistant_employee_id,
+                    head_count_target=src_ct.head_count_target,
+                    returning_student_rate=src_ct.returning_student_rate,
+                    avg_monthly_enrollment=Decimal("0"),  # 重置：build_settlements 重算
+                    class_performance_rate=Decimal("0"),   # 重置
+                )
+            )
+
     session.commit()
     session.refresh(cycle)
     return cycle
@@ -176,6 +232,51 @@ def list_class_targets(
         )
         .all()
     )
+
+
+@year_end_router.post(
+    "/cycles/{cycle_id}/class_targets", response_model=ClassEnrollmentTargetOut
+)
+def upsert_class_target(
+    cycle_id: int,
+    payload: ClassEnrollmentTargetUpsert,
+    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    session: Session = Depends(get_session_dep),
+):
+    """手動設定班級招生目標（upsert by cycle+semester+classroom）。
+    avg_monthly_enrollment / class_performance_rate 由 build_settlements refresh，
+    此端點僅存手動輸入欄位（head_count_target / returning_student_rate / 老師指派）。
+    """
+    if not session.get(YearEndCycle, cycle_id):
+        raise HTTPException(404, "cycle 不存在")
+    existing = (
+        session.query(ClassEnrollmentTarget)
+        .filter_by(
+            year_end_cycle_id=cycle_id,
+            semester_first=payload.semester_first,
+            classroom_id=payload.classroom_id,
+        )
+        .first()
+    )
+    if existing is None:
+        existing = ClassEnrollmentTarget(
+            year_end_cycle_id=cycle_id,
+            semester_first=payload.semester_first,
+            classroom_id=payload.classroom_id,
+            head_teacher_employee_id=payload.head_teacher_employee_id,
+            assistant_employee_id=payload.assistant_employee_id,
+            head_count_target=payload.head_count_target,
+            returning_student_rate=payload.returning_student_rate,
+        )
+        session.add(existing)
+    else:
+        existing.head_teacher_employee_id = payload.head_teacher_employee_id
+        existing.assistant_employee_id = payload.assistant_employee_id
+        existing.head_count_target = payload.head_count_target
+        existing.returning_student_rate = payload.returning_student_rate
+    session.commit()
+    session.refresh(existing)
+    return existing
 
 
 # ===== Settlements =====
@@ -745,6 +846,7 @@ def grid_endpoint(
         name = emp.name if emp else f"emp#{s.employee_id}"
         rows.append(
             GridRowOut(
+                settlement_id=s.id,
                 employee_id=s.employee_id,
                 employee_name=name,
                 payable_amount=s.payable_amount,
