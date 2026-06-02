@@ -56,12 +56,17 @@ payroll *config* 目標的差」。Excel 蔡宜倩 12 月為例：
 優先序 主管 > 辦公室 > 帶班 → category "主管" 走全校；若應領僅看 roster 會誤判 per-class
 → 兩側基數/比例皆不同 → 差額 garbage。以 category 判定根除此分歧。
 
+**eligibility 對稱（修新人 windfall P1）**：應領與已發套用**完全相同**的 festival
+eligibility 判定——未滿 `festival_bonus_months`（_attendance_policy，預設 3）個月的新人，
+該月應領 = 0（與 payroll calculate_period_accrual_row 對該月的 gate 一致）。reference_date
+取該月月底（鏡像 payroll `_get_bonus_reference_date(y, m)`「發放月當月才滿三個月」語意）。
+故新人早月（未滿資格）應領 0、已發亦 0 → diff = 0，**不**產生憑空的正向 true-up windfall。
+Excel `114上節慶獎金比例差額` 佐證：年中加入者（如楊思瑜 8 月）該月整欄空白/0，不照給應領。
+
 **已知限制（NEEDS_CONTEXT，見 task report）**：
-  1. eligibility 不對稱：已發套 3 個月新人 gate（未滿則 0），應領未套 → 新人會有
-     正向 windfall true-up。controller 待確認應領是否也應 gate。
-  2. base=0 角色（廚房/護理/美語等）刻意排除（festival_base <= 0 → skip）：應領恆
+  1. base=0 角色（廚房/護理/美語等）刻意排除（festival_base <= 0 → skip）：應領恆
      0，若 payroll 仍發 festival，全負差額會變成「回收」而非「true-up」，非本欄職責。
-  3. 多班副班導/美師：payroll（已發）對跨多班加權平均，應領以單班 count_enrolled_on
+  2. 多班副班導/美師：payroll（已發）對跨多班加權平均，應領以單班 count_enrolled_on
      計（取主要班）。Excel 僅佐證單班情境（呂宜凡/天堂鳥）。多班加權差異待 phase1.5。
 
 override 慣例見 auto_derive/__init__.py：source_ref 以 ``auto:`` 標記自動筆；
@@ -393,6 +398,40 @@ def derive_festival_diff(db: Session, cycle: YearEndCycle) -> FestivalDiffReport
             paid = _q2(accrual.get("festival_bonus") or 0)
             category = accrual.get("category", "")
 
+            # ── eligibility 對稱 gate（修新人 windfall P1）──
+            # payroll「已發」對未滿 festival_bonus_months（預設 3）個月的新人 gate
+            # festival=0（engine.calculate_festival_bonus_breakdown:1994-1998）。
+            # 「應領」必須套**完全相同**的判定：reference_date = 該月月底 month_end
+            # （= payroll `_get_bonus_reference_date(y, m)` 回傳值，逐字鏡像「在發放月
+            # 當月才滿三個月」語意，engine.py:1029-1037），festival_bonus_months 同樣
+            # 由 engine 從 _attendance_policy 讀（不硬寫 3，避免與 payroll config desync）。
+            # 不 eligible → 應領 = 0 → diff = 0（paid 同 gate 亦 0），不對「資格未到」
+            # 的月份 true-up（憑空發給未滿資格者 = windfall）。**先 gate 再算 target**：
+            # 避免「資格未到月份」誤觸下方 target 缺漏的 skip_emp/break（那會連同該員工
+            # 後段已滿資格月份的正常 true-up 一併丟棄）；也省一次 count_enrolled_on。
+            if not engine.is_eligible_for_festival_bonus(
+                emp.hire_date, reference_date=month_end
+            ):
+                # paid 與 due 走同一 gate；保留 diff = due - paid 而非硬寫 0：
+                # 若 paid 異常非 0（payroll 不一致）會反映在 diff，不被遮蔽。
+                due = Decimal("0")
+                diff = due - paid
+                total_diff += diff
+                months_meta.append(
+                    {
+                        "month": f"{y}-{m:02d}",
+                        "category": category,
+                        "classroom_id": None,
+                        "enrolled": None,
+                        "target": None,
+                        "eligible": False,
+                        "due": str(due),
+                        "paid": str(paid),
+                        "diff": str(diff),
+                    }
+                )
+                continue
+
             # ── 應領_m：依 payroll category 決定 per-class vs 全校（兩側必一致）──
             if category == _CLASS_CATEGORY and cand_classroom is not None:
                 classroom_id: Optional[int] = cand_classroom.id
@@ -433,6 +472,7 @@ def derive_festival_diff(db: Session, cycle: YearEndCycle) -> FestivalDiffReport
                     "classroom_id": classroom_id,
                     "enrolled": enrolled,
                     "target": int(target),
+                    "eligible": True,
                     "due": str(due),
                     "paid": str(paid),
                     "diff": str(diff),
@@ -442,10 +482,17 @@ def derive_festival_diff(db: Session, cycle: YearEndCycle) -> FestivalDiffReport
         if skip_emp:
             continue
 
-        # 員工層 classroom_id：若全期皆 per-class 同一班則記該班，否則 None。
-        item_classroom_ids = {mm["classroom_id"] for mm in months_meta}
+        # 員工層 classroom_id：只看「eligible 月份」的歸屬——gated 月份的
+        # classroom_id 是非語意 placeholder（None），不應稀釋 attribution，否則
+        # 年中入職的班導會因早月 gated 而被誤判成無班級（is_head_teacher=False）。
+        # 若所有 eligible 月份皆 per-class 同一班則記該班，否則（混合/全 gated）None。
+        eligible_classroom_ids = {
+            mm["classroom_id"] for mm in months_meta if mm.get("eligible")
+        }
         item_classroom_id = (
-            next(iter(item_classroom_ids)) if len(item_classroom_ids) == 1 else None
+            next(iter(eligible_classroom_ids))
+            if len(eligible_classroom_ids) == 1
+            else None
         )
 
         amount = _q2(total_diff)

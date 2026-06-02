@@ -510,3 +510,94 @@ def test_supervisor_on_class_roster_gated_to_schoolwide(seed):
         # 全校在園 = 20(茉莉) + 5(鈴蘭) = 25；全校 target 40 → 應領=3500×25/40=2187.5
         assert Decimal(mrow["due"]) == Decimal("2187.50")
         assert mrow["target"] == 40  # 全校 target，非 per-class 10
+
+
+def test_new_hire_early_months_gated_no_windfall(seed):
+    """**新人 eligibility 對稱（修 P1 windfall）**：未滿 3 個月的月份「應領」=0。
+
+    payroll「已發」對未滿 festival_bonus_months（預設 3）個月的新人 gate festival=0
+    （calculate_period_accrual_row）；本「應領」端必須套用**完全相同**的判定（同一
+    reference_date = 該月月底），否則早月 已發=0 但 應領>0 → diff 變正向 windfall
+    （憑空把資格未到不該領的節慶獎金 true-up 給新人）。
+
+    seed 新人小新 hire_date=2025-08-15 → +3 個月 = 2025-11-15：
+      - 8/9/10 月底（08-31 / 09-30 / 10-31）< 11-15 → **未滿資格**：應領=0、已發=0、diff=0。
+      - 11/12/1 月底（11-30 / 12-31 / 01-31）≥ 11-15 → 已滿：正常 true-up。
+    小新帶單師「中班」class（payroll 1_teacher target 12），18 生（全期入學無退學，
+    count_enrolled_on 各月恆 18，**早月在園 > 0** → sabotage 非空轉）；年終目標 head=9。
+      已滿月 已發 = round(2000×18/12) = 3000；應領 = 2000×18/9 = 4000；diff = 1000/月。
+      總額 = 0×3（早月 gated）+ 1000×3（後段）= 3000。
+
+    **sabotage（移掉 gate → 早月 windfall 使本斷言 FAIL）**：若應領未套 eligibility，
+    早月 應領 = 2000×18/9 = 4000（已發仍 0，payroll 有 gate）→ diff 4000/月 × 3 = 12000
+    額外 windfall → 總額會變 15000 ≠ 3000。本斷言（== 3000 + 早月 diff==0）鎖死 gate。
+    """
+    db, cycle = seed["db"], seed["cycle"]
+
+    grade_mid = ClassGrade(name="中班")
+    db.add(grade_mid)
+    db.flush()
+    emp_new = _mk_employee(db, "E_NEW_001", "小新", position="班導", title="幼兒園教師")
+    # 年中入職：2025-08-15 → 滿 3 個月 = 2025-11-15（8/9/10 月底未滿，11 月底起滿）。
+    emp_new.hire_date = date(2025, 8, 15)
+    db.flush()
+
+    cls_new = Classroom(
+        name="鳶尾",
+        grade_id=grade_mid.id,
+        head_teacher_id=emp_new.id,
+        assistant_teacher_id=0,  # 單師 → payroll 中班 1_teacher target 12
+        school_year=114,
+        semester=1,
+        is_active=True,
+    )
+    db.add(cls_new)
+    db.flush()
+    db.add(
+        ClassEnrollmentTarget(
+            year_end_cycle_id=cycle.id,
+            semester_first=True,
+            classroom_id=cls_new.id,
+            head_teacher_employee_id=emp_new.id,
+            head_count_target=9,
+        )
+    )
+    db.flush()
+    # 18 生，全期已入學、無退學 → 各月 count_enrolled_on 恆 18（早月在園 > 0）。
+    for i in range(18):
+        _mk_student(
+            db, f"鳶尾生{i}", classroom_id=cls_new.id, enrollment_date=date(2025, 7, 1)
+        )
+    db.commit()
+
+    fd.derive_festival_diff(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
+    item = _item_for(items, emp_new.id)
+
+    # 總額：早月 3 個 gated（diff 0）+ 後段 3 個 true-up（1000/月）= 3000（非 15000）。
+    assert item.amount == Decimal("3000.00")
+
+    # 年中入職的班導仍正確歸屬其班級：item_classroom_id 只看 eligible 月份，
+    # 不被早月 gated（classroom_id=None placeholder）稀釋 → 仍是 cls_new.id。
+    assert item.classroom_id == cls_new.id
+    assert item.calc_meta["is_head_teacher"] is True
+
+    months = item.calc_meta["months"]
+    assert len(months) == 6
+    # 早月（8/9/10）：未滿資格 → 應領 0、已發 0、diff 0、eligible False、enrolled None。
+    for mrow in months[:3]:
+        assert mrow["eligible"] is False
+        assert Decimal(mrow["due"]) == Decimal("0")
+        assert Decimal(mrow["paid"]) == Decimal("0")  # payroll 同樣 gate
+        assert Decimal(mrow["diff"]) == Decimal("0")  # 無 windfall
+        assert mrow["enrolled"] is None  # gate 前 short-circuit，未查 count
+    # 後段（11/12/1）：已滿資格 → 正常 per-class true-up。
+    for mrow in months[3:]:
+        assert mrow["eligible"] is True
+        assert Decimal(mrow["due"]) == Decimal("4000.00")  # 2000×18/9
+        assert Decimal(mrow["paid"]) == Decimal("3000.00")  # round(2000×18/12)
+        assert Decimal(mrow["diff"]) == Decimal("1000.00")
+        assert mrow["enrolled"] == 18
+        assert mrow["target"] == 9
