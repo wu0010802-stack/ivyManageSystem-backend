@@ -64,6 +64,7 @@ from utils.permissions import (
     get_role_default_permissions,
     has_permission,
     resolve_user_permissions,
+    validate_permission_names,
     ROLE_LABELS,
     WILDCARD,
 )
@@ -1409,6 +1410,12 @@ def create_user(
             payload_role=data.role,
             payload_permission_names=data.permission_names,
         )
+        # RA-HIGH-1b：驗證 permission_names code/scope 格式（非 scope-aware code 不可
+        # 帶 scope 後綴、scope 值須合法、code 須存在）。早於密碼強度檢查確保回 422。
+        if data.permission_names is not None:
+            bad = validate_permission_names(data.permission_names)
+            if bad:
+                raise HTTPException(status_code=422, detail=f"非法權限項：{bad}")
         if session.query(User).filter(User.username == data.username).first():
             raise HTTPException(status_code=400, detail="帳號已存在")
 
@@ -1546,6 +1553,11 @@ def update_user(
             payload_role=data.role,
             payload_permission_names=data.permission_names,
         )
+        # RA-HIGH-1b：驗證 permission_names code/scope 格式（同 create_user）。
+        if data.permission_names is not None:
+            bad = validate_permission_names(data.permission_names)
+            if bad:
+                raise HTTPException(status_code=422, detail=f"非法權限項：{bad}")
 
         # 記錄舊值，用於審計摘要
         old_role = user.role

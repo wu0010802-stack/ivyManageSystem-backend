@@ -652,6 +652,30 @@ def has_permission(
     return False
 
 
+def validate_permission_names(names: List[str]) -> List[str]:
+    """驗證 permission_names 每筆格式合法（RA-HIGH-1b）。
+
+    規則：
+        - wildcard '*' 視為合法（admin 授全權）
+        - base code 必須是合法 Permission（在 Permission.__members__ 中）
+        - 帶 scope 後綴（'CODE:scope'）者：base 必須在 SCOPE_AWARE_CODES，
+          且 scope 值 ∈ {own_class, all}
+    回傳非法項清單（空 list = 全部合法）；caller 收到非空即可 raise 422。
+    """
+    invalid: List[str] = []
+    for n in names:
+        if n == WILDCARD:
+            continue
+        base, sep, scope = n.partition(":")
+        if base not in Permission.__members__:
+            invalid.append(n)
+            continue
+        if sep:  # 帶 ':' 後綴
+            if base not in SCOPE_AWARE_CODES or scope not in ("own_class", "all"):
+                invalid.append(n)
+    return invalid
+
+
 def resolve_user_permissions(user) -> List[str]:
     """從 User 物件取出最終權限清單。
 
