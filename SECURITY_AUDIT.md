@@ -443,7 +443,7 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 
 新攻擊面的**機密性 access control 體質仍紮實**：標準 OWASP 輕掃（L7）0 個 High/Medium 真陽性；IDOR 五威脅模型在家長端逐端點追 call chain 皆有 student scope 綁定；薪資金流計算正確性與授權無 P0（核心加解密、補充保費、考核年終、進位、proration、N+1、portal 自助薪資 IDOR 全過）；前後端 PII denylist 與權限字串集合無單側漂移。
 
-本輪 finding 集中在三條主軸：(1) **權限 scope 設計 footgun**（非 scope-aware 權限授 `:own_class` 被當全域放行，已動態重現）；(2) **個資法合規控制的強制力落差**（consent 完全 fail-open、DSR 無決議端點故 opt-out/刪除/更正永不執行、醫療 reason-gate 對批量讀取路徑形同虛設、多項醫療級欄位仍明文、稽核表 FK 用 CASCADE 會在硬刪時連坐抹除）；(3) **限流 fail-open / 可繞過**（DB 失敗時 auth 限流歸零且 in-process backstop 是死碼；`TRUSTED_PROXY_IPS="*"` 使 per-IP 限流可能被偽造 XFF 繞過）。多數為「特權內部人誤用」或「合規完整性」性質，**非未認證外部可直接利用**；嚴重度上限為 High（條件性）。
+本輪 finding 集中在三條主軸：(1) **權限 scope 設計 footgun**（非 scope-aware 權限授 `:own_class` 被當全域放行，已動態重現）；(2) **個資法合規控制的強制力落差**（consent 完全 fail-open、DSR 無決議端點故 opt-out/刪除/更正永不執行、醫療 reason-gate 對批量讀取路徑形同虛設、多項醫療級欄位仍明文、稽核表 FK 用 CASCADE 會在硬刪時連坐抹除）；(3) **限流 fail-open / 可繞過**（DB 失敗時 auth 限流歸零且 in-process backstop 是死碼；`TRUSTED_PROXY_IPS="*"` 使 per-IP 限流可能被偽造 XFF 繞過）。多數為「特權內部人誤用」或「合規完整性」性質，**非未認證外部可直接利用**；其中 RA-HIGH-3（園長可竄改全園家長 PII）為**預設角色即可觸發、非條件性**，是本輪最該優先處理者。
 
 > **prod 驗證限制**：supabase prod MCP 本輪不可用（`Resource has been removed`），數項需 prod 資料/環境佐證的判定（scope grant 實際分布、醫療欄位 at-rest 是否真加密、Zeabur edge 的 XFF 行為、prod `COOKIE_SAMESITE`/`TRUSTED_PROXY_IPS` 值）標記為 **unverified-prod**，列於文末待 user 補驗。
 
@@ -467,14 +467,16 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 - **驗證狀態**：confirmed-程式路徑（Python 實測解析行為）；**prod 曝險 unverified-prod**（需 ops 佐證 edge 行為 + `TRUSTED_PROXY_IPS` 實際值）
 - **建議修法**：prod 明設 `TRUSTED_PROXY_IPS` 為實際 edge IP/網段（勿留 `"*"`）；`get_client_ip` 改信任「最右側第 N 跳」而非由右掃第一個非信任值。配合 RA-MED-2 一併處理 auth 限流韌性。
 
-### 🟠 RA-MED-1：`GUARDIANS_WRITE` 寫入端點跳過 `assert_student_access`（讀有寫沒有）
+### 🔴 RA-HIGH-3：園長（principal）可竄改全園任一學生的家長 PII（GUARDIANS_WRITE 寫入端點漏 scope 守衛）
 
-- **位置**：`api/students.py`（create_guardian:1445 / update:1518 / delete:1557）；對照 GUARDIANS_READ:1404 有做 `assert_student_access`
-- **描述**：三個改家長 PII 的端點只查 bare `GUARDIANS_WRITE`，**完全不做 per-student 存取守衛**。且 `GUARDIANS_WRITE` 不在 scope-aware 集合（與 RA-HIGH-1 相同根因的另一面）。
-- **攻擊情境**：任一持 `GUARDIANS_WRITE` 的非 unrestricted 帳號可對**全園任一學生**改家長電話 / 緊急聯絡人 / email。
-- **嚴重度**：Medium
-- **驗證狀態**：confirmed-程式路徑（逐檔讀端點 body，READ 有守衛 WRITE 無）
-- **建議修法**：三個寫入端點補 `assert_student_access`；並評估把 `GUARDIANS_*` 納入 scope-aware 集合。
+> **驗證後自 Medium 升級**（2026-06-02，advisor catch）：原判「需 scoped grant 才越權」前提錯誤——`principal` 並非 unrestricted 角色，卻在預設模板就持有 `GUARDIANS_WRITE` → 開箱即用提權，無需任何 misconfig。
+
+- **位置**：`api/students.py`（`create_guardian`:1438 / `update_guardian`:1481 / `delete_guardian`:1534）；對照 READ 端點 `assert_student_access`（:1404）有做、WRITE 三端點皆無
+- **描述**：三個改家長 PII 的端點只掛 `require_staff_permission(GUARDIANS_WRITE)`，**完全不做 per-student 存取守衛**。`utils/portfolio_access.is_unrestricted` 的 `_UNRESTRICTED_ROLES` 僅 `{admin, hr, supervisor}`，**`principal` 不在內**（實測），但 `ROLE_TEMPLATES["principal"]` 含 `GUARDIANS_WRITE`（實測）。故園長 READ 家長受 `accessible_classroom_ids` 班級 scope 限制（只能看自己帶的班），WRITE/DELETE 卻無限制。同 codebase 的 `require_unrestricted_role` docstring 明訂「改家長電話只限 admin/hr/supervisor」，此三端點正好繞過該政策。
+- **攻擊情境**：園長帳號（預設角色）只能讀自己班級的家長，卻可新增/竄改/刪除**全園任一學生**的家長電話 / 緊急聯絡人 / email。同理，若 RA-HIGH-1 被觸發（teacher 被授 `GUARDIANS_WRITE:own_class` 被當全域），此處 WRITE 無 scope 過濾使越權加倍。
+- **嚴重度**：**High**（低門檻越權 + PII 寫入 + authz 守衛缺失，預設角色即可觸發）
+- **驗證狀態**：**confirmed**（三重：實測 `ROLE_TEMPLATES["principal"]` 含 `GUARDIANS_WRITE`、實測 `is_unrestricted("principal")==False`、讀端點 body 確認 WRITE 無 `assert_student_access`）。完整 HTTP repro（principal token PATCH 他班 guardian 應 403 實得 200）列為 fix 階段回歸測試。
+- **建議修法**：三個寫入端點補 `assert_student_access`（與 READ 對齊）或 `require_unrestricted_role`（若政策是只 admin/hr/supervisor 可改家長）；並評估把 `GUARDIANS_*` 納入 scope-aware 集合。
 
 ### 🟠 RA-MED-2：DB 失敗時 auth 限流完全 fail-open，且 in-process backstop 是死碼
 
@@ -590,14 +592,17 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 
 | 優先 | Finding | 主軸 | 預估 |
 |------|---------|------|------|
-| 1 | RA-HIGH-1 + RA-MED-1（scope fail-open + GUARDIANS_WRITE 漏守衛 + user CRUD 驗證） | 權限 | 半天 |
-| 2 | RA-MED-2 + RA-HIGH-2（auth 限流韌性 + 信任代理） | 限流 | 半天 |
-| 3 | RA-MED-6（graduate 走 lifecycle）+ RA-MED-7（PII GC 連動 token） | 個資法 PII 生命週期 | 半天 |
-| 4 | RA-MED-9（稽核表 FK CASCADE → RESTRICT/SET NULL，需 prod migration） | 稽核完整性 | 半天（含 migration） |
-| 5 | RA-MED-3（醫療解密收斂 §6 稽核）+ RA-L13（special_needs denylist 兩端） | 個資法醫療 | 半天 |
-| 6 | RA-L2（role CRUD 子集檢查 + runtime 讀 DB，**兩者綁一起**） | 權限 | 半天 |
-| 7 | RA-MED-4 / RA-MED-5（consent 強制 / DSR 決議端點）— 視合規時程，工程較大 | 個資法合規 | 1-2 天 |
-| 8 | RA-MED-8 / RA-MED-10 / RA-L 其餘 | 強化 | 視項目 |
+| 1 | **RA-HIGH-3**（園長越權：GUARDIANS_WRITE 三端點補 `assert_student_access`/`require_unrestricted_role`）— 預設角色即可觸發，最優先 | 權限 | 1-2 小時 |
+| 2 | **RA-HIGH-1**（`has_permission` 對非 scope-aware code fail-closed + `POST/PUT /api/auth/users` 驗證 code/scope + **前端 `auth.ts:189` 同步**，見下方跨端註） | 權限 | 半天 |
+| 3 | RA-MED-2 + RA-HIGH-2（auth 限流韌性 fail-closed + 設 `TRUSTED_PROXY_IPS`） | 限流 | 半天 |
+| 4 | RA-MED-6（graduate 走 lifecycle）+ RA-MED-7（PII GC 連動 token 撤銷） | 個資法 PII 生命週期 | 半天 |
+| 5 | RA-MED-9（稽核表 FK CASCADE → RESTRICT/SET NULL，需 prod migration） | 稽核完整性 | 半天（含 migration） |
+| 6 | RA-MED-3（醫療解密收斂 §6 稽核）+ RA-L13（special_needs denylist 兩端） | 個資法醫療 | 半天 |
+| 7 | RA-L2（role CRUD 子集檢查 + runtime 讀 DB，**兩者必須綁一起修**，否則修後者接成 High 提權） | 權限 | 半天 |
+| 8 | RA-MED-4 / RA-MED-5（consent 強制 / DSR 決議端點）— 視合規時程，工程較大 | 個資法合規 | 1-2 天 |
+| 9 | RA-MED-8 / RA-MED-10 / RA-L 其餘 | 強化 | 視項目 |
+
+> **跨端註（RA-HIGH-1 fix 必讀）**：前端 `src/utils/auth.ts:189` 的 `hasPermission` 目前與後端 `has_permission` 同樣用 `startsWith(name+":")`，故「今日無漂移」。一旦後端改為「非 scope-aware code 的 `:own_class` fail-closed」，前後端會**反向漂移**：使用者看得到 UI（前端說有權）卻被後端 403。修 RA-HIGH-1 時必須把「哪些 code 是 scope-aware」這份集合放在兩端共用來源或明確同步，否則拿安全 footgun 換 UX 不一致。
 
 ## 待 user 補驗（unverified-prod / 業務確認）
 
