@@ -826,6 +826,9 @@ def update_job_title(
         if not db_title:
             raise HTTPException(status_code=404, detail="Job title not found")
 
+        old_name = db_title.name
+        old_grade = db_title.bonus_grade
+
         db_title.name = title.name
         # Ensure it's active if we are updating it
         db_title.is_active = True
@@ -834,10 +837,38 @@ def update_job_title(
         # 若把 None 當「設為 NULL」會造成意外覆蓋。
         if title.bonus_grade is not None:
             db_title.bonus_grade = title.bonus_grade
+
+        # bonus_grade 真的變動 → 標記持該職稱員工未封存薪資 needs_recalc，否則 finalize
+        # 會以舊節慶獎金等級封存。引擎 grade_map = {JobTitle.name: bonus_grade}，員工以
+        # Employee.title 字串對應（engine._load_grade_map_from_db）。對稱依據：員工側
+        # bonus_grade 在 _SALARY_INPUT_FIELDS（api/employees.py）改動會標 stale。
+        grade_changed = title.bonus_grade is not None and title.bonus_grade != old_grade
+        stale_marked = 0
+        if grade_changed:
+            from models.database import Employee
+
+            affected_titles = {old_name, title.name}
+            stale_marked = (
+                session.query(SalaryRecord)
+                .filter(
+                    SalaryRecord.is_finalized != True,
+                    SalaryRecord.employee_id.in_(
+                        session.query(Employee.id).filter(
+                            Employee.is_active == True,
+                            Employee.title.in_(affected_titles),
+                        )
+                    ),
+                )
+                .update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
+            )
+
         session.commit()
         _clear_cache("titles")
         _trigger_engine_grade_reload()
-        return {"message": "Job title updated"}
+        return {
+            "message": "Job title updated",
+            "salary_records_marked_stale": stale_marked,
+        }
     except HTTPException:
         raise
     except Exception as e:
