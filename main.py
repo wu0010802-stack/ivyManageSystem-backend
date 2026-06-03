@@ -917,9 +917,6 @@ app.include_router(announcements_router)
 app.include_router(approvals_router)
 app.include_router(notifications_router)
 app.include_router(reports_router)
-from api.analytics import router as analytics_router
-
-app.include_router(analytics_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
 app.include_router(internal_metrics_router)
