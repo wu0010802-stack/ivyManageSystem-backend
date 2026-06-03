@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 from sqlalchemy.orm import joinedload
 
 from models.database import Employee, VendorPayment, get_session
@@ -30,6 +30,7 @@ from schemas.vendor_payments import (
     VendorPaymentAttachmentMetaOut,
     VendorPaymentListOut,
     VendorPaymentOut,
+    VendorPaymentSummaryOut,
 )
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
@@ -260,6 +261,67 @@ def list_vendor_payments(
         session.close()
 
 
+@router.get("/vendor-payments/summary", response_model=VendorPaymentSummaryOut)
+def vendor_payments_summary(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    vendor_name: Optional[str] = Query(None, max_length=120),
+    payment_method: Optional[
+        Literal["cash", "bank_transfer", "check", "linepay", "other"]
+    ] = Query(None),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.VENDOR_PAYMENT_READ)
+    ),
+):
+    """區間彙總（跨狀態）：供前端 KPI 卡。
+
+    range 篩選（日期 / 廠商 / 收付方式）與列表一致，但**不吃 status**——
+    一律回全狀態並拆 pending / signed，讓「本期總額 / 待簽收 / 已簽收」
+    三張卡同時有意義。sum 走 SQL group_by 聚合，不受列表分頁限制、無 N+1。
+
+    NOTE: 本路由必須宣告在 ``/vendor-payments/{payment_id}`` 之前，否則
+    "summary" 會被當成 payment_id 解析（422）。
+    """
+    session = get_session()
+    try:
+        filters = []
+        if start_date:
+            filters.append(VendorPayment.payment_date >= start_date)
+        if end_date:
+            filters.append(VendorPayment.payment_date <= end_date)
+        if vendor_name:
+            filters.append(VendorPayment.vendor_name.ilike(f"%{vendor_name.strip()}%"))
+        if payment_method:
+            filters.append(VendorPayment.payment_method == payment_method)
+
+        q = session.query(
+            VendorPayment.status,
+            func.count(VendorPayment.id),
+            func.coalesce(func.sum(VendorPayment.amount), 0),
+        )
+        if filters:
+            q = q.filter(and_(*filters))
+        rows = q.group_by(VendorPayment.status).all()
+
+        by_status = {status: (int(cnt), float(amt)) for status, cnt, amt in rows}
+        pending_count, pending_amount = by_status.get("pending", (0, 0.0))
+        signed_count, signed_amount = by_status.get("signed", (0, 0.0))
+        return {
+            "total_count": pending_count + signed_count,
+            "total_amount": pending_amount + signed_amount,
+            "pending_count": pending_count,
+            "pending_amount": pending_amount,
+            "signed_count": signed_count,
+            "signed_amount": signed_amount,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="彙總查詢失敗")
+    finally:
+        session.close()
+
+
 @router.get("/vendor-payments/{payment_id}", response_model=VendorPaymentOut)
 def get_vendor_payment(
     payment_id: int,
@@ -443,7 +505,11 @@ def get_signature_image(
         session.close()
 
 
-@router.post("/vendor-payments/{payment_id}/attachments", status_code=201, response_model=VendorPaymentAttachmentMetaOut)
+@router.post(
+    "/vendor-payments/{payment_id}/attachments",
+    status_code=201,
+    response_model=VendorPaymentAttachmentMetaOut,
+)
 async def upload_attachment(
     payment_id: int,
     request: Request,

@@ -91,3 +91,23 @@ class VendorPaymentListOut(IvyBaseModel):
     total: int
     page: int
     page_size: int
+
+
+# ============ GET /vendor-payments/summary ============
+
+
+class VendorPaymentSummaryOut(IvyBaseModel):
+    """GET /vendor-payments/summary 區間彙總（供前端 KPI 卡使用）。
+
+    依與列表相同的 range 篩選（start_date / end_date / vendor_name /
+    payment_method）彙總，但**不**受 status 篩選影響——一律回全狀態並拆
+    pending / signed，讓 KPI 卡同時呈現「本期總額 / 待簽收 / 已簽收」。
+    跨狀態 sum 走 SQL 聚合（非 N+1），不受列表分頁限制。
+    """
+
+    total_count: int
+    total_amount: float  # pii-allow: 廠商付款金額彙總（行政帳務必看）
+    pending_count: int
+    pending_amount: float  # pii-allow: 同上
+    signed_count: int
+    signed_amount: float  # pii-allow: 同上
