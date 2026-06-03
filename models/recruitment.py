@@ -16,6 +16,7 @@ from sqlalchemy import (
     Float,
     JSON,
     ForeignKey,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -332,8 +333,8 @@ class GradeIntakeTarget(Base):
         Integer, ForeignKey("class_grades.id", ondelete="CASCADE"), nullable=False
     )
     school_year = Column(Integer, nullable=False)  # 民國學年
-    semester = Column(Integer, nullable=False, default=1)
-    target_seats = Column(Integer, nullable=False, default=0)
+    semester = Column(Integer, nullable=False, default=1, server_default=text("1"))
+    target_seats = Column(Integer, nullable=False, default=0, server_default=text("0"))
     created_at = Column(DateTime, default=now_taipei_naive)
     updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
