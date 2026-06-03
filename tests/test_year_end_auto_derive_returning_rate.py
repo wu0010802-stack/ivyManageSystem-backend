@@ -520,3 +520,76 @@ class TestSchoolWideReturningRate:
 
         # 80/160 = 0.500（退學 NULL 不阻斷、不計分子）
         assert school_wide_returning_rate(session, cycle) == Decimal("0.500")
+
+    def test_school_wide_rate_none_when_zero_enrolled(self, session, cycle):
+        """全校基準日 0 在籍（org target>0、無任何在籍學生）→ school_wide_returning_rate 回 None。
+
+        P2-1：total==0 時現況會 0/target → 0.000；修後應回 None（與其他 None-safe 路徑一致，
+        確保 B7 畢業班老師消費此 helper 時能正確 fallback 而非誤拿 0.000）。
+        """
+        # 有 OrgYearSettings（target>0）但基準日全校零在籍
+        _make_org(session, cycle, enrollment_target=200)
+        # 加一名在基準日前已退學的學生（不在籍）
+        c = _make_classroom(session, "全退班G")
+        _make_student(
+            session,
+            classroom_id=c.id,
+            enrollment_school_year=113,
+            withdrawal_date=date(2025, 10, 1),
+            lifecycle_status=LIFECYCLE_WITHDRAWN,
+        )
+        session.commit()
+
+        from services.year_end.auto_derive.returning_rate import (
+            school_wide_returning_rate,
+        )
+
+        assert school_wide_returning_rate(session, cycle) is None
+
+
+# ============ Test: 零在籍班保留手填 ============
+
+
+class TestZeroEnrolled:
+    def test_zero_enrolled_class_keeps_manual_rate(self, session, cycle):
+        """P1-1：班在基準日零在籍（head_count_target>0）→ fallback_classes==1，手填值保留。
+
+        現況：total=0, null_count=0 → 不觸發 null_count>0 守衛 → 落入完整班覆寫分支
+        寫 0/target=0.000，把合法手填清成 0（少發績效）。
+        修後：total<=0 應在 null_count 守衛之前觸發 fallback（保留既有手填，不寫 0.000）。
+        """
+        c = _make_classroom(session, "空班H")
+        # 既有手填 0.950（模擬 Phase1 HR 手填）
+        _make_target(
+            session,
+            cycle,
+            c.id,
+            head_count_target=24,
+            returning_student_rate=Decimal("0.950"),
+        )
+        # 基準日全班零在籍（例如開學前或所有學生均已提前退學）
+        _make_student(
+            session,
+            classroom_id=c.id,
+            enrollment_school_year=113,
+            withdrawal_date=date(2025, 10, 1),  # 基準日 2026-01-15 前已退
+            lifecycle_status=LIFECYCLE_WITHDRAWN,
+        )
+        session.commit()
+
+        from services.year_end.auto_derive.returning_rate import (
+            derive_returning_rate,
+        )
+
+        report = derive_returning_rate(session, cycle)
+        session.commit()
+
+        tgt = session.query(ClassEnrollmentTarget).filter_by(classroom_id=c.id).one()
+        # 手填值必須保留（不被寫成 0.000）
+        assert tgt.returning_student_rate == Decimal(
+            "0.950"
+        ), f"手填值被覆蓋！got {tgt.returning_student_rate!r}，應保留 0.950"
+        assert (
+            report.fallback_classes == 1
+        ), f"fallback_classes={report.fallback_classes}，應==1"
+        assert report.written == 0, f"written={report.written}，應==0（不應寫入空班）"

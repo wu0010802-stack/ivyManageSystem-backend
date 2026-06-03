@@ -162,6 +162,17 @@ def derive_returning_rate(db: Session, cycle: YearEndCycle) -> ReturningRateRepo
             db, tgt.classroom_id, basis_date, academic_year
         )
 
+        # graceful fallback（優先）：基準日 0 在籍（時序假象，如開學前快照或全班已退）→
+        # 不寫 0.000 覆蓋手填；保留既有值，記 fallback。
+        if total <= 0:
+            report.fallback_classes += 1
+            report.warnings.append(
+                f"班 classroom_id={tgt.classroom_id} "
+                f"(semester_first={tgt.semester_first}) 基準日 0 在籍（時序假象），"
+                f"跳過（保留既有值）"
+            )
+            continue
+
         # graceful fallback：在籍集有任一 NULL → 不寫半套，保留既有手填。
         if null_count > 0:
             report.fallback_classes += 1
@@ -224,14 +235,20 @@ def school_wide_returning_rate(db: Session, cycle: YearEndCycle) -> Optional[Dec
 
     row = db.execute(
         select(
+            func.count(Student.id),
             func.sum(func.cast(Student.enrollment_school_year.is_(None), Integer)),
             func.sum(
                 func.cast(Student.enrollment_school_year < academic_year, Integer)
             ),
         ).where(_enrolled_on_filter(basis_date))
     ).one()
-    null_count = int(row[0] or 0)
-    old_count = int(row[1] or 0)
+    total = int(row[0] or 0)
+    null_count = int(row[1] or 0)
+    old_count = int(row[2] or 0)
+
+    # 全校基準日 0 在籍（時序假象）→ 回 None（與 None-safe 路徑一致，B7 fallback 正確）。
+    if total <= 0:
+        return None
 
     if null_count > 0:
         return None
