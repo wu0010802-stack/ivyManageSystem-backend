@@ -386,6 +386,9 @@ class DashboardQueryService:
             return cached
         action_items = []
         reminders = []
+        term_reminder = build_term_turnover_reminder()
+        if term_reminder is not None:
+            reminders.append(term_reminder)
 
         if has_permission(user_permissions, Permission.APPROVALS):
             approval_summary = self.build_approval_summary(session)
@@ -497,3 +500,30 @@ class DashboardQueryService:
 
 
 dashboard_query_service = DashboardQueryService()
+
+
+def build_term_turnover_reminder():
+    """學期 start_date 起 7 天內顯示「已自動切換」提醒；純日期、無狀態、自動消失。"""
+    from utils.academic import _resolve_by_date, term_bounds
+
+    today = today_taipei()
+    sy, sem = _resolve_by_date(today)
+    start, _ = term_bounds(sy, sem)
+    delta = (today - start).days
+    if 0 <= delta <= 7:
+        label = "上學期" if sem == 1 else "下學期"
+        return {
+            "type": "academic_term_turnover",
+            "title": f"本學期已自動切換為 {sy} 學年{label}",
+            "route": "/",
+            "priority": "low",
+            "items": [
+                {
+                    "id": f"term-{sy}-{sem}",
+                    "label": "已完成班級延續與假別額度結轉",
+                    "date": start.isoformat(),
+                    "meta": f"{sy} 學年{label}",
+                }
+            ],
+        }
+    return None
