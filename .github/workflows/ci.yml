@@ -211,6 +211,14 @@ jobs:
         working-directory: ivy-frontend
         run: npm run gen:api:check
 
+      # 跨 repo 雙寫常數（基本工資/退費門檻/才藝獎金）單側漂移守衛的「後端→前端」方向。
+      # 後端 PR 改 shared constant 時，此步拉前端 main 比對即抓到單側漂移。
+      # 與前端 ci.yml 的同名步驟對稱，共用 ivy-frontend/scripts/check-shared-constants.mjs。
+      # 注意：依賴前端 main 已有 check:shared-constants script（前端分支須先 merge）。
+      - name: Check cross-repo shared constants
+        working-directory: ivy-frontend
+        run: npm run check:shared-constants
+
   pii-denylist-parity:
     name: PII Denylist Parity Gate (FE/BE)
     runs-on: ubuntu-latest

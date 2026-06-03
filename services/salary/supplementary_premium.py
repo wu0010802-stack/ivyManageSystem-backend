@@ -41,6 +41,11 @@ BONUS_FIELDS_FOR_YTD = (
     "supervisor_dividend",
 )
 
+# 補充保費費率與門檻倍數（健保法 §31 第 1 項第 1 款）
+# rate 可被 InsuranceService.supplementary_health_rate 覆寫；此為 fallback 預設。
+DEFAULT_SUPPLEMENTARY_PREMIUM_RATE = 0.0211  # 2.11%（115 年）
+SUPPLEMENTARY_PREMIUM_THRESHOLD_MULTIPLIER = 4  # 逾「當月投保金額 × 4」部分課徵
+
 
 def query_ytd_bonus_before(
     session: Session, employee_id: int, year: int, month: int
@@ -97,7 +102,7 @@ def calculate_bonus_supplementary_fee(
     *,
     breakdown_bonus_total: float,
     health_insured_salary: float,
-    rate: float = 0.0211,
+    rate: float = DEFAULT_SUPPLEMENTARY_PREMIUM_RATE,
     ytd_before: float | None = None,
 ) -> float:
     """計算本月應扣的「獎金補充保費」。
@@ -134,7 +139,9 @@ def calculate_bonus_supplementary_fee(
     if current_month_total <= 0:
         return 0
 
-    threshold = 4.0 * float(health_insured_salary)
+    threshold = SUPPLEMENTARY_PREMIUM_THRESHOLD_MULTIPLIER * float(
+        health_insured_salary
+    )
     ytd = (
         ytd_before
         if ytd_before is not None
@@ -185,7 +192,12 @@ def apply_bonus_supplementary_to_breakdown(
     設值，本函式以 += 累計，兩條路徑共存（hourly 員工同時拿獎金時兩者都會扣）。
     """
     rate = float(
-        getattr(insurance_service, "supplementary_health_rate", 0.0211) or 0.0211
+        getattr(
+            insurance_service,
+            "supplementary_health_rate",
+            DEFAULT_SUPPLEMENTARY_PREMIUM_RATE,
+        )
+        or DEFAULT_SUPPLEMENTARY_PREMIUM_RATE
     )
     health_insured_salary = _resolve_health_insured_salary(emp_dict, insurance_service)
     if health_insured_salary <= 0 or rate <= 0:
