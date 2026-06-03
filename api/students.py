@@ -990,6 +990,20 @@ async def delete_student(
         student.is_active = False
         student.status = "已刪除"
 
+        # 同步 lifecycle_status + terminal_entered_at（CLAUDE.md §9）：軟刪除等同
+        # 終態離校（withdrawn），不可繞過 set_lifecycle_status，否則家長 PII 365 天
+        # GC（pii_retention_scheduler）永不觸發。audit=False：DELETE 已由 AuditMiddleware 記錄。
+        from utils.student_lifecycle import set_lifecycle_status
+        from models.classroom import LIFECYCLE_WITHDRAWN
+
+        set_lifecycle_status(
+            session,
+            student,
+            LIFECYCLE_WITHDRAWN,
+            actor_user_id=current_user.get("user_id"),
+            audit=False,
+        )
+
         # 同步：刪除學生時軟刪該生當學期才藝報名
         from api.activity._shared import sync_registrations_on_student_deactivate
 

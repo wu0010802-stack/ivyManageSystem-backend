@@ -143,3 +143,32 @@ def test_graduate_endpoint_syncs_lifecycle_and_terminal_timestamp(
         assert (
             st.terminal_entered_at is not None
         ), "graduate 後 terminal_entered_at 應被設定，否則 PII GC 永不觸發"
+
+
+def test_delete_endpoint_syncs_lifecycle_and_terminal_timestamp(students_client):
+    """軟刪除學生同樣須同步終態 lifecycle_status + terminal_entered_at。
+
+    delete_student 設 status='已刪除' / is_active=False 但不動 lifecycle_status，
+    與 graduate 同類繞過 → PII GC 永不觸發。軟刪語意對應終態 withdrawn。
+    """
+    client, sf = students_client
+    with sf() as s:
+        _create_admin(s)
+        student = _seed_student(s)
+        s.commit()
+        sid = student.id
+
+    assert _login(client).status_code == 200
+    res = client.delete(f"/api/students/{sid}")
+    assert res.status_code == 200, res.text
+
+    with sf() as s:
+        st = s.query(Student).filter(Student.id == sid).first()
+        assert st.status == "已刪除"
+        assert st.is_active is False
+        assert (
+            st.lifecycle_status == LIFECYCLE_WITHDRAWN
+        ), f"軟刪後 lifecycle_status 應為 withdrawn，實得 {st.lifecycle_status}"
+        assert (
+            st.terminal_entered_at is not None
+        ), "軟刪後 terminal_entered_at 應被設定，否則 PII GC 永不觸發"
