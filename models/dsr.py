@@ -50,10 +50,11 @@ class DsrRequest(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(
         Integer,
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        # SET NULL：硬刪 user 時保留 DSR 申請史稽核（RA-MED-9）
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
-        comment="申請人 user_id（家長或員工）",
+        comment="申請人 user_id（家長或員工；硬刪後 NULL 保留稽核）",
     )
     request_type = Column(
         String(20), nullable=False, comment="delete / correct / opt_out"
