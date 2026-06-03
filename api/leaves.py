@@ -175,9 +175,15 @@ def _consume_compensatory_grants_fifo(session, employee_id: int, hours: float) -
             OvertimeCompLeaveGrant.employee_id == employee_id,
             OvertimeCompLeaveGrant.status == "active",
         )
-        .order_by(OvertimeCompLeaveGrant.expires_at.asc())
+        # 鎖序統一用 id（與 expire_comp_leave_grants 一致），避免同員工 grant 在
+        # consume 與 expiry 反序搶鎖造成 deadlock；FIFO 消耗順序改在 Python 端依
+        # expires_at 排序，語意不變。row lock 序列化跨月併發核准（approve 的 advisory
+        # 鎖是薪資『月』粒度互不互斥），無此鎖會 lost-update 致超額核准 + ledger 漏記。
+        .order_by(OvertimeCompLeaveGrant.id)
+        .with_for_update()
         .all()
     )
+    grants.sort(key=lambda g: (g.expires_at, g.id))
     for g in grants:
         if remaining <= 0:
             break
@@ -206,9 +212,13 @@ def _release_compensatory_grants_fifo(session, employee_id: int, hours: float) -
             OvertimeCompLeaveGrant.status == "active",
             OvertimeCompLeaveGrant.consumed_hours > 0,
         )
-        .order_by(OvertimeCompLeaveGrant.expires_at.asc())
+        # 鎖序統一用 id（與 consume/expiry 一致）避免反序搶鎖 deadlock；FIFO 退回順序
+        # 改在 Python 端依 expires_at 排序。row lock 序列化避免 release 的 lost-update。
+        .order_by(OvertimeCompLeaveGrant.id)
+        .with_for_update()
         .all()
     )
+    grants.sort(key=lambda g: (g.expires_at, g.id))
     for g in grants:
         if remaining <= 0:
             break
@@ -1139,6 +1149,21 @@ def delete_leave(
         )
         if not leave:
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
+
+        # ── 自我刪除防護（與 approve_leave 自我核准守衛對齊）──────────────────────
+        # 防止持 LEAVES_WRITE 的 supervisor/hr/principal 自刪本人已核准的扣薪假單、
+        # 觸發薪資重算撤銷扣款＝替自己加薪，繞過 approve 的自我核准守衛。
+        if is_self_approval(current_user, leave.employee_id):
+            raise HTTPException(status_code=403, detail="不可刪除您本人的請假單")
+
+        # ── 角色資格檢查（與 approve_leave 對齊）：無權審核他人此假別者不可刪他人假單 ──
+        assert_approver_eligible(
+            session,
+            doc_type="leave",
+            doc_label="請假",
+            submitter_employee_id=leave.employee_id,
+            approver_role=current_user.get("role", ""),
+        )
 
         # ── 封存保護：已核准假單在封存月份不得刪除 ──────────────────────────
         was_approved = leave.status == ApprovalStatus.APPROVED.value

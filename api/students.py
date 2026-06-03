@@ -1022,6 +1022,20 @@ async def delete_student(
         student.is_active = False
         student.status = "已刪除"
 
+        # 同步 lifecycle_status + terminal_entered_at（CLAUDE.md §9）：軟刪除等同
+        # 終態離校（withdrawn），不可繞過 set_lifecycle_status，否則家長 PII 365 天
+        # GC（pii_retention_scheduler）永不觸發。audit=False：DELETE 已由 AuditMiddleware 記錄。
+        from utils.student_lifecycle import set_lifecycle_status
+        from models.classroom import LIFECYCLE_WITHDRAWN
+
+        set_lifecycle_status(
+            session,
+            student,
+            LIFECYCLE_WITHDRAWN,
+            actor_user_id=current_user.get("user_id"),
+            audit=False,
+        )
+
         # 同步：刪除學生時軟刪該生當學期才藝報名
         from api.activity._shared import sync_registrations_on_student_deactivate
 
@@ -1372,9 +1386,14 @@ async def transition_student_lifecycle(
     session = get_session()
     dismissal_broadcasts: list[dict] = []
     try:
-        student = session.query(Student).filter(Student.id == student_id).first()
-        if student is None:
-            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        # 班級 scope 守衛（STUDENTS_LIFECYCLE_WRITE 為 scope-aware perm，own_class/all）：
+        # class-scoped 角色不可對他班學生做破壞性生命週期轉移。
+        student = assert_student_access(
+            session,
+            current_user,
+            student_id,
+            code=Permission.STUDENTS_LIFECYCLE_WRITE.value,
+        )
 
         terminal_like = {"withdrawn", "transferred", "graduated"}
         if item.to_status in terminal_like:
@@ -1421,6 +1440,8 @@ async def transition_student_lifecycle(
         )
         response = {
             "message": f"已轉為 {result.to_status}",
+            # response_model=MutationResultOut 需 id；缺此欄會 ResponseValidationError 500
+            "id": result.student_id,
             "student_id": result.student_id,
             "from_status": result.from_status,
             "to_status": result.to_status,

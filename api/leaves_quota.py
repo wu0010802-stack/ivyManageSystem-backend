@@ -20,6 +20,7 @@ from sqlalchemy import func, or_
 from models.approval import ApprovalStatus
 from models.database import get_session, Employee, LeaveRecord, LeaveQuota
 from utils.auth import require_staff_permission
+from utils.approval_helpers import is_self_approval
 from utils.constants import LEAVE_TYPE_LABELS
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.permissions import Permission
@@ -90,7 +91,10 @@ def _get_sick_committed_hours(
         LeaveRecord.employee_id == employee_id,
         LeaveRecord.leave_type == "sick",
         LeaveRecord.is_hospitalized == is_hospitalized,
-        or_(LeaveRecord.status == ApprovalStatus.APPROVED.value, LeaveRecord.status == ApprovalStatus.PENDING.value),
+        or_(
+            LeaveRecord.status == ApprovalStatus.APPROVED.value,
+            LeaveRecord.status == ApprovalStatus.PENDING.value,
+        ),
         LeaveRecord.start_date >= date(year, 1, 1),
         LeaveRecord.start_date < date(year + 1, 1, 1),
     )
@@ -220,7 +224,7 @@ def _resolve_quota_row(
     )
     if row:
         return row
-    legacy_year = (target_date or today_taipei()).year  
+    legacy_year = (target_date or today_taipei()).year
     return (
         session.query(LeaveQuota)
         .filter(
@@ -592,7 +596,7 @@ def get_leave_quotas(
 ):
     """查詢請假配額，含動態計算已使用、待審、剩餘時數"""
     if year is None:
-        year = today_taipei().year  
+        year = today_taipei().year
     session = get_session()
     try:
         q = session.query(LeaveQuota).filter(LeaveQuota.year == year)
@@ -686,8 +690,8 @@ def init_leave_quotas(
     - 已存在的配額只更新 total_hours 與 note，不刪除手動調整記錄
     """
     if year is None:
-        year = today_taipei().year  
-    current_year = today_taipei().year  
+        year = today_taipei().year
+    current_year = today_taipei().year
     if year < current_year:
         raise HTTPException(
             status_code=400, detail="禁止重新初始化過去年份的配額，以維護稽核紀錄完整性"
@@ -837,6 +841,10 @@ def update_leave_quota(
         quota = session.query(LeaveQuota).filter(LeaveQuota.id == quota_id).first()
         if not quota:
             raise HTTPException(status_code=404, detail="配額記錄不存在")
+        # 自我守衛（職責分離）：LEAVES_WRITE 持有者不可調整本人配額，避免灌爆配額把
+        # 原本扣薪假別轉為不扣薪。比照 leaves/overtimes 的 is_self_approval idiom。
+        if is_self_approval(current_user, quota.employee_id):
+            raise HTTPException(status_code=403, detail="不可調整您本人的請假配額")
         quota.total_hours = data.total_hours
         if data.note is not None:
             quota.note = data.note

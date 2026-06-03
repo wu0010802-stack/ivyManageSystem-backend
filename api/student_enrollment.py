@@ -20,6 +20,7 @@ from models.classroom import Classroom, ClassGrade, Student
 from models.database import Employee
 from services.enrollment_roster_pdf import generate_enrollment_roster_pdf
 from utils.auth import require_staff_permission
+from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
 from utils.permissions import Permission
 from utils.portfolio_access import assert_all_scope
 from utils.academic import resolve_academic_term_filters
@@ -267,6 +268,17 @@ def get_enrollment_roster(
             .order_by(ClassGrade.sort_order, Classroom.name)
             .all()
         )
+
+        # ── 班級 scope 守衛 ─────────────────────────────────────────────
+        # class-scoped 角色（STUDENTS_READ:own_class）只看自己班，比照 get_students；
+        # admin/hr/supervisor 或持 :all 者不受限。避免跨班學生姓名冊 over-read。
+        if not is_unrestricted(current_user, code=Permission.STUDENTS_READ.value):
+            allowed = set(
+                accessible_classroom_ids(
+                    session, current_user, code=Permission.STUDENTS_READ.value
+                )
+            )
+            classroom_rows = [r for r in classroom_rows if r.classroom_id in allowed]
 
         # ── 查詢各班學生 ────────────────────────────────────────────────
         classroom_ids = [r.classroom_id for r in classroom_rows]

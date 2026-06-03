@@ -873,6 +873,11 @@ else:
         "http://127.0.0.1:3000",
     ]
 
+# 教師登入 WiFi 閘可見性：prod 未設 SCHOOL_WIFI_IPS 時 _is_school_wifi fail-open，啟動告警
+from api.auth import warn_if_school_wifi_gate_disabled
+
+warn_if_school_wifi_gate_disabled(_is_prod_env)
+
 # 注意：CORSMiddleware 的 add 已移到下方 middleware 區塊（TrustedHost 之前），
 # 使其成為 KillSwitch / CSRF / SecurityHeaders / RequestLogging / Audit 的外層
 # wrapper。否則這些 middleware 自身短路產生的 503/403/400 回應不會回流經過

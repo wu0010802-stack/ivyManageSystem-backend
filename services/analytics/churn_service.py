@@ -160,17 +160,30 @@ def detect_signal_long_on_leave(
     students = (
         session.query(Student).filter(Student.lifecycle_status == "on_leave").all()
     )
+    if not students:
+        return []
+    # 批次取所有 on_leave 學生的「休學」log（一次 IN 查詢），Python 端取每生最新一筆，
+    # 消除原本逐生 query 的 N+1。
+    student_ids = [s.id for s in students]
+    rows = (
+        session.query(StudentChangeLog)
+        .filter(
+            StudentChangeLog.student_id.in_(student_ids),
+            StudentChangeLog.event_type == "休學",
+        )
+        .order_by(
+            StudentChangeLog.student_id,
+            StudentChangeLog.event_date.desc(),
+        )
+        .all()
+    )
+    latest_by_student: dict[int, StudentChangeLog] = {}
+    for log in rows:
+        if log.student_id not in latest_by_student:  # 已 desc，每生第一筆即最新
+            latest_by_student[log.student_id] = log
     triggered = []
     for s in students:
-        last_log = (
-            session.query(StudentChangeLog)
-            .filter(
-                StudentChangeLog.student_id == s.id,
-                StudentChangeLog.event_type == "休學",
-            )
-            .order_by(StudentChangeLog.event_date.desc())
-            .first()
-        )
+        last_log = latest_by_student.get(s.id)
         if last_log is None:
             continue
         days = (today - last_log.event_date).days

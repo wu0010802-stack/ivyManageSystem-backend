@@ -25,6 +25,7 @@ from models.database import (
 from utils.audit import _extract_impersonation_from_header
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.portfolio_access import assert_student_access
 from utils.request_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,10 @@ def create_binding_code(
         )
         if guardian is None:
             raise HTTPException(status_code=404, detail="找不到監護人")
+
+        # F-025 班級 scope 守衛：以 guardian 所屬學生判定，class-scoped 角色不可
+        # 跨班為他班孩童簽發家長綁定碼（account-linkage 越權）。
+        assert_student_access(session, current_user, guardian.student_id)
 
         # S4 per-guardian active cap：避免單一 guardian 累積過多 unused active code。
         now = now_taipei_naive()
@@ -155,6 +160,9 @@ def create_device_setup_code(
         if guardian is None:
             raise HTTPException(status_code=404, detail="找不到監護人")
 
+        # F-025 班級 scope 守衛：class-scoped 角色不可跨班簽發裝置登入碼。
+        assert_student_access(session, current_user, guardian.student_id)
+
         now = now_taipei_naive()
         active_count = (
             session.query(ParentDeviceSetupCode)
@@ -233,6 +241,10 @@ def revoke_guardian_devices(
         )
         if guardian is None:
             raise HTTPException(status_code=404, detail="找不到監護人")
+
+        # F-025 班級 scope 守衛：class-scoped 角色不可跨班撤銷他班家長裝置。
+        assert_student_access(session, current_user, guardian.student_id)
+
         if guardian.user_id is None:
             return {"revoked": 0}
 

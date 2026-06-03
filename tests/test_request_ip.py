@@ -263,6 +263,24 @@ class TestGetClientIp:
         result = mod.get_client_ip(req)
         assert result == "8.8.8.8"
 
+    def test_x_real_ip_ignored_from_untrusted_peer(self, monkeypatch):
+        """X-Real-IP 來自非 trusted peer（直連攻擊者）→ 忽略並回傳真實 peer。
+
+        防：送無 XFF、帶偽造 X-Real-IP（每次不同）的請求，讓每次落不同 rate-limit
+        bucket 繞過 per-IP 限流 / 污染 audit IP。X-Real-IP 應只在 peer 為 trusted proxy
+        （nginx 設此 header）時採信。
+        """
+        monkeypatch.setenv("TRUSTED_PROXY_IPS", "10.0.0.0/8")
+        from config import reset_for_tests
+
+        reset_for_tests()
+        mod = _reload_request_ip()
+
+        # 公網 peer（非 10.0.0.0/8 trusted）+ 偽造 X-Real-IP
+        req = _make_request(x_real_ip="8.8.8.8", client_host="203.0.113.99")
+        result = mod.get_client_ip(req)
+        assert result == "203.0.113.99"  # 偽造 X-Real-IP 被忽略，用真實 peer
+
     def test_wildcard_default_ignores_xff_returns_peer(self, monkeypatch):
         """RA-HIGH-2（2026-06-02 行為變更）：TRUSTED_PROXY_IPS='*'（未明設可信代理）
         時不再信任 X-Forwarded-For，直接回直連 peer，避免偽造 XFF 繞過 per-IP 限流。

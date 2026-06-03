@@ -5,20 +5,20 @@
 修正班級經營績效低估問題。withdrawal_date > d 已精確排除「已在 d 當日或之前退學」
 的學生，不需再加 lifecycle_status == active 條件。
 
-效能備註：class_performance_rate 逐月呼叫 classroom_at_month_end resolver，
-階段 1 O(學生×月) 可接受；正確性優先。
+效能備註：class_performance_rate 逐月以 _classroom_map_at_month_end 批次解析全校
+月底班級歸屬（每月固定 2-3 條 query），避免逐生 classroom_at_month_end 的 N+1。
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from models.classroom import Student
-from services.gov_moe.monthly_calculator import classroom_at_month_end
+from models.student_transfer import StudentClassroomTransfer
 
 _Q2 = Decimal("0.01")
 
@@ -81,6 +81,49 @@ def school_achievement_rate(
     return _q2(Decimal(actual) / target_d * Decimal("100"))
 
 
+def _classroom_map_at_month_end(
+    db: Session, student_ids: list[int], snapshot_date: date
+) -> dict[int, int | None]:
+    """批次版 classroom_at_month_end：一次解析多位學生月底班級歸屬，避免逐生 N+1。
+
+    語意對齊 services.gov_moe.monthly_calculator.classroom_at_month_end：
+    取每生 transferred_at <= snapshot_date 當日最後一刻 的最近一筆轉班 to_classroom_id；
+    無轉班紀錄者 fallback 現態 Student.classroom_id。
+    """
+    if not student_ids:
+        return {}
+    cutoff = datetime.combine(snapshot_date, time.max)
+    rows = (
+        db.query(
+            StudentClassroomTransfer.student_id,
+            StudentClassroomTransfer.to_classroom_id,
+        )
+        .filter(
+            StudentClassroomTransfer.student_id.in_(student_ids),
+            StudentClassroomTransfer.transferred_at <= cutoff,
+        )
+        .order_by(
+            StudentClassroomTransfer.student_id.asc(),
+            StudentClassroomTransfer.transferred_at.desc(),
+        )
+        .all()
+    )
+    result: dict[int, int | None] = {}
+    for sid, to_cid in rows:
+        if sid not in result:  # 已 desc 排序，每生第一筆即最近一筆
+            result[sid] = to_cid
+    # 無轉班紀錄者 fallback 現態 classroom_id（一次查）
+    missing = [sid for sid in student_ids if sid not in result]
+    if missing:
+        for sid, cid in (
+            db.query(Student.id, Student.classroom_id)
+            .filter(Student.id.in_(missing))
+            .all()
+        ):
+            result[sid] = cid
+    return result
+
+
 def class_performance_rate(
     db: Session,
     classroom_id: int,
@@ -103,16 +146,19 @@ def class_performance_rate(
     total_count = 0
     for month_end in month_ends:
         # 取當月底嚴格在籍學生集合（全校）
-        candidates = (
-            db.query(Student.id).filter(_enrolled_on_filter(month_end)).all()
+        candidate_ids = [
+            sid
+            for (sid,) in db.query(Student.id)
+            .filter(_enrolled_on_filter(month_end))
+            .all()
+        ]
+        if not candidate_ids:
+            continue
+        # 批次解析各生月底班級歸屬（取代逐生 classroom_at_month_end 的 N+1）
+        month_map = _classroom_map_at_month_end(db, candidate_ids, month_end)
+        total_count += sum(
+            1 for sid in candidate_ids if month_map.get(sid) == classroom_id
         )
-        # 逐生確認月底班級歸屬
-        month_count = sum(
-            1
-            for (student_id,) in candidates
-            if classroom_at_month_end(db, student_id, month_end) == classroom_id
-        )
-        total_count += month_count
 
     avg = Decimal(total_count) / Decimal(len(month_ends))
     return _q2(avg / target_d * Decimal("100"))

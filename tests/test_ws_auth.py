@@ -25,12 +25,14 @@ _PATCH_GET_SESSION = "models.database.get_session"
 
 
 def _make_token(user_id: int = 1, token_version: int = 0, **extra) -> str:
-    return create_access_token({
-        "user_id": user_id,
-        "token_version": token_version,
-        "role": "teacher",
-        **extra,
-    })
+    return create_access_token(
+        {
+            "user_id": user_id,
+            "token_version": token_version,
+            "role": "teacher",
+            **extra,
+        }
+    )
 
 
 def _mock_user(
@@ -46,6 +48,7 @@ def _mock_user(
 
 
 # ── 正常情境 ───────────────────────────────────────────────────────────────
+
 
 class TestVerifyWsTokenValid:
     def test_valid_token_active_user_returns_payload(self):
@@ -69,6 +72,7 @@ class TestVerifyWsTokenValid:
 
 # ── token 本身無效 ────────────────────────────────────────────────────────
 
+
 class TestVerifyWsTokenInvalidJwt:
     def test_garbage_token_raises_401(self):
         with pytest.raises(HTTPException) as exc:
@@ -84,8 +88,19 @@ class TestVerifyWsTokenInvalidJwt:
             verify_ws_token(token)
         assert exc.value.status_code == 401
 
+    def test_scope_restricted_token_rejected(self):
+        """受限用途 token（scope='bind' 等）不可用於 WS 連線——對齊 get_current_user
+        的 scope 守衛（defense-in-depth）。"""
+        token = create_access_token({"scope": "bind", "line_user_id": "Uxxxxx"})
+        with patch(_PATCH_GET_SESSION) as mock_get_session:
+            with pytest.raises(HTTPException) as exc:
+                verify_ws_token(token)
+            mock_get_session.assert_not_called()  # 查 DB 前就被擋
+        assert exc.value.status_code == 401
+
 
 # ── 帳號狀態檢查 ──────────────────────────────────────────────────────────
+
 
 class TestVerifyWsTokenAccountChecks:
     def test_inactive_user_raises_401(self):
