@@ -422,7 +422,7 @@ def refresh_enrollment_rates(db: Session, cycle: YearEndCycle) -> None:
 
 
 def gather_performance_rates(
-    db: Session, cycle: YearEndCycle, emp: Any
+    db: Session, cycle: YearEndCycle, emp: Any, *, school_rates=None
 ) -> PerformanceRates:
     """讀取 STORED rates 組 PerformanceRates（百分比）。
 
@@ -432,25 +432,29 @@ def gather_performance_rates(
     - class_returning_rate_*      ← ClassEnrollmentTarget.returning_student_rate × 100
     無帶班角色（STAFF/COOK/admin/領導職）→ class_* 全 None（引擎僅以全校率平均）。
     """
-    # 全校率（兩學期）
-    org_first = db.scalar(
-        select(OrgYearSettings).where(
-            OrgYearSettings.year_end_cycle_id == cycle.id,
-            OrgYearSettings.semester_first == True,  # noqa: E712
+    # 全校達成率（兩學期）只依 cycle、與員工無關：caller（build_settlements 迴圈）以
+    # school_rates 預先查一次傳入，避免 per-employee 2N 重查；未傳則自行查（standalone）。
+    if school_rates is not None:
+        school_first, school_second = school_rates
+    else:
+        org_first = db.scalar(
+            select(OrgYearSettings).where(
+                OrgYearSettings.year_end_cycle_id == cycle.id,
+                OrgYearSettings.semester_first == True,  # noqa: E712
+            )
         )
-    )
-    org_second = db.scalar(
-        select(OrgYearSettings).where(
-            OrgYearSettings.year_end_cycle_id == cycle.id,
-            OrgYearSettings.semester_first == False,  # noqa: E712
+        org_second = db.scalar(
+            select(OrgYearSettings).where(
+                OrgYearSettings.year_end_cycle_id == cycle.id,
+                OrgYearSettings.semester_first == False,  # noqa: E712
+            )
         )
-    )
-    school_first = (
-        Decimal(str(org_first.school_achievement_rate)) if org_first else None
-    )
-    school_second = (
-        Decimal(str(org_second.school_achievement_rate)) if org_second else None
-    )
+        school_first = (
+            Decimal(str(org_first.school_achievement_rate)) if org_first else None
+        )
+        school_second = (
+            Decimal(str(org_second.school_achievement_rate)) if org_second else None
+        )
 
     class_perf_first = class_perf_second = None
     class_ret_first = class_ret_second = None
@@ -605,6 +609,24 @@ def build_settlements(
     _standards = load_position_salary_standards(db)
     # 節慶基數只依角色（非員工），且查的是全域最新 BonusConfig；memoize 避免每位員工各查一次
     _festival_cache: dict["str | None", Decimal] = {}
+    # 全校達成率（兩學期）只依 cycle、與員工無關；迴圈外查一次避免 gather_performance_rates
+    # 每位員工各查兩列 OrgYearSettings（原 2N → 2）。
+    _org_first = db.scalar(
+        select(OrgYearSettings.school_achievement_rate).where(
+            OrgYearSettings.year_end_cycle_id == cycle.id,
+            OrgYearSettings.semester_first == True,  # noqa: E712
+        )
+    )
+    _org_second = db.scalar(
+        select(OrgYearSettings.school_achievement_rate).where(
+            OrgYearSettings.year_end_cycle_id == cycle.id,
+            OrgYearSettings.semester_first == False,  # noqa: E712
+        )
+    )
+    _school_rates = (
+        Decimal(str(_org_first)) if _org_first is not None else None,
+        Decimal(str(_org_second)) if _org_second is not None else None,
+    )
 
     for emp in employees:
         existing = db.scalar(
@@ -632,7 +654,7 @@ def build_settlements(
         )
         hire_months = Decimal(str(_override)) if _override is not None else auto_months
         worked_first, worked_second = worked_semesters(emp, cycle)
-        rates = gather_performance_rates(db, cycle, emp)
+        rates = gather_performance_rates(db, cycle, emp, school_rates=_school_rates)
         org_rate = resolve_org_achievement_rate(
             rates.school_rate_first,
             rates.school_rate_second,
