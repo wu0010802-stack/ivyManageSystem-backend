@@ -974,6 +974,9 @@ app.include_router(permissions_admin_router)
 from api.dsr_admin import router as dsr_admin_router
 
 app.include_router(dsr_admin_router)
+from api.policies_admin import router as policies_admin_router
+
+app.include_router(policies_admin_router)
 app.include_router(offboarding_router, prefix="/api")
 
 from api import leave_quota_expiry as _lqe_api
