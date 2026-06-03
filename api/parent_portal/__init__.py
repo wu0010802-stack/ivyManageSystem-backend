@@ -45,16 +45,16 @@ from .data_export import router as data_export_router
 from .consent import router as consent_router
 from .dsr import router as dsr_router
 
-# 家長端 router（前綴 /api/parent，並掛 require_parent_role 統一擋線）
+# 家長端 router（前綴 /api/parent）
 parent_router = APIRouter(
     prefix="/api/parent",
     tags=["parent-portal"],
 )
 # auth 子模組需要例外：liff-login / bind 在尚無 access token 前也得通；
 # bind-additional / logout 自帶 require_parent_role dependency。
-# 因此這個 parent_router 不掛 router-level dependency；其他子模組（profile
-# / attendance / ...）在自身 endpoint 內掛 require_parent_role 即可，
-# 並一律經 _assert_student_owned 進行 IDOR 過濾。
+# 資料子模組（21 個）在 router 層掛 require_current_consent()，
+# gate 內部已含 require_parent_role()；各端點本身仍個別掛 require_parent_role
+# 以取得 current_user 注入，行為與 P2-2 前相同。
 # 豁免（不掛 consent gate）：auth（登入/綁定無 token）、consent（簽署端點本身）、
 # dsr 與 data_export（個資法查閱權，不可被 consent 擋）。
 parent_router.include_router(auth_router)

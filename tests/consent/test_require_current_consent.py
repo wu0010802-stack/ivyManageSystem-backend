@@ -7,6 +7,7 @@
 4. flag off → 不擋（即使沒簽）
 5. POST 寫端點 + DB error（mock session_scope 拋例外）→ 503（fail-closed by method）
 6. GET 讀端點 + DB error → degraded 通過（非 503/403，fail-open by method）
+7. router 層級掛載結構驗證：21 資料 router 有 gate、4 豁免 router 無 gate
 
 代表端點（router 層級掛載，method-based fail-mode）：
 - 讀端點：GET /api/parent/home/summary（GET → degraded fail-open）
@@ -358,3 +359,83 @@ def test_read_endpoint_db_error_passes_degraded(gate_client, monkeypatch):
         403,
         503,
     ), f"讀端點 DB error 應 degraded 放行（非 403/503），實際 {resp.status_code}: {resp.text}"
+
+
+# ── Case 7：router 層級掛載結構驗證（P2-2 防回歸）────────────────────────────
+
+
+def test_router_level_consent_gate_mounting_structure():
+    """驗證 __init__.py 的 include_router 呼叫結構：
+
+    - 21 個資料 router 的 include_router 帶有 dependencies（含 require_current_consent）
+    - 4 個豁免 router（auth / consent / dsr / data_export）的 include_router 不帶 dependencies
+
+    此測試為靜態 AST-free 結構掃描（grep include_router 呼叫）；
+    防止未來新增資料 router 但漏掛 gate，或誤把豁免 router 掛上 gate。
+    """
+    import pathlib
+    import re
+
+    init_path = (
+        pathlib.Path(__file__).resolve().parents[2] / "api/parent_portal/__init__.py"
+    )
+    src = init_path.read_text(encoding="utf-8")
+
+    # 找出所有 include_router 行
+    lines = [l for l in src.splitlines() if "include_router(" in l]
+
+    # 豁免 router 變數名（不應帶 dependencies）
+    exempt_vars = {"auth_router", "consent_router", "dsr_router", "data_export_router"}
+
+    # 資料 router 變數名（應帶 dependencies）
+    data_vars = {
+        "profile_router",
+        "home_router",
+        "family_router",
+        "attendance_router",
+        "announcements_router",
+        "events_router",
+        "leaves_router",
+        "fees_router",
+        "activity_router",
+        "medications_router",
+        "messages_router",
+        "notifications_router",
+        "parent_downloads_router",
+        "calendar_router",
+        "contact_book_router",
+        "timeline_router",
+        "growth_reports_router",
+        "milestones_router",
+        "measurements_router",
+        "photos_router",
+        "assistant_router",
+    }
+
+    missing_gate: list[str] = []
+    unexpected_gate: list[str] = []
+
+    for line in lines:
+        # 跳過 admin_router（非 parent_router 的 include_router）
+        if "binding_admin_router" in line:
+            continue
+
+        # 找出被 include 的 router 變數名
+        m = re.search(r"include_router\((\w+)", line)
+        if not m:
+            continue
+        var = m.group(1)
+        has_dep = "dependencies" in line
+
+        if var in data_vars and not has_dep:
+            missing_gate.append(var)
+        if var in exempt_vars and has_dep:
+            unexpected_gate.append(var)
+
+    assert not missing_gate, (
+        f"以下資料 router 未帶 dependencies（缺 consent gate）：{missing_gate}\n"
+        "新增資料 router 時必須加 dependencies=[Depends(require_current_consent())]"
+    )
+    assert (
+        not unexpected_gate
+    ), f"以下豁免 router 意外帶了 dependencies（不可被 consent gate 擋）：{unexpected_gate}"
