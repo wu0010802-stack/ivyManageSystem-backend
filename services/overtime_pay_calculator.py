@@ -55,7 +55,7 @@ def calculate_overtime_pay(
             + hourly_base * (hours - WEEKDAY_THRESHOLD_HOURS) * WEEKDAY_AFTER_2H_RATE
         )
     elif overtime_type == "weekend":
-        # 休息日：最低計 2h，前2h × 1.33，3~8h × 1.67，超8h × 2.67
+        # 休息日：最低計 2h，前2h × 1.34，3~8h × 1.67，超8h × 2.67
         billable = max(hours, RESTDAY_MIN_HOURS)
         if billable <= RESTDAY_FIRST_SEGMENT:
             return round_half_up(hourly_base * billable * RESTDAY_FIRST_2H_RATE)

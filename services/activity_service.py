@@ -59,6 +59,7 @@ from models.activity import (
     ActivityPosDailyClose,
 )
 from services.report_cache_service import report_cache_service
+from utils.activity_constants import GRADE_TARGET_BONUS
 
 logger = logging.getLogger(__name__)
 
@@ -587,7 +588,9 @@ class ActivityService:
                 if sub_student_count > 0
                 else 0
             )
-            sub_bonus = 1000 if target_pct > 0 and sub_ratio >= target_pct else 0
+            sub_bonus = (
+                GRADE_TARGET_BONUS if target_pct > 0 and sub_ratio >= target_pct else 0
+            )
             sub_points = target_pct if sub_bonus else 0
 
             result_grades.append(
