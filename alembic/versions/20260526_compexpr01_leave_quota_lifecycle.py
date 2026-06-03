@@ -192,12 +192,25 @@ def upgrade():
     # 5. Backfill 既有 annual LeaveQuota → period_start = hire_date 最近過去週年
     # 用 Python 端跑（SQL 表達 anniversary date 跨方言複雜，資料量小）
     bind = op.get_bind()
-    rows = bind.execute(sa.text("""SELECT lq.id, e.hire_date
+    rows = bind.execute(sa.text("""SELECT lq.id, lq.employee_id, lq.year, e.hire_date
                FROM leave_quotas lq
                JOIN employees e ON e.id = lq.employee_id
                WHERE lq.leave_type = 'annual' AND lq.period_start IS NULL
             """)).fetchall()
-    for lq_id, hire_date in rows:
+    # 同一員工可能有多筆 annual row（每西元年各一筆，school_year=NULL）；period_start
+    # 由 hire_date 週年推得、與 row.year 無關 → 若每筆都填會得到「相同」period_start，
+    # 撞 partial unique index uq_leave_quotas_emp_period_annual（key 不含 year）。
+    # 因此每位員工只讓「最新年度」那筆 row 拿到非 NULL period_start，其餘維持 NULL
+    # （partial index WHERE period_start IS NOT NULL 會自動忽略 NULL row）。
+    canonical_by_emp = {}
+    for lq_id, emp_id, yr, hire_date in rows:
+        if hire_date is None:
+            continue
+        sort_key = (yr if yr is not None else -1, lq_id)
+        prev = canonical_by_emp.get(emp_id)
+        if prev is None or sort_key > prev[0]:
+            canonical_by_emp[emp_id] = (sort_key, lq_id, hire_date)
+    for _sort_key, lq_id, hire_date in canonical_by_emp.values():
         if hire_date is None:
             continue
         # hire_date 可能從 DB 拿到 str（SQLite）或 date 物件（Postgres）
