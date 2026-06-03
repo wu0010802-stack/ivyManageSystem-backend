@@ -21,6 +21,7 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError
 
 from models.database import (
+    Employee,
     LineReplyContext,
     LineWebhookEvent,
     ParentMessage,
@@ -34,6 +35,25 @@ logger = logging.getLogger(__name__)
 
 # postback context TTL：10 分鐘
 CONTEXT_TTL = timedelta(minutes=10)
+
+
+def _resolve_teacher_display_name(session, teacher) -> str:
+    """教師對家長顯示名稱：Employee.name > User.display_name > '老師'。
+
+    不可用 User.username（內部登入帳號 emp_xxx 形式，不應外洩家長端）——與
+    api/parent_portal/messages.py:_thread_summary_from_maps 同一不變式。
+    """
+    if teacher is None:
+        return "老師"
+    if teacher.employee_id:
+        emp = session.query(Employee).filter(Employee.id == teacher.employee_id).first()
+        if emp and emp.name:
+            return emp.name
+    if getattr(teacher, "display_name", None):
+        return teacher.display_name
+    return "老師"
+
+
 # quick-reply 最多 5 個按鈕（LINE 限制）
 QUICK_REPLY_MAX = 5
 
@@ -120,7 +140,7 @@ def _list_unread_threads_for_parent(
             (
                 t,
                 student.name if student else "孩子",
-                teacher.username if teacher else "老師",
+                _resolve_teacher_display_name(session, teacher),
             )
         )
     return out
@@ -240,6 +260,6 @@ def handle_parent_postback(
     teacher = session.query(User).filter(User.id == thread.teacher_user_id).first()
     line_service._reply(
         reply_token,
-        f"請輸入要回覆給 {teacher.username if teacher else '老師'}"
+        f"請輸入要回覆給 {_resolve_teacher_display_name(session, teacher)}"
         f"（{student.name if student else '孩子'}）的訊息：",
     )
