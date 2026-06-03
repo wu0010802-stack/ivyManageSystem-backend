@@ -29,11 +29,11 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 
 - **服務注入**：`SalaryEngine`、`InsuranceService`、`LineService` 為 `main.py` 啟動時建立的 singleton。需要這些服務的 router 必須透過 `init_*_services()` 注入，**不可** 直接 import。
 - **DB session**：新程式優先用 `session_scope()`（context manager，自動 commit/rollback/close）；`get_session()` 僅在需要手動管理時使用。
-- **權限守衛**：所有路由必須有 `require_permission(Permission.XXX)`。`Permission` IntFlag 位元遮罩定義在 `utils/permissions.py`，**讀取放低位（如 `1 << 11`）、寫入放高位（如 `1 << 23`）**。
+- **權限守衛**：所有路由必須有 `require_permission(Permission.XXX)`。`Permission` 定義在 `utils/permissions.py`，自 2026-05-21（`permtxt01`）起為 `str Enum`（`Permission.EMPLOYEES_READ.value == "EMPLOYEES_READ"`），**非** IntFlag 位元遮罩——無 64-bit 上限、無 BigInt 需求。檔內 `LEGACY_PERMISSION_BITS`（含 `1 << N`）僅供 alembic backfill，runtime 不參考。
 - **Schema 異動**：使用 Alembic（`alembic/versions/`），啟動時自動 `alembic upgrade heads`。
 - **啟動邏輯**：seed / migration 放 `startup/`，**不要** 放回 `main.py`。
 - **Rate Limiter**：`utils/rate_limit.py` 為 in-process 記憶體版，僅單 worker 部署有效；多實例需改 Redis-backed。
-- **`portal.py`** 是教師自助入口（查自己的考勤/請假/加班/薪資），不具管理權限。新增管理功能不要放 portal。
+- **`api/portal/`**（子套件，非單一 `portal.py`）是教師自助入口（查自己的考勤/請假/加班/薪資），不具管理權限。新增管理功能不要放 portal。
 - **`BonusConfig`** DB 模型在 `startup/seed.py` 以 `DBBonusConfig` 別名匯入,避免與 `api/salary.py` 同名 Pydantic schema 衝突。
 - **Datetime 寫入契約**（2026-05-26 cutover，spec `docs/superpowers/specs/2026-05-26-datetime-taipei-consistency-design.md`）：所有 naive `Column(DateTime)` 視為 Asia/Taipei naive。寫入 **必經** `utils/taipei_time.py` 三個入口：`now_taipei_naive()`（naive col）/ `now_taipei_aware()`（45 個 `DateTime(timezone=True)` col）/ `today_taipei()`（date）。**禁用** `datetime.now()` / `datetime.utcnow()` / `date.today()` / `datetime.today()` — CI Ruff DTZ005/003/011/002 擋；model `default=datetime.now` 由 `tests/test_no_naive_datetime_in_model_defaults.py` reflection check 擋（allow-list 必空）。Phase 0 已 ALTER Supabase DATABASE timezone + 設 zeabur env `TZ=Asia/Taipei`；2026-05-26 前歷史 naive column 字面值為 UTC naive（顯示「比實際發生早 8h」），**未 backfill**。詳見 `docs/sop/datetime-contract.md`。
 
@@ -53,7 +53,7 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 - **加班費時薪基準**：`emp.base_salary` 僅底薪，**不含** 任何加給或獎金。
 - **加班雙重上限**（勞基法 §32 II）：`services/overtime_conflict_service` 同步檢查月度 46h（`check_monthly_overtime_cap`）+ 季度 138h（`check_quarterly_overtime_cap`，曆月對齊 rolling 3 月）。兩者並排呼叫，admin/portal create/update/approve/batch/import 6 個 call site 同步 enforce；越界拒 400。設計規格見 `docs/superpowers/specs/2026-05-26-overtime-quarterly-cap-138h-design.md`
 - **稽核追蹤**：`SalaryRecord` 必須記錄當下使用的 `bonus_config_id` 與 `attendance_policy_id`，確保可回溯。
-- **年終考核獎金（2026-05-22 落地）**：每年 2 月 calculate 時自動拉 `special_bonus_items` 兩筆 `APPRAISAL_HALF_BONUS_FIRST`（前一年下半）+ `APPRAISAL_HALF_BONUS_SECOND`（當年上半）SUM 寫入 `SalaryRecord.appraisal_year_end_bonus`（獨立 column，不進 `gross_salary`）。由 `engine.py` 的 `_fill_salary_record()` 呼叫 `services/salary/appraisal_year_end.query_appraisal_year_end_bonus()`。HR trigger 點：`POST /api/year_end/appraisal-payout/generate`。**關鍵**：改 payout 後須重 calculate 2 月薪資同步；改 `appraisal_summary.bonus_amount` 須重 generate payout。設計規格見 `docs/superpowers/specs/2026-05-22-salary-appraisal-year-end-payout-design.md`
+- **年終考核獎金（決策⑥B，2026-06-02 落地，取代 2026-05-22 舊機制）**：考核年終**不再**併入 2 月薪資。`engine.py` 的 `_fill_salary_record()` 一律填 `SalaryRecord.appraisal_year_end_bonus = 0`；`services/salary/appraisal_year_end.py` 已 **DEPRECATED**（`query_appraisal_year_end_bonus()` runtime 無 caller，僅保留避免 import 爆）。改由年終獎金 E化引擎（`services/year_end/`，6 步引擎 + 6 表）計算考核年終並寫入 `year_end_settlements` 獨立轉帳——**表外**：不進 `gross_salary`、**不進二代健保補充保費年累計**（`supplementary_premium.BONUS_FIELDS_FOR_YTD` 已排除）。HR 流程改走年終 E化：build → grid → manual + 兩關簽核（`api/year_end/`）。設計規格見 `docs/superpowers/specs/2026-06-01-year-end-bonus-e-automation-phase1-design.md`（舊 `2026-05-22-salary-appraisal-year-end-payout-design.md` 已 superseded）。
 
 ---
 
@@ -119,7 +119,7 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 - `funnel_service.py` — 招生漏斗（雙源拼接 RecruitmentVisit + Student lifecycle）；`build_funnel`、`count_visit_side_stages`、`count_student_side_stages`、`slice_by_source`、`slice_by_grade`、`summarize_no_deposit_reasons`
 - `churn_service.py` — A/C/D 三訊號 at-risk 偵測 + 12 月歷史趨勢；`detect_at_risk_students`、`build_churn_history`、`detect_signal_consecutive_absence`、`detect_signal_long_on_leave`、`detect_signal_fee_overdue`
 
-對應 router：`api/analytics.py`，權限 `Permission.BUSINESS_ANALYTICS = 1 << 40`，預設只給 admin / supervisor 角色。
+對應 router：`api/analytics.py`，權限 `Permission.BUSINESS_ANALYTICS`（str enum，值 = `"BUSINESS_ANALYTICS"`；`1 << 40` 僅為 `LEGACY_PERMISSION_BITS` backfill 映射，非 enum 定義），預設只給 admin / supervisor 角色。
 快取走 `report_cache_service`，三類別 + TTL：
 - `analytics_funnel` — 30 min
 - `analytics_churn_at_risk` — 5 min
@@ -167,7 +167,7 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 - **整合**：FastAPI / Starlette / SQLAlchemy / Logging（`event_level=ERROR`）；`transaction_style="endpoint"` 讓 Sentry 用 path template 不是 raw URL
 - **PII 過濾**：`_scrub_event` + `_scrub_breadcrumb` 自動遮罩 60+ 欄位（金流 / 個資 / 幼教 / 醫療 / 認證）；URL path 中段 id 自動換成 `:id`，**query string 內 PII（phone/email/id_number 等）值自動 `[Filtered]`**（含 `request.query_string` 與 `request.url` 兩個獨立欄位）。新增 PII 欄位請更新 `_PII_KEY_SUBSTRINGS` 並補 `tests/test_sentry_scrubber.py`
 - **`event.user.id` 自動 blake2b hash 化**：employees.id / parents.id 是擬個資，scrubber 自動 hash 成 8-char hex 保留 issue grouping 但移除直連性。沒呼叫 `set_user` 的 code path 不受影響
-- **FE/BE denylist parity 由 CI enforce**：`tests/test_pii_denylist_parity.py` 讀 `../ivy-frontend/src/utils/sentry.js` 對比 PII denylist + exempt list；drift 即 fail。新增 PII key 必須同步前後端
+- **FE/BE denylist parity 由 CI enforce**：`tests/test_pii_denylist_parity.py` 對比 backend `_PII_KEY_SUBSTRINGS` / `_PII_KEY_EXEMPT_SUBSTRINGS` 與前端 `src/utils/sentry.ts` 同名 array；drift 即 fail。新增 PII key 必須同步前後端
 - **logger.error / logger.exception 自動上報**；`logger.warning` 不會（業務語意通常是「可降級警告」）
 - **scheduler / WS handler 啟動 try/except**：吞 exception 的點請呼叫 `capture_exception(e, level="warning")` 顯式上報，否則 prod 出事只會看到「scheduler 沒跑」但 Sentry 一片乾淨（main.py 已示範 10 處）
 - **不要在 logger.exception 之後重複呼叫 capture_exception**：LoggingIntegration 已抓，重複會雙報炸 quota

@@ -3,7 +3,6 @@ startup/migrations.py — Alembic migration + 資料遷移函式
 """
 
 import logging
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -53,18 +52,16 @@ def needs_alembic_baseline_stamp() -> bool:
 def run_alembic_upgrade():
     """執行 Alembic schema bootstrap + migration（三態分流，見 ``_detect_alembic_state``）。"""
     backend_root = Path(__file__).resolve().parent.parent
-    alembic_bin = shutil.which("alembic")
-    if not alembic_bin:
-        bundled_alembic = backend_root / "venv_sec" / "bin" / "alembic"
-        if bundled_alembic.exists():
-            alembic_bin = str(bundled_alembic)
-    if not alembic_bin:
-        raise RuntimeError(
-            "找不到 alembic 可執行檔，請先安裝 backend/requirements.txt 或啟用正確虛擬環境。"
-        )
 
+    # 一律用「app 自己的直譯器」跑 migration（sys.executable -m alembic），不可用
+    # shutil.which("alembic") 抓 PATH 上第一個 alembic。後者可能是系統或別的 Python
+    # 版本（例如 framework 3.14）的 alembic，與 app venv（3.13）的 site-packages 不一致，
+    # env.py import models / 連線時行為不可預期，且常見「PATH 抓錯 alembic」導致啟動失敗。
+    # -m alembic 保證 migration 與 runtime 同一環境，prod / 多 venv 皆可靠自動執行。
     base_cmd = [
-        alembic_bin,
+        sys.executable,
+        "-m",
+        "alembic",
         "-c",
         str(backend_root / "alembic.ini"),
     ]

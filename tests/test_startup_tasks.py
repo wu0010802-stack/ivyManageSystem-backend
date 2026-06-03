@@ -173,24 +173,16 @@ class _MockSubprocessResult:
 
 
 def _patch_alembic_subprocess(monkeypatch, migrations_module, calls):
-    """把 shutil.which 與 subprocess.run 換成可記錄呼叫的 mock。
+    """把 subprocess.run 換成可記錄呼叫的 mock。
+
+    run_alembic_upgrade 自 ``sys.executable -m alembic`` 改版後不再呼叫
+    ``shutil.which("alembic")``（並移除了 ``import shutil``），故此處不再 patch
+    shutil，只攔 subprocess.run；指令結尾仍為 ``[<subcommand>, <arg>]``，呼叫端的
+    ``c[-2:]`` 斷言不受影響。
 
     subprocess.run 簽名接受 **kwargs，避免 commit 3fa99e9e 之後 capture_output=True
     打到只接固定參數的 lambda 而 TypeError。
     """
-    monkeypatch.setattr(
-        migrations_module,
-        "shutil",
-        type(
-            "MockShutil",
-            (),
-            {
-                "which": staticmethod(
-                    lambda name: "/mock/alembic" if name == "alembic" else None
-                )
-            },
-        )(),
-    )
 
     def _fake_run(args, **kwargs):
         calls.append(args)
