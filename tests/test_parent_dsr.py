@@ -19,17 +19,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import models.base as base_module
 from api.parent_portal import parent_router
 from api.parent_portal._dependencies import get_parent_db
-from models.consent import CONSENT_SCOPE_PHOTO_PUBLISH
+from models.consent import (
+    CONSENT_SCOPE_PHOTO_PUBLISH,
+    ParentConsentLog,
+    PolicyVersion,
+)
 from models.database import Base, Guardian, Student, User
 from models.dsr import (
     DSR_REQUEST_TYPE_CORRECT,
     DSR_REQUEST_TYPE_DELETE,
     DSR_REQUEST_TYPE_OPT_OUT,
+    DSR_STATUS_APPROVED,
     DSR_STATUS_PENDING,
     DsrRequest,
 )
 from tests._parent_rls_test_utils import make_sqlite_parent_db_override
 from utils.auth import create_access_token
+from utils.taipei_time import now_taipei_naive
 
 
 @pytest.fixture
@@ -227,9 +233,34 @@ def test_correct_request_creates_pending(dsr_client):
 # ── opt-out ──
 
 
-def test_opt_out_creates_pending(dsr_client):
+def test_opt_out_creates_approved(dsr_client):
+    """P2-3：granular opt-out 即時生效 → DsrRequest.status == approved（不再 pending）。
+
+    需先 seed PolicyVersion + ParentConsentLog(consented=True)，
+    否則「無可撤回的同意紀錄」→ 400。
+    """
     client, sf = dsr_client
     user_id, _ = _seed_parent_with_student(sf)
+
+    # seed：policy + photo_publish 同意
+    with sf() as session:
+        pv = PolicyVersion(
+            version="2026.dsr-test",
+            effective_at=now_taipei_naive(),
+            document_path="/policies/test.pdf",
+        )
+        session.add(pv)
+        session.flush()
+        log = ParentConsentLog(
+            user_id=user_id,
+            policy_version_id=pv.id,
+            scope=CONSENT_SCOPE_PHOTO_PUBLISH,
+            consented=True,
+            consented_at=now_taipei_naive(),
+        )
+        session.add(log)
+        session.commit()
+
     with sf() as session:
         token = _parent_token(session.query(User).get(user_id))
 
@@ -238,8 +269,12 @@ def test_opt_out_creates_pending(dsr_client):
         headers={"Authorization": f"Bearer {token}"},
         json={"scope": CONSENT_SCOPE_PHOTO_PUBLISH, "reason": "個人隱私考量"},
     )
-    assert r.status_code == 200
-    assert r.json()["scope"] == CONSENT_SCOPE_PHOTO_PUBLISH
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scope"] == CONSENT_SCOPE_PHOTO_PUBLISH
+    assert (
+        body["status"] == DSR_STATUS_APPROVED
+    ), "granular opt-out 即時撤回應為 approved 狀態（P2-3），不再是 pending"
 
 
 def test_opt_out_rejects_unknown_scope(dsr_client):
@@ -260,8 +295,29 @@ def test_opt_out_rejects_unknown_scope(dsr_client):
 
 
 def test_list_dsr_requests_returns_history(dsr_client):
+    """P2-3：opt-out 即時撤回後仍寫 DsrRequest（approved）→ list 回傳 2 筆。"""
     client, sf = dsr_client
     user_id, student_id = _seed_parent_with_student(sf)
+
+    # seed：policy + photo_publish 同意（opt-out 需有先前紀錄）
+    with sf() as session:
+        pv = PolicyVersion(
+            version="2026.list-test",
+            effective_at=now_taipei_naive(),
+            document_path="/policies/list-test.pdf",
+        )
+        session.add(pv)
+        session.flush()
+        log = ParentConsentLog(
+            user_id=user_id,
+            policy_version_id=pv.id,
+            scope=CONSENT_SCOPE_PHOTO_PUBLISH,
+            consented=True,
+            consented_at=now_taipei_naive(),
+        )
+        session.add(log)
+        session.commit()
+
     with sf() as session:
         token = _parent_token(session.query(User).get(user_id))
 
@@ -275,11 +331,12 @@ def test_list_dsr_requests_returns_history(dsr_client):
             "reason": "刪除申請理由",
         },
     )
-    client.post(
+    r_opt = client.post(
         "/api/parent/me/opt-out",
         headers={"Authorization": f"Bearer {token}"},
         json={"scope": CONSENT_SCOPE_PHOTO_PUBLISH},
     )
+    assert r_opt.status_code == 200, f"opt-out 應成功：{r_opt.text}"
 
     r = client.get(
         "/api/parent/me/dsr-requests",
@@ -290,6 +347,7 @@ def test_list_dsr_requests_returns_history(dsr_client):
     assert len(rows) == 2
     # 最新在前（opt_out 第二送）
     assert rows[0]["request_type"] == DSR_REQUEST_TYPE_OPT_OUT
+    assert rows[0]["status"] == DSR_STATUS_APPROVED, "opt-out 應為 approved（P2-3）"
     assert rows[1]["request_type"] == DSR_REQUEST_TYPE_DELETE
 
 
