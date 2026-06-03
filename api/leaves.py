@@ -1146,6 +1146,21 @@ def delete_leave(
         if not leave:
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
+        # ── 自我刪除防護（與 approve_leave 自我核准守衛對齊）──────────────────────
+        # 防止持 LEAVES_WRITE 的 supervisor/hr/principal 自刪本人已核准的扣薪假單、
+        # 觸發薪資重算撤銷扣款＝替自己加薪，繞過 approve 的自我核准守衛。
+        if is_self_approval(current_user, leave.employee_id):
+            raise HTTPException(status_code=403, detail="不可刪除您本人的請假單")
+
+        # ── 角色資格檢查（與 approve_leave 對齊）：無權審核他人此假別者不可刪他人假單 ──
+        assert_approver_eligible(
+            session,
+            doc_type="leave",
+            doc_label="請假",
+            submitter_employee_id=leave.employee_id,
+            approver_role=current_user.get("role", ""),
+        )
+
         # ── 封存保護：已核准假單在封存月份不得刪除 ──────────────────────────
         was_approved = leave.status == ApprovalStatus.APPROVED.value
         # 跨月假單需涵蓋完整月份集合，與 lock_and_premark_stale 的範圍對齊。
