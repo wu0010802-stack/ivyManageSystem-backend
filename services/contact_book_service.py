@@ -90,14 +90,23 @@ def publish_entry(
 
     guardian_user_ids = _gather_guardian_user_ids(session, entry.student_id)
 
-    # photo_publish 廣播咽喉（spec §3.1b）：
-    # flag on 時，過濾掉未同意 photo_publish 的 guardian，再 fan-out。
+    # photo_publish 廣播咽喉（spec §3.1b，P2-1 review P1-1 修正）：
+    # flag on + 含照片 entry → 過濾掉未同意 photo_publish 的 guardian，再 fan-out。
+    # flag on + 純文字 entry（無照片）→ 不過濾，全部 guardian 照收。
+    #   過嚴修正：photo_publish 同意只控管「照片」接收；純文字聯絡簿不含照片，
+    #   不應因 photo_publish 未同意就阻斷整筆通知。
     # flag off 時 no-op，全部 guardian 皆收到。
+    #
+    # 完整「廣播照發但 payload 去照片」（未同意者收通知但不含照片內容）較複雜，
+    # 列為 follow-up；本 fix 採「含照片 entry 才過濾整筆」的務實折中。
     from config import get_settings
     from models.consent import CONSENT_SCOPE_PHOTO_PUBLISH
     from services.consent.checker import consent_check
 
-    if get_settings().consent.enforcement_enabled:
+    if (
+        get_settings().consent.enforcement_enabled
+        and _count_photos(session, entry_id) > 0
+    ):
         guardian_user_ids = [
             uid
             for uid in guardian_user_ids

@@ -1,15 +1,19 @@
 """tests/consent/test_photo_publish_gate.py — photo_publish 廣播咽喉測試（Task 6A）。
 
-行為（spec §3.1b）：
-  flag on  + guardian 未同意 photo_publish → publish_entry 後不應在 dispatch.enqueue
-              的 recipient_user_id 中出現該 guardian；已同意的仍在。
+行為（spec §3.1b，P2-1 review P1-1 修正後）：
+  flag on  + 含照片 entry + guardian 未同意 photo_publish
+              → publish_entry 後不應在 dispatch.enqueue 的 recipient_user_id 中出現該
+                guardian；已同意的仍在。
+  flag on  + 純文字 entry（無照片）+ guardian 未同意 photo_publish
+              → 不過濾；所有 guardian 照收（P1-1 修正核心）。
   flag off → 全部 guardian 皆收到（不過濾）。
 
 設計決策：
   - 對 dispatch.enqueue 做 mock（同步，同 call stack，可靠斷言）
   - broadcast_parent 在 fire-and-forget asyncio 中，不確定性高，不做斷言
   - 一個學生兩個 guardian：guardian_consented（有 photo_publish log，consented=True）
-    與 guardian_no_consent（無 log → False），flag on 時應只通知前者
+    與 guardian_no_consent（無 log → False）
+  - 含照片 = 有 Attachment row（owner_type=contact_book_entry）；純文字 = 無 Attachment
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from models.consent import (
     PolicyVersion,
 )
 from models.database import (
+    Attachment,
     Base,
     Classroom,
     Employee,
@@ -43,6 +48,7 @@ from models.database import (
     StudentContactBookEntry,
     User,
 )
+from models.portfolio import ATTACHMENT_OWNER_CONTACT_BOOK
 from utils.auth import create_access_token
 from utils.cache_layer import reset_cache_for_testing
 from utils.permissions import Permission
@@ -225,6 +231,21 @@ def _seed_two_guardians(session):
     return emp, teacher_user, entry.id, parent_consented.id, parent_no_consent.id
 
 
+def _add_contact_book_photo(session, entry_id: int) -> None:
+    """在指定 contact_book entry 上掛一個假 Attachment（代表含照片）。"""
+    session.add(
+        Attachment(
+            owner_type=ATTACHMENT_OWNER_CONTACT_BOOK,
+            owner_id=entry_id,
+            storage_key="2026/06/test-photo.jpg",
+            original_filename="test-photo.jpg",
+            mime_type="image/jpeg",
+            size_bytes=12345,
+        )
+    )
+    session.flush()
+
+
 def _teacher_token(teacher_user: User, emp: Employee) -> str:
     return create_access_token(
         {
@@ -242,8 +263,8 @@ def _teacher_token(teacher_user: User, emp: Employee) -> str:
 
 
 def test_photo_publish_gate_flag_on_filters_non_consented(photo_gate_app, monkeypatch):
-    """flag on + guardian 未同意 photo_publish → dispatch.enqueue 不呼叫該 uid。
-    已同意的 guardian 仍然收到 enqueue。
+    """flag on + 含照片 entry + guardian 未同意 photo_publish
+    → dispatch.enqueue 不呼叫該 uid；已同意的 guardian 仍然收到 enqueue。
     """
     from config import reset_for_tests
 
@@ -255,6 +276,8 @@ def test_photo_publish_gate_flag_on_filters_non_consented(photo_gate_app, monkey
         emp, teacher_user, entry_id, consented_uid, no_consent_uid = (
             _seed_two_guardians(session)
         )
+        # 含照片 → 過濾應生效
+        _add_contact_book_photo(session, entry_id)
         session.commit()
         token = _teacher_token(teacher_user, emp)
 
@@ -326,3 +349,53 @@ def test_photo_publish_gate_flag_off_all_guardians_receive(photo_gate_app, monke
     assert (
         no_consent_uid in enqueued_uids
     ), f"flag off 時未同意家長（uid={no_consent_uid}）也應收到（flag off 不過濾）"
+
+
+def test_photo_publish_gate_flag_on_text_only_entry_no_filter(
+    photo_gate_app, monkeypatch
+):
+    """flag on + 純文字 entry（無照片）+ guardian 未同意 photo_publish
+    → 不過濾；所有 guardian 照收通知（P2-1 review P1-1 修正核心）。
+
+    過嚴修正理由：photo_publish 同意僅控管「照片」的接收；
+    純文字聯絡簿不含任何照片，未同意 photo_publish 的家長仍應收到文字通知。
+    """
+    from config import reset_for_tests
+
+    monkeypatch.setenv("CONSENT_ENFORCEMENT_ENABLED", "true")
+    reset_for_tests()
+
+    client, sf = photo_gate_app
+    with sf() as session:
+        emp, teacher_user, entry_id, consented_uid, no_consent_uid = (
+            _seed_two_guardians(session)
+        )
+        # 刻意不呼叫 _add_contact_book_photo → 純文字 entry，無 Attachment
+        session.commit()
+        token = _teacher_token(teacher_user, emp)
+
+    with patch("services.notification.dispatch.enqueue") as mock_enqueue:
+        resp = client.post(
+            f"/api/portal/contact-book/{entry_id}/publish",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 200, resp.text
+
+    enqueued_uids = {
+        c.kwargs["recipient_user_id"]
+        for c in mock_enqueue.call_args_list
+        if c.kwargs.get("event_type") == "parent.contact_book_published"
+    }
+
+    # 純文字 entry：flag on 不應過濾，兩位 guardian 都應收到
+    assert (
+        consented_uid in enqueued_uids
+    ), f"已同意家長（uid={consented_uid}）應收到純文字聯絡簿通知"
+    assert no_consent_uid in enqueued_uids, (
+        f"未同意 photo_publish 的家長（uid={no_consent_uid}）"
+        f"在純文字 entry 下不應被過濾；實際 enqueued={enqueued_uids}"
+    )
+
+    monkeypatch.delenv("CONSENT_ENFORCEMENT_ENABLED", raising=False)
+    reset_for_tests()
