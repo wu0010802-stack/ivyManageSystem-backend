@@ -201,6 +201,32 @@ class TestEnrolledActive:
         )
         assert log.actor_user_id == 99
 
+    def test_enrolled_to_active_writes_lifecycle_audit(self, session, classroom):
+        """activate 經 set_lifecycle_status 統一入口寫全站 AuditLog（修補繞過缺口）。"""
+        from models.audit import AuditLog
+
+        visit = _make_visit(session, has_deposit=True, enrolled=True)
+        student = Student(
+            student_id="115-A-09",
+            name="稽核生",
+            lifecycle_status="enrolled",
+            recruitment_visit_id=visit.id,
+            is_active=True,
+        )
+        session.add(student)
+        session.flush()
+        transition_visit(
+            session, visit_id=visit.id, to_stage="active", actor_user_id=99
+        )
+        session.flush()
+        audit = (
+            session.query(AuditLog)
+            .filter_by(entity_type="student", entity_id=str(student.id))
+            .one()
+        )
+        assert "active" in audit.summary
+        assert audit.user_id == 99
+
     def test_active_to_enrolled_with_reason(self, session):
         visit = _make_visit(session, has_deposit=True, enrolled=True)
         student = Student(
