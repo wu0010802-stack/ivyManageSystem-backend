@@ -32,6 +32,7 @@ from schemas.students import (
 )
 from schemas.student_lifecycle import LifecycleOverviewOut
 from services.student_lifecycle import LifecycleTransitionError, transition
+from utils.student_lifecycle import set_lifecycle_status
 from services.student_lifecycle_overview import build_lifecycle_overview
 from services.student_profile import assemble_profile
 from utils.academic import resolve_current_academic_term, resolve_academic_term_filters
@@ -1087,6 +1088,24 @@ async def graduate_student(
         student.graduation_date = graduation_date
         student.status = item.status
         student.is_active = False
+
+        # 同步 lifecycle_status 並蓋 terminal_entered_at 戳記：所有 lifecycle 變更必經
+        # set_lifecycle_status，否則家長 PII retention GC（依 terminal_entered_at 起算
+        # 365 天）永不啟動、終態守衛被繞過（RA-MED-6）。audit=False：本端點已寫
+        # StudentChangeLog + 有 AuditMiddleware，避免重複 AuditLog。
+        status_to_lifecycle = {
+            "已畢業": LIFECYCLE_GRADUATED,
+            "已轉出": LIFECYCLE_TRANSFERRED,
+            "已退學": LIFECYCLE_WITHDRAWN,
+        }
+        set_lifecycle_status(
+            session,
+            student,
+            status_to_lifecycle.get(item.status, LIFECYCLE_WITHDRAWN),
+            actor_user_id=current_user.get("user_id"),
+            audit=False,
+            reason=item.reason,
+        )
 
         # 自動寫入異動紀錄（畢業/退學/轉出）
         from models.student_log import StudentChangeLog
