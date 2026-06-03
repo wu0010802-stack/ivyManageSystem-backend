@@ -16,6 +16,7 @@ from models.leave import LeaveRecord
 from utils.attendance_calc import (
     compute_late_minutes_with_leave,
     compute_early_leave_minutes_with_leave,
+    sync_attendance_flags,
 )
 
 # 預設排班（若員工無自訂排班則 fallback）
@@ -102,9 +103,7 @@ def apply(session: Session, leave_id: int) -> list[date]:
     if leave is None:
         raise LeaveNotApproved(f"leave_id={leave_id} 不存在")
     if leave.status != ApprovalStatus.APPROVED.value:
-        raise LeaveNotApproved(
-            f"leave_id={leave_id} 不是已核可(status={leave.status})"
-        )
+        raise LeaveNotApproved(f"leave_id={leave_id} 不是已核可(status={leave.status})")
 
     _assert_leave_time_consistent(leave)
 
@@ -154,6 +153,8 @@ def _apply_full_day(session: Session, leave: LeaveRecord, d: date) -> None:
     row.early_leave_minutes = 0
     row.leave_record_id = leave.id
     row.partial_leave_hours = None
+    # P0-3：全天假覆蓋後清掉殘留的遲到/早退/缺卡旗標，否則薪資仍算成缺卡
+    sync_attendance_flags(row)
 
 
 def _apply_partial(session: Session, leave: LeaveRecord, d: date) -> None:
@@ -200,6 +201,7 @@ def _apply_partial(session: Session, leave: LeaveRecord, d: date) -> None:
         row.status = AttendanceStatus.ABSENT.value
         row.late_minutes = 0
         row.early_leave_minutes = 0
+        sync_attendance_flags(row)
         return
 
     # 有打卡 → 用 leave-aware 重算 late/early_leave
@@ -216,14 +218,17 @@ def _apply_partial(session: Session, leave: LeaveRecord, d: date) -> None:
         )
 
     if row.punch_out_time is not None:
-        # punch_out_time 是 DateTime，需先轉成 time
-        punch_out_time_only = row.punch_out_time.time() if row.punch_out_time else None
-        row.early_leave_minutes = compute_early_leave_minutes_with_leave(
-            punch_out=punch_out_time_only,
-            scheduled_end=sched_end,
-            leave_start=lv_start,
-            leave_end=lv_end,
-        )
+        # 跨夜班：下班落在隔日，不可用 .time() 截斷後當早退（會誤算 ~960 分，P1-4）
+        if row.punch_out_time.date() > d:
+            row.early_leave_minutes = 0
+        else:
+            punch_out_time_only = row.punch_out_time.time()
+            row.early_leave_minutes = compute_early_leave_minutes_with_leave(
+                punch_out=punch_out_time_only,
+                scheduled_end=sched_end,
+                leave_start=lv_start,
+                leave_end=lv_end,
+            )
 
     # 若 late 與 early_leave 都歸零，且原 status 為 LATE/EARLY_LEAVE → 退回 NORMAL
     late_min = row.late_minutes or 0
@@ -234,6 +239,9 @@ def _apply_partial(session: Session, leave: LeaveRecord, d: date) -> None:
             AttendanceStatus.EARLY_LEAVE.value,
         ):
             row.status = AttendanceStatus.NORMAL.value
+
+    # P0-3：重算後同步布林旗標
+    sync_attendance_flags(row)
 
 
 def revert(session: Session, leave_id: int) -> list[date]:
@@ -278,14 +286,19 @@ def revert(session: Session, leave_id: int) -> list[date]:
 
             early_min = 0
             if row.punch_out_time is not None:
-                punch_out_time_only = row.punch_out_time.time()
-                early_min = compute_early_leave_minutes_with_leave(
-                    punch_out=punch_out_time_only,
-                    scheduled_end=sched_end,
-                    leave_start=None,
-                    leave_end=None,
-                )
-                row.early_leave_minutes = early_min
+                # 跨夜班：下班落在隔日，不可用 .time() 截斷後當早退（P1-4）
+                if row.punch_out_time.date() > d:
+                    early_min = 0
+                    row.early_leave_minutes = 0
+                else:
+                    punch_out_time_only = row.punch_out_time.time()
+                    early_min = compute_early_leave_minutes_with_leave(
+                        punch_out=punch_out_time_only,
+                        scheduled_end=sched_end,
+                        leave_start=None,
+                        leave_end=None,
+                    )
+                    row.early_leave_minutes = early_min
 
             # 根據重算結果決定 status
             if late_min > 0:
@@ -294,6 +307,9 @@ def revert(session: Session, leave_id: int) -> list[date]:
                 row.status = AttendanceStatus.EARLY_LEAVE.value
             else:
                 row.status = AttendanceStatus.NORMAL.value
+
+            # P0-3：清 leave 還原後同步布林旗標
+            sync_attendance_flags(row)
 
         reverted.append(d)
 
