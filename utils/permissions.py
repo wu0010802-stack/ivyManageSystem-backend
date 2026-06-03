@@ -98,6 +98,9 @@ class Permission(str, Enum):
     PORTAL_PREVIEW = "PORTAL_PREVIEW"
     PORTAL_IMPERSONATE = "PORTAL_IMPERSONATE"
 
+    # 個資法 DSR（個人資料主體權利）申請審核
+    DSR_MANAGE = "DSR_MANAGE"
+
 
 # 位元值凍結快照——僅供 alembic upgrade()/downgrade() backfill 使用。
 # 一旦 migration 跑過 prod，請勿變更此表（保持歷史 migration 可重跑）。
@@ -433,6 +436,8 @@ PERMISSION_LABELS: Dict[str, str] = {
     "ROLES_MANAGE": "角色與權限管理",
     "PORTAL_PREVIEW": "預覽教師端",
     "PORTAL_IMPERSONATE": "代為操作教師端",
+    # 個資法 DSR 申請審核
+    "DSR_MANAGE": "個資權利請求管理",
 }
 
 # 權限分組 (供前端 UI 使用)
@@ -811,14 +816,11 @@ def require_scoped_permission(code: "Permission"):
     return dep
 
 
-
 # === Startup sanity warning for missing scope_options ===
 
 # Prefixes that imply a permission SHOULD support scope_options.
 # Phase 1 only includes STUDENTS_*. Phases 2-4 expand this list.
-_SCOPE_AWARE_PREFIXES = (
-    "STUDENTS_",
-)
+_SCOPE_AWARE_PREFIXES = ("STUDENTS_",)
 _SCOPE_AWARE_EXACT: tuple = ()
 
 
