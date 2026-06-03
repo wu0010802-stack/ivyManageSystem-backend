@@ -12,7 +12,8 @@ class DsrRequestAdminOut(BaseModel):
     """admin queue 單筆 DSR 請求輸出（datetime 欄位序列化為 isoformat str）。"""
 
     id: int
-    user_id: int
+    # Optional：dsr_requests.user_id 為 ON DELETE SET NULL，申請人硬刪後此列 user_id=NULL（RA-MED-9）
+    user_id: int | None = None
     request_type: str
     status: str
     subject_entity_type: str | None = None
