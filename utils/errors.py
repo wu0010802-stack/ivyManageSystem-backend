@@ -36,3 +36,31 @@ def raise_safe_500(e: Exception, *, context: str = "") -> None:
         raise HTTPException(status_code=500, detail=str(e))
     else:
         raise HTTPException(status_code=500, detail=_GENERIC_500_MESSAGE)
+
+
+_GENERIC_BATCH_REASON = "處理失敗，請稍後重試或聯絡管理員"
+
+
+def safe_batch_reason(
+    e: Exception,
+    *,
+    context: str = "",
+    fallback: str = _GENERIC_BATCH_REASON,
+) -> str:
+    """批次操作 per-item 失敗原因的安全字串。
+
+    批次端點常把 `str(e)` / f"...{e}" 放進回傳的 `failed[].reason`，會把非預期
+    例外（DB 錯誤、constraint 名、SQL 片段）洩漏給 client。本 helper：
+
+    - HTTPException：回其 `detail`（屬刻意的業務驗證訊息，例如「假單已封存」，安全）。
+    - 其他例外：記錄完整例外到 log（exc_info）後，回傳不含內部細節的通用訊息。
+
+    Usage::
+
+        except Exception as e:
+            failed.append({"id": x, "reason": safe_batch_reason(e, context="批次核准")})
+    """
+    if isinstance(e, HTTPException):
+        return str(e.detail)
+    logger.error("批次項目處理失敗%s", f"：{context}" if context else "", exc_info=True)
+    return fallback
