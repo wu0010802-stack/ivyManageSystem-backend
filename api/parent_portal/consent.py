@@ -169,6 +169,12 @@ def write_consent(
     session.add(log)
     session.flush()
 
+    # 寫入後立即 invalidate 快取，確保撤回/再同意後 consent_check 即時反映新狀態
+    # （不等 TTL 60s 過期；flush 後 DB row 在本 session 內已可見）
+    from services.consent.checker import invalidate_consent_cache
+
+    invalidate_consent_cache(user.id, payload.scope)
+
     logger.info(
         "parent_consent: user_id=%s scope=%s consented=%s policy_version=%s",
         user.id,

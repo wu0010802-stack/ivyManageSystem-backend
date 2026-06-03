@@ -25,14 +25,20 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from models.consent import CONSENT_SCOPES
+from models.consent import (
+    CONSENT_SCOPE_SERVICE_ESSENTIAL,
+    CONSENT_SCOPES,
+    ParentConsentLog,
+)
 from models.dsr import (
     DSR_REQUEST_TYPE_CORRECT,
     DSR_REQUEST_TYPE_DELETE,
     DSR_REQUEST_TYPE_OPT_OUT,
+    DSR_STATUS_APPROVED,
     DSR_STATUS_PENDING,
     DsrRequest,
 )
+from services.consent.checker import invalidate_consent_cache
 from utils.audit import write_explicit_audit
 from utils.auth import require_parent_role
 from utils.request_ip import get_client_ip
@@ -228,13 +234,17 @@ def submit_opt_out_request(
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
 ) -> DsrRequestOut:
-    """個資法 §3.3 停止處理利用權：申請停止特定 scope 的資料處理。
+    """個資法 §3.3 停止處理利用權：granular scope 即時撤回（spec §3.2a）。
 
-    比 consent 撤回更具法律意義（撤回是「現在不同意」，opt-out 是「請求停止」)。
-    *opt-out 主要 surface 是 consent 撤回 + 此申請副本作為法律備案*。
+    - service_essential → 拒絕（400）：基礎服務同意不可停止，如需終止服務請走刪除申請。
+    - granular scope（photo_publish / line_push / cross_border_transfer）→ 即時生效：
+      1. 查該家長該 scope 最近一筆 ParentConsentLog 取 policy_version_id。
+         若從未有任何記錄 → 400「無可撤回的同意紀錄」。
+      2. 寫入 ParentConsentLog(consented=False, policy_version_id=<原版本>)。
+      3. invalidate_consent_cache 立即清快取，下次查詢即時反映撤回。
+      4. 寫 DsrRequest(status=approved) 作法律備案，不進 pending queue。
     """
     user = _get_parent_user(session, current_user)
-    _block_if_pending_same_type(session, user.id, DSR_REQUEST_TYPE_OPT_OUT)
 
     if payload.scope not in CONSENT_SCOPES:
         raise HTTPException(
@@ -242,10 +252,54 @@ def submit_opt_out_request(
             detail=f"未知 scope: {payload.scope}; 允許: {sorted(CONSENT_SCOPES)}",
         )
 
+    # service_essential 不可 opt-out
+    if payload.scope == CONSENT_SCOPE_SERVICE_ESSENTIAL:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "基礎服務同意不可停止；如需終止服務請走刪除申請（POST /me/delete-request）"
+            ),
+        )
+
+    # 查最近一筆 ParentConsentLog 取 policy_version_id（任意 consented 值皆可）
+    latest_log = (
+        session.query(ParentConsentLog)
+        .filter(
+            ParentConsentLog.user_id == user.id,
+            ParentConsentLog.scope == payload.scope,
+        )
+        .order_by(ParentConsentLog.consented_at.desc())
+        .first()
+    )
+    if latest_log is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"無可撤回的同意紀錄（scope={payload.scope}）",
+        )
+
+    policy_version_id = latest_log.policy_version_id
+
+    # 即時寫入撤回 log
+    revoke_log = ParentConsentLog(
+        user_id=user.id,
+        policy_version_id=policy_version_id,
+        scope=payload.scope,
+        consented=False,
+        note=payload.reason,
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    session.add(revoke_log)
+    session.flush()
+
+    # 立即清快取（確保下次 consent_check 重新讀 DB）
+    invalidate_consent_cache(user.id, payload.scope)
+
+    # 法律備案：DsrRequest status=approved（自助撤回不需 admin 核准）
     req = DsrRequest(
         user_id=user.id,
         request_type=DSR_REQUEST_TYPE_OPT_OUT,
-        status=DSR_STATUS_PENDING,
+        status=DSR_STATUS_APPROVED,
         scope=payload.scope,
         reason=payload.reason,
         ip_address=get_client_ip(request),
@@ -259,8 +313,13 @@ def submit_opt_out_request(
         action="CREATE",
         entity_type="dsr_request",
         entity_id=str(req.id),
-        summary=f"家長提交停止處理申請（scope={payload.scope}）",
-        changes={"request_type": "opt_out", "scope": payload.scope},
+        summary=f"家長 opt-out 即時撤回（scope={payload.scope}）",
+        changes={"request_type": "opt_out", "scope": payload.scope, "immediate": True},
+    )
+    logger.info(
+        "DSR opt-out immediate revoke: user_id=%s scope=%s",
+        user.id,
+        payload.scope,
     )
     return _to_out(req)
 

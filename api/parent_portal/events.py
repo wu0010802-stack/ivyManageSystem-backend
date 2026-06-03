@@ -36,6 +36,7 @@ from utils.file_upload import safe_attachment_filename, validate_file_signature
 
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
+from services.consent.checker import enforce_student_cross_border
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +309,7 @@ async def upload_ack_signature(
         )
         if old and not old.deleted_at:
             old.deleted_at = now_taipei_naive()
+    enforce_student_cross_border(session, student_id)
     storage = get_portfolio_storage()
     stored = storage.put_attachment(content, ext)
     # P1-9：sanitize 後再入庫，避免 download Content-Disposition 顯示

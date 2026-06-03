@@ -515,6 +515,10 @@ async def upload_photo(
         if current_user.get("role") == "teacher":
             _assert_classroom_owned(session, emp.id, entry.classroom_id)
 
+        from services.consent.checker import enforce_student_cross_border
+
+        enforce_student_cross_border(session, entry.student_id)
+
         storage = get_portfolio_storage()
         stored = storage.put_attachment(content, ext)
         att = Attachment(
