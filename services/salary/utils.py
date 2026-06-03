@@ -320,6 +320,44 @@ def mark_salary_stale_from_month(
     )
 
 
+def snapshot_ytd_bonus(record) -> dict:
+    """快照 record 的 BONUS_FIELDS_FOR_YTD 欄位值，供 engine 重算後 delta 比較。
+
+    在 _fill_salary_record 寫入新值「之前」呼叫。record 為 None 或新建（屬性尚未設）
+    時各欄回 0。`or 0` 把 falsy（0/0.0/None）統一成 0，使 before/after 比較不受
+    int/float/None 表示差異干擾。
+    """
+    from services.salary.supplementary_premium import BONUS_FIELDS_FOR_YTD
+
+    if record is None:
+        return {f: 0 for f in BONUS_FIELDS_FOR_YTD}
+    return {f: (getattr(record, f, 0) or 0) for f in BONUS_FIELDS_FOR_YTD}
+
+
+def mark_stale_if_ytd_bonus_changed(
+    session, employee_id: int, year: int, month: int, before: dict, record
+) -> int:
+    """engine 重算路徑：本月 YTD 累計獎金 vs 重算前有變動 → 標同年「後月」needs_recalc。
+
+    `before` 為 _fill_salary_record 之前 snapshot_ytd_bonus(record) 的值；本函式在
+    _fill 之後呼叫，比較 record 當前 BONUS_FIELDS_FOR_YTD。
+
+    **from_month = month + 1**：engine 重算當月已連同當月補充保費一起算對
+    （ytd_before = sum(1..month-1) + 當月新獎金），當月自身正確；要傳播的是「之後」
+    月份（其 ytd_before 含當月、尚未重算）。manual_adjust 用 month（不重算當月補充
+    保費）語意不同，勿混淆。
+
+    Returns:
+        被標記的後月 record 數（0 表無變動或無後月；caller 隨主路徑事務 commit）。
+    """
+    from services.salary.supplementary_premium import BONUS_FIELDS_FOR_YTD
+
+    after = {f: (getattr(record, f, 0) or 0) for f in BONUS_FIELDS_FOR_YTD}
+    if before == after:
+        return 0
+    return mark_salary_stale_from_month(session, employee_id, year, month + 1)
+
+
 def lock_and_premark_stale(
     session, employee_id: int, months: set[tuple[int, int]]
 ) -> None:
