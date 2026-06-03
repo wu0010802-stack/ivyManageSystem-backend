@@ -293,6 +293,107 @@ class TestVendorPaymentFilters:
         assert res.json()["total"] == 2
 
 
+class TestVendorPaymentSummary:
+    def test_summary_breaks_down_by_status_over_range(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session,
+                "vp_sum",
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
+            )
+        _login(client, "vp_sum")
+
+        # 三筆 5 月、一筆 4 月（用來驗 range 篩選會排除）
+        ids = []
+        for amt, day in [
+            ("1000", "2026-05-01"),
+            ("2500", "2026-05-10"),
+            ("4000", "2026-05-20"),
+        ]:
+            res = client.post(
+                "/api/vendor-payments",
+                json=_payment_payload(amount=amt, payment_date=day),
+            )
+            ids.append(res.json()["id"])
+        client.post(
+            "/api/vendor-payments",
+            json=_payment_payload(amount="9999", payment_date="2026-04-15"),
+        )
+        # 簽掉其中一筆 5 月（2500）
+        client.post(
+            f"/api/vendor-payments/{ids[1]}/sign",
+            json={"signature_kind": "drawn", "signature_data": _png_data_url()},
+        )
+
+        # 5 月區間彙總：總 3 筆 7500，待簽 2 筆 5000，已簽 1 筆 2500
+        res = client.get(
+            "/api/vendor-payments/summary",
+            params={"start_date": "2026-05-01", "end_date": "2026-05-31"},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["total_count"] == 3
+        assert body["total_amount"] == 7500.0
+        assert body["pending_count"] == 2
+        assert body["pending_amount"] == 5000.0
+        assert body["signed_count"] == 1
+        assert body["signed_amount"] == 2500.0
+
+    def test_summary_ignores_status_filter_param(self, client_with_db):
+        # summary 不吃 status：即使帶 status=signed 也要回全狀態拆分
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session,
+                "vp_sum2",
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
+            )
+        _login(client, "vp_sum2")
+        client.post("/api/vendor-payments", json=_payment_payload(amount="100"))
+        res = client.get("/api/vendor-payments/summary", params={"status": "signed"})
+        assert res.status_code == 200, res.text
+        # status 是未知 query param，被忽略；pending 那筆仍計入
+        assert res.json()["pending_count"] == 1
+
+    def test_summary_empty_range_returns_zeros(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(session, "vp_sum3", ["VENDOR_PAYMENT_READ"])
+        _login(client, "vp_sum3")
+        res = client.get(
+            "/api/vendor-payments/summary",
+            params={"start_date": "2099-01-01", "end_date": "2099-12-31"},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body == {
+            "total_count": 0,
+            "total_amount": 0.0,
+            "pending_count": 0,
+            "pending_amount": 0.0,
+            "signed_count": 0,
+            "signed_amount": 0.0,
+        }
+
+    def test_summary_requires_read_permission(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(session, "vp_sum_noperm", Permission.DASHBOARD)
+        _login(client, "vp_sum_noperm")
+        res = client.get("/api/vendor-payments/summary")
+        assert res.status_code == 403
+
+    def test_summary_route_not_shadowed_by_id_route(self, client_with_db):
+        # /summary 不可被 /{payment_id} 吃掉（否則會 422 / 404）
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(session, "vp_sum4", ["VENDOR_PAYMENT_READ"])
+        _login(client, "vp_sum4")
+        res = client.get("/api/vendor-payments/summary")
+        assert res.status_code == 200, res.text
+
+
 class TestVendorPaymentSignature:
     def test_sign_rejects_too_small_payload(self, client_with_db):
         client, session_factory = client_with_db
