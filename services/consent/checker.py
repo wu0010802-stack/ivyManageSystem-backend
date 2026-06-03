@@ -32,8 +32,14 @@ import logging
 from sqlalchemy.orm import Session
 
 from config import get_settings
-from models.consent import CONSENT_SCOPE_CROSS_BORDER_TRANSFER, ParentConsentLog
+from models.consent import (
+    CONSENT_SCOPE_CROSS_BORDER_TRANSFER,
+    CONSENT_SCOPE_SERVICE_ESSENTIAL,
+    ParentConsentLog,
+    PolicyVersion,
+)
 from models.guardian import Guardian
+from utils.taipei_time import now_taipei_naive
 from utils.cache_layer import get_cache
 
 logger = logging.getLogger(__name__)
@@ -71,6 +77,41 @@ def consent_check(session: Session, user_id: int, scope: str) -> bool:
     # 快取兩種結果（True / False）；撤回後由 invalidate_consent_cache 清除
     get_cache().set(_CACHE_NS, cache_key, result, ttl=_CACHE_TTL)
     return result
+
+
+# ── policy-bump 重簽判定 ─────────────────────────────────────────────────────
+
+
+def has_signed_current_policy(session: Session, user_id: int) -> bool:
+    """判定家長是否已對當期生效政策簽署 service_essential 同意。
+
+    「當期政策」= effective_at <= now 且最新（effective_at desc 取第一筆）。
+    若 DB 尚未 seed 任何 PolicyVersion → dark 期，一律回 True（不擋）。
+
+    Returns:
+        True  — 已簽署當期政策版本（或尚無任何政策 seed）
+        False — 未簽署、或簽的是舊版（policy_version_id 不符當期）
+    """
+    current = (
+        session.query(PolicyVersion.id)
+        .filter(PolicyVersion.effective_at <= now_taipei_naive())
+        .order_by(PolicyVersion.effective_at.desc())
+        .first()
+    )
+    if current is None:
+        # 尚未 seed 任何 policy → dark 期，不擋
+        return True
+
+    latest = (
+        session.query(ParentConsentLog)
+        .filter(
+            ParentConsentLog.user_id == user_id,
+            ParentConsentLog.scope == CONSENT_SCOPE_SERVICE_ESSENTIAL,
+        )
+        .order_by(ParentConsentLog.consented_at.desc())
+        .first()
+    )
+    return bool(latest and latest.consented and latest.policy_version_id == current[0])
 
 
 # ── per-student（家庭層）──────────────────────────────────────────────────────
