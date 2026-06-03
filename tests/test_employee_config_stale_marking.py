@@ -529,6 +529,67 @@ class TestUpdateJobTitleBonusGradeMarksStale:
                 is False
             )
 
+    def _seed_fk_linked_holder(self, sf, *, title_name, grade, emp_title=None):
+        """建立以 job_title_id（FK）連結職稱、但 Employee.title 可為 NULL/drift 的在職員工。
+
+        模擬 legacy/migration 殘列或 title 被獨立清空者：引擎以 title_name property
+        （FK 的 JobTitle.name 優先、fallback legacy title）解析 bonus_grade，故這類
+        員工的節慶獎金等級仍隨 JobTitle.bonus_grade 變動，必須一併標 stale。
+        """
+        from models.database import JobTitle, Employee
+
+        with sf() as session:
+            jt = JobTitle(name=title_name, bonus_grade=grade, is_active=True)
+            session.add(jt)
+            session.commit()
+            jt_id = jt.id
+
+            emp = Employee(
+                employee_id="TFK01",
+                name="FK持職員",
+                base_salary=35000,
+                employee_type="regular",
+                is_active=True,
+                hire_date=date(2025, 1, 1),
+                position="班導",
+                job_title_id=jt_id,
+                title=emp_title,
+            )
+            session.add(emp)
+            session.commit()
+            emp_id = emp.id
+        return jt_id, emp_id
+
+    def test_change_bonus_grade_marks_fk_linked_holder_with_null_title_stale(
+        self, stale_client
+    ):
+        """FK 連結（job_title_id）但 Employee.title 為 NULL 的員工，改職稱 bonus_grade
+        後也須標 stale。引擎以 title_name（FK 優先）解析 grade，純 title 字串過濾會漏
+        掉這類員工 → finalize 以舊節慶獎金等級封存（P0 錯帳）。"""
+        client, sf, _ = stale_client
+        jt_id, emp_id = self._seed_fk_linked_holder(
+            sf, title_name="幼兒園教師", grade="A", emp_title=None
+        )
+        unfin = _seed_record(sf, emp_id, year=2026, month=3)
+        fin = _seed_record(sf, emp_id, year=2026, month=2, is_finalized=True)
+
+        _login_admin(client, sf)
+        res = client.put(
+            f"/api/config/titles/{jt_id}",
+            json={"name": "幼兒園教師", "bonus_grade": "B"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            assert (
+                session.query(SalaryRecord).filter_by(id=unfin).one().needs_recalc
+                is True
+            )
+            assert (
+                session.query(SalaryRecord).filter_by(id=fin).one().needs_recalc
+                is False
+            )
+
     def test_change_name_only_does_not_mark_stale(self, stale_client):
         """只改 name、bonus_grade 不送（不變）→ 不標 stale。"""
         client, sf, _ = stale_client

@@ -840,7 +840,10 @@ def update_job_title(
 
         # bonus_grade 真的變動 → 標記持該職稱員工未封存薪資 needs_recalc，否則 finalize
         # 會以舊節慶獎金等級封存。引擎 grade_map = {JobTitle.name: bonus_grade}，員工以
-        # Employee.title 字串對應（engine._load_grade_map_from_db）。對稱依據：員工側
+        # title_name（models.employee：job_title_rel FK 優先、fallback legacy title）對應。
+        # 過濾必須對齊此優先序——FK 分支涵蓋所有 job_title_id 連結員工（不論 title 值，
+        # 含 title 為 NULL/drift 的 legacy 殘列）；字串分支保留 job_title_id IS NULL 的
+        # legacy 員工。只用 title 字串會漏標 FK 連結員工 → 以舊等級錯帳。對稱依據：員工側
         # bonus_grade 在 _SALARY_INPUT_FIELDS（api/employees.py）改動會標 stale。
         grade_changed = title.bonus_grade is not None and title.bonus_grade != old_grade
         stale_marked = 0
@@ -855,7 +858,10 @@ def update_job_title(
                     SalaryRecord.employee_id.in_(
                         session.query(Employee.id).filter(
                             Employee.is_active == True,
-                            Employee.title.in_(affected_titles),
+                            or_(
+                                Employee.job_title_id == db_title.id,
+                                Employee.title.in_(affected_titles),
+                            ),
                         )
                     ),
                 )
