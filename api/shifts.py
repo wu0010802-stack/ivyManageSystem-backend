@@ -419,7 +419,9 @@ def _apply_employee_assignment_action(session, existing, item, week_date: str) -
     return "inserted"
 
 
-@router.post("/assignments", status_code=201, response_model=ShiftAssignmentSaveResultOut)
+@router.post(
+    "/assignments", status_code=201, response_model=ShiftAssignmentSaveResultOut
+)
 def save_assignments(
     data: BulkAssignmentRequest,
     current_user: dict = Depends(require_staff_permission(Permission.SCHEDULE)),
@@ -795,8 +797,12 @@ def _import_shifts_sync(content: bytes, week_start: str, username: str) -> dict:
     validate_file_signature(content, ".xlsx")
     try:
         df = pd.read_excel(BytesIO(content))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
+    except Exception:
+        logger.warning("班表 Excel 解析失敗", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="無法解析 Excel 檔案，請確認檔案格式正確且未損壞",
+        )
 
     try:
         week_date = date.fromisoformat(week_start)

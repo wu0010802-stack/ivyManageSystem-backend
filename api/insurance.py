@@ -202,7 +202,7 @@ def list_brackets(
     無資料時 fallback 到 ≤year 中最新的年度（與 service load_brackets_from_db 同邏輯），
     便於行政在新年度尚未公告時還能看到目前生效級距。
     """
-    target_year = year or today_taipei().year  
+    target_year = year or today_taipei().year
     session = get_session()
     try:
         rows = (
@@ -339,14 +339,15 @@ def upsert_brackets(
             _insurance_service.load_brackets_from_db(
                 payload.effective_year, strict=True
             )
-        except Exception as e:
+        except Exception:
+            # 不把內部例外訊息（type/message）回給 client，避免洩漏系統內部結構；
+            # 真正的錯誤已透過 exc_info=True 落 log 供 ops 排查。
             logger.error("勞健保級距 reload 失敗", exc_info=True)
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    "級距已寫入 DB，但 service reload 失敗："
-                    f"{type(e).__name__}: {e}。"
-                    "請聯絡 ops 確認；目前計算端仍使用 reload 前的級距表。"
+                    "級距已寫入 DB，但 service reload 失敗，請聯絡 ops 確認；"
+                    "目前計算端仍使用 reload 前的級距表。"
                 ),
             )
 
@@ -384,7 +385,9 @@ def upsert_brackets(
     }
 
 
-@router.delete("/insurance/brackets/{bracket_id}", response_model=InsuranceBracketDeleteResultOut)
+@router.delete(
+    "/insurance/brackets/{bracket_id}", response_model=InsuranceBracketDeleteResultOut
+)
 def delete_bracket(
     bracket_id: int,
     payload: InsuranceBracketDeleteRequest,
@@ -433,14 +436,15 @@ def delete_bracket(
     if _insurance_service is not None:
         try:
             _insurance_service.load_brackets_from_db(year, strict=True)
-        except Exception as e:
+        except Exception:
+            # 不把內部例外訊息（type/message）回給 client，避免洩漏系統內部結構；
+            # 真正的錯誤已透過 exc_info=True 落 log 供 ops 排查。
             logger.error("勞健保級距 reload 失敗（delete 後）", exc_info=True)
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    "級距已刪除，但 service reload 失敗："
-                    f"{type(e).__name__}: {e}。"
-                    "請聯絡 ops 確認；目前計算端仍使用 reload 前的級距表。"
+                    "級距已刪除，但 service reload 失敗，請聯絡 ops 確認；"
+                    "目前計算端仍使用 reload 前的級距表。"
                 ),
             )
 
