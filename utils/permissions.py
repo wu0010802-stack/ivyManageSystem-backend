@@ -597,6 +597,30 @@ def get_role_default_permissions(session, role_code: str) -> List[str]:
     return list(role.permissions)
 
 
+# Canonical scope-aware permission codes（對齊 DB permission_definitions.scope_options，
+# permscope01-04 seed）。has_permission 只對這些 code 認 ":scope" 後綴；其餘 code 的
+# scope 後綴 fail-closed（避免「想授本班、實際授全域」的 footgun，RA-HIGH-1）。
+# 新增 scope-aware 權限時務必同步更新此集合 + 對應 alembic seed migration
+# （check_scope_options_sanity 會在 startup 比對 DB 與此集合，漂移時 log WARNING）。
+SCOPE_AWARE_CODES = frozenset(
+    {
+        "STUDENTS_READ",
+        "STUDENTS_WRITE",
+        "STUDENTS_HEALTH_READ",
+        "STUDENTS_HEALTH_WRITE",
+        "STUDENTS_LIFECYCLE_WRITE",
+        "STUDENTS_MEDICATION_ADMINISTER",
+        "STUDENTS_SPECIAL_NEEDS_READ",
+        "STUDENTS_SPECIAL_NEEDS_WRITE",
+        "PORTFOLIO_READ",
+        "PORTFOLIO_WRITE",
+        "PORTFOLIO_PUBLISH",
+        "DISMISSAL_CALLS_READ",
+        "DISMISSAL_CALLS_WRITE",
+    }
+)
+
+
 def has_permission(
     user_perms: List[str] | None,
     required: "Permission | str",
@@ -610,6 +634,10 @@ def has_permission(
     Scope-aware（2026-06-01 latent fix）：認 `:scope` 後綴的 entry。
     例：`['STUDENTS_HEALTH_READ:own_class']` 持有 `STUDENTS_HEALTH_READ` perm
     （只是限自班 scope）。對齊 frontend `hasPermission` 行為。
+
+    RA-HIGH-1 fail-closed（2026-06-02）：只對 SCOPE_AWARE_CODES 認 `:scope`
+    後綴；非 scope-aware code 帶 scope 後綴（例 `SALARY_READ:own_class`）視為
+    「無此權限」回 False，避免誤把「想授本班、實際授全域」的設定當成全域放行。
     """
     if user_perms is None:
         return False
@@ -618,8 +646,34 @@ def has_permission(
     name = required.value if isinstance(required, Permission) else required
     if name in user_perms:
         return True
-    scope_prefix = f"{name}:"
-    return any(p.startswith(scope_prefix) for p in user_perms)
+    if name in SCOPE_AWARE_CODES:
+        scope_prefix = f"{name}:"
+        return any(p.startswith(scope_prefix) for p in user_perms)
+    return False
+
+
+def validate_permission_names(names: List[str]) -> List[str]:
+    """驗證 permission_names 每筆格式合法（RA-HIGH-1b）。
+
+    規則：
+        - wildcard '*' 視為合法（admin 授全權）
+        - base code 必須是合法 Permission（在 Permission.__members__ 中）
+        - 帶 scope 後綴（'CODE:scope'）者：base 必須在 SCOPE_AWARE_CODES，
+          且 scope 值 ∈ {own_class, all}
+    回傳非法項清單（空 list = 全部合法）；caller 收到非空即可 raise 422。
+    """
+    invalid: List[str] = []
+    for n in names:
+        if n == WILDCARD:
+            continue
+        base, sep, scope = n.partition(":")
+        if base not in Permission.__members__:
+            invalid.append(n)
+            continue
+        if sep:  # 帶 ':' 後綴
+            if base not in SCOPE_AWARE_CODES or scope not in ("own_class", "all"):
+                invalid.append(n)
+    return invalid
 
 
 def resolve_user_permissions(user) -> List[str]:
@@ -811,14 +865,11 @@ def require_scoped_permission(code: "Permission"):
     return dep
 
 
-
 # === Startup sanity warning for missing scope_options ===
 
 # Prefixes that imply a permission SHOULD support scope_options.
 # Phase 1 only includes STUDENTS_*. Phases 2-4 expand this list.
-_SCOPE_AWARE_PREFIXES = (
-    "STUDENTS_",
-)
+_SCOPE_AWARE_PREFIXES = ("STUDENTS_",)
 _SCOPE_AWARE_EXACT: tuple = ()
 
 
@@ -844,3 +895,23 @@ def check_scope_options_sanity(seed: dict) -> None:
                 "in permission_definitions; consider adding a migration",
                 code,
             )
+
+    # RA-HIGH-1：防 SCOPE_AWARE_CODES（has_permission/validate_permission_names 用的
+    # canonical 集合）與 DB scope_options 漂移。只比對「seed 中實際出現」的 code
+    # （部分 seed 不誤報，對齊既有單元測試以 partial seed 呼叫的慣例）：
+    #   - seed code 有 scope_options 但不在 SCOPE_AWARE_CODES → code 集合漏列
+    #   - seed code 在 SCOPE_AWARE_CODES 但 scope_options 空 → DB seed 漏補
+    # 啟動處傳入完整 seed 時即可偵測雙向漂移；不擋啟動，只 log WARNING。
+    present = set(seed.keys())
+    db_scope_aware = {code for code, opts in seed.items() if opts}
+    missing_in_code = db_scope_aware - SCOPE_AWARE_CODES
+    missing_in_db = (SCOPE_AWARE_CODES & present) - db_scope_aware
+    if missing_in_code or missing_in_db:
+        _logger.warning(
+            "SCOPE_AWARE_CODES 與 DB scope_options 漂移："
+            "DB 有 scope_options 但 code 集合缺 %r；code 集合列為 scope-aware 但 DB "
+            "scope_options 空 %r。請同步 utils.permissions.SCOPE_AWARE_CODES 與 "
+            "permscope alembic seed。",
+            sorted(missing_in_code),
+            sorted(missing_in_db),
+        )

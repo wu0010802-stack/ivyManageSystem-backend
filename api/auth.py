@@ -64,6 +64,7 @@ from utils.permissions import (
     get_role_default_permissions,
     has_permission,
     resolve_user_permissions,
+    validate_permission_names,
     ROLE_LABELS,
     WILDCARD,
 )
@@ -234,7 +235,9 @@ def _check_ip_rate_limit(ip: str) -> None:
     from utils.rate_limit_db import count_recent_attempts, record_attempt
 
     record_attempt(_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
-    count = count_recent_attempts(_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    count = count_recent_attempts(
+        _IP_SCOPE, ip, within_seconds=_IP_WINDOW, fail_closed=True
+    )
     if count > _IP_MAX_ATTEMPTS:
         logger.warning("IP 登入頻率超限: %s (count=%d)", ip, count)
         raise HTTPException(status_code=429, detail="登入嘗試次數過多，請稍後再試")
@@ -248,7 +251,7 @@ def _check_account_lockout(username: str) -> None:
     from utils.rate_limit_db import count_recent_attempts
 
     count = count_recent_attempts(
-        _ACCOUNT_SCOPE, username, within_seconds=_FAIL_LOCKOUT
+        _ACCOUNT_SCOPE, username, within_seconds=_FAIL_LOCKOUT, fail_closed=True
     )
     if count >= _FAIL_THRESHOLD:
         logger.warning("帳號已鎖定: %s (failures=%d)", username, count)
@@ -284,7 +287,9 @@ def _check_pwd_change_ip(ip: str) -> None:
     from utils.rate_limit_db import count_recent_attempts, record_attempt
 
     record_attempt(_PWD_CHANGE_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
-    count = count_recent_attempts(_PWD_CHANGE_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    count = count_recent_attempts(
+        _PWD_CHANGE_IP_SCOPE, ip, within_seconds=_IP_WINDOW, fail_closed=True
+    )
     if count > _IP_MAX_ATTEMPTS:
         logger.warning("change-password IP 頻率超限: %s (count=%d)", ip, count)
         raise HTTPException(status_code=429, detail="請求過於頻繁，請稍後再試")
@@ -300,7 +305,7 @@ def _check_pwd_change_user_lockout(user_id: int) -> None:
 
     key = f"user:{user_id}"
     count = count_recent_attempts(
-        _PWD_CHANGE_USER_SCOPE, key, within_seconds=_FAIL_LOCKOUT
+        _PWD_CHANGE_USER_SCOPE, key, within_seconds=_FAIL_LOCKOUT, fail_closed=True
     )
     if count >= _FAIL_THRESHOLD:
         logger.warning(
@@ -338,7 +343,9 @@ def _check_pwd_reset_ip(ip: str) -> None:
     from utils.rate_limit_db import count_recent_attempts, record_attempt
 
     record_attempt(_PWD_RESET_IP_SCOPE, ip, window_seconds=_IP_WINDOW)
-    count = count_recent_attempts(_PWD_RESET_IP_SCOPE, ip, within_seconds=_IP_WINDOW)
+    count = count_recent_attempts(
+        _PWD_RESET_IP_SCOPE, ip, within_seconds=_IP_WINDOW, fail_closed=True
+    )
     if count > _IP_MAX_ATTEMPTS:
         logger.warning("reset-password IP 頻率超限: %s (count=%d)", ip, count)
         raise HTTPException(status_code=429, detail="請求過於頻繁，請稍後再試")
@@ -1409,6 +1416,12 @@ def create_user(
             payload_role=data.role,
             payload_permission_names=data.permission_names,
         )
+        # RA-HIGH-1b：驗證 permission_names code/scope 格式（非 scope-aware code 不可
+        # 帶 scope 後綴、scope 值須合法、code 須存在）。早於密碼強度檢查確保回 422。
+        if data.permission_names is not None:
+            bad = validate_permission_names(data.permission_names)
+            if bad:
+                raise HTTPException(status_code=422, detail=f"非法權限項：{bad}")
         if session.query(User).filter(User.username == data.username).first():
             raise HTTPException(status_code=400, detail="帳號已存在")
 
@@ -1546,6 +1559,11 @@ def update_user(
             payload_role=data.role,
             payload_permission_names=data.permission_names,
         )
+        # RA-HIGH-1b：驗證 permission_names code/scope 格式（同 create_user）。
+        if data.permission_names is not None:
+            bad = validate_permission_names(data.permission_names)
+            if bad:
+                raise HTTPException(status_code=422, detail=f"非法權限項：{bad}")
 
         # 記錄舊值，用於審計摘要
         old_role = user.role

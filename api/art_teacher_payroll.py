@@ -5,6 +5,7 @@ salary engine 會以 sum(entries.total_amount) 覆寫 salary_record.hourly_total
 """
 
 import io
+import logging
 from datetime import datetime
 from io import BytesIO
 from typing import Optional
@@ -28,6 +29,8 @@ from utils.file_upload import read_upload_with_size_check, validate_file_signatu
 from utils.permissions import Permission
 
 router = APIRouter(prefix="/api", tags=["art-teacher-payroll"])
+
+logger = logging.getLogger(__name__)
 
 
 class EntryCreate(BaseModel):
@@ -298,8 +301,12 @@ async def batch_import(
     validate_file_signature(content, ".xlsx")
     try:
         wb = load_workbook(BytesIO(content), data_only=True)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
+    except Exception:
+        logger.warning("才藝老師薪資 Excel 解析失敗", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="無法解析 Excel 檔案，請確認檔案格式正確且未損壞",
+        )
 
     ws = wb.active
 

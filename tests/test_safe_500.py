@@ -70,6 +70,8 @@ _AUDIT_FILES = [
     "api/activity/courses.py",
     "api/activity/inquiries.py",
     "api/activity/pos.py",
+    # MEDIUM-N2（2026-06-03 資安掃描）：勞健保級距 reload 失敗 500 洩例外
+    "api/insurance.py",
 ]
 
 # 非常確切的洩漏 pattern：HTTPException(status_code=500, detail=str(e)) 或 f-string with {e}
@@ -95,3 +97,24 @@ def test_audit_files_do_not_leak_500_exception_messages(rel_path):
             f"{rel_path} 仍存在 500 例外訊息洩漏 pattern：{match.group(0)[:80]!r}\n"
             f"請改用 `raise_safe_500(e, context=...)`"
         )
+
+
+# 串接形式 f-string 內插 e / type(e)：例如
+#   detail=( "級距已寫入 DB，但 reload 失敗：" f"{type(e).__name__}: {e}。" "..." )
+# 上面 _LEAK_PATTERNS 要求 detail= 後「緊接」str(e)/f"{e}"，故抓不到此括號串接形式
+# ——這正是 MEDIUM-N2 在 api/insurance.py 漏網的原因（兩處 reload 失敗 handler）。
+_FSTRING_INTERP_E = re.compile(r"""f["'][^"']*\{\s*(?:type\(\s*)?e\b""")
+
+
+def test_insurance_handlers_do_not_interpolate_exception_into_response():
+    """MEDIUM-N2 回歸：api/insurance.py 不得用 f-string 把 e / type(e) 插進字串。
+
+    兩個 reload 失敗 500 handler 原本回 `{type(e).__name__}: {e}` 洩漏內部例外；
+    修法為改 `except Exception:` + 固定安全 detail，錯誤走 logger.error(exc_info=True)。
+    """
+    src = (_BACKEND_ROOT / "api/insurance.py").read_text(encoding="utf-8")
+    match = _FSTRING_INTERP_E.search(src)
+    assert match is None, (
+        f"api/insurance.py 疑似把例外插進回應字串：{match.group(0)!r}\n"
+        f"請保持 detail 為固定安全訊息，錯誤只走 logger.error(exc_info=True)"
+    )

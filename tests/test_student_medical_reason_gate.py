@@ -183,6 +183,19 @@ def test_medical_endpoint_rejects_short_reason(medical_client):
     assert r.status_code == 422
 
 
+def test_medical_endpoint_rejects_whitespace_reason(medical_client):
+    """RA-L4：10 個空白通過 min_length=10 但 strip 後為空，應 422（防空洞 reason 架空 §6）。"""
+    client, sf = medical_client
+    student_id = _seed_admin_and_student(sf)
+    token = _admin_token()
+
+    r = client.get(
+        f"/api/students/{student_id}/medical?reason={'%20' * 10}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 422
+
+
 def test_medical_endpoint_rejects_missing_reason(medical_client):
     client, sf = medical_client
     student_id = _seed_admin_and_student(sf)

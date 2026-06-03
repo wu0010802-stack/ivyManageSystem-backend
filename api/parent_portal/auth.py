@@ -237,7 +237,7 @@ def _check_bind_lockout(line_user_id: str) -> None:
     from utils.rate_limit_db import count_recent_attempts
 
     count = count_recent_attempts(
-        _BIND_SCOPE, line_user_id, within_seconds=_BIND_FAIL_LOCKOUT
+        _BIND_SCOPE, line_user_id, within_seconds=_BIND_FAIL_LOCKOUT, fail_closed=True
     )
     if count >= _BIND_FAIL_THRESHOLD:
         logger.warning(
@@ -456,7 +456,7 @@ def _check_device_setup_lockout(ip: str) -> None:
     from utils.rate_limit_db import count_recent_attempts
 
     count = count_recent_attempts(
-        _DEVICE_SETUP_SCOPE, ip, within_seconds=_BIND_FAIL_LOCKOUT
+        _DEVICE_SETUP_SCOPE, ip, within_seconds=_BIND_FAIL_LOCKOUT, fail_closed=True
     )
     if count >= _BIND_FAIL_THRESHOLD:
         logger.warning("device-setup 失敗過多，ip=%s 已鎖 (failures=%d)", ip, count)

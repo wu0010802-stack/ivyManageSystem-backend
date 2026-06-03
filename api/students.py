@@ -725,6 +725,28 @@ def get_student(
             entity_id=str(student_id),
             summary=f"查看學生資料：{student_name}",
         )
+
+        # RA-MED-3：當實際回出解密醫療欄位（caller 有 health-read 且該生有醫療內容）時，
+        # 補寫 §6 medical_access_log（detail 頁無顯式 reason，用 generic 字串）。
+        from utils.portfolio_access import can_view_student_health
+
+        if can_view_student_health(current_user) and (
+            student.allergy or student.medication
+        ):
+            from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
+            from utils.request_ip import get_client_ip
+
+            session.add(
+                MedicalAccessLog(
+                    user_id=current_user.get("user_id"),
+                    student_id=student_id,
+                    field_name=MEDICAL_FIELD_BUNDLE,
+                    reason="學生詳細頁檢視（無顯式理由）",
+                    ip_address=get_client_ip(request),
+                )
+            )
+            session.commit()
+
         return mask_student_health_fields(payload, current_user)
     finally:
         session.close()
@@ -767,6 +789,12 @@ def get_student_medical(
     """
     from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
     from utils.request_ip import get_client_ip
+
+    # RA-L4：min_length 不 trim，純空白可過；strip 後再驗語意長度，避免空洞 reason 架空 §6 稽核
+    if len(reason.strip()) < 10:
+        raise HTTPException(
+            status_code=422, detail="讀取醫療資訊原因需至少 10 個有意義字元"
+        )
 
     session = get_session()
     try:
@@ -1442,9 +1470,9 @@ def create_guardian(
 ):
     session = get_session()
     try:
-        student = session.query(Student).filter(Student.id == student_id).first()
-        if student is None:
-            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        # RA-HIGH-3：對齊 READ 端點的 per-student scope 守衛（內部處理 404/403）。
+        # 園長/教師只能對自班學生新增 guardian，跨班一律 403。
+        student = assert_student_access(session, current_user, student_id)
 
         # 若設為主要聯絡人，先將其他主要聯絡人降級
         if item.is_primary:
@@ -1492,6 +1520,9 @@ def update_guardian(
         )
         if guardian is None:
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
+
+        # RA-HIGH-3：對齊 READ 端點的 per-student scope 守衛（跨班 403）。
+        assert_student_access(session, current_user, guardian.student_id)
 
         data = item.model_dump(exclude_unset=True)
         # 驗證 relation
@@ -1547,6 +1578,9 @@ def delete_guardian(
         )
         if guardian is None:
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
+
+        # RA-HIGH-3：對齊 READ 端點的 per-student scope 守衛（跨班 403）。
+        assert_student_access(session, current_user, guardian.student_id)
 
         guardian.deleted_at = now_taipei_naive()
         mark_soft_delete(request, "guardian", guardian.name or str(guardian_id))
