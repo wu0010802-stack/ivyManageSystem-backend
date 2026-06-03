@@ -225,12 +225,11 @@ def get_enrollment_roster(
     semester: Optional[int] = Query(None),
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
-    """取得花名冊格式的在籍記錄，含每班學生姓名、教師、員工名單。"""
-    assert_all_scope(
-        current_user,
-        Permission.STUDENTS_READ.value,
-        action_label="檢視全園在籍花名冊",
-    )
+    """取得花名冊格式的在籍記錄，含每班學生姓名、教師、員工名單。
+
+    scope 由下方 class-scope filter 收斂（own_class 只看自己班，比照 get_students）；
+    不再用 assert_all_scope 一律 403，避免 class-scoped 角色完全看不到自己班花名冊。
+    """
     school_year, semester = resolve_academic_term_filters(school_year, semester)
 
     # ROC 民國日期字串，例如 "1150402"
@@ -395,7 +394,7 @@ def print_enrollment_roster_pdf(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """產生在籍花名冊 PDF（A4 橫向，繁中 embed Noto Sans TC）。"""
-    # scope :all 守衛由 get_enrollment_roster 內 assert_all_scope 負責；
+    # scope 過濾由 get_enrollment_roster 內 class-scope filter 負責；
     # 直接呼叫端點函式需顯式傳 current_user（Depends default 不會注入）。
     roster = get_enrollment_roster(
         school_year=school_year, semester=semester, current_user=current_user
