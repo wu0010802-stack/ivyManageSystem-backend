@@ -23,19 +23,38 @@ from models.database import (
 # 既有家長推播 helper（不重新定義，遵守 DRY）
 from api.announcements import _fire_announcement_push
 from utils.scheduler_observability import scheduler_iteration
+from utils.scheduler_watermark import get_watermark, set_watermark
 
 logger = logging.getLogger(__name__)
+
+# 此排程器的時間游標 name（持久化於 scheduler_watermarks 表）
+_WATERMARK_NAME = "announcement_publish"
 
 
 def scheduler_enabled() -> bool:
     return bool(get_settings().scheduler.announcement_publish_scheduler_enabled)
 
 
+def _initial_watermark(session) -> datetime:
+    """重啟後 seed 用的時間游標：優先讀持久化值，無則 fallback now()。
+
+    fallback now() 確保首次啟動（游標尚未建立）不會把所有歷史排程公告
+    重推一遍——只有已持久化的游標才會被回放，補上重啟窗口內漏推的公告。
+    """
+    from utils.taipei_time import now_taipei_naive
+
+    return get_watermark(session, _WATERMARK_NAME) or now_taipei_naive()
+
+
 def tick(session, now: datetime, last_dispatched_at: datetime) -> int:
     """掃 publish_at in (last_dispatched_at, now] 且有家長 recipients 的公告，逐筆推播。
 
     Returns dispatched announcement count.
-    Caller 負責持久化 last_dispatched_at = now 給下一次 tick。
+
+    本函式在 commit 前把游標推進到 now 並持久化（set_watermark），使「enqueue
+    通知」與「游標推進」在同一事務原子落地——崩潰只會整批回滾重做，不會出現
+    「已推但游標沒進 → 重啟重推家長 LINE」。空窗口也推進游標並 commit，否則
+    重啟 seed 用舊游標會重推其後所有公告。
     """
     parent_exists = exists().where(
         AnnouncementParentRecipient.announcement_id == Announcement.id
@@ -52,8 +71,6 @@ def tick(session, now: datetime, last_dispatched_at: datetime) -> int:
         )
         .all()
     )
-    if not rows:
-        return 0
 
     for ann in rows:
         recipients = (
@@ -74,13 +91,15 @@ def tick(session, now: datetime, last_dispatched_at: datetime) -> int:
                 ann.id,
             )
 
+    set_watermark(session, _WATERMARK_NAME, now)
     session.commit()
-    logger.info(
-        "announcement publish tick: dispatched=%d (last=%s now=%s)",
-        len(rows),
-        last_dispatched_at.isoformat(),
-        now.isoformat(),
-    )
+    if rows:
+        logger.info(
+            "announcement publish tick: dispatched=%d (last=%s now=%s)",
+            len(rows),
+            last_dispatched_at.isoformat(),
+            now.isoformat(),
+        )
     return len(rows)
 
 
@@ -92,7 +111,9 @@ async def run_announcement_publish_scheduler(stop_event: asyncio.Event) -> None:
     check_interval = get_settings().scheduler.announcement_publish_check_interval
     logger.info("announcement publish scheduler 啟動 (interval=%ss)", check_interval)
 
-    last_dispatched_at = now_taipei_naive()
+    # 從持久化游標 seed（而非 now()）：重啟後回放，補上停機窗口內漏推的公告
+    with session_scope() as session:
+        last_dispatched_at = _initial_watermark(session)
 
     while not stop_event.is_set():
         with scheduler_iteration(

@@ -106,6 +106,7 @@ from models.recruitment import (
     RecruitmentAreaInsightCache,
     RecruitmentSyncState,
 )
+from models.scheduler_watermark import SchedulerWatermark
 from models.portfolio import (
     Attachment,
     StudentObservation,
@@ -252,6 +253,7 @@ __all__ = [
     "RecruitmentCampusSetting",
     "RecruitmentAreaInsightCache",
     "RecruitmentSyncState",
+    "SchedulerWatermark",
     # portfolio
     "Attachment",
     "StudentObservation",
