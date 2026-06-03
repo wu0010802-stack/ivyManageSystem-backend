@@ -416,6 +416,7 @@ def create_employee(
         # 自動配發工號（取代手填 + 重複檢查）：取 hire_date 民國年，空則用今日。
         from datetime import date as _date
         from services.employee_numbering import next_employee_id
+
         _hire = emp_data.get("hire_date")
         _hire_year = _hire.year if isinstance(_hire, _date) else today_taipei().year
         emp_data["employee_id"] = next_employee_id(session, _hire_year - 1911)
@@ -455,7 +456,11 @@ def create_employee(
         employee = Employee(**emp_data)
         session.add(employee)
         session.commit()
-        return {"message": "員工新增成功", "id": employee.id, "employee_id": employee.employee_id}
+        return {
+            "message": "員工新增成功",
+            "id": employee.id,
+            "employee_id": employee.employee_id,
+        }
     except IntegrityError:
         session.rollback()
         raise HTTPException(status_code=409, detail="工號配發衝突，請重試")
@@ -736,6 +741,19 @@ def delete_employee(
                     "員工 %s 軟刪除（離職）觸發薪資重算旗標，影響 %d 筆未封存記錄",
                     employee_id,
                     stale_marked,
+                )
+            # 偵測仍掛該員工的 active 班級導師綁定（標記待改派，不清空）
+            from services.offboarding.homeroom_check import (
+                detect_dangling_homeroom_assignments,
+            )
+
+            dangling = detect_dangling_homeroom_assignments(session, employee_id)
+            if dangling:
+                logger.warning(
+                    "員工 %s 離職時仍為 %d 個 active 班級導師，需 HR 改派：%s",
+                    employee_id,
+                    len(dangling),
+                    dangling,
                 )
         session.commit()
         return {"message": "員工已設為離職", "id": employee.id}
