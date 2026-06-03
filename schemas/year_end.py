@@ -193,6 +193,11 @@ class BuildSettlementsRequest(BaseModel):
 class BuildResultOut(BaseModel):
     built: int
     skipped_finalized: int
+    # B8: derive_report 彙整欄位（供前端 F2 提醒用）
+    # refresh_rates=False 時 derive_report 為 None，以 default 0/[] 回填
+    unmatched_count: int = 0  # 才藝報名未配對班級筆數
+    fallback_classes: int = 0  # 學號未回填沿用手填舊生率的班數
+    warnings: list[str] = []  # 各 derive 警告串接（缺單價/缺班導/缺目標等）
 
 
 class GridRowOut(BaseModel):

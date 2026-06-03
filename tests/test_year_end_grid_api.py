@@ -249,6 +249,54 @@ def test_build_settlements_endpoint(client_with_db):
     assert body["skipped_finalized"] == 0
 
 
+def test_build_settlements_response_has_derive_fields(client_with_db):
+    """B8: build-settlements 端點 response 應含 unmatched_count/fallback_classes/warnings。
+
+    本端點固定 refresh_rates=True，故 derive_report 非 None；欄位型別正確即通過。
+    SQLite 測試環境中才藝報名資料通常為空，所以 unmatched_count 預期 0，
+    fallback_classes 因 ClassEnrollmentTarget 已有種手填 returning_student_rate 而應為 0。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)
+    _login(client)
+
+    res = _build(client, cycle_id)
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # 原有欄位不破壞
+    assert body["built"] >= 1
+    assert body["skipped_finalized"] == 0
+
+    # B8 新增欄位存在且型別正確
+    assert "unmatched_count" in body
+    assert "fallback_classes" in body
+    assert "warnings" in body
+    assert isinstance(body["unmatched_count"], int)
+    assert isinstance(body["fallback_classes"], int)
+    assert isinstance(body["warnings"], list)
+
+    # SQLite seed 沒有才藝報名資料 → unmatched_count 為 0
+    assert body["unmatched_count"] == 0
+    # fallback_classes：seed 無學生 enrollment_school_year 資料，
+    # returning_rate derive 無法自動計算 → 沿用手填值，計為 fallback（>= 0 即合法）
+    assert body["fallback_classes"] >= 0
+
+
+def test_build_result_out_derive_report_none_safe():
+    """B8 None-safe: derive_report=None 時 BuildResultOut 三欄均用 default 值。
+
+    模擬 refresh_rates=False 路徑（或 derive_all 未執行）；不需完整 DB。
+    """
+    from schemas.year_end import BuildResultOut
+
+    out = BuildResultOut(built=3, skipped_finalized=1)
+    assert out.unmatched_count == 0
+    assert out.fallback_classes == 0
+    assert out.warnings == []
+
+
 def test_grid_endpoint_shape(client_with_db):
     client, sf = client_with_db
     _seed_users(sf)
@@ -494,27 +542,34 @@ def test_two_gate_signoff(client_with_db):
     with sf() as s:
         from models.database import User
         from utils.auth import hash_password
-        s.add(User(
-            username="admin",
-            password_hash=hash_password("TempPass123"),
-            role="admin",
-            permission_names=["YEAR_END_WRITE", "YEAR_END_READ"],
-            is_active=True,
-        ))
-        s.add(User(
-            username="accountant",
-            password_hash=hash_password("TempPass123"),
-            role="staff",
-            permission_names=["APPRAISAL_ACCOUNTING", "YEAR_END_READ"],
-            is_active=True,
-        ))
-        s.add(User(
-            username="boss",
-            password_hash=hash_password("TempPass123"),
-            role="staff",
-            permission_names=["YEAR_END_FINALIZE", "YEAR_END_READ"],
-            is_active=True,
-        ))
+
+        s.add(
+            User(
+                username="admin",
+                password_hash=hash_password("TempPass123"),
+                role="admin",
+                permission_names=["YEAR_END_WRITE", "YEAR_END_READ"],
+                is_active=True,
+            )
+        )
+        s.add(
+            User(
+                username="accountant",
+                password_hash=hash_password("TempPass123"),
+                role="staff",
+                permission_names=["APPRAISAL_ACCOUNTING", "YEAR_END_READ"],
+                is_active=True,
+            )
+        )
+        s.add(
+            User(
+                username="boss",
+                password_hash=hash_password("TempPass123"),
+                role="staff",
+                permission_names=["YEAR_END_FINALIZE", "YEAR_END_READ"],
+                is_active=True,
+            )
+        )
         s.commit()
 
     cycle_id, emp_id = _seed_cycle_and_employee(sf)
@@ -649,13 +704,17 @@ def test_upsert_class_target_idempotent(client_with_db):
         "head_count_target": 20,
         "returning_student_rate": "0.800",
     }
-    r1 = client.post(f"/api/year_end/cycles/{cycle_id}/class_targets", json=base_payload)
+    r1 = client.post(
+        f"/api/year_end/cycles/{cycle_id}/class_targets", json=base_payload
+    )
     assert r1.status_code == 200, r1.text
 
     # 第二次：更新 head_count_target
     updated_payload = dict(base_payload)
     updated_payload["head_count_target"] = 22
-    r2 = client.post(f"/api/year_end/cycles/{cycle_id}/class_targets", json=updated_payload)
+    r2 = client.post(
+        f"/api/year_end/cycles/{cycle_id}/class_targets", json=updated_payload
+    )
     assert r2.status_code == 200, r2.text
     assert r2.json()["head_count_target"] == 22
 

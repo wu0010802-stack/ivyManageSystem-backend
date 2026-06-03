@@ -138,7 +138,7 @@ def create_cycle(
                     year_end_cycle_id=cycle.id,
                     semester_first=src_org.semester_first,
                     enrollment_target=src_org.enrollment_target,
-                    enrollment_actual=None,            # 重置：實際值待新週期填入
+                    enrollment_actual=None,  # 重置：實際值待新週期填入
                     school_achievement_rate=Decimal("0"),  # 重置
                     org_achievement_rate=src_org.org_achievement_rate,
                     meeting_absence_deduction=src_org.meeting_absence_deduction,
@@ -161,7 +161,7 @@ def create_cycle(
                     head_count_target=src_ct.head_count_target,
                     returning_student_rate=src_ct.returning_student_rate,
                     avg_monthly_enrollment=Decimal("0"),  # 重置：build_settlements 重算
-                    class_performance_rate=Decimal("0"),   # 重置
+                    class_performance_rate=Decimal("0"),  # 重置
                 )
             )
 
@@ -780,7 +780,6 @@ def export_summary_pdf(
     )
 
 
-
 # ===== Task 6: build-settlements / grid / manual-patch =====
 
 
@@ -809,12 +808,19 @@ def build_settlements_endpoint(
         refresh_rates=True,
     )
     session.commit()
-    return BuildResultOut(built=result.built, skipped_finalized=result.skipped_finalized)
+    dr = (
+        result.derive_report
+    )  # None when refresh_rates=False（本端點固定 True，但 None-safe）
+    return BuildResultOut(
+        built=result.built,
+        skipped_finalized=result.skipped_finalized,
+        unmatched_count=dr.unmatched_count if dr is not None else 0,
+        fallback_classes=dr.fallback_classes if dr is not None else 0,
+        warnings=dr.warnings if dr is not None else [],
+    )
 
 
-@year_end_router.get(
-    "/cycles/{cycle_id}/grid", response_model=list[GridRowOut]
-)
+@year_end_router.get("/cycles/{cycle_id}/grid", response_model=list[GridRowOut])
 def grid_endpoint(
     cycle_id: int,
     current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
