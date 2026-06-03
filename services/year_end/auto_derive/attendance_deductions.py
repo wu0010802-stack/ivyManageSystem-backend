@@ -226,8 +226,13 @@ def _compute(
             "missing_punch_count": missing_count,
             "late_rate": float(late_rate),
             "missing_punch_rate": float(miss_rate),
+            # 原始時數（未四捨五入），讓金額可被外部精確重建：
+            #   personal_leave = personal_hours / 8 × personal_rate（全精度後 _q2）
+            #   sick_leave     = sick_hours     / 8 × sick_rate    （同上）
+            "personal_hours": float(personal_hours),
             "personal_days": float(_q2(personal_days)),
             "personal_rate": float(personal_rate),
+            "sick_hours": float(sick_hours),
             "sick_days": float(_q2(sick_days)),
             "sick_rate": float(sick_rate),
             "meeting_absence_count": meeting_absence,

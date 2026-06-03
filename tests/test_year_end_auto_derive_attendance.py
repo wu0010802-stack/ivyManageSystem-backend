@@ -367,3 +367,137 @@ def test_sabotage_wrong_rate_would_fail(base):
 
     res = ad.derive_attendance_deductions(db, cycle, emp)
     assert res.late == Decimal("-150.00")  # 50/次，非 100/次
+
+
+# --------------------------------------------------------------------------- #
+# item 2：半天/小時假 fixture（鎖定比例扣法 + calc_meta 原始時數可重建驗證）   #
+# --------------------------------------------------------------------------- #
+def test_personal_leave_half_day(base):
+    """事假 4h（半天）→ 4/8 × 500 = -250；calc_meta 記 personal_hours=4.0（原始）。
+
+    業主規則「事假 -500/天」採按比例：半天 = 0.5 天 = -250。
+    同時驗證 calc_meta 可重建：personal_hours / 8 × personal_rate（_q2） == 250.00。
+    """
+    db, cycle, emp = base["db"], base["cycle"], base["emp"]
+    _mk_leave(db, emp, "personal", date(2025, 6, 2), date(2025, 6, 2), 4)
+    db.commit()
+
+    res = ad.derive_attendance_deductions(db, cycle, emp)
+    assert res.personal_leave == Decimal("-250.00")
+
+    meta = res.calc_meta
+    # calc_meta 原始時數
+    assert meta["personal_hours"] == 4.0
+    # 可重建驗證：hours / 8 × rate（全精度後 _q2）== abs(personal_leave)
+    reconstructed = (
+        Decimal(str(meta["personal_hours"]))
+        / Decimal("8")
+        * Decimal(str(meta["personal_rate"]))
+    ).quantize(Decimal("0.01"), rounding=__import__("decimal").ROUND_HALF_UP)
+    assert reconstructed == abs(res.personal_leave)
+
+
+def test_sick_leave_partial_hours(base):
+    """病假 1.5h → 1.5/8 × 500 = 93.75 → -93.75；calc_meta 記 sick_hours=1.5（原始）。
+
+    若 meta 改存四捨五入後 sick_days=0.19 → 重建 0.19×500=95≠93.75，稽核反推對不上。
+    存原始時數後：1.5/8×500=93.75 → 精確重建。
+    """
+    db, cycle, emp = base["db"], base["cycle"], base["emp"]
+    _mk_leave(db, emp, "sick", date(2025, 7, 2), date(2025, 7, 2), 1.5)
+    db.commit()
+
+    res = ad.derive_attendance_deductions(db, cycle, emp)
+    assert res.sick_leave == Decimal("-93.75")
+
+    meta = res.calc_meta
+    # calc_meta 存原始時數（非四捨後天數）
+    assert meta["sick_hours"] == 1.5
+    # 可重建驗證
+    reconstructed = (
+        Decimal(str(meta["sick_hours"]))
+        / Decimal("8")
+        * Decimal(str(meta["sick_rate"]))
+    ).quantize(Decimal("0.01"), rounding=__import__("decimal").ROUND_HALF_UP)
+    assert reconstructed == abs(res.sick_leave)
+
+
+def test_sick_leave_half_day(base):
+    """病假 4h（半天）→ 4/8 × 500 = -250；同時確認 sick_hours=4.0 可重建。"""
+    db, cycle, emp = base["db"], base["cycle"], base["emp"]
+    _mk_leave(db, emp, "sick", date(2025, 7, 3), date(2025, 7, 3), 4)
+    db.commit()
+
+    res = ad.derive_attendance_deductions(db, cycle, emp)
+    assert res.sick_leave == Decimal("-250.00")
+
+    meta = res.calc_meta
+    assert meta["sick_hours"] == 4.0
+    reconstructed = (
+        Decimal(str(meta["sick_hours"]))
+        / Decimal("8")
+        * Decimal(str(meta["sick_rate"]))
+    ).quantize(Decimal("0.01"), rounding=__import__("decimal").ROUND_HALF_UP)
+    assert reconstructed == abs(res.sick_leave)
+
+
+# --------------------------------------------------------------------------- #
+# item 3：跨期假單行為鎖定（以 start_date 落期間整單計入）                    #
+# --------------------------------------------------------------------------- #
+def test_cross_period_leave_counted_by_start_date(base):
+    """跨期假單：start=2025-12-30、end=2026-01-02（end 在期間外）。
+
+    現行以 start_date 落期間為準 → 整單計入（授權近似，非拆分）。
+    seed 整單 4 天（32h），期間內應全計入 → personal_leave = -2000.00。
+
+    注意：end_date 與 LeaveRecord.leave_hours 計算無關（_leave_hours 只 SUM hours，
+    不依日期切割）。本測試釘死「整單計入」行為——若改為按比例拆分，
+    期間內僅 2 天（16h）→ 金額 -1000.00，此 assert 將 FAIL 並提醒。
+    """
+    db, cycle, emp = base["db"], base["cycle"], base["emp"]
+    # start_date=2025-12-30（在 2025 期間內）；end_date=2026-01-02（在期間外）
+    # 整單 4 天 = 32h
+    _mk_leave(db, emp, "personal", date(2025, 12, 30), date(2026, 1, 2), 32)
+    db.commit()
+
+    res = ad.derive_attendance_deductions(db, cycle, emp)
+    # 整單 32h 計入 → 32/8 × 500 = 2000.00 → -2000.00
+    assert res.personal_leave == Decimal("-2000.00")
+
+    meta = res.calc_meta
+    # calc_meta 也應記錄完整 32h（原始時數）
+    assert meta["personal_hours"] == 32.0
+
+
+# --------------------------------------------------------------------------- #
+# item 4：費率 fallback（無 active BonusConfig 但有資料 → 用預設值扣款）      #
+# --------------------------------------------------------------------------- #
+def test_no_config_with_data_uses_default_rates(test_db_session):
+    """無 active BonusConfig 但有遲到/事假/病假資料 → 使用 default 費率扣款。
+
+    補強 test_no_config_zero 的盲點（那個測試因無資料，fallback 與 0 無法區分）。
+    預設費率：遲到/未打卡=50，事假=500，病假=500。
+    """
+    db = test_db_session
+    # 確認無 active BonusConfig（不加 cfg）
+    cycle = _mk_cycle(db, 114)
+    emp = _mk_employee(db, "E_NOFG_DATA", "無設定有資料")
+    # 遲到 2 次 → default 50 × 2 = -100
+    _mk_attendance(db, emp, date(2025, 3, 1), is_late=True)
+    _mk_attendance(db, emp, date(2025, 3, 2), is_late=True)
+    # 事假 1 天（8h）→ default 500 × 1 = -500
+    _mk_leave(db, emp, "personal", date(2025, 6, 1), date(2025, 6, 1), 8)
+    # 病假 0.5 天（4h）→ default 500 × 0.5 = -250
+    _mk_leave(db, emp, "sick", date(2025, 7, 1), date(2025, 7, 1), 4)
+    db.commit()
+
+    res = ad.derive_attendance_deductions(db, cycle, emp)
+    # fallback 費率：遲到 50、事假 500、病假 500
+    assert res.late == Decimal("-100.00"), "遲到應用 default 50/次"
+    assert res.personal_leave == Decimal("-500.00"), "事假應用 default 500/天"
+    assert res.sick_leave == Decimal("-250.00"), "病假應用 default 500/天（按比例）"
+
+    meta = res.calc_meta
+    assert meta["late_rate"] == 50.0
+    assert meta["personal_rate"] == 500.0
+    assert meta["sick_rate"] == 500.0
