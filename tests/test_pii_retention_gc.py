@@ -69,6 +69,34 @@ def test_gc_redacts_after_365_days(test_db_session, monkeypatch):
     assert g.pii_redacted_at is not None
 
 
+def test_gc_redacts_student_parent_snapshot(test_db_session, monkeypatch):
+    """GC 抹 Guardian 時，也要抹 students 表上的去正規化家長快照（parent_name/phone）。
+
+    對稱補抹：否則同一份家長 PII 以明文續存於 students（雙寫副本），等同 GC 被繞過。
+    """
+    # 直接 patch dry_run_enabled：test_db_session setup 已先觸發 get_settings() 快取
+    # dry_run=True（預設安全值），此時測試體內 setenv 已太晚。patch 確保關閉 dry-run。
+    monkeypatch.setattr(
+        "services.pii_retention_scheduler.dry_run_enabled", lambda: False
+    )
+    student, g = _make_guardian_pair(
+        test_db_session,
+        lifecycle=LIFECYCLE_GRADUATED,
+        days_ago=400,
+        user_id=7,
+    )
+    student.parent_name = "王媽媽"
+    student.parent_phone = "0912345678"
+    test_db_session.commit()
+
+    _run_pii_retention_gc(session=test_db_session)
+
+    test_db_session.expire_all()
+    test_db_session.refresh(student)
+    assert student.parent_name == "[已離校家長]"
+    assert student.parent_phone is None
+
+
 def test_gc_skips_within_retention_window(test_db_session, monkeypatch):
     monkeypatch.setenv("PII_RETENTION_GC_DRY_RUN", "0")
     student, g = _make_guardian_pair(

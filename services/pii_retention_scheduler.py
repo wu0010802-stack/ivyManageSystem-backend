@@ -65,7 +65,9 @@ async def run_pii_retention_scheduler(stop_event: asyncio.Event) -> None:
             pass
 
         while not stop_event.is_set():
-            with scheduler_iteration("pii_retention", expected_interval_seconds=_GC_INTERVAL_SEC):
+            with scheduler_iteration(
+                "pii_retention", expected_interval_seconds=_GC_INTERVAL_SEC
+            ):
                 _run_pii_retention_gc()
             with scheduler_iteration("pii_retention_employee"):
                 _run_employee_pii_retention_gc()
@@ -147,6 +149,19 @@ def _run_pii_retention_gc(session=None) -> None:
             WHERE id IN :ids
         """).bindparams(bindparam("ids", expanding=True))
         session.execute(stmt, {"ids": tuple(guardian_ids), "now": now})
+
+        # 同步抹除 students 表上的去正規化家長快照（parent_name / parent_phone 是
+        # is_primary guardian 的雙寫副本，見 api/students._sync_*）。只抹 guardians
+        # 會讓同一份家長 PII 以明文續存於 students，等同 GC 被繞過（個資法 §11）。
+        student_ids = sorted({r[1] for r in rows if r[1] is not None})
+        if student_ids:
+            student_stmt = text("""
+                UPDATE students
+                SET parent_name = '[已離校家長]',
+                    parent_phone = NULL
+                WHERE id IN :sids
+            """).bindparams(bindparam("sids", expanding=True))
+            session.execute(student_stmt, {"sids": tuple(student_ids)})
 
         # 寫 audit_log（每筆一條，changes 不含 PII）
         days = retention_days()
