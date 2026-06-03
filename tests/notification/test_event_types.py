@@ -3,15 +3,16 @@
 from services.notification.event_types import NOTIFICATION_EVENT_TYPES
 
 
-def test_event_types_contains_all_23_v1_events():
+def test_event_types_contains_all_24_v1_events():
     expected = {
-        # 員工域 (12)
+        # 員工域 (13)
         "leave.submitted",
         "leave.approved",
         "leave.rejected",
         "overtime.submitted",
         "overtime.approved",
         "overtime.rejected",
+        "punch_correction.submitted",
         "punch_correction.approved",
         "punch_correction.rejected",
         "salary.batch_completed",
@@ -40,6 +41,6 @@ def test_event_types_is_frozenset():
     assert isinstance(NOTIFICATION_EVENT_TYPES, frozenset)
 
 
-def test_event_types_count_is_23():
-    # 員工 12 + 家長 7 + 才藝家長 3 + Growth Report 1 = 23
-    assert len(NOTIFICATION_EVENT_TYPES) == 23
+def test_event_types_count_is_24():
+    # 員工 13 + 家長 7 + 才藝家長 3 + Growth Report 1 = 24
+    assert len(NOTIFICATION_EVENT_TYPES) == 24

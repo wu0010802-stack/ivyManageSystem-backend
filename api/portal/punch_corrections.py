@@ -11,12 +11,36 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 from pydantic import BaseModel, field_validator, model_validator
 
+import logging
+
 from models.approval import ApprovalStatus
-from models.database import get_session, PunchCorrectionRequest
+from models.database import get_session, PunchCorrectionRequest, User
 from utils.auth import get_current_user
+from utils.permissions import Permission
 from ._shared import _get_employee
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+def _list_active_users_with_permission(session, perm: str) -> list[int]:
+    """列出 permission_names 含 perm 的 active user_id（SQLite/PG 通用）。"""
+    if session.bind.dialect.name == "sqlite":
+        users = session.query(User).filter(User.is_active.is_(True)).all()
+        return [
+            u.id for u in users if u.permission_names and perm in u.permission_names
+        ]
+    rows = (
+        session.query(User.id)
+        .filter(
+            User.is_active.is_(True),
+            User.permission_names.contains([perm]),
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
+
 
 CORRECTION_TYPE_LABELS = {
     "punch_in": "補上班打卡",
@@ -42,7 +66,7 @@ class PunchCorrectionCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_required_times(self):
-        if self.attendance_date and self.attendance_date > today_taipei():  
+        if self.attendance_date and self.attendance_date > today_taipei():
             raise ValueError("補打卡日期不得為未來日期")
         if self.correction_type == "punch_in" and not self.requested_punch_in:
             raise ValueError("補正類型為「補上班打卡」時，申請上班時間為必填")
@@ -61,9 +85,15 @@ def _format_correction(c: PunchCorrectionRequest) -> dict:
         "id": c.id,
         "attendance_date": c.attendance_date.isoformat(),
         "correction_type": c.correction_type,
-        "correction_type_label": CORRECTION_TYPE_LABELS.get(c.correction_type, c.correction_type),
-        "requested_punch_in": c.requested_punch_in.isoformat() if c.requested_punch_in else None,
-        "requested_punch_out": c.requested_punch_out.isoformat() if c.requested_punch_out else None,
+        "correction_type_label": CORRECTION_TYPE_LABELS.get(
+            c.correction_type, c.correction_type
+        ),
+        "requested_punch_in": (
+            c.requested_punch_in.isoformat() if c.requested_punch_in else None
+        ),
+        "requested_punch_out": (
+            c.requested_punch_out.isoformat() if c.requested_punch_out else None
+        ),
         "reason": c.reason,
         "approval_status": c.approval_status,
         "approved_by": c.approved_by,
@@ -113,13 +143,22 @@ def create_my_punch_correction(
         emp = _get_employee(session, current_user)
 
         # 防重複：同員工同日期若已有待審或已核准的申請
-        existing = session.query(PunchCorrectionRequest).filter(
-            PunchCorrectionRequest.employee_id == emp.id,
-            PunchCorrectionRequest.attendance_date == data.attendance_date,
-            PunchCorrectionRequest.status != ApprovalStatus.REJECTED.value,  # pending 或 approved
-        ).first()
+        existing = (
+            session.query(PunchCorrectionRequest)
+            .filter(
+                PunchCorrectionRequest.employee_id == emp.id,
+                PunchCorrectionRequest.attendance_date == data.attendance_date,
+                PunchCorrectionRequest.status
+                != ApprovalStatus.REJECTED.value,  # pending 或 approved
+            )
+            .first()
+        )
         if existing:
-            status_label = "待審核" if existing.status == ApprovalStatus.PENDING.value else "已核准"
+            status_label = (
+                "待審核"
+                if existing.status == ApprovalStatus.PENDING.value
+                else "已核准"
+            )
             raise HTTPException(
                 status_code=400,
                 detail=f"您在 {data.attendance_date} 已有{status_label}的補打卡申請（ID: {existing.id}），請勿重複送出",
@@ -135,6 +174,33 @@ def create_my_punch_correction(
             status=ApprovalStatus.PENDING.value,
         )
         session.add(correction)
+        session.flush()  # 取得 correction.id 供通知 context
+
+        # 通知：commit 前 enqueue；對每位 APPROVALS reviewer 個人推送（對稱 leave /
+        # overtime submit；補打卡 approve 端點守衛即 Permission.APPROVALS）。
+        try:
+            from services.notification import dispatch
+
+            reviewer_user_ids = _list_active_users_with_permission(
+                session, Permission.APPROVALS.value
+            )
+            for rid in reviewer_user_ids:
+                dispatch.enqueue(
+                    session=session,
+                    event_type="punch_correction.submitted",
+                    recipient_user_id=rid,
+                    context={
+                        "submitter_name": emp.name,
+                        "target_date": data.attendance_date.isoformat(),
+                        "correction_id": correction.id,
+                    },
+                    sender_id=current_user.get("user_id"),
+                    source_entity_type="punch_correction_request",
+                    source_entity_id=correction.id,
+                )
+        except Exception as exc:
+            logger.warning("punch_correction.submitted enqueue 失敗（已吞）：%s", exc)
+
         session.commit()
         return {"message": "補打卡申請已送出，待主管核准", "id": correction.id}
     except HTTPException:

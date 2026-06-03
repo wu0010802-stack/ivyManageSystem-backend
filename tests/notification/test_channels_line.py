@@ -82,12 +82,12 @@ def test_line_adapter_calls_handler_when_registered():
         LINE_HANDLERS["leave.approved"] = orig
 
 
-def test_line_handlers_covers_all_23_events():
-    """Phase 4 Section 2 後 LINE_HANDLERS 覆蓋全部 23 個 event_type（含 dismissal.created
-    via group_id mode）。fallback push_text path 為 safety net 給未來新 event。"""
+def test_line_handlers_covers_all_24_events():
+    """LINE_HANDLERS 覆蓋全部 24 個 event_type（含 dismissal.created via group_id
+    mode）。fallback push_text path 為 safety net 給未來新 event。"""
     assert UNREGISTERED_EVENT not in LINE_HANDLERS
-    # 員工 11 + 家長 7 + 才藝家長 3 + Growth Report 1 + dismissal 1 = 23
-    assert len(LINE_HANDLERS) == 23
+    # 員工 12 + 家長 7 + 才藝家長 3 + Growth Report 1 + dismissal 1 = 24
+    assert len(LINE_HANDLERS) == 24
 
 
 def test_dismissal_created_handler_uses_group_push():
