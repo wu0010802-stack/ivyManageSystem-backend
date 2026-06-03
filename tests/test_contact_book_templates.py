@@ -312,6 +312,34 @@ class TestSharedTemplate:
         )
         assert rsp.status_code == 400
 
+    def test_promote_others_personal_template_forbidden(self, tpl_client):
+        """IDOR 守衛：非 owner 且無發布權的教師不可 promote 他人個人範本。"""
+        client, sf = tpl_client
+        perms = [
+            Permission.PORTFOLIO_READ.value,
+            Permission.PORTFOLIO_WRITE.value,
+        ]
+        # 教師 A 建個人範本
+        with sf() as session:
+            ua, ea = _make_teacher(session, username="tch_a", perms=perms)
+            session.commit()
+            a_tk = _token(ua, ea.id, perms)
+        created = client.post(
+            "/api/portal/contact-book/templates",
+            json={"name": "A 的範本", "scope": "personal", "fields": {}},
+            cookies={"access_token": a_tk},
+        ).json()
+        # 教師 B（非 owner、無 PORTFOLIO_PUBLISH）嘗試 promote A 的範本 → 403
+        with sf() as session:
+            ub, eb = _make_teacher(session, username="tch_b", perms=perms)
+            session.commit()
+            b_tk = _token(ub, eb.id, perms)
+        rsp = client.post(
+            f"/api/portal/contact-book/templates/{created['id']}/promote",
+            cookies={"access_token": b_tk},
+        )
+        assert rsp.status_code == 403
+
     def test_teacher_sees_shared_templates_in_list(self, tpl_client):
         """教師列表看到自己 personal + 全部 shared。"""
         client, sf = tpl_client

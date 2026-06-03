@@ -46,6 +46,7 @@ def is_unrestricted(current_user: dict, code: str | None = None) -> bool:
     """
     if code is not None:
         from utils.permissions import resolve_grant
+
         grant = resolve_grant(current_user, code)
         return grant is not None and grant.scope == "all"
     return current_user.get("role", "") in _UNRESTRICTED_ROLES
@@ -64,6 +65,27 @@ def require_unrestricted_role(
         raise HTTPException(
             status_code=403,
             detail=f"{action_label}僅限 admin/hr/supervisor 角色執行",
+        )
+
+
+def assert_all_scope(
+    current_user: dict, code: str, *, action_label: str = "此操作"
+) -> None:
+    """要求 caller 對 ``code`` 持有 ``:all`` scope（或 wildcard / 管理角色），
+    否則 403。
+
+    用於「全園彙總 / 跨班匯出」型端點：這類端點語意上回傳全校資料，無法以
+    per-row 過濾收斂。gate（``require_*_permission``）是 scope-blind，會放行
+    持有 ``code:own_class`` 的自訂角色 → 若不額外檢查即 fail-open（回全園）。
+
+    本守衛確保只有 ``code:all`` / wildcard 持有者可進；持 ``code:own_class``
+    的角色一律 403。對標準管理角色（admin wildcard、bare ``code`` 等價 ``:all``）
+    **零行為變更**。
+    """
+    if not is_unrestricted(current_user, code=code):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{action_label}需要全園範圍權限（{code}:all）",
         )
 
 

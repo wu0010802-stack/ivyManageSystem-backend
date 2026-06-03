@@ -20,6 +20,7 @@ from models.database import (
 from models.dismissal import StudentDismissalCall, _now_taipei_naive, _TAIPEI_TZ
 from utils.auth import require_staff_permission, get_current_user
 from utils.permissions import Permission
+from utils.portfolio_access import assert_all_scope
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,16 @@ async def create_dismissal_call(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """建立接送通知。同一學生若已有 pending/acknowledged 通知則拋 409。"""
+    # 不要正名為 DISMISSAL_CALLS_*：create/list 亦由前端 StudentWorkbench
+    # 「通知放學」按鈕呼叫，使用者為學生管理者（supervisor 有 STUDENTS_WRITE 但
+    # 無 DISMISSAL_CALLS_WRITE）；正名會 regression（已試過並 revert，見 git 史）。
+    # STUDENTS_WRITE gate 符合使用 context；assert_all_scope 仍鎖 :all 堵
+    # STUDENTS_WRITE:own_class 自訂角色越權。teacher 走 portal 端自班 scope 路徑。
+    assert_all_scope(
+        current_user,
+        Permission.STUDENTS_WRITE.value,
+        action_label="建立接送通知",
+    )
     user_id = current_user.get("user_id")
     loop = asyncio.get_running_loop()
     out, classroom_id = await loop.run_in_executor(
@@ -305,6 +316,13 @@ def list_dismissal_calls(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """列出接送通知（預設今日）。"""
+    # 全園接送通知列表：鎖 :all，擋住持 STUDENTS_READ:own_class 的自訂角色
+    # 看到全園接送名單（teacher 自班檢視走 portal 端）。
+    assert_all_scope(
+        current_user,
+        Permission.STUDENTS_READ.value,
+        action_label="檢視全園接送通知",
+    )
     session = get_session()
     try:
         if target_date:
@@ -409,6 +427,13 @@ async def cancel_dismissal_call(
 
     F-044：僅原建立者或 admin/hr/supervisor 可取消，避免他人改寫線下流程。
     """
+    # 鎖 :all 擋持 STUDENTS_WRITE:own_class 的自訂角色（_db_cancel 內另有
+    # F-044 建立者/管理角色檢查）。TODO(scope): 理想 per-row，列 follow-up。
+    assert_all_scope(
+        current_user,
+        Permission.STUDENTS_WRITE.value,
+        action_label="取消接送通知",
+    )
     loop = asyncio.get_running_loop()
     out, classroom_id = await loop.run_in_executor(
         None, _db_cancel_dismissal_call, call_id, current_user

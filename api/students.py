@@ -854,6 +854,9 @@ def create_student(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """新增學生"""
+    # 學生主資料寫入：限 admin/hr/supervisor（對齊 PUT/DELETE/bulk-transfer policy，
+    # audit 2026-05-07 P0 #3/#4）。擋自訂 STUDENTS_WRITE:own_class 角色越權建生。
+    require_unrestricted_role(current_user, action_label="新增學生")
     session = get_session()
     try:
         data = item.model_dump()
@@ -1062,6 +1065,9 @@ async def graduate_student(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """設定學生畢業或轉出，並標記為非在讀。同時取消進行中的接送通知並推送 WS 事件。"""
+    # 學生主資料生命週期寫入：限 admin/hr/supervisor（對齊主資料寫入 policy）。
+    # 擋自訂 STUDENTS_WRITE:own_class 角色越權畢業/轉出任意學生。
+    require_unrestricted_role(current_user, action_label="學生畢業/離園")
     session = get_session()
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
@@ -1289,6 +1295,12 @@ def get_student_profile(
     """學生完整檔案聚合（basic + lifecycle + health + guardians + 各種 summary）。"""
     session = get_session()
     try:
+        # 逐筆 PII：限自班——持 STUDENTS_READ:own_class 者不得讀跨班學生完整檔案
+        # （含監護人電話/生日）。標準角色（admin/supervisor :all）照常放行；不存在
+        # 的 student_id raise 404。
+        assert_student_access(
+            session, current_user, student_id, code=Permission.STUDENTS_READ.value
+        )
         profile = assemble_profile(
             session,
             student_id,
@@ -1335,6 +1347,9 @@ async def transition_student_lifecycle(
     - 軟刪該生當學期才藝報名
     - 標記 AuditMiddleware soft-delete summary（request 傳入 set_lifecycle_status）
     """
+    # 學生主資料生命週期寫入：限 admin/hr/supervisor（對齊主資料寫入 policy）。
+    # 擋自訂 STUDENTS_LIFECYCLE_WRITE:own_class 角色越權轉移任意學生狀態。
+    require_unrestricted_role(current_user, action_label="學生生命週期轉移")
     session = get_session()
     dismissal_broadcasts: list[dict] = []
     try:
@@ -1643,6 +1658,10 @@ def get_student_lifecycle_overview(
 ):
     session = get_session()
     try:
+        # 逐筆：限自班——持 STUDENTS_READ:own_class 者不得查跨班學生生命週期。
+        assert_student_access(
+            session, current_user, student_id, code=Permission.STUDENTS_READ.value
+        )
         overview = build_lifecycle_overview(session, student_id)
         return LifecycleOverviewOut(
             student_id=overview.student_id,
