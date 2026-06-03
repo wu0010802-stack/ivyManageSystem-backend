@@ -220,7 +220,11 @@ def _do_convert(session, visit, *, classroom_id, actor_user_id):
 
 def _do_activate(session, visit, student, *, actor_user_id):
     """enrolled → active: lifecycle 升級。"""
-    student.lifecycle_status = "active"
+    from utils.student_lifecycle import set_lifecycle_status
+
+    # 走統一入口寫 lifecycle，補上全站 AuditLog（RecruitmentEventLog 僅漏斗自身軌跡，
+    # 不進統一稽核）。enrolled↔active 皆非終態，terminal_entered_at / PII GC 不受影響。
+    set_lifecycle_status(session, student, "active", actor_user_id=actor_user_id)
     log_id = _write_event_log(
         session,
         visit_id=visit.id,
@@ -280,7 +284,9 @@ def _do_revert_activate(session, visit, student, *, actor_user_id, reason):
     )
     if has_attendance:
         warnings.append("student_has_attendance_after_active")
-    student.lifecycle_status = "enrolled"
+    from utils.student_lifecycle import set_lifecycle_status
+
+    set_lifecycle_status(session, student, "enrolled", actor_user_id=actor_user_id)
     log_id = _write_event_log(
         session,
         visit_id=visit.id,

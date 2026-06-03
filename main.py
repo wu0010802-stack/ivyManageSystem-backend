@@ -229,7 +229,9 @@ def on_startup():
 
         s = get_session()
         try:
-            seed = {p.code: p.scope_options for p in s.query(PermissionDefinition).all()}
+            seed = {
+                p.code: p.scope_options for p in s.query(PermissionDefinition).all()
+            }
         finally:
             s.close()
         check_scope_options_sanity(seed)
@@ -969,6 +971,12 @@ app.include_router(calendar_admin_router, prefix="/api/calendar")
 from api.permissions_admin import router as permissions_admin_router
 
 app.include_router(permissions_admin_router)
+from api.dsr_admin import router as dsr_admin_router
+
+app.include_router(dsr_admin_router)
+from api.policies_admin import router as policies_admin_router
+
+app.include_router(policies_admin_router)
 app.include_router(offboarding_router, prefix="/api")
 
 from api import leave_quota_expiry as _lqe_api

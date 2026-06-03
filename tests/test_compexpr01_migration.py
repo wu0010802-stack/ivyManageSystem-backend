@@ -187,6 +187,7 @@ def _create_prerequisite_tables(bind):
         meta,
         Column("id", Integer, primary_key=True),
         Column("employee_id", Integer),
+        Column("year", Integer),
         Column("leave_type", String(30)),
         Column("total_days", Float, default=0),
     )
@@ -393,6 +394,63 @@ def test_compexpr01_backfill_leave_quota_period(tmp_path):
         assert (
             364 <= diff_days <= 366
         ), f"period_end - period_start 應約 1 年，實為 {diff_days} 天"
+
+    engine.dispose()
+
+
+def test_compexpr01_backfill_multi_year_no_unique_violation(tmp_path):
+    """同員工多年度 annual row → backfill 不可撞 uq_leave_quotas_emp_period_annual。
+
+    Bug sweep 2026-06-03 ①：backfill 對同員工每筆 annual row 算出的 period_start
+    只看 hire_date（與 row.year 無關）→ 全部相同 → 第 2 筆 UPDATE 撞 partial unique
+    index → prod upgrade abort。修後：每員工只讓「最新年度」那筆拿 period_start，
+    其餘維持 NULL。
+    """
+    db_path = tmp_path / "multi_year_backfill.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    module = _load_migration_module()
+
+    with engine.begin() as conn:
+        _create_prerequisite_tables(conn)
+        conn.execute(
+            text(
+                "INSERT INTO employees (id, name, hire_date) "
+                "VALUES (5, '跨年員工', '2020-03-15')"
+            )
+        )
+        # 同員工兩筆 annual row（2025 / 2026），period_start 皆 NULL
+        conn.execute(
+            text(
+                "INSERT INTO leave_quotas (id, employee_id, year, leave_type, total_days) "
+                "VALUES (200, 5, 2025, 'annual', 14.0)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO leave_quotas (id, employee_id, year, leave_type, total_days) "
+                "VALUES (201, 5, 2026, 'annual', 14.0)"
+            )
+        )
+
+        stub = _AlembicOpStub(conn)
+        module.op = stub
+        # 舊碼會在此處因 unique violation 拋 IntegrityError
+        module.upgrade()
+
+        rows = conn.execute(
+            text(
+                "SELECT id, period_start FROM leave_quotas "
+                "WHERE employee_id = 5 AND leave_type = 'annual' ORDER BY id"
+            )
+        ).fetchall()
+        backfilled = [r for r in rows if r[1] is not None]
+        assert (
+            len(backfilled) == 1
+        ), f"每員工只應有 1 筆 annual row 拿到 period_start，實際 {len(backfilled)} 筆"
+        # 應落在最新年度（id=201, year=2026）那筆
+        assert (
+            backfilled[0][0] == 201
+        ), f"period_start 應落在最新年度 row(id=201)，實際 id={backfilled[0][0]}"
 
     engine.dispose()
 

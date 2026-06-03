@@ -120,6 +120,40 @@ class TestAutoPromoteToPending:
         assert rc_w.promoted_at is not None
         assert rc_w.confirm_deadline is not None
 
+    def test_promote_notifies_parent(self, session, svc, monkeypatch):
+        """候補升正式時也要推家長（複用 activity.waitlist_reminder；修補只推 staff 缺口）。"""
+        from unittest.mock import MagicMock
+        import services.activity_service as svc_mod
+        import services.notification.dispatch as dispatch_mod
+
+        course = _add_course(session, capacity=1)
+        reg_e = _add_reg(session, "在籍")
+        _enroll(session, reg_e.id, course.id)
+        reg_w = _add_reg(session, "候補")
+        _enroll(session, reg_w.id, course.id, status="waitlist")
+
+        # fixture 無 guardian/user 鏈：mock 家長 resolver 回 fake uid；staff 回空聚焦家長路徑
+        monkeypatch.setattr(
+            svc_mod, "_resolve_parent_user_ids_for_registration", lambda s, rid: [999]
+        )
+        monkeypatch.setattr(
+            svc_mod, "_list_active_users_with_permission", lambda s, p: []
+        )
+        spy = MagicMock()
+        monkeypatch.setattr(dispatch_mod, "enqueue", spy)
+
+        svc.delete_registration(session, reg_e.id, "admin")
+        session.flush()
+
+        parent_calls = [
+            c
+            for c in spy.call_args_list
+            if c.kwargs.get("event_type") == "activity.waitlist_reminder"
+            and c.kwargs.get("recipient_user_id") == 999
+        ]
+        assert len(parent_calls) == 1
+        assert parent_calls[0].kwargs["context"]["course_name"] == "美術"
+
     def test_deadline_matches_configured_window(self, session, svc, monkeypatch):
         """env 覆寫確認窗口長度"""
         monkeypatch.setenv("ACTIVITY_WAITLIST_CONFIRM_WINDOW_HOURS", "72")

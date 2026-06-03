@@ -17,7 +17,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
-from utils.errors import raise_safe_500
+from utils.errors import raise_safe_500, safe_batch_reason
 from utils.excel_utils import SafeWorksheet
 from utils.rate_limit import create_limiter
 
@@ -30,6 +30,8 @@ _batch_approve_limiter = create_limiter(
 ).as_dependency()
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.leave_validators import validate_leave_hours_value, validate_leave_date_order
+from utils.validators import validate_hhmm_format
+from utils.leave_overtime_conflict import times_overlap
 from sqlalchemy import or_, and_
 
 from models.database import (
@@ -308,6 +310,12 @@ class LeaveCreate(BaseModel):
     def validate_leave_hours(cls, v):
         return validate_leave_hours_value(v)
 
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _normalize_time(cls, v):
+        # 統一補零成 HH:MM，避免 '9:00' 這類未補零字串在重疊偵測時走字典序誤判
+        return validate_hhmm_format(v)
+
     @model_validator(mode="after")
     def validate_date_order(self):
         validate_leave_date_order(self.start_date, self.end_date)
@@ -357,6 +365,12 @@ class LeaveUpdate(BaseModel):
             if round(v * 2) != v * 2:
                 raise ValueError("請假時數必須為 0.5 小時的倍數（如 0.5、1、1.5、2…）")
         return v
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _normalize_time(cls, v):
+        # 統一補零成 HH:MM，避免 '9:00' 這類未補零字串在重疊偵測時走字典序誤判
+        return validate_hhmm_format(v)
 
     @model_validator(mode="after")
     def validate_date_order(self):
@@ -469,10 +483,10 @@ def _check_employee_has_conflicting_overtime(
                     "請假時段與加班重疊"
                 ),
             )
-        # 時段精比：兩端轉成 HH:MM 字串再比
+        # 時段精比：用 times_overlap（內部 to_time 正規化），避免未補零字串字典序誤判
         ot_start_str = ot.start_time.strftime("%H:%M")
         ot_end_str = ot.end_time.strftime("%H:%M")
-        if max(start_time, ot_start_str) < min(end_time, ot_end_str):
+        if times_overlap(start_time, end_time, ot.start_time, ot.end_time):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -551,9 +565,8 @@ def _check_substitute_leave_conflict(
         # OT 無時段（罕見）→ 視為全日 → 衝突
         if not ot.start_time or not ot.end_time:
             raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
-        ot_start_str = ot.start_time.strftime("%H:%M")
-        ot_end_str = ot.end_time.strftime("%H:%M")
-        if max(start_time, ot_start_str) < min(end_time, ot_end_str):
+        # 用 times_overlap（內部 to_time 正規化），避免未補零字串字典序誤判
+        if times_overlap(start_time, end_time, ot.start_time, ot.end_time):
             raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
 
 
@@ -1923,7 +1936,12 @@ def batch_approve_leaves(
             except Exception as e:
                 # Pass 1 純查詢/驗證，幾乎不可能 dirty session；保留 rollback 防呆。
                 session.rollback()
-                failed.append({"id": leave_id, "reason": str(e)})
+                failed.append(
+                    {
+                        "id": leave_id,
+                        "reason": safe_batch_reason(e, context="批次請假核准"),
+                    }
+                )
                 session.expire_all()
 
         # ── Pass 2：套用 setattr + lock + ApprovalLog（仍不 commit）──────
@@ -2038,10 +2056,15 @@ def batch_approve_leaves(
                     failed.append(
                         {
                             "id": prev_id,
-                            "reason": f"同批後續條目失敗導致整批回滾：{e}",
+                            "reason": "同批後續條目失敗導致整批回滾",
                         }
                     )
-                failed.append({"id": leave_id, "reason": str(e)})
+                failed.append(
+                    {
+                        "id": leave_id,
+                        "reason": safe_batch_reason(e, context="批次請假 Pass2"),
+                    }
+                )
                 applied = []
                 break
 
@@ -2190,8 +2213,13 @@ def batch_approve_leaves(
                         session.rollback()
             except Exception as e:
                 session.rollback()
+                reason = safe_batch_reason(
+                    e,
+                    context="批次請假統一提交",
+                    fallback="統一提交失敗，請稍後重試或聯絡管理員",
+                )
                 for leave_id, *_ in changes:
-                    failed.append({"id": leave_id, "reason": f"統一提交失敗：{e}"})
+                    failed.append({"id": leave_id, "reason": reason})
 
         # AuditLog changes：批次操作彙整為單筆 audit，列出受影響的 leave_id 與每筆 ApprovalLog 連結
         request.state.audit_summary = (
@@ -2371,10 +2399,11 @@ def _import_leaves_sync(content: bytes) -> dict:
                 else:
                     try:
                         leave_hours = float(hours_raw)
-                        if leave_hours < 0.5:
-                            raise ValueError("時數至少 0.5 小時")
                     except (ValueError, TypeError):
-                        leave_hours = 8.0
+                        raise ValueError("時數格式錯誤，必須為數字（如 4、4.5、8）")
+                    # 與管理端/portal 建立假單一致：最小 0.5、最大 480、0.5 倍數。
+                    # 不可在驗證失敗時 fallback 成 8h（會把非法時數靜默變全日扣薪假）。
+                    leave_hours = validate_leave_hours_value(leave_hours)
 
                 reason_raw = row.reason
                 reason = str(reason_raw).strip() if reason_raw is not None else None

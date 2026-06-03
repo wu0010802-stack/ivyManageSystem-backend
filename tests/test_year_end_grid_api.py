@@ -348,6 +348,66 @@ def test_manual_patch_disciplinary_recomputes(client_with_db):
     assert diff == Decimal("6000"), f"expected 6000 drop, got {diff}"
 
 
+def test_manual_patch_only_recomputes_target_employee(client_with_db):
+    """單筆 manual_patch 只重算被 patch 的員工，不動其他員工的 version。
+
+    回歸：manual_patch 過去呼叫 build_settlements 未帶 only_employee_ids，會重算整個
+    cycle 的所有 DRAFT 員工（每人 version+=1）。修補後只重算目標員工，未被 patch 的
+    員工 version 不變（避免版本 churn 與不必要的全 cohort 重算）。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, emp_a_id = _seed_cycle_and_employee(sf)
+
+    # 加第二位全年在職員工 B（不帶班，避免相依班級資料）
+    with sf() as s:
+        emp_b = Employee(
+            employee_id="E_GRID_002",
+            name="李老師",
+            position="行政",
+            title="行政人員",
+            base_salary=32000,
+            is_active=True,
+            hire_date=date(2020, 1, 1),
+        )
+        s.add(emp_b)
+        s.commit()
+        emp_b_id = emp_b.id
+
+    _login(client)
+    _build(client, cycle_id)
+
+    def _versions():
+        with sf() as s:
+            a = (
+                s.query(YearEndSettlement)
+                .filter_by(year_end_cycle_id=cycle_id, employee_id=emp_a_id)
+                .one()
+            )
+            b = (
+                s.query(YearEndSettlement)
+                .filter_by(year_end_cycle_id=cycle_id, employee_id=emp_b_id)
+                .one()
+            )
+            return a.id, a.version, b.version
+
+    a_id, a_ver_before, b_ver_before = _versions()
+
+    # patch A
+    patch_res = client.patch(
+        f"/api/year_end/settlements/{a_id}/manual",
+        json={"deduction_disciplinary": "-6000"},
+    )
+    assert patch_res.status_code == 200, patch_res.text
+
+    _, a_ver_after, b_ver_after = _versions()
+    assert a_ver_after > a_ver_before, "被 patch 的員工 version 應 bump"
+    assert b_ver_after == b_ver_before, (
+        f"未被 patch 的員工 version 不應變動："
+        f"before={b_ver_before} after={b_ver_after}"
+    )
+
+
 def test_manual_patch_excess_adds_special(client_with_db):
     client, sf = client_with_db
     _seed_users(sf)

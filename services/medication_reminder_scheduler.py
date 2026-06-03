@@ -23,6 +23,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, exists
 
 from config import settings
+from models.classroom import (
+    LIFECYCLE_GRADUATED,
+    LIFECYCLE_TRANSFERRED,
+    LIFECYCLE_WITHDRAWN,
+    Student,
+)
 from models.database import session_scope
 from models.portfolio import StudentMedicationOrder
 from models.student_leave import StudentLeaveRequest
@@ -54,9 +60,11 @@ def _today_target_dt(today: date) -> datetime:
 
 
 def _active_orders_query(session, today: date):
-    """今日須提醒的 medication orders（排除已核准請假學生）。
+    """今日須提醒的 medication orders（排除已核准請假學生 + 終態學生）。
 
     請假學生今日不在校，提醒會誤導家長並可能在接 LINE 推播後形成誤推。
+    終態學生（已畢業/退學/轉出）已永久離校，同理不該再觸發用藥提醒——PII GC
+    前殘留的當日 order 否則會持續誤推給班導。對稱於上方 leave 排除。
     """
     leave_subq = exists().where(
         and_(
@@ -66,10 +74,19 @@ def _active_orders_query(session, today: date):
             StudentLeaveRequest.end_date >= today,
         )
     )
+    terminal_subq = exists().where(
+        and_(
+            Student.id == StudentMedicationOrder.student_id,
+            Student.lifecycle_status.in_(
+                [LIFECYCLE_GRADUATED, LIFECYCLE_TRANSFERRED, LIFECYCLE_WITHDRAWN]
+            ),
+        )
+    )
     return (
         session.query(StudentMedicationOrder)
         .filter(StudentMedicationOrder.order_date == today)
         .filter(~leave_subq)
+        .filter(~terminal_subq)
     )
 
 
@@ -157,7 +174,10 @@ async def medication_reminder_loop(stop_event: asyncio.Event) -> None:
             today = now.date()
             target = _today_target_dt(today)
             if now >= target and last_run_date != today:
-                with scheduler_iteration("medication_reminder", expected_interval_seconds=CHECK_INTERVAL_SECONDS):
+                with scheduler_iteration(
+                    "medication_reminder",
+                    expected_interval_seconds=CHECK_INTERVAL_SECONDS,
+                ):
                     result = run_medication_reminder(effective_date=today)
                     record_rows(
                         "medication_reminder",

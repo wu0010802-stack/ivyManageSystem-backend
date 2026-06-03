@@ -666,6 +666,22 @@ def get_student_detail(
             },
         )
 
+        # RA-MED-3：實際回出解密醫療欄位時補寫 §6 medical_access_log（generic reason）。
+        if can_health and (student.allergy or student.medication):
+            from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
+            from utils.request_ip import get_client_ip
+
+            session.add(
+                MedicalAccessLog(
+                    user_id=current_user.get("user_id"),
+                    student_id=student.id,
+                    field_name=MEDICAL_FIELD_BUNDLE,
+                    reason="教師端學生詳情頁檢視（無顯式理由）",
+                    ip_address=get_client_ip(request),
+                )
+            )
+            session.commit()
+
         return {
             "student": {
                 "id": student.id,

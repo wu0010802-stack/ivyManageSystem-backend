@@ -60,6 +60,7 @@ from utils.file_upload import (
     validate_file_signature,
 )
 from utils.permissions import Permission
+from services.consent.checker import enforce_student_cross_border
 
 logger = logging.getLogger(__name__)
 
@@ -361,7 +362,9 @@ def list_messages(
         session.close()
 
 
-@router.post("/threads", status_code=201, response_model=PortalParentMessageCreateThreadOut)
+@router.post(
+    "/threads", status_code=201, response_model=PortalParentMessageCreateThreadOut
+)
 def create_thread(
     payload: CreateThreadRequest,
     request: Request,
@@ -450,7 +453,11 @@ def create_thread(
         session.close()
 
 
-@router.post("/threads/{thread_id}/messages", status_code=201, response_model=PortalParentMessageReplyOut)
+@router.post(
+    "/threads/{thread_id}/messages",
+    status_code=201,
+    response_model=PortalParentMessageReplyOut,
+)
 def post_reply(
     thread_id: int,
     payload: TeacherReplyRequest,
@@ -504,7 +511,11 @@ def post_reply(
         session.close()
 
 
-@router.post("/threads/{thread_id}/messages/{message_id}/attach", status_code=201, response_model=PortalParentMessageAttachmentOut)
+@router.post(
+    "/threads/{thread_id}/messages/{message_id}/attach",
+    status_code=201,
+    response_model=PortalParentMessageAttachmentOut,
+)
 async def attach_to_message(
     thread_id: int,
     message_id: int,
@@ -544,6 +555,7 @@ async def attach_to_message(
         if msg.deleted_at is not None:
             raise HTTPException(status_code=400, detail="已撤回的訊息不可附加附件")
 
+        enforce_student_cross_border(session, t.student_id)
         storage = get_portfolio_storage()
         stored = storage.put_attachment(content, ext)
         att = Attachment(

@@ -70,6 +70,8 @@ from schemas.parent_portal_medications import (
     ParentMedicationPhotoOut,
 )
 
+from services.consent.checker import enforce_student_cross_border
+
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned
 
@@ -347,7 +349,9 @@ def create_medication_order(
     return _order_to_dict(order, logs, [])
 
 
-@router.post("/{order_id}/photos", status_code=201, response_model=ParentMedicationPhotoOut)
+@router.post(
+    "/{order_id}/photos", status_code=201, response_model=ParentMedicationPhotoOut
+)
 async def upload_medication_photo(
     order_id: int,
     request: Request,
@@ -380,6 +384,9 @@ async def upload_medication_photo(
     order = _get_order_for_parent(
         session, user_id=user_id, order_id=order_id, for_write=True
     )
+
+    # cross_border consent gate
+    enforce_student_cross_border(session, order.student_id)
 
     storage = get_portfolio_storage()
     stored = storage.put_attachment(content, ext)

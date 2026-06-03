@@ -8,6 +8,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .cache import CacheSettings
+from .consent import ConsentSettings
 from .core import CoreSettings
 from .geocoding import GeocodingSettings
 from .line import LineSettings
@@ -72,6 +73,7 @@ class Settings(BaseSettings):
     geocoding: GeocodingSettings = Field(default_factory=GeocodingSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
+    consent: ConsentSettings = Field(default_factory=ConsentSettings)
     misc: MiscSettings = Field(default_factory=MiscSettings)
     ops_alert: OpsAlertSettings = Field(default_factory=OpsAlertSettings)
     medical: MedicalSettings = Field(default_factory=MedicalSettings)

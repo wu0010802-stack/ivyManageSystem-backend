@@ -163,6 +163,18 @@ class TestActiveOrdersQuery:
         _add_leave(session, student_id=1, start=TODAY, end=TODAY, status="pending")
         assert _ids(sched._active_orders_query(session, TODAY)) == {1}
 
+    def test_student_in_terminal_lifecycle_is_excluded(self, session):
+        """終態學生（已畢業/退學/轉出）已永久離校，今日 order 不該列入提醒。
+
+        對稱於請假排除：scheduler 已用 leave 子查詢證明它在意「學生今天是否在校」，
+        終態是更強的「永久不在校」訊號。
+        """
+        _add_order(session, student_id=1)
+        _add_order(session, student_id=2)
+        session.query(Student).filter_by(id=2).update({"lifecycle_status": "withdrawn"})
+        session.commit()
+        assert _ids(sched._active_orders_query(session, TODAY)) == {1}
+
 
 class TestCountAndRun:
     def test_count_today_medication_orders(self, session, monkeypatch):

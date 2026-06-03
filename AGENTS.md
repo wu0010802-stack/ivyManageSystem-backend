@@ -25,7 +25,7 @@ uvicorn main:app --reload --port 8088
 
 ---
 
-## 環境變數（backend/.env）
+## 環境變數（repo 根目錄 `.env`）
 
 | 變數 | 說明 |
 |------|------|
@@ -56,23 +56,26 @@ main.py → init_salary_services(salary_engine, insurance_service)
 - `get_session()` — 手動管理（使用後須 `.close()`）
 - `session_scope()` — context manager，自動 commit/rollback/close（推薦新程式使用）
 
-schema 異動透過 `_add_column_if_missing()` 在啟動時自動執行 `ALTER TABLE`，不使用 migration 框架。
+schema 異動一律走 **Alembic migration**（`alembic/versions/`）。啟動時由 `startup/bootstrap.py` 的 `run_alembic_upgrade()` 自動執行 `alembic upgrade`。**不要**用啟動時自動 `ALTER TABLE` 建欄；舊的 `_add_column_if_missing()` 已淘汰，僅殘留於個別舊 migration 檔內，不在 app startup 呼叫。
 
 ### 權限系統
-`utils/permissions.py` 定義 `Permission` IntFlag（位元遮罩），讀寫分離：
-- 讀取：低位（如 `SALARY_READ = 1 << 11`）
-- 寫入：高位（如 `SALARY_WRITE = 1 << 23`）
+`utils/permissions.py` 定義 `Permission` 為 **`str` Enum**（2026-05-21 `permtxt01` 後，非位元遮罩）：`Permission.SALARY_READ.value == "SALARY_READ"`。`User.permission_names` 是 `ARRAY(Text)` 字串集合，`has_permission()` 以 `includes` 比對（含 `*` wildcard 快徑），**無 64-bit 上限、無 BigInt 需求**。
+
+- 新增權限只需加 `Permission` enum 值 + `PERMISSION_LABELS` + 必要的 `ROLE_TEMPLATES`／`PERMISSION_GROUPS` 條目（前後端同步）。
+- 支援 row-level scope：wire format `<CODE>:<scope>`（如 `STUDENTS_READ:own_class`／`:all`），`has_permission` scope-aware。
+- `LEGACY_PERMISSION_BITS`（舊 `1 << N`）僅供 alembic backfill 使用，runtime 不參考。
 
 路由使用 `require_permission(Permission.SALARY_WRITE)` 做守衛（在 `utils/auth.py`）。
 
-### 薪資計算邏輯（salary_engine.py）
-- **`gross_salary`（月薪應發）** = `base_salary + allowances + performance/special_bonus + supervisor_dividend + meeting_overtime_pay`
+### 薪資計算邏輯（`services/salary/` package，入口 `engine.py`）
+> 薪資邏輯為 package（非單一 `salary_engine.py`）；聚合欄位公式集中在 `services/salary/totals.py`（engine 與 api 共用，避免 drift）。
+- **`gross_salary`（月薪應發，見 `totals.py:recompute_record_totals`）** = `base_salary + hourly_total + performance_bonus + special_bonus + supervisor_dividend + meeting_overtime_pay + birthday_bonus + overtime_pay`
   - **不含** `festival_bonus` / `overtime_bonus`（這兩項獨立轉帳）
 - **`festival_bonus`** 在發放月（2、6、9、12 月）才計入，`meeting_absence_deduction` 只從 `festival_bonus` 扣，**不進入** `total_deduction`
-- **`bonus_separate`** 旗標：當 `festival_bonus + overtime_bonus + supervisor_dividend > 0` 時為 True，表示有另行匯款
-- **`total_deduction`** = 勞保 + 健保 + 勞退 + 遲到/早退/請假扣款（無 `meeting_absence_deduction`）
+- **`total_deduction`** = 勞保 + 健保 + 勞退 + 遲到/早退/缺卡/請假/曠職/其他扣款（不含 `meeting_absence_deduction`；二代健保補充保費已併入 `health_insurance_employee`，`supplementary_health_employee` 為拆分顯示欄、**不可**再加進 total_deduction）
 - 時薪計算基準：`base_salary / 30 / 8`（MONTHLY_BASE_DAYS = 30，依勞基法）
 - 加班費時薪基準：`emp.base_salary`（僅底薪，不含任何加給或獎金）
+- **考核年終獎金**走年終 E化獨立轉帳（`services/year_end/`，表外），engine 一律填 `appraisal_year_end_bonus = 0`。詳細口徑見 workspace `CLAUDE.md` §10／§11。
 
 ### 設定版本控制（稽核追蹤）
 `SalaryRecord` 記錄計算時使用的 `bonus_config_id` 與 `attendance_policy_id`，確保薪資可回溯查核。
@@ -81,9 +84,9 @@ schema 異動透過 `_add_column_if_missing()` 在啟動時自動執行 `ALTER T
 
 ## 開發注意事項
 - 回應語言：一律使用**繁體中文**
-- `BonusConfig` DB 模型在 `main.py` 以 `DBBonusConfig` 匯入，避免與 `api/salary.py` 中同名 Pydantic schema 衝突
+- `BonusConfig` DB 模型在 `startup/seed.py` 以 `BonusConfig as DBBonusConfig` 匯入，避免與 `api/salary/` 中同名 Pydantic schema 衝突
 - 日誌使用 `logging.getLogger(__name__)`，不使用 `print()`
-- `portal.py` 是教師自助入口，提供自己的考勤/請假/加班/薪資查詢，不具管理權限
+- `api/portal/`（子套件，非單一 `portal.py`）是教師自助入口，提供自己的考勤/請假/加班/薪資查詢，不具管理權限
 - `api/dev.py` 包含開發/測試用端點，正式環境應留意是否需要關閉
 
 ---
@@ -111,9 +114,8 @@ schema 異動透過 `_add_column_if_missing()` 在啟動時自動執行 `ALTER T
 
 ### 後端測試（pytest）
 
-**執行指令：**
+**執行指令：**（於 repo 根目錄）
 ```bash
-cd backend
 pytest tests/ -v                    # 執行全部
 pytest tests/test_salary_engine.py  # 只跑特定檔案
 pytest tests/ -k "TestLeave"        # 只跑特定 class
@@ -122,7 +124,7 @@ pytest tests/ --tb=short            # 失敗時精簡輸出
 
 **測試目錄結構：**
 ```
-backend/tests/
+tests/
 ├── conftest.py              # 共用 fixtures（engine, sample_employee…）
 ├── test_salary_engine.py    # 薪資計算邏輯
 ├── test_insurance_service.py

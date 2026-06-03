@@ -148,6 +148,30 @@ def process_offboarding(
         cert_result = generate_certificate.run(session, record)
         steps_result.append(cert_result)
 
+        # Step 6: 偵測仍掛該員工的 active 班級導師綁定（標記待改派，不清空——
+        # 直接 NULL 會讓 active 班級瞬間無導師；交由 HR 改派）。
+        from services.offboarding.homeroom_check import (
+            detect_dangling_homeroom_assignments,
+        )
+
+        dangling = detect_dangling_homeroom_assignments(session, employee_id)
+        if dangling:
+            logger.warning(
+                "員工 %s 離職時仍為 %d 個 active 班級導師，需 HR 改派：%s",
+                employee_id,
+                len(dangling),
+                dangling,
+            )
+        steps_result.append(
+            StepResult(
+                step="homeroom_reassignment_check",
+                status="completed",
+                completed_at=now_taipei_naive(),
+                payload={"dangling_classrooms": dangling},
+                error=None,
+            )
+        )
+
     except OffboardingError:
         raise  # 由 endpoint 層 catch + session.rollback
 

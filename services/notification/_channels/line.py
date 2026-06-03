@@ -149,6 +149,16 @@ def _h_overtime_rejected(ls, evt, rendered) -> None:
     ls._push_to_user(evt.recipient_user_id, text)
 
 
+def _h_punch_correction_submitted(ls, evt, rendered) -> None:
+    """員工送出補打卡 → per-reviewer LINE 個人推送。"""
+    ctx = evt.context
+    target = _parse_date(ctx.get("target_date"))
+    name = ctx.get("submitter_name", "")
+    target_str = target.isoformat() if target else ctx.get("target_date", "")
+    text = f"【補打卡待審】{name} 送出 {target_str} 的補打卡申請，待核准"
+    ls._push_to_user(evt.recipient_user_id, text)
+
+
 def _h_punch_correction_approved(ls, evt, rendered) -> None:
     ctx = evt.context
     target = _parse_date(ctx.get("target_date"))
@@ -339,14 +349,16 @@ def _h_parent_announcement(ls, evt, rendered) -> None:
             snippet = preview.strip()
             if len(snippet) > 80:
                 snippet = snippet[:80] + "…"
-            flex["body"]["contents"].append({
-                "type": "text",
-                "text": snippet,
-                "size": "sm",
-                "color": "#555555",
-                "wrap": True,
-                "margin": "md",
-            })
+            flex["body"]["contents"].append(
+                {
+                    "type": "text",
+                    "text": snippet,
+                    "size": "sm",
+                    "color": "#555555",
+                    "wrap": True,
+                    "margin": "md",
+                }
+            )
         try:
             ls.push_flex_to_user(
                 evt.recipient_user_id,
@@ -491,6 +503,7 @@ LINE_HANDLERS: dict[str, Callable] = {
     "overtime.submitted": _h_overtime_submitted,
     "overtime.approved": _h_overtime_approved,
     "overtime.rejected": _h_overtime_rejected,
+    "punch_correction.submitted": _h_punch_correction_submitted,
     "punch_correction.approved": _h_punch_correction_approved,
     "punch_correction.rejected": _h_punch_correction_rejected,
     "salary.batch_completed": _h_salary_batch_completed,

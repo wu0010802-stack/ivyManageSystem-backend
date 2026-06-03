@@ -107,6 +107,15 @@ def _r_overtime_rejected(ctx: dict) -> Rendered:
     )
 
 
+@renderer("punch_correction.submitted")
+def _r_punch_corr_submitted(ctx: dict) -> Rendered:
+    return Rendered(
+        title=f"{ctx['submitter_name']} 送出補打卡申請",
+        body=f"日期：{ctx['target_date']}",
+        deep_link=f"/approvals/punch-corrections/{ctx['correction_id']}",
+    )
+
+
 @renderer("punch_correction.approved")
 def _r_punch_corr_approved(ctx: dict) -> Rendered:
     return Rendered(
@@ -194,17 +203,19 @@ def _r_parent_announcement(ctx: dict) -> Rendered:
     attachments = ctx.get("attachments") or []
     first_image = next(
         (
-            a for a in attachments
-            if (a.get("mime_type") or "").startswith("image/")
-            and a.get("thumb_url")
+            a
+            for a in attachments
+            if (a.get("mime_type") or "").startswith("image/") and a.get("thumb_url")
         ),
         None,
     )
     hero_url: str | None = None
     if first_image:
         from urllib.parse import urljoin
+
         try:
             from config import get_settings
+
             base = getattr(get_settings().misc, "ivy_api_base_url", None) or ""
         except Exception:
             base = ""

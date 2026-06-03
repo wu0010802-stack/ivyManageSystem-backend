@@ -932,12 +932,14 @@ def manual_patch_settlement(
     is_inactive = not getattr(emp, "is_active", True)
     included = {settlement.employee_id} if is_inactive else set()
     actor_id = current_user.get("user_id")
+    # 只重算這位被 patch 的員工：避免單筆手調觸發整個 cycle 全員重算與版本 churn
     build_settlements(
         session,
         cycle.academic_year,
         included,
         actor_id=actor_id,
         refresh_rates=False,
+        only_employee_ids={settlement.employee_id},
     )
     session.commit()
 

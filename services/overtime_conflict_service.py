@@ -26,6 +26,7 @@ from utils.constants import (
     MAX_QUARTERLY_OVERTIME_HOURS,
     OVERTIME_QUARTERLY_WINDOW_MONTHS,
 )
+from utils.leave_overtime_conflict import times_overlap
 
 # -- 純函式（無 session 依賴）：抽出便於 unit test ----------------------
 
@@ -135,10 +136,12 @@ def check_employee_has_conflicting_leave(
         session.query(LeaveRecord)
         .filter(
             LeaveRecord.employee_id == employee_id,
-            LeaveRecord.status.in_([
-                ApprovalStatus.PENDING.value,
-                ApprovalStatus.APPROVED.value,
-            ]),
+            LeaveRecord.status.in_(
+                [
+                    ApprovalStatus.PENDING.value,
+                    ApprovalStatus.APPROVED.value,
+                ]
+            ),
             LeaveRecord.start_date <= overtime_date,
             LeaveRecord.end_date >= overtime_date,
         )
@@ -163,10 +166,8 @@ def check_employee_has_conflicting_leave(
                     f"（{lv.leave_type}），加班時段與請假重疊"
                 ),
             )
-        # 半日 vs 半日：時段精比
-        ot_start_str = start_time.strftime("%H:%M")
-        ot_end_str = end_time.strftime("%H:%M")
-        if max(ot_start_str, lv.start_time) < min(ot_end_str, lv.end_time):
+        # 半日 vs 半日：用 times_overlap（內部 to_time 正規化），避免未補零字串字典序誤判
+        if times_overlap(start_time, end_time, lv.start_time, lv.end_time):
             raise HTTPException(
                 status_code=409,
                 detail=(

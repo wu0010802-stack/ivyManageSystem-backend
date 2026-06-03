@@ -388,3 +388,270 @@ class TestUpdateInsuranceRatesMarksStale:
                 session.query(SalaryRecord).filter_by(id=rec_b_fin).one().needs_recalc
                 is False
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# sync_position_salary：把員工底薪同步至職位標準後 → mark stale（#1 P0）
+# 對稱依據：PUT /employees 改 base_salary 走 _mark_employee_salary_stale；
+#          同檔 PUT /position-salary 走 _mark_existing_salary_stale_for_config。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _seed_position_employee(
+    sf, *, name, emp_no, base_salary, position, title=None, bonus_grade=None
+):
+    from models.database import Employee
+
+    with sf() as session:
+        emp = Employee(
+            employee_id=emp_no,
+            name=name,
+            base_salary=base_salary,
+            employee_type="regular",
+            is_active=True,
+            hire_date=date(2025, 1, 1),
+            position=position,
+            title=title,
+            bonus_grade=bonus_grade,
+        )
+        session.add(emp)
+        session.commit()
+        return emp.id
+
+
+class TestPositionSalarySyncMarksStale:
+    def test_sync_marks_unfinalized_only(self, stale_client):
+        """sync 把員工底薪改成標準後，應標該員工未封存薪資；封存的不動。"""
+        client, sf, _ = stale_client
+        # 班導 a 級 → 標準 head_teacher_a=39240（預設）；base 39000 → delta 240 (<1000，免簽核)
+        emp_id = _seed_position_employee(
+            sf,
+            name="班導A",
+            emp_no="P001",
+            base_salary=39000,
+            position="班導",
+            bonus_grade="a",
+        )
+        unfin = _seed_record(sf, emp_id, year=2026, month=3)
+        fin = _seed_record(sf, emp_id, year=2026, month=2, is_finalized=True)
+
+        _login_admin(client, sf)
+        res = client.post(
+            "/api/config/position-salary/sync",
+            json={"adjustment_reason": "年度調薪同步至職位標準"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            assert (
+                session.query(SalaryRecord).filter_by(id=unfin).one().needs_recalc
+                is True
+            )
+            assert (
+                session.query(SalaryRecord).filter_by(id=fin).one().needs_recalc
+                is False
+            )
+
+    def test_sync_no_delta_does_not_mark_stale(self, stale_client):
+        """員工底薪已等於標準（無 delta、不進 planned_updates）→ 不標 stale。"""
+        client, sf, _ = stale_client
+        emp_id = _seed_position_employee(
+            sf,
+            name="班導B",
+            emp_no="P002",
+            base_salary=39240,
+            position="班導",
+            bonus_grade="a",
+        )
+        rec = _seed_record(sf, emp_id, year=2026, month=3)
+
+        _login_admin(client, sf)
+        res = client.post(
+            "/api/config/position-salary/sync",
+            json={"adjustment_reason": "嘗試同步但已對齊標準"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            assert (
+                session.query(SalaryRecord).filter_by(id=rec).one().needs_recalc
+                is False
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# update_job_title：改 bonus_grade → mark 持該職稱員工 stale（#2 P1）
+# 引擎 grade_map = {JobTitle.name: bonus_grade}，員工以 Employee.title 字串對應。
+# 對稱依據：員工側 bonus_grade 在 _SALARY_INPUT_FIELDS，改員工職稱會標 stale。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestUpdateJobTitleBonusGradeMarksStale:
+    def _seed_title_holder(self, sf, *, title_name, grade):
+        from models.database import JobTitle
+
+        with sf() as session:
+            jt = JobTitle(name=title_name, bonus_grade=grade, is_active=True)
+            session.add(jt)
+            session.commit()
+            jt_id = jt.id
+        emp_id = _seed_position_employee(
+            sf,
+            name="持職員",
+            emp_no="T001",
+            base_salary=35000,
+            position="班導",
+            title=title_name,
+        )
+        return jt_id, emp_id
+
+    def test_change_bonus_grade_marks_holders_stale(self, stale_client):
+        """改職稱 bonus_grade → 持該職稱（title 字串對應 grade_map）員工未封存薪資 stale。"""
+        client, sf, _ = stale_client
+        jt_id, emp_id = self._seed_title_holder(sf, title_name="幼兒園教師", grade="A")
+        unfin = _seed_record(sf, emp_id, year=2026, month=3)
+        fin = _seed_record(sf, emp_id, year=2026, month=2, is_finalized=True)
+
+        _login_admin(client, sf)
+        res = client.put(
+            f"/api/config/titles/{jt_id}",
+            json={"name": "幼兒園教師", "bonus_grade": "B"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            assert (
+                session.query(SalaryRecord).filter_by(id=unfin).one().needs_recalc
+                is True
+            )
+            assert (
+                session.query(SalaryRecord).filter_by(id=fin).one().needs_recalc
+                is False
+            )
+
+    def _seed_fk_linked_holder(self, sf, *, title_name, grade, emp_title=None):
+        """建立以 job_title_id（FK）連結職稱、但 Employee.title 可為 NULL/drift 的在職員工。
+
+        模擬 legacy/migration 殘列或 title 被獨立清空者：引擎以 title_name property
+        （FK 的 JobTitle.name 優先、fallback legacy title）解析 bonus_grade，故這類
+        員工的節慶獎金等級仍隨 JobTitle.bonus_grade 變動，必須一併標 stale。
+        """
+        from models.database import JobTitle, Employee
+
+        with sf() as session:
+            jt = JobTitle(name=title_name, bonus_grade=grade, is_active=True)
+            session.add(jt)
+            session.commit()
+            jt_id = jt.id
+
+            emp = Employee(
+                employee_id="TFK01",
+                name="FK持職員",
+                base_salary=35000,
+                employee_type="regular",
+                is_active=True,
+                hire_date=date(2025, 1, 1),
+                position="班導",
+                job_title_id=jt_id,
+                title=emp_title,
+            )
+            session.add(emp)
+            session.commit()
+            emp_id = emp.id
+        return jt_id, emp_id
+
+    def test_change_bonus_grade_marks_fk_linked_holder_with_null_title_stale(
+        self, stale_client
+    ):
+        """FK 連結（job_title_id）但 Employee.title 為 NULL 的員工，改職稱 bonus_grade
+        後也須標 stale。引擎以 title_name（FK 優先）解析 grade，純 title 字串過濾會漏
+        掉這類員工 → finalize 以舊節慶獎金等級封存（P0 錯帳）。"""
+        client, sf, _ = stale_client
+        jt_id, emp_id = self._seed_fk_linked_holder(
+            sf, title_name="幼兒園教師", grade="A", emp_title=None
+        )
+        unfin = _seed_record(sf, emp_id, year=2026, month=3)
+        fin = _seed_record(sf, emp_id, year=2026, month=2, is_finalized=True)
+
+        _login_admin(client, sf)
+        res = client.put(
+            f"/api/config/titles/{jt_id}",
+            json={"name": "幼兒園教師", "bonus_grade": "B"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            assert (
+                session.query(SalaryRecord).filter_by(id=unfin).one().needs_recalc
+                is True
+            )
+            assert (
+                session.query(SalaryRecord).filter_by(id=fin).one().needs_recalc
+                is False
+            )
+
+    def test_change_name_only_does_not_mark_stale(self, stale_client):
+        """只改 name、bonus_grade 不送（不變）→ 不標 stale。"""
+        client, sf, _ = stale_client
+        jt_id, emp_id = self._seed_title_holder(sf, title_name="教保員", grade="B")
+        rec = _seed_record(sf, emp_id, year=2026, month=3)
+
+        _login_admin(client, sf)
+        res = client.put(
+            f"/api/config/titles/{jt_id}",
+            json={"name": "教保員（資深）"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            assert (
+                session.query(SalaryRecord).filter_by(id=rec).one().needs_recalc
+                is False
+            )
+
+    def test_change_bonus_grade_marks_resigned_holder_with_unfinalized_record_stale(
+        self, stale_client
+    ):
+        """剛離職（is_active=False）但最終在職月薪資仍未封存的員工，改職稱 bonus_grade
+        後也須標 stale。bulk 薪資以 hire_date/resign_date（刻意不依 current is_active）
+        選人，仍會為其算最終月節慶獎金；若 stale-marking 多用 is_active 過濾而漏標 →
+        finalize 以舊 grade 封存節慶獎金（P1 錯帳）。"""
+        from models.database import JobTitle, Employee
+
+        client, sf, _ = stale_client
+        with sf() as session:
+            jt = JobTitle(name="幼兒園教師", bonus_grade="A", is_active=True)
+            session.add(jt)
+            session.commit()
+            jt_id = jt.id
+
+            emp = Employee(
+                employee_id="TRES1",
+                name="離職持職員",
+                base_salary=35000,
+                employee_type="regular",
+                is_active=False,
+                hire_date=date(2025, 1, 1),
+                resign_date=date(2026, 3, 31),
+                position="班導",
+                job_title_id=jt_id,
+                title="幼兒園教師",
+            )
+            session.add(emp)
+            session.commit()
+            emp_id = emp.id
+
+        unfin = _seed_record(sf, emp_id, year=2026, month=3)
+
+        _login_admin(client, sf)
+        res = client.put(
+            f"/api/config/titles/{jt_id}",
+            json={"name": "幼兒園教師", "bonus_grade": "B"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            assert (
+                session.query(SalaryRecord).filter_by(id=unfin).one().needs_recalc
+                is True
+            )

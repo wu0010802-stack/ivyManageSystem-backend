@@ -11,6 +11,7 @@ profile/attendance/announcements/leaves/fees/events/activity 子模組。
 from fastapi import APIRouter, Depends
 
 from utils.auth import require_parent_role
+from ._consent_gate import require_current_consent
 
 from api.guardians_admin import (
     router as binding_admin_router,
@@ -44,41 +45,46 @@ from .data_export import router as data_export_router
 from .consent import router as consent_router
 from .dsr import router as dsr_router
 
-# 家長端 router（前綴 /api/parent，並掛 require_parent_role 統一擋線）
+# 家長端 router（前綴 /api/parent）
 parent_router = APIRouter(
     prefix="/api/parent",
     tags=["parent-portal"],
 )
 # auth 子模組需要例外：liff-login / bind 在尚無 access token 前也得通；
 # bind-additional / logout 自帶 require_parent_role dependency。
-# 因此這個 parent_router 不掛 router-level dependency；其他子模組（profile
-# / attendance / ...）在自身 endpoint 內掛 require_parent_role 即可，
-# 並一律經 _assert_student_owned 進行 IDOR 過濾。
+# 資料子模組（21 個）在 router 層掛 require_current_consent()，
+# gate 內部已含 require_parent_role()；各端點本身仍個別掛 require_parent_role
+# 以取得 current_user 注入，行為與 P2-2 前相同。
+# 豁免（不掛 consent gate）：auth（登入/綁定無 token）、consent（簽署端點本身）、
+# dsr 與 data_export（個資法查閱權，不可被 consent 擋）。
 parent_router.include_router(auth_router)
-parent_router.include_router(profile_router)
-parent_router.include_router(home_router)
-parent_router.include_router(family_router)
-parent_router.include_router(attendance_router)
-parent_router.include_router(announcements_router)
-parent_router.include_router(events_router)
-parent_router.include_router(leaves_router)
-parent_router.include_router(fees_router)
-parent_router.include_router(activity_router)
-parent_router.include_router(medications_router)
-parent_router.include_router(messages_router)
-parent_router.include_router(notifications_router)
-parent_router.include_router(parent_downloads_router)
-parent_router.include_router(calendar_router)
-parent_router.include_router(contact_book_router)
-parent_router.include_router(timeline_router)
-parent_router.include_router(growth_reports_router)
-parent_router.include_router(milestones_router)
-parent_router.include_router(measurements_router)
-parent_router.include_router(photos_router)
-parent_router.include_router(assistant_router)
-parent_router.include_router(data_export_router)
 parent_router.include_router(consent_router)
 parent_router.include_router(dsr_router)
+parent_router.include_router(data_export_router)
+
+# 資料 router（21 個）：統一掛 require_current_consent() router-level gate。
+_consent_dep = [Depends(require_current_consent())]
+parent_router.include_router(profile_router, dependencies=_consent_dep)
+parent_router.include_router(home_router, dependencies=_consent_dep)
+parent_router.include_router(family_router, dependencies=_consent_dep)
+parent_router.include_router(attendance_router, dependencies=_consent_dep)
+parent_router.include_router(announcements_router, dependencies=_consent_dep)
+parent_router.include_router(events_router, dependencies=_consent_dep)
+parent_router.include_router(leaves_router, dependencies=_consent_dep)
+parent_router.include_router(fees_router, dependencies=_consent_dep)
+parent_router.include_router(activity_router, dependencies=_consent_dep)
+parent_router.include_router(medications_router, dependencies=_consent_dep)
+parent_router.include_router(messages_router, dependencies=_consent_dep)
+parent_router.include_router(notifications_router, dependencies=_consent_dep)
+parent_router.include_router(parent_downloads_router, dependencies=_consent_dep)
+parent_router.include_router(calendar_router, dependencies=_consent_dep)
+parent_router.include_router(contact_book_router, dependencies=_consent_dep)
+parent_router.include_router(timeline_router, dependencies=_consent_dep)
+parent_router.include_router(growth_reports_router, dependencies=_consent_dep)
+parent_router.include_router(milestones_router, dependencies=_consent_dep)
+parent_router.include_router(measurements_router, dependencies=_consent_dep)
+parent_router.include_router(photos_router, dependencies=_consent_dep)
+parent_router.include_router(assistant_router, dependencies=_consent_dep)
 
 
 # 行政端綁定碼 router（前綴 /api/guardians，需 GUARDIANS_WRITE）
