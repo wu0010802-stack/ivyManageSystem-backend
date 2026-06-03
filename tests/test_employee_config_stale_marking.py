@@ -608,3 +608,50 @@ class TestUpdateJobTitleBonusGradeMarksStale:
                 session.query(SalaryRecord).filter_by(id=rec).one().needs_recalc
                 is False
             )
+
+    def test_change_bonus_grade_marks_resigned_holder_with_unfinalized_record_stale(
+        self, stale_client
+    ):
+        """剛離職（is_active=False）但最終在職月薪資仍未封存的員工，改職稱 bonus_grade
+        後也須標 stale。bulk 薪資以 hire_date/resign_date（刻意不依 current is_active）
+        選人，仍會為其算最終月節慶獎金；若 stale-marking 多用 is_active 過濾而漏標 →
+        finalize 以舊 grade 封存節慶獎金（P1 錯帳）。"""
+        from models.database import JobTitle, Employee
+
+        client, sf, _ = stale_client
+        with sf() as session:
+            jt = JobTitle(name="幼兒園教師", bonus_grade="A", is_active=True)
+            session.add(jt)
+            session.commit()
+            jt_id = jt.id
+
+            emp = Employee(
+                employee_id="TRES1",
+                name="離職持職員",
+                base_salary=35000,
+                employee_type="regular",
+                is_active=False,
+                hire_date=date(2025, 1, 1),
+                resign_date=date(2026, 3, 31),
+                position="班導",
+                job_title_id=jt_id,
+                title="幼兒園教師",
+            )
+            session.add(emp)
+            session.commit()
+            emp_id = emp.id
+
+        unfin = _seed_record(sf, emp_id, year=2026, month=3)
+
+        _login_admin(client, sf)
+        res = client.put(
+            f"/api/config/titles/{jt_id}",
+            json={"name": "幼兒園教師", "bonus_grade": "B"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            assert (
+                session.query(SalaryRecord).filter_by(id=unfin).one().needs_recalc
+                is True
+            )

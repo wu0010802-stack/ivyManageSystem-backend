@@ -857,7 +857,11 @@ def update_job_title(
                     SalaryRecord.is_finalized != True,
                     SalaryRecord.employee_id.in_(
                         session.query(Employee.id).filter(
-                            Employee.is_active == True,
+                            # 不加 is_active 過濾：bulk 薪資以 hire_date/resign_date
+                            # 選人（_active_employees_in_month_filter，刻意不依 current
+                            # is_active），剛離職者最終在職月仍會被算節慶獎金。多掛
+                            # is_active==True 會漏標其未封存薪資 → finalize 以舊 grade
+                            # 錯帳。鎖定語意由 is_finalized 保證，over-mark 無金錢副作用。
                             or_(
                                 Employee.job_title_id == db_title.id,
                                 Employee.title.in_(affected_titles),
