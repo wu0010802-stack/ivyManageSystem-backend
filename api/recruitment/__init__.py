@@ -24,6 +24,7 @@ from api.recruitment import (
     competitors as _competitors,
     funnel as _funnel,
     hotspots as _hotspots,
+    intake as _intake,
     market as _market,
     periods as _periods,
     records as _records,
@@ -102,6 +103,7 @@ router.include_router(_market.router)
 router.include_router(_competitors.router)
 router.include_router(_periods.router)
 router.include_router(_funnel.router)
+router.include_router(_intake.router)
 
 
 __all__ = [

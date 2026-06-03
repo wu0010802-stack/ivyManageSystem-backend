@@ -18,6 +18,9 @@ class FunnelCard(BaseModel):
     deposited_at: Optional[datetime]
     student_id: Optional[int]
     current_stage: Stage
+    provisional_grade_id: Optional[int] = None
+    provisional_grade_name: Optional[str] = None
+    target_school_year: Optional[int] = None
 
 
 class FunnelSummary(BaseModel):

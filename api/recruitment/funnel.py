@@ -37,6 +37,25 @@ from utils.permissions import Permission, has_permission
 router = APIRouter(prefix="/funnel", tags=["recruitment-funnel"])
 
 
+def _build_funnel_card(visit, student, grade_name_map):
+    """把一筆訪視（+ 對應 student）組成看板卡片；純函式、不碰 session。"""
+    stage = derive_stage(visit, student)
+    return FunnelCard(
+        visit_id=visit.id,
+        child_name=visit.child_name,
+        grade=visit.grade,
+        phone=visit.phone,
+        district=visit.district,
+        source=visit.source,
+        deposited_at=visit.updated_at if visit.has_deposit else None,
+        student_id=student.id if student else None,
+        current_stage=stage,
+        provisional_grade_id=visit.provisional_grade_id,
+        provisional_grade_name=grade_name_map.get(visit.provisional_grade_id),
+        target_school_year=visit.target_school_year,
+    )
+
+
 # === GET /board ===
 @router.get("/board", response_model=FunnelBoardOut)
 def get_board(
@@ -65,6 +84,12 @@ def get_board(
         )
     }
 
+    from models.classroom import ClassGrade
+
+    grade_name_map: dict[int, str] = {
+        g.id: g.name for g in session.query(ClassGrade).all()
+    }
+
     buckets: dict[str, list[FunnelCard]] = {
         "visited": [],
         "deposited": [],
@@ -73,20 +98,8 @@ def get_board(
     }
     for v in visits:
         student = student_map.get(v.id)
-        stage = derive_stage(v, student)
-        buckets[stage].append(
-            FunnelCard(
-                visit_id=v.id,
-                child_name=v.child_name,
-                grade=v.grade,
-                phone=v.phone,
-                district=v.district,
-                source=v.source,
-                deposited_at=v.updated_at if v.has_deposit else None,
-                student_id=student.id if student else None,
-                current_stage=stage,
-            )
-        )
+        card = _build_funnel_card(v, student, grade_name_map)
+        buckets[card.current_stage].append(card)
 
     return FunnelBoardOut(
         stages=buckets,
