@@ -18,6 +18,7 @@ from models.approval import ApprovalStatus
 from utils.attendance_calc import (
     compute_early_leave_minutes_with_leave,
     compute_late_minutes_with_leave,
+    sync_attendance_flags,
 )
 
 # 預設排班（對齊 services/employee_leave_attendance_sync）
@@ -99,18 +100,26 @@ def merge_attendance_with_leave(att: Attendance, session: Session) -> None:
                 )
 
             if att.punch_out_time is not None:
-                # punch_out_time 是 DateTime，需先轉成 time
-                punch_out_t = (
-                    att.punch_out_time.time()
-                    if hasattr(att.punch_out_time, "time")
-                    else att.punch_out_time
-                )
-                att.early_leave_minutes = compute_early_leave_minutes_with_leave(
-                    punch_out=punch_out_t,
-                    scheduled_end=sched_end,
-                    leave_start=lv_start,
-                    leave_end=lv_end,
-                )
+                # 跨夜班：下班打卡落在隔日（caller 已 normalize 為 +1 天），
+                # 不可用 .time() 截斷日期後比對當日 scheduled_end（會誤算 ~960 分早退，P1-4）。
+                if (
+                    hasattr(att.punch_out_time, "date")
+                    and att.punch_out_time.date() > att.attendance_date
+                ):
+                    att.early_leave_minutes = 0
+                else:
+                    # punch_out_time 是 DateTime，需先轉成 time
+                    punch_out_t = (
+                        att.punch_out_time.time()
+                        if hasattr(att.punch_out_time, "time")
+                        else att.punch_out_time
+                    )
+                    att.early_leave_minutes = compute_early_leave_minutes_with_leave(
+                        punch_out=punch_out_t,
+                        scheduled_end=sched_end,
+                        leave_start=lv_start,
+                        leave_end=lv_end,
+                    )
 
             # status 修復:late/early_leave 都歸零 → 從 LATE/EARLY_LEAVE 退回 NORMAL
             late_min = att.late_minutes or 0
@@ -121,6 +130,10 @@ def merge_attendance_with_leave(att: Attendance, session: Session) -> None:
                     AttendanceStatus.EARLY_LEAVE.value,
                 ):
                     att.status = AttendanceStatus.NORMAL.value
+
+    # P0-3：leave 併入改動了 status/minutes/punch，重新同步布林旗標
+    # （case 1 無 leave 已於前面 return，保留 caller recompute 的旗標）。
+    sync_attendance_flags(att)
 
 
 def _is_full_day(leave: LeaveRecord) -> bool:

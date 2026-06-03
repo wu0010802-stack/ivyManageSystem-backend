@@ -52,7 +52,9 @@ def _make_leave(db_session, emp_id, **kwargs):
         start_time=kwargs.get("start_time"),
         end_time=kwargs.get("end_time"),
         leave_hours=kwargs.get("leave_hours", 8.0),
-        status=kwargs.get("status", "approved" if kwargs.get("is_approved", True) else "rejected"),
+        status=kwargs.get(
+            "status", "approved" if kwargs.get("is_approved", True) else "rejected"
+        ),
     )
     db_session.add(lv)
     db_session.commit()
@@ -186,3 +188,77 @@ class TestMergeAttendanceWithLeave:
         assert att not in db_session.new
         # session 不應有 dirty(merge 只讀 session)
         assert len(db_session.dirty) == 0
+
+
+class TestMergeFlagSync:
+    """P0-3 / P1-4 回歸：leave 併入後布林旗標必須與 minutes/status/punch 同步。
+
+    薪資 engine(services/salary/engine.py)直接讀 is_late/is_early_leave/
+    is_missing_punch_* 做 count，stale 旗標會讓請假日被算成遲到/缺卡。
+    """
+
+    def test_full_day_leave_clears_stale_missing_flags(
+        self, db_session, sample_employee
+    ):
+        """P0-3: 既有缺打卡 row(is_missing=True)被全天假覆蓋後,四旗標應全清 False。"""
+        _make_leave(db_session, sample_employee.id, leave_hours=8.0)
+        att = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.MISSING_PUNCH.value,
+            is_missing_punch_in=True,
+            is_missing_punch_out=True,
+            is_late=True,
+        )
+        merge_attendance_with_leave(att, db_session)
+        assert att.status == AttendanceStatus.LEAVE.value
+        assert att.is_missing_punch_in is False
+        assert att.is_missing_punch_out is False
+        assert att.is_late is False
+        assert att.is_early_leave is False
+
+    def test_partial_leave_covering_late_clears_is_late_flag(
+        self, db_session, sample_employee
+    ):
+        """P0-3: 部分假涵蓋遲到時段使 late_minutes→0,is_late 應同步 False。"""
+        _make_leave(
+            db_session,
+            sample_employee.id,
+            leave_hours=4.0,
+            start_time="09:00",
+            end_time="13:00",
+        )
+        att = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.LATE.value,
+            is_late=True,
+            punch_in_time=datetime.combine(date(2026, 5, 22), time(9, 30)),
+            late_minutes=30,
+        )
+        merge_attendance_with_leave(att, db_session)
+        assert att.late_minutes == 0
+        assert att.is_late is False
+
+    def test_overnight_punch_out_not_counted_as_early_leave(
+        self, db_session, sample_employee
+    ):
+        """P1-4: 跨夜班下班落在隔日,leave-aware 重算不可當早退(否則 ~960 分早退)。"""
+        _make_leave(
+            db_session,
+            sample_employee.id,
+            leave_hours=4.0,
+            start_time="09:00",
+            end_time="13:00",
+        )
+        att = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.NORMAL.value,
+            punch_in_time=datetime.combine(date(2026, 5, 22), time(13, 0)),
+            # 隔日 02:00 下班（跨夜班）
+            punch_out_time=datetime.combine(date(2026, 5, 23), time(2, 0)),
+        )
+        merge_attendance_with_leave(att, db_session)
+        assert att.early_leave_minutes == 0
+        assert att.is_early_leave is False
