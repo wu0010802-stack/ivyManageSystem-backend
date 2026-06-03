@@ -304,8 +304,9 @@ def get_attendance_sheet(
                     if not effective_out:
                         effective_out = fallback_end
 
-                # 跨夜班修正：DB 儲存的 punch_out 早於 punch_in（舊資料或異常），補一天
-                if effective_in and effective_out and effective_out <= effective_in:
+                # 跨夜班修正：DB 儲存的 punch_out 早於 punch_in（舊資料或異常），補一天。
+                # 嚴格小於：punch_in == punch_out（相等）視為異常，不補一天（否則虛增 ~24h，P2-1）。
+                if effective_in and effective_out and effective_out < effective_in:
                     effective_out += timedelta(days=1)
 
                 if effective_in and effective_out and effective_out > effective_in:
