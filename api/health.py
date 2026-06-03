@@ -2,13 +2,18 @@
 api/health.py — 健康檢查端點
 
 提供 liveness 與 readiness 探針，供負載均衡器 / K8s 使用。
+
+Readiness shallow（無 query）：SELECT 1，K8s/zeabur 預設 probe 用。回 既有 shape
+（status / db / latency_ms）— 不更動，避免破壞既有監控與 LB 設定。
+Readiness deep（?deep=1）：另探 LINE / Supabase breaker state + DB pool 飽和度。
+SRE 手測 / 排錯用，**不打外網**（讀既有 P1 breaker state + LineTokenHealth 表）。
 """
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from schemas._base import IvyBaseModel
@@ -23,6 +28,108 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/health", tags=["health"])
 
 
+# Deep-only thresholds
+_DB_POOL_UTILIZATION_WARN = 0.85
+_SUPABASE_PENDING_WARN = 50
+_LINE_HEALTH_STALE_HOURS = 26
+
+
+def _check_line() -> dict:
+    """LINE 健康度：breaker state + LineTokenHealth 最新 row。不打外網。"""
+    try:
+        from utils.circuit_breaker import LINE_BREAKER
+    except Exception:
+        return {"ok": False, "error": "breaker_import_failed"}
+
+    breaker_stats = LINE_BREAKER.stats
+    state = breaker_stats.get("state", "unknown")
+    out: dict = {
+        "ok": state == "closed",
+        "breaker": state,
+        "consecutive_failures": breaker_stats.get("consecutive_failures", 0),
+    }
+
+    # 補 LineTokenHealth row（不打外網，讀本機表）
+    try:
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT healthy, last_check_at, consecutive_failures "
+                    "FROM line_token_health WHERE id=1"
+                )
+            ).first()
+        if row is None:
+            out["token_health"] = "no_record"
+        else:
+            out["token_healthy"] = bool(row.healthy)
+            out["token_last_check_at"] = (
+                row.last_check_at.isoformat() if row.last_check_at else None
+            )
+            if row.last_check_at:
+                age = datetime.now(timezone.utc) - row.last_check_at
+                if age > timedelta(hours=_LINE_HEALTH_STALE_HOURS):
+                    out["ok"] = False
+                    out["stale"] = True
+            if not row.healthy:
+                out["ok"] = False
+    except Exception as e:
+        logger.warning("LineTokenHealth query failed: %s", e)
+        out["token_health"] = "query_failed"
+
+    return out
+
+
+def _check_supabase() -> dict:
+    """Supabase 健康度：breaker state + pending_uploads 積壓。不打外網。"""
+    try:
+        from utils.circuit_breaker import SUPABASE_BREAKER
+    except Exception:
+        return {"ok": False, "error": "breaker_import_failed"}
+
+    breaker_stats = SUPABASE_BREAKER.stats
+    state = breaker_stats.get("state", "unknown")
+    out: dict = {"ok": state == "closed", "breaker": state}
+
+    try:
+        with get_engine().connect() as conn:
+            pending = (
+                conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM pending_uploads "
+                        "WHERE status='pending' AND attempts < 5"
+                    )
+                ).scalar()
+                or 0
+            )
+        out["pending_uploads"] = pending
+        if pending > _SUPABASE_PENDING_WARN:
+            out["ok"] = False
+    except Exception as e:
+        logger.warning("pending_uploads query failed: %s", e)
+        out["pending_uploads"] = None
+
+    return out
+
+
+def _check_db_pool() -> dict:
+    """DB connection pool 飽和度。"""
+    try:
+        pool = get_engine().pool
+        used = pool.checkedout()
+        size = pool.size() if hasattr(pool, "size") else -1
+    except Exception as e:
+        logger.warning("db pool stats failed: %s", e)
+        return {"ok": True, "error": "stats_unavailable"}
+
+    utilization = (used / size) if size > 0 else 0.0
+    return {
+        "ok": utilization <= _DB_POOL_UTILIZATION_WARN,
+        "used": used,
+        "size": size,
+        "utilization": round(utilization, 2),
+    }
+
+
 @router.get("/live", response_model=OkStatusOut)
 def liveness():
     """Liveness probe — 程序存活即回 200。"""
@@ -30,30 +137,74 @@ def liveness():
 
 
 @router.get("/ready")
-def readiness():
-    """Readiness probe — 確認 DB 連線池可用。
+async def readiness(deep: bool = Query(False)):
+    """Readiness probe.
 
-    資安掃描 2026-05-07 P1：response 不再回傳 env 欄位（無認證端點，env 值
-    告訴攻擊者部署環境類型，協助針對性 payload）。SRE 改在啟動 log 一次性
-    確認；如需動態查詢可在 /health/live 用 X-Health-Token header 私有揭露。
+    Shallow（無 query）— 既有 shape，不更動：
+        {"status": "ok", "db": "connected", "latency_ms": X.X}
+
+    Deep（?deep=1）— enriched shape：
+        {
+          "status": "ok" | "degraded",
+          "latency_ms": X.X,
+          "components": {
+            "db": {...},
+            "line": {...},
+            "supabase": {...},
+            "db_pool": {...},
+          },
+        }
     """
     start = time.monotonic()
+
+    # Shallow path — 既有行為，逐字保留
+    if not deep:
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            elapsed_ms = round((time.monotonic() - start) * 1000, 1)
+            return {
+                "status": "ok",
+                "db": "connected",
+                "latency_ms": elapsed_ms,
+            }
+        except Exception as e:
+            logger.error("Readiness check failed: %s", e, exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unavailable", "db": "unavailable"},
+            )
+
+    # Deep path — components shape
+    components: dict[str, dict] = {}
+
+    # DB
     try:
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        elapsed_ms = round((time.monotonic() - start) * 1000, 1)
-        return {
-            "status": "ok",
-            "db": "connected",
-            "latency_ms": elapsed_ms,
-        }
+        components["db"] = {"ok": True}
     except Exception as e:
-        logger.error("Readiness check failed: %s", e, exc_info=True)
-        return JSONResponse(
-            status_code=503,
-            content={"status": "unavailable", "db": "unavailable"},
-        )
+        logger.error("Deep readiness DB check failed: %s", e, exc_info=True)
+        components["db"] = {"ok": False, "error": "db_unavailable"}
+
+    # 3 deep components
+    components["line"] = _check_line()
+    components["supabase"] = _check_supabase()
+    components["db_pool"] = _check_db_pool()
+
+    overall_ok = all(c.get("ok") for c in components.values())
+    elapsed_ms = round((time.monotonic() - start) * 1000, 1)
+    body = {
+        "status": "ok" if overall_ok else "degraded",
+        "latency_ms": elapsed_ms,
+        "components": components,
+    }
+    return JSONResponse(
+        status_code=200 if overall_ok else 503,
+        content=body,
+    )
 
 
 
@@ -116,3 +267,4 @@ def schedulers_health():
             content={"status": "degraded", "lagging": lagging, "schedulers": schedulers},
         )
     return {"status": "ok", "schedulers": schedulers}
+

@@ -373,8 +373,12 @@ async def import_holidays(
     validate_file_signature(content, ".xlsx")
     try:
         df = pd.read_excel(BytesIO(content))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"無法解析 Excel 檔案：{e}")
+    except Exception:
+        logger.warning("考勤事件 Excel 解析失敗", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail="無法解析 Excel 檔案，請確認檔案格式正確且未損壞",
+        )
 
     # 預掃描:收集所有可解析日期所屬的 (year, month) 集合,供封存檢查與 stale 標記
     affected_months: set = set()

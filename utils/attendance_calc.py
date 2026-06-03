@@ -142,6 +142,36 @@ def apply_attendance_status(
     return fields
 
 
+def sync_attendance_flags(attendance) -> None:
+    """依 attendance 最終 canonical 狀態重新推導四個布林旗標。
+
+    薪資 engine（services/salary/engine.py:2313-2328）直接讀
+    is_late / is_early_leave / is_missing_punch_* 做 late/early/missing count，
+    因此 leave 併入（attendance_leave_merge）或 sync（employee_leave_attendance_sync）
+    改動 late_minutes / early_leave_minutes / status / punch 後，必須同步這四個旗標，
+    否則請假日仍被算成遲到/早退/缺卡（P0-3）。
+
+    規則:
+    - status == LEAVE（全天請假）→ 四旗標全 False（非遲到/早退/缺卡）
+    - 其餘 → is_late = late_minutes>0；is_early_leave = early_leave_minutes>0；
+             is_missing_punch_* = 對應 punch is None
+    """
+    # 延遲 import 避免 models ↔ utils 任何潛在循環
+    from models.attendance import AttendanceStatus
+
+    if attendance.status == AttendanceStatus.LEAVE.value:
+        attendance.is_late = False
+        attendance.is_early_leave = False
+        attendance.is_missing_punch_in = False
+        attendance.is_missing_punch_out = False
+        return
+
+    attendance.is_late = (attendance.late_minutes or 0) > 0
+    attendance.is_early_leave = (attendance.early_leave_minutes or 0) > 0
+    attendance.is_missing_punch_in = attendance.punch_in_time is None
+    attendance.is_missing_punch_out = attendance.punch_out_time is None
+
+
 # ── leave-aware 遲到 / 早退分鐘計算純函式 ─────────────────────────────────────
 
 

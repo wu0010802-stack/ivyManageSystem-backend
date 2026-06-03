@@ -84,7 +84,15 @@ def convert_recruitment_to_student(
     # 經 before_flush listener 自動組出，不再接受手填。
     from services.student_numbering import next_enrollment_seq
 
-    enroll_year, _ = resolve_current_academic_term()
+    cur_year, cur_sem = resolve_current_academic_term()
+    if visit.target_school_year is not None:
+        enroll_year = visit.target_school_year
+        enroll_sem = (
+            visit.target_semester if visit.target_semester is not None else cur_sem
+        )
+    else:
+        enroll_year = cur_year
+        enroll_sem = cur_sem
     seq = next_enrollment_seq(session, enroll_year)
 
     enroll_date = enrollment_date or today_taipei()
@@ -131,7 +139,7 @@ def convert_recruitment_to_student(
     # 刻意不呼叫 student_lifecycle.transition()：此處是「建立」而非「既有學生的狀態轉移」，
     # 學生尚未進入狀態機（沒有 from_status）。若走 transition() 會變成
     # prospect → enrolled 的偽轉移並寫出第二筆 ChangeLog。
-    school_year, semester = resolve_current_academic_term()
+    school_year, semester = enroll_year, enroll_sem
     change_log = StudentChangeLog(
         student_id=student.id,
         school_year=school_year,
@@ -156,7 +164,11 @@ def convert_recruitment_to_student(
         to_stage="enrolled",
         student_id=student.id,
         actor_user_id=recorded_by,
-        metadata_json={"enrollment_seq": seq, "enrollment_school_year": enroll_year, "classroom_id": classroom_id},
+        metadata_json={
+            "enrollment_seq": seq,
+            "enrollment_school_year": enroll_year,
+            "classroom_id": classroom_id,
+        },
         created_at=now_taipei_naive(),
     )
     session.add(funnel_log)

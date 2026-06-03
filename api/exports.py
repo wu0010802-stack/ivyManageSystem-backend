@@ -16,6 +16,7 @@ from utils.constants import LEAVE_TYPE_LABELS, OVERTIME_TYPE_LABELS
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
 from utils.masking import mask_bank_account
 from utils.permissions import Permission, has_permission
+from utils.portfolio_access import assert_all_scope
 from utils.rate_limit import create_limiter
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
@@ -247,6 +248,12 @@ def export_students(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """匯出學生名冊 Excel"""
+    # 全校 PII 匯出（生日/家長電話/地址）：鎖 :all，禁 own_class 自訂角色匯出全校。
+    assert_all_scope(
+        current_user,
+        Permission.STUDENTS_READ.value,
+        action_label="匯出全校學生名冊",
+    )
     session = get_session()
     try:
         students = list(

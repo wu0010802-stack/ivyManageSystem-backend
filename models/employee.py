@@ -86,6 +86,9 @@ class Employee(Base):
 
     insurance_salary_level = Column(Money, default=0, comment="投保薪資級距")
     pension_self_rate = Column(Float, default=0, comment="勞退自提比例 (0~0.06)")
+    insurance_effective_date = Column(
+        Date, nullable=True, comment="加保生效日（記錄用，不入薪資計算）"
+    )
 
     work_start_time = Column(String(5), default="08:00", comment="上班時間 HH:MM")
     work_end_time = Column(String(5), default="17:00", comment="下班時間 HH:MM")
@@ -178,6 +181,8 @@ class Employee(Base):
     hire_date = Column(Date, comment="到職日期")
     probation_end_date = Column(Date, nullable=True, comment="試用期結束日")
     birthday = Column(Date, nullable=True, comment="生日")
+    gender = Column(String(10), nullable=True, comment="性別：男/女/其他")
+    email = Column(String(100), nullable=True, comment="電子郵件")
 
     phone = Column(String(20), comment="聯絡電話")
     address = Column(String(200), comment="通訊地址")

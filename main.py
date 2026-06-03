@@ -52,6 +52,7 @@ from api.notifications import router as notifications_router
 from api.reports import router as reports_router
 from api.exports import router as exports_router
 from api.audit import router as audit_router
+from api.data_quality import router as data_quality_router
 from api.internal_metrics import router as internal_metrics_router
 from api.integrations_health import router as integrations_health_router
 from api.punch_corrections import router as punch_corrections_router
@@ -229,7 +230,9 @@ def on_startup():
 
         s = get_session()
         try:
-            seed = {p.code: p.scope_options for p in s.query(PermissionDefinition).all()}
+            seed = {
+                p.code: p.scope_options for p in s.query(PermissionDefinition).all()
+            }
         finally:
             s.close()
         check_scope_options_sanity(seed)
@@ -578,6 +581,23 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("對帳排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # 資料品質排程（spec 2026-05-28 observability-forensic Ch2.4）：
+    # 每日 03:00 Asia/Taipei 跑 run_all_rules → dispatch.emit → flush_line_digest
+    # 預設關閉（DATA_QUALITY_ENABLED=1 才啟用）；HR 確認 baseline 不雜音再開
+    data_quality_task = None
+    data_quality_stop_event: asyncio.Event | None = None
+    try:
+        from services import data_quality_scheduler as _dq_sched
+
+        if _dq_sched.scheduler_enabled():
+            data_quality_stop_event = asyncio.Event()
+            data_quality_task = asyncio.create_task(
+                _dq_sched.run_data_quality_scheduler(data_quality_stop_event)
+            )
+    except Exception as e:
+        logger.warning("資料品質排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     try:
         yield
     finally:
@@ -689,6 +709,17 @@ async def app_lifespan(app_instance: FastAPI):
                 finance_reconciliation_task.cancel()
                 try:
                     await finance_reconciliation_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if data_quality_task is not None:
+            if data_quality_stop_event is not None:
+                data_quality_stop_event.set()
+            try:
+                await asyncio.wait_for(data_quality_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                data_quality_task.cancel()
+                try:
+                    await data_quality_task
                 except (asyncio.CancelledError, Exception):
                     pass
         if recruitment_term_advance_task is not None:
@@ -842,6 +873,11 @@ else:
         "http://127.0.0.1:3000",
     ]
 
+# 教師登入 WiFi 閘可見性：prod 未設 SCHOOL_WIFI_IPS 時 _is_school_wifi fail-open，啟動告警
+from api.auth import warn_if_school_wifi_gate_disabled
+
+warn_if_school_wifi_gate_disabled(_is_prod_env)
+
 # 注意：CORSMiddleware 的 add 已移到下方 middleware 區塊（TrustedHost 之前），
 # 使其成為 KillSwitch / CSRF / SecurityHeaders / RequestLogging / Audit 的外層
 # wrapper。否則這些 middleware 自身短路產生的 503/403/400 回應不會回流經過
@@ -915,11 +951,9 @@ app.include_router(announcements_router)
 app.include_router(approvals_router)
 app.include_router(notifications_router)
 app.include_router(reports_router)
-from api.analytics import router as analytics_router
-
-app.include_router(analytics_router)
 app.include_router(exports_router)
 app.include_router(audit_router)
+app.include_router(data_quality_router)
 app.include_router(internal_metrics_router)
 app.include_router(integrations_health_router)
 app.include_router(uptime_webhook_router)
@@ -969,6 +1003,12 @@ app.include_router(calendar_admin_router, prefix="/api/calendar")
 from api.permissions_admin import router as permissions_admin_router
 
 app.include_router(permissions_admin_router)
+from api.dsr_admin import router as dsr_admin_router
+
+app.include_router(dsr_admin_router)
+from api.policies_admin import router as policies_admin_router
+
+app.include_router(policies_admin_router)
 app.include_router(offboarding_router, prefix="/api")
 
 from api import leave_quota_expiry as _lqe_api

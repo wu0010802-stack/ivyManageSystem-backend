@@ -20,7 +20,9 @@ from models.classroom import Classroom, ClassGrade, Student
 from models.database import Employee
 from services.enrollment_roster_pdf import generate_enrollment_roster_pdf
 from utils.auth import require_staff_permission
+from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
 from utils.permissions import Permission
+from utils.portfolio_access import assert_all_scope
 from utils.academic import resolve_academic_term_filters
 
 logger = logging.getLogger(__name__)
@@ -78,9 +80,14 @@ class TermOption(BaseModel):
 def get_enrollment_stats(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None),
-    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得指定學年學期的在籍學生統計，未提供則自動使用當前學期。"""
+    assert_all_scope(
+        current_user,
+        Permission.STUDENTS_READ.value,
+        action_label="檢視全園在籍統計",
+    )
     school_year, semester = resolve_academic_term_filters(school_year, semester)
 
     with session_scope() as session:
@@ -216,9 +223,13 @@ class RosterResponse(BaseModel):
 def get_enrollment_roster(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None),
-    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
-    """取得花名冊格式的在籍記錄，含每班學生姓名、教師、員工名單。"""
+    """取得花名冊格式的在籍記錄，含每班學生姓名、教師、員工名單。
+
+    scope 由下方 class-scope filter 收斂（own_class 只看自己班，比照 get_students）；
+    不再用 assert_all_scope 一律 403，避免 class-scoped 角色完全看不到自己班花名冊。
+    """
     school_year, semester = resolve_academic_term_filters(school_year, semester)
 
     # ROC 民國日期字串，例如 "1150402"
@@ -256,6 +267,17 @@ def get_enrollment_roster(
             .order_by(ClassGrade.sort_order, Classroom.name)
             .all()
         )
+
+        # ── 班級 scope 守衛 ─────────────────────────────────────────────
+        # class-scoped 角色（STUDENTS_READ:own_class）只看自己班，比照 get_students；
+        # admin/hr/supervisor 或持 :all 者不受限。避免跨班學生姓名冊 over-read。
+        if not is_unrestricted(current_user, code=Permission.STUDENTS_READ.value):
+            allowed = set(
+                accessible_classroom_ids(
+                    session, current_user, code=Permission.STUDENTS_READ.value
+                )
+            )
+            classroom_rows = [r for r in classroom_rows if r.classroom_id in allowed]
 
         # ── 查詢各班學生 ────────────────────────────────────────────────
         classroom_ids = [r.classroom_id for r in classroom_rows]
@@ -369,10 +391,14 @@ def get_enrollment_roster(
 def print_enrollment_roster_pdf(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None),
-    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """產生在籍花名冊 PDF（A4 橫向，繁中 embed Noto Sans TC）。"""
-    roster = get_enrollment_roster(school_year=school_year, semester=semester)
+    # scope 過濾由 get_enrollment_roster 內 class-scope filter 負責；
+    # 直接呼叫端點函式需顯式傳 current_user（Depends default 不會注入）。
+    roster = get_enrollment_roster(
+        school_year=school_year, semester=semester, current_user=current_user
+    )
     # roster 是 Pydantic model；轉成 dict 餵 generator
     roster_dict = (
         roster.model_dump() if hasattr(roster, "model_dump") else roster.dict()
@@ -394,9 +420,14 @@ def print_enrollment_roster_pdf(
 
 @router.get("/student-enrollment/options", response_model=list[TermOption])
 def get_enrollment_options(
-    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得所有可用的學年/學期組合（用於前端篩選下拉）。"""
+    assert_all_scope(
+        current_user,
+        Permission.STUDENTS_READ.value,
+        action_label="檢視全園學年學期選項",
+    )
     with session_scope() as session:
         rows = (
             session.query(Classroom.school_year, Classroom.semester)

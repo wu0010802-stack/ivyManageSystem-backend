@@ -18,7 +18,7 @@ from utils.taipei_time import today_taipei
 from pathlib import Path
 from typing import Optional
 
-from config import settings
+from config import get_settings, settings
 
 from fastapi import (
     APIRouter,
@@ -63,6 +63,7 @@ from utils.auth import require_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
 from utils.portfolio_access import assert_student_access
+from services.consent.checker import consent_check_student_scope
 from utils.storage import get_backend
 
 logger = logging.getLogger(__name__)
@@ -265,7 +266,7 @@ def _collect_report_data(
             "period_end": report.period_end,
             "report_id": report.id,
             "teacher_narrative": report.teacher_narrative,
-            "generated_on": today_taipei(),  
+            "generated_on": today_taipei(),
         },
         "attendance_summary": summarize_attendance(att_records),
         "highlight_observations": pick_highlight_observations(obs_rows, max_count=5),
@@ -310,6 +311,21 @@ def _generate_pdf_job(report_id: int) -> None:
                 report.status = REPORT_STATUS_FAILED
                 report.error_message = "Student not found"
                 return
+
+            # cross_border consent gate（background job 版：不 raise，優雅 skip）
+            if get_settings().consent.enforcement_enabled:
+                ok = consent_check_student_scope(
+                    session, report.student_id, "cross_border_transfer"
+                )
+                if not ok:
+                    report.status = REPORT_STATUS_FAILED
+                    report.error_message = "家長未同意學生資料跨境傳輸，略過上傳"
+                    logger.warning(
+                        "PDF job %d skipped: student=%d 未同意 cross_border_transfer",
+                        report_id,
+                        report.student_id,
+                    )
+                    return
 
             data = _collect_report_data(
                 session, student, report.period_start, report.period_end, report
@@ -398,7 +414,12 @@ def create_growth_report(
                 status_code=422, detail="period_start 必須早於 period_end"
             )
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_PUBLISH.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.PORTFOLIO_PUBLISH.value,
+            )
             student = session.query(Student).filter_by(id=student_id).first()
             if not student:
                 raise HTTPException(status_code=404, detail="學生不存在")
@@ -472,7 +493,9 @@ def list_growth_reports(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
+            assert_student_access(
+                session, current_user, student_id, code=Permission.PORTFOLIO_READ.value
+            )
             rows = (
                 session.query(StudentGrowthReport)
                 .filter(StudentGrowthReport.student_id == student_id)
@@ -506,7 +529,9 @@ def get_growth_report(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
+            assert_student_access(
+                session, current_user, student_id, code=Permission.PORTFOLIO_READ.value
+            )
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)
@@ -539,7 +564,9 @@ def download_growth_report(
 ) -> FileResponse | RedirectResponse:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_READ.value)
+            assert_student_access(
+                session, current_user, student_id, code=Permission.PORTFOLIO_READ.value
+            )
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)
@@ -600,7 +627,12 @@ def delete_growth_report(
 ) -> Response:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_PUBLISH.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.PORTFOLIO_PUBLISH.value,
+            )
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)
@@ -658,7 +690,12 @@ async def send_growth_report_to_line(
         claimed_sent_at: Optional[datetime] = None
         period_label: str = ""
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.PORTFOLIO_PUBLISH.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.PORTFOLIO_PUBLISH.value,
+            )
             r = (
                 session.query(StudentGrowthReport)
                 .filter_by(id=report_id, student_id=student_id)

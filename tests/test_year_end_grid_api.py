@@ -249,6 +249,54 @@ def test_build_settlements_endpoint(client_with_db):
     assert body["skipped_finalized"] == 0
 
 
+def test_build_settlements_response_has_derive_fields(client_with_db):
+    """B8: build-settlements 端點 response 應含 unmatched_count/fallback_classes/warnings。
+
+    本端點固定 refresh_rates=True，故 derive_report 非 None；欄位型別正確即通過。
+    SQLite 測試環境中才藝報名資料通常為空，所以 unmatched_count 預期 0，
+    fallback_classes 因 ClassEnrollmentTarget 已有種手填 returning_student_rate 而應為 0。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)
+    _login(client)
+
+    res = _build(client, cycle_id)
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # 原有欄位不破壞
+    assert body["built"] >= 1
+    assert body["skipped_finalized"] == 0
+
+    # B8 新增欄位存在且型別正確
+    assert "unmatched_count" in body
+    assert "fallback_classes" in body
+    assert "warnings" in body
+    assert isinstance(body["unmatched_count"], int)
+    assert isinstance(body["fallback_classes"], int)
+    assert isinstance(body["warnings"], list)
+
+    # SQLite seed 沒有才藝報名資料 → unmatched_count 為 0
+    assert body["unmatched_count"] == 0
+    # fallback_classes：seed 無學生 enrollment_school_year 資料，
+    # returning_rate derive 無法自動計算 → 沿用手填值，計為 fallback（>= 0 即合法）
+    assert body["fallback_classes"] >= 0
+
+
+def test_build_result_out_derive_report_none_safe():
+    """B8 None-safe: derive_report=None 時 BuildResultOut 三欄均用 default 值。
+
+    模擬 refresh_rates=False 路徑（或 derive_all 未執行）；不需完整 DB。
+    """
+    from schemas.year_end import BuildResultOut
+
+    out = BuildResultOut(built=3, skipped_finalized=1)
+    assert out.unmatched_count == 0
+    assert out.fallback_classes == 0
+    assert out.warnings == []
+
+
 def test_grid_endpoint_shape(client_with_db):
     client, sf = client_with_db
     _seed_users(sf)

@@ -752,6 +752,28 @@ def get_student(
             entity_id=str(student_id),
             summary=f"查看學生資料：{student_name}",
         )
+
+        # RA-MED-3：當實際回出解密醫療欄位（caller 有 health-read 且該生有醫療內容）時，
+        # 補寫 §6 medical_access_log（detail 頁無顯式 reason，用 generic 字串）。
+        from utils.portfolio_access import can_view_student_health
+
+        if can_view_student_health(current_user) and (
+            student.allergy or student.medication
+        ):
+            from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
+            from utils.request_ip import get_client_ip
+
+            session.add(
+                MedicalAccessLog(
+                    user_id=current_user.get("user_id"),
+                    student_id=student_id,
+                    field_name=MEDICAL_FIELD_BUNDLE,
+                    reason="學生詳細頁檢視（無顯式理由）",
+                    ip_address=get_client_ip(request),
+                )
+            )
+            session.commit()
+
         return mask_student_health_fields(payload, current_user)
     finally:
         session.close()
@@ -795,6 +817,12 @@ def get_student_medical(
     from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
     from utils.request_ip import get_client_ip
 
+    # RA-L4：min_length 不 trim，純空白可過；strip 後再驗語意長度，避免空洞 reason 架空 §6 稽核
+    if len(reason.strip()) < 10:
+        raise HTTPException(
+            status_code=422, detail="讀取醫療資訊原因需至少 10 個有意義字元"
+        )
+
     session = get_session()
     try:
         student = assert_student_access(session, current_user, student_id)
@@ -827,6 +855,9 @@ def create_student(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """新增學生"""
+    # 學生主資料寫入：限 admin/hr/supervisor（對齊 PUT/DELETE/bulk-transfer policy，
+    # audit 2026-05-07 P0 #3/#4）。擋自訂 STUDENTS_WRITE:own_class 角色越權建生。
+    require_unrestricted_role(current_user, action_label="新增學生")
     session = get_session()
     try:
         data = item.model_dump()
@@ -991,6 +1022,20 @@ async def delete_student(
         student.is_active = False
         student.status = "已刪除"
 
+        # 同步 lifecycle_status + terminal_entered_at（CLAUDE.md §9）：軟刪除等同
+        # 終態離校（withdrawn），不可繞過 set_lifecycle_status，否則家長 PII 365 天
+        # GC（pii_retention_scheduler）永不觸發。audit=False：DELETE 已由 AuditMiddleware 記錄。
+        from utils.student_lifecycle import set_lifecycle_status
+        from models.classroom import LIFECYCLE_WITHDRAWN
+
+        set_lifecycle_status(
+            session,
+            student,
+            LIFECYCLE_WITHDRAWN,
+            actor_user_id=current_user.get("user_id"),
+            audit=False,
+        )
+
         # 同步：刪除學生時軟刪該生當學期才藝報名
         from api.activity._shared import sync_registrations_on_student_deactivate
 
@@ -1035,6 +1080,9 @@ async def graduate_student(
     current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
 ):
     """設定學生畢業或轉出，並標記為非在讀。同時取消進行中的接送通知並推送 WS 事件。"""
+    # 學生主資料生命週期寫入：限 admin/hr/supervisor（對齊主資料寫入 policy）。
+    # 擋自訂 STUDENTS_WRITE:own_class 角色越權畢業/轉出任意學生。
+    require_unrestricted_role(current_user, action_label="學生畢業/離園")
     session = get_session()
     try:
         student = session.query(Student).filter(Student.id == student_id).first()
@@ -1280,6 +1328,12 @@ def get_student_profile(
     """學生完整檔案聚合（basic + lifecycle + health + guardians + 各種 summary）。"""
     session = get_session()
     try:
+        # 逐筆 PII：限自班——持 STUDENTS_READ:own_class 者不得讀跨班學生完整檔案
+        # （含監護人電話/生日）。標準角色（admin/supervisor :all）照常放行；不存在
+        # 的 student_id raise 404。
+        assert_student_access(
+            session, current_user, student_id, code=Permission.STUDENTS_READ.value
+        )
         profile = assemble_profile(
             session,
             student_id,
@@ -1326,12 +1380,20 @@ async def transition_student_lifecycle(
     - 軟刪該生當學期才藝報名
     - 標記 AuditMiddleware soft-delete summary（request 傳入 set_lifecycle_status）
     """
+    # 學生主資料生命週期寫入：限 admin/hr/supervisor（對齊主資料寫入 policy）。
+    # 擋自訂 STUDENTS_LIFECYCLE_WRITE:own_class 角色越權轉移任意學生狀態。
+    require_unrestricted_role(current_user, action_label="學生生命週期轉移")
     session = get_session()
     dismissal_broadcasts: list[dict] = []
     try:
-        student = session.query(Student).filter(Student.id == student_id).first()
-        if student is None:
-            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        # 班級 scope 守衛（STUDENTS_LIFECYCLE_WRITE 為 scope-aware perm，own_class/all）：
+        # class-scoped 角色不可對他班學生做破壞性生命週期轉移。
+        student = assert_student_access(
+            session,
+            current_user,
+            student_id,
+            code=Permission.STUDENTS_LIFECYCLE_WRITE.value,
+        )
 
         terminal_like = {"withdrawn", "transferred", "graduated"}
         if item.to_status in terminal_like:
@@ -1378,6 +1440,8 @@ async def transition_student_lifecycle(
         )
         response = {
             "message": f"已轉為 {result.to_status}",
+            # response_model=MutationResultOut 需 id；缺此欄會 ResponseValidationError 500
+            "id": result.student_id,
             "student_id": result.student_id,
             "from_status": result.from_status,
             "to_status": result.to_status,
@@ -1490,9 +1554,9 @@ def create_guardian(
 ):
     session = get_session()
     try:
-        student = session.query(Student).filter(Student.id == student_id).first()
-        if student is None:
-            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        # RA-HIGH-3：對齊 READ 端點的 per-student scope 守衛（內部處理 404/403）。
+        # 園長/教師只能對自班學生新增 guardian，跨班一律 403。
+        student = assert_student_access(session, current_user, student_id)
 
         # 若設為主要聯絡人，先將其他主要聯絡人降級
         if item.is_primary:
@@ -1540,6 +1604,9 @@ def update_guardian(
         )
         if guardian is None:
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
+
+        # RA-HIGH-3：對齊 READ 端點的 per-student scope 守衛（跨班 403）。
+        assert_student_access(session, current_user, guardian.student_id)
 
         data = item.model_dump(exclude_unset=True)
         # 驗證 relation
@@ -1596,6 +1663,9 @@ def delete_guardian(
         if guardian is None:
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
 
+        # RA-HIGH-3：對齊 READ 端點的 per-student scope 守衛（跨班 403）。
+        assert_student_access(session, current_user, guardian.student_id)
+
         guardian.deleted_at = now_taipei_naive()
         mark_soft_delete(request, "guardian", guardian.name or str(guardian_id))
         request.state.audit_entity_id = str(guardian.student_id)
@@ -1628,6 +1698,10 @@ def get_student_lifecycle_overview(
 ):
     session = get_session()
     try:
+        # 逐筆：限自班——持 STUDENTS_READ:own_class 者不得查跨班學生生命週期。
+        assert_student_access(
+            session, current_user, student_id, code=Permission.STUDENTS_READ.value
+        )
         overview = build_lifecycle_overview(session, student_id)
         return LifecycleOverviewOut(
             student_id=overview.student_id,

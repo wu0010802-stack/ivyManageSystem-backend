@@ -20,6 +20,8 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import time
+import contextvars
+from contextlib import contextmanager
 
 import requests
 
@@ -35,10 +37,17 @@ _LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 
 def _check_line_push_consent(line_user_id: str) -> bool:
-    """Query User WHERE line_user_id, return line_push_consent value。
+    """LINE 個人推播跨境 consent gate（Spec E §3.3 P0 #6）。
 
-    未綁定 LINE / consent False / DB error → return False (fail-closed)。
-    跨境合規不可放行，DB 異常時保守 skip 推播。
+    跨境同意僅針對「家長推播含學生（第三方未成年）PII」。判定規則：
+    - 未綁定 LINE / DB error → False（fail-closed，保守 skip）
+    - 員工等非家長 user（role != 'parent'）→ True（放行）：員工 LINE 通知傳的是
+      本人工作資訊（請假/加班/薪資），非第三方 PII，且無 opt-in 途徑（Spec E 僅建
+      家長 LIFF opt-in UI），不在本 gate 約束範圍
+    - 家長（role == 'parent'）→ 回其 line_push_consent 值（須 explicit opt-in）
+
+    用 role（而非 employee_id）判定：對 teacher-parent（role='parent' 但同時為員工）
+    的家長身分推播仍須 gate，避免在未同意下外洩學生 PII。
     """
     from models.auth import User
     from models.base import session_scope
@@ -48,7 +57,12 @@ def _check_line_push_consent(line_user_id: str) -> bool:
             user = session.query(User).filter(User.line_user_id == line_user_id).first()
             if not user:
                 return False
-            return bool(user.line_push_consent)
+            if user.role != "parent":
+                return True
+            # 家長：查 ParentConsentLog 單一數據源（退役 user.line_push_consent）
+            from services.consent.checker import consent_check
+
+            return consent_check(session, user.id, "line_push")
     except Exception as e:
         logger.warning(
             "check_line_push_consent failed for %s...: %s",
@@ -66,7 +80,32 @@ _LINE_401_DEDUP_TTL_SECONDS = 3600
 _RECENT_LINE_401_403: dict[int, float] = {}  # status_code → last_capture_ts
 
 
-def _record_line_response(
+class LineDeliveryError(RuntimeError):
+    """LINE push 在 notification dispatch 情境下 HTTP 失敗（非 200 或網路例外）。
+
+    供 dispatch._fan_out / retry_scheduler 將失敗記為 channels_failed 並排重試，
+    而非靜默誤記送達。僅在 dispatch_delivery_strict() 區塊內由 _record_line_response 拋出。
+    """
+
+
+_RAISE_ON_LINE_FAILURE: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "_raise_on_line_failure", default=False
+)
+
+
+@contextmanager
+def dispatch_delivery_strict():
+    """在此區塊內，_record_line_response 對 LINE push 失敗（非 200 / 網路例外）改為
+    raise LineDeliveryError，使 notification dispatch / retry 能偵測失敗並排重試。
+    webhook reply 等區塊外 caller 不受影響（維持 bool 回傳語意）。"""
+    token = _RAISE_ON_LINE_FAILURE.set(True)
+    try:
+        yield
+    finally:
+        _RAISE_ON_LINE_FAILURE.reset(token)
+
+
+def _record_line_response_impl(
     resp_or_exc: object,
     *,
     context: str,
@@ -137,6 +176,24 @@ def _record_line_response(
         level="error",
     )
     return False
+
+
+def _record_line_response(resp_or_exc: object, *, context: str) -> bool:
+    """_record_line_response_impl 的包裝。
+
+    dispatch_delivery_strict() 區塊內：push 失敗（impl 回 False）即 raise
+    LineDeliveryError，讓 dispatch / retry 偵測（避免靜默誤記送達）。
+    區塊外：維持原 bool 回傳語意，所有既有 caller 行為不變。
+    """
+    ok = _record_line_response_impl(resp_or_exc, context=context)
+    if not ok and _RAISE_ON_LINE_FAILURE.get():
+        status = (
+            None
+            if isinstance(resp_or_exc, BaseException)
+            else getattr(resp_or_exc, "status_code", 0)
+        )
+        raise LineDeliveryError(f"LINE {context} 推播失敗（status={status}），需重試")
+    return ok
 
 
 # ── 訊息建構（純函式，方便測試）──────────────────────────────────────────────

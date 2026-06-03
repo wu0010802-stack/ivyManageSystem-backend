@@ -392,6 +392,13 @@ def verify_ws_token(token: str) -> dict:
     if is_token_revoked(payload.get("jti", "")):
         raise HTTPException(status_code=401, detail="Token 已廢止，請重新登入")
 
+    # 受限用途 token（scope-restricted，如 parent bind temp token scope='bind'）不可用於
+    # 一般 WS 連線——對齊 get_current_user 的 scope 守衛（defense-in-depth）。
+    if payload.get("scope") is not None:
+        raise HTTPException(
+            status_code=401, detail="受限用途 token 不可用於 WebSocket 連線"
+        )
+
     user_id = payload.get("user_id")
     if user_id is None:
         return payload  # 無帳號綁定，略過 DB 查詢

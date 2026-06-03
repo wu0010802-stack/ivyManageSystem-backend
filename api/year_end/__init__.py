@@ -808,8 +808,15 @@ def build_settlements_endpoint(
         refresh_rates=True,
     )
     session.commit()
+    dr = (
+        result.derive_report
+    )  # None when refresh_rates=False（本端點固定 True，但 None-safe）
     return BuildResultOut(
-        built=result.built, skipped_finalized=result.skipped_finalized
+        built=result.built,
+        skipped_finalized=result.skipped_finalized,
+        unmatched_count=dr.unmatched_count if dr is not None else 0,
+        fallback_classes=dr.fallback_classes if dr is not None else 0,
+        warnings=dr.warnings if dr is not None else [],
     )
 
 

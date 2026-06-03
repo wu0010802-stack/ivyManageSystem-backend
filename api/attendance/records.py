@@ -469,13 +469,17 @@ def delete_single_attendance(
         session.close()
 
 
-@router.delete("/records/{year}/{month}", response_model=DeleteResultOut)
+@router.delete("/records/month/{year}/{month}", response_model=DeleteResultOut)
 def delete_attendance_records(
     year: int,
     month: int,
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
 ):
-    """刪除指定月份的所有考勤記錄"""
+    """刪除指定月份的所有考勤記錄。
+
+    path 刻意用 /records/month/{year}/{month}（而非 /records/{year}/{month}），
+    避免與單筆刪除 /records/{employee_id}/{date_str} 同為 2-segment 而被遮蔽（P1-6）。
+    """
     session = get_session()
     try:
         start_date = date(year, month, 1)

@@ -13,7 +13,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile, File
-from utils.errors import raise_safe_500
+from utils.errors import raise_safe_500, safe_batch_reason
 from utils.excel_utils import SafeWorksheet
 from utils.rate_limit import create_limiter
 
@@ -1579,7 +1579,12 @@ def batch_approve_overtimes(
                 failed.append({"id": ot_id, "reason": he.detail})
             except Exception as e:
                 session.rollback()
-                failed.append({"id": ot_id, "reason": str(e)})
+                failed.append(
+                    {
+                        "id": ot_id,
+                        "reason": safe_batch_reason(e, context="批次加班核准"),
+                    }
+                )
                 session.expire_all()
 
         # ── Pass 2：套用 setattr + lock + grant + ApprovalLog ────────────
@@ -1633,10 +1638,15 @@ def batch_approve_overtimes(
                     failed.append(
                         {
                             "id": prev_id,
-                            "reason": f"同批後續條目失敗導致整批回滾：{e}",
+                            "reason": "同批後續條目失敗導致整批回滾",
                         }
                     )
-                failed.append({"id": ot_id, "reason": str(e)})
+                failed.append(
+                    {
+                        "id": ot_id,
+                        "reason": safe_batch_reason(e, context="批次加班 Pass2"),
+                    }
+                )
                 applied = []
                 break
 
@@ -1676,8 +1686,13 @@ def batch_approve_overtimes(
                                 session.rollback()
             except Exception as e:
                 session.rollback()
+                reason = safe_batch_reason(
+                    e,
+                    context="批次加班統一提交",
+                    fallback="統一提交失敗，請稍後重試或聯絡管理員",
+                )
                 for ot_id, *_ in changes:
-                    failed.append({"id": ot_id, "reason": f"統一提交失敗：{e}"})
+                    failed.append({"id": ot_id, "reason": reason})
 
         # AuditLog changes：批次操作彙整成單筆 audit 摘要
         request.state.audit_summary = (

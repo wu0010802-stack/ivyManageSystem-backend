@@ -151,7 +151,7 @@ def _build_anomaly_rows(session, year: int, month: int, status_filter: str):
                 {
                     "id": att.id,
                     "employee_name": emp.name,
-                    "employee_number": emp.employee_number or "",
+                    "employee_number": emp.employee_id or "",
                     "date": att.attendance_date.isoformat(),
                     "weekday": WEEKDAY_NAMES[att.attendance_date.weekday()],
                     "confirmed_action": att.confirmed_action,

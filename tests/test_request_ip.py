@@ -263,18 +263,40 @@ class TestGetClientIp:
         result = mod.get_client_ip(req)
         assert result == "8.8.8.8"
 
-    def test_wildcard_default_uses_rfc1918_as_trusted(self, monkeypatch):
-        """TRUSTED_PROXY_IPS='*'（預設）→ fallback RFC1918 → 10.x 被視為 trusted proxy，
-        剝除後回傳 XFF 中的公網 IP。"""
+    def test_x_real_ip_ignored_from_untrusted_peer(self, monkeypatch):
+        """X-Real-IP 來自非 trusted peer（直連攻擊者）→ 忽略並回傳真實 peer。
+
+        防：送無 XFF、帶偽造 X-Real-IP（每次不同）的請求，讓每次落不同 rate-limit
+        bucket 繞過 per-IP 限流 / 污染 audit IP。X-Real-IP 應只在 peer 為 trusted proxy
+        （nginx 設此 header）時採信。
+        """
+        monkeypatch.setenv("TRUSTED_PROXY_IPS", "10.0.0.0/8")
+        from config import reset_for_tests
+
+        reset_for_tests()
+        mod = _reload_request_ip()
+
+        # 公網 peer（非 10.0.0.0/8 trusted）+ 偽造 X-Real-IP
+        req = _make_request(x_real_ip="8.8.8.8", client_host="203.0.113.99")
+        result = mod.get_client_ip(req)
+        assert result == "203.0.113.99"  # 偽造 X-Real-IP 被忽略，用真實 peer
+
+    def test_wildcard_default_ignores_xff_returns_peer(self, monkeypatch):
+        """RA-HIGH-2（2026-06-02 行為變更）：TRUSTED_PROXY_IPS='*'（未明設可信代理）
+        時不再信任 X-Forwarded-For，直接回直連 peer，避免偽造 XFF 繞過 per-IP 限流。
+
+        （原 test_wildcard_default_uses_rfc1918_as_trusted 斷言剝除後回 XFF 公網 IP；
+        該行為即 RA-HIGH-2 漏洞本身，已改為安全行為。_parse_trusted_proxies 對 '*'
+        仍 fallback RFC1918，見 test_wildcard_returns_rfc1918_defaults。）"""
         monkeypatch.setenv("TRUSTED_PROXY_IPS", "*")
         from config import reset_for_tests
 
         reset_for_tests()
         mod = _reload_request_ip()
 
-        req = _make_request(xff="1.2.3.4, 10.0.0.1")
+        req = _make_request(xff="1.2.3.4, 10.0.0.1", client_host="127.0.0.1")
         result = mod.get_client_ip(req)
-        assert result == "1.2.3.4"
+        assert result == "127.0.0.1"
 
     def test_multiple_calls_consistent_result(self, monkeypatch):
         """多次呼叫 get_client_ip，memoize 不影響正確性（每次 request 結果一致）。"""

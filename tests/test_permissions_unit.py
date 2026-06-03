@@ -142,7 +142,10 @@ def test_all_permissions_have_labels():
 
 
 def test_role_templates_principal_inherits_supervisor():
-    """principal 必須含 supervisor 全部 + 4 條額外（含 PORTAL_PREVIEW）。"""
+    """principal 必須含 supervisor 全部 + 6 條額外
+    （SALARY_READ / AUDIT_LOGS / GOV_REPORTS_EXPORT / PORTAL_PREVIEW
+    / DATA_QUALITY_READ / DATA_QUALITY_WRITE）。
+    """
     sup_set = set(ROLE_TEMPLATES["supervisor"])
     pri_set = set(ROLE_TEMPLATES["principal"])
     assert sup_set.issubset(pri_set)
@@ -152,6 +155,8 @@ def test_role_templates_principal_inherits_supervisor():
         Permission.AUDIT_LOGS.value,
         Permission.GOV_REPORTS_EXPORT.value,
         Permission.PORTAL_PREVIEW.value,
+        Permission.DATA_QUALITY_READ.value,
+        Permission.DATA_QUALITY_WRITE.value,
     }
 
 

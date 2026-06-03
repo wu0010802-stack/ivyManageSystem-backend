@@ -607,3 +607,50 @@ class TestApi:
             },
         )
         assert res.status_code in (401, 403)
+
+
+def _login_role(client, session_factory, *, role, perm):
+    """以指定 role + perm 建 user 並登入（_login 寫死 admin，這裡測非 admin 角色）。"""
+    uname = f"u_{role}"
+    with session_factory() as session:
+        session.add(
+            User(
+                username=uname,
+                password_hash=hash_password("TempPass123"),
+                role=role,
+                permission_names=perm,
+                is_active=True,
+                must_change_password=False,
+            )
+        )
+        session.commit()
+    res = client.post(
+        "/api/auth/login", json={"username": uname, "password": "TempPass123"}
+    )
+    assert res.status_code == 200
+
+
+class TestArtPayrollViewerScope:
+    """才藝薪資明細 list viewer 守衛（稽核 2026-06-03 P3-11）。
+
+    只持 SALARY_READ 的角色（如園長 principal）不可越權看全所才藝老師逐筆給付；
+    admin/hr（full salary view）或持 SALARY_WRITE（會計，本就建立/管理才藝薪資）可看全部。
+    """
+
+    def test_salary_read_only_role_cannot_list(self, art_client):
+        client, sf = art_client
+        _login_role(client, sf, role="principal", perm=["SALARY_READ"])
+        res = client.get("/api/art-teacher-payroll", params={"year": 2026, "month": 4})
+        assert res.status_code == 403, res.text
+
+    def test_salary_write_role_can_list(self, art_client):
+        client, sf = art_client
+        _login_role(client, sf, role="accountant", perm=["SALARY_READ", "SALARY_WRITE"])
+        res = client.get("/api/art-teacher-payroll", params={"year": 2026, "month": 4})
+        assert res.status_code == 200, res.text
+
+    def test_admin_can_list(self, art_client):
+        client, sf = art_client
+        _login_role(client, sf, role="admin", perm=["SALARY_READ"])
+        res = client.get("/api/art-teacher-payroll", params={"year": 2026, "month": 4})
+        assert res.status_code == 200, res.text

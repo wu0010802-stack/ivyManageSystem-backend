@@ -66,14 +66,36 @@ jobs:
       - name: Run ruff DTZ check
         run: ruff check .
 
+  scope-filter-gate:
+    name: Scope-Filter Guard (row-level fail-open)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run scope-filter guard
+        # 確保每個 gate 用 row-level scope-aware 權限的 API 端點都有套 scope 過濾
+        # （portfolio_access helper / assert_all_scope / 明文豁免），堵「gate 放行
+        # :own_class 但忘了過濾 → 回全園」的 fail-open。純 stdlib（ast）免裝依賴。
+        # 邏輯與 tests/test_scope_filter_guard.py 共用同一支 lint script。
+        run: python scripts/lint_scope_filter_guard.py
+
   test:
     name: Tests (TZ=${{ matrix.container_tz }})
     runs-on: ubuntu-latest
     timeout-minutes: 60  # 2026-05-25: 15→30→60. CI 64% @ 30 min；含 5000+ test + spike_rls auth setup overhead
-    # PR1 (2026-05-26) 引入 TZ matrix。UTC run 暫設 continue-on-error 因 pre-existing
-    # ~6 個 test 有 container TZ 隱性依賴；PR2/PR3 替換 datetime.now → now_taipei_naive
-    # 後這些 test 多半自動綠。PR3 收尾時移除此 continue-on-error。
-    continue-on-error: ${{ matrix.container_tz == 'UTC' }}
+    # PR1 (2026-05-26) 引入 TZ matrix；當時 UTC leg 暫以 continue-on-error 軟化
+    # pre-existing TZ-dependent fail 以解 CI deadlock（spec §7.5 載明「收尾時移除」）。
+    # 2026-06-02：datetime cutover 收尾 + 個案修復（如 security_gc 改 now_taipei_naive）後，
+    # TZ 敏感 test 在 UTC / Asia/Taipei 已對稱通過 → 移除 continue-on-error，UTC leg
+    # 恢復為 blocking gate（防新寫的 datetime.now()/date.today() 偷渡回 codebase；本 CI
+    # 在真 PG 雙時區跑全套，補足本地 SQLite 涵蓋不到的 DB 層 server_default/date_trunc）。
 
     strategy:
       fail-fast: false
@@ -208,6 +230,14 @@ jobs:
       - name: Run drift check
         working-directory: ivy-frontend
         run: npm run gen:api:check
+
+      # 跨 repo 雙寫常數（基本工資/退費門檻/才藝獎金）單側漂移守衛的「後端→前端」方向。
+      # 後端 PR 改 shared constant 時，此步拉前端 main 比對即抓到單側漂移。
+      # 與前端 ci.yml 的同名步驟對稱，共用 ivy-frontend/scripts/check-shared-constants.mjs。
+      # 注意：依賴前端 main 已有 check:shared-constants script（前端分支須先 merge）。
+      - name: Check cross-repo shared constants
+        working-directory: ivy-frontend
+        run: npm run check:shared-constants
 
   pii-denylist-parity:
     name: PII Denylist Parity Gate (FE/BE)

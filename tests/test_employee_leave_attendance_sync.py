@@ -643,3 +643,102 @@ class TestReapply:
         assert row.status == AttendanceStatus.ABSENT.value
         assert row.partial_leave_hours == Decimal("4.00")
         assert row.leave_record_id == lv.id
+
+
+class TestSyncFlagSync:
+    """P0-3 / P1-4 回歸：sync service 改 minutes/status 後布林旗標必須同步。
+
+    薪資 engine 直接讀 is_late/is_early_leave/is_missing_punch_* 做 count，
+    stale 旗標會讓請假日被算成遲到/缺卡。
+    """
+
+    def test_apply_full_day_clears_stale_anomaly_flags(
+        self, db_session, sample_employee, approved_full_day_leave
+    ):
+        """P0-3: 既有缺打卡 row 被全天假覆蓋,四旗標應清 False。"""
+        existing = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 23),
+            status=AttendanceStatus.MISSING_PUNCH.value,
+            is_missing_punch_in=True,
+            is_missing_punch_out=True,
+            is_late=True,
+            late_minutes=15,
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        sync.apply(db_session, approved_full_day_leave.id)
+        db_session.flush()
+
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 23),
+            )
+            .first()
+        )
+        assert row.status == AttendanceStatus.LEAVE.value
+        assert row.is_missing_punch_in is False
+        assert row.is_missing_punch_out is False
+        assert row.is_late is False
+        assert row.is_early_leave is False
+
+    def test_apply_partial_covering_late_syncs_is_late_flag(
+        self, db_session, sample_employee, approved_partial_morning_leave
+    ):
+        """P0-3: 部分假涵蓋遲到時段使 late_minutes→0,is_late 應同步 False。"""
+        existing = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.LATE.value,
+            is_late=True,
+            punch_in_time=datetime.combine(date(2026, 5, 22), time(9, 30)),
+            late_minutes=30,
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        sync.apply(db_session, approved_partial_morning_leave.id)
+        db_session.flush()
+
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 22),
+            )
+            .first()
+        )
+        assert row.late_minutes == 0
+        assert row.is_late is False
+
+    def test_apply_partial_overnight_punch_out_not_early_leave(
+        self, db_session, sample_employee, approved_partial_morning_leave
+    ):
+        """P1-4: 跨夜班下班落在隔日,sync 重算不可當早退。"""
+        existing = Attendance(
+            employee_id=sample_employee.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.NORMAL.value,
+            punch_in_time=datetime.combine(date(2026, 5, 22), time(13, 0)),
+            # 隔日 02:00 下班（跨夜班）
+            punch_out_time=datetime.combine(date(2026, 5, 23), time(2, 0)),
+        )
+        db_session.add(existing)
+        db_session.commit()
+
+        sync.apply(db_session, approved_partial_morning_leave.id)
+        db_session.flush()
+
+        row = (
+            db_session.query(Attendance)
+            .filter_by(
+                employee_id=sample_employee.id,
+                attendance_date=date(2026, 5, 22),
+            )
+            .first()
+        )
+        assert row.early_leave_minutes == 0
+        assert row.is_early_leave is False

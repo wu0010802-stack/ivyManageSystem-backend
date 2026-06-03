@@ -534,18 +534,26 @@ class LineAdapter:
 
     def send(self, evt, rendered, *, log_id: int) -> None:
         # log_id 留作 Section 3 push receipt 追蹤；v1 不用
-        handler = LINE_HANDLERS.get(evt.event_type)
-        if handler is None:
-            # group mode 走專屬 handler；個人 mode 需 str recipient_user_id
-            # （_fan_out 已 pre-resolve）；其他情境是 caller 錯
-            if evt.line_group_id is None and not isinstance(evt.recipient_user_id, str):
-                raise ValueError(
-                    f"LINE adapter 收到非 str recipient_user_id={evt.recipient_user_id!r}; "
-                    "_fan_out 應先呼叫 _resolve_line_user_id"
+        # dispatch 情境：LINE push HTTP 失敗須 raise（非靜默誤記送達），讓
+        # dispatch._fan_out / retry_scheduler 偵測失敗並排重試。webhook reply
+        # 等不經此 adapter，維持 bool 回傳不受影響。
+        from services.line_service import dispatch_delivery_strict
+
+        with dispatch_delivery_strict():
+            handler = LINE_HANDLERS.get(evt.event_type)
+            if handler is None:
+                # group mode 走專屬 handler；個人 mode 需 str recipient_user_id
+                # （_fan_out 已 pre-resolve）；其他情境是 caller 錯
+                if evt.line_group_id is None and not isinstance(
+                    evt.recipient_user_id, str
+                ):
+                    raise ValueError(
+                        f"LINE adapter 收到非 str recipient_user_id={evt.recipient_user_id!r}; "
+                        "_fan_out 應先呼叫 _resolve_line_user_id"
+                    )
+                text = (rendered.title or "") + (
+                    "\n" + rendered.body if rendered.body else ""
                 )
-            text = (rendered.title or "") + (
-                "\n" + rendered.body if rendered.body else ""
-            )
-            self._ls.push_text_to_user(evt.recipient_user_id, text)
-            return
-        handler(self._ls, evt, rendered)
+                self._ls.push_text_to_user(evt.recipient_user_id, text)
+                return
+            handler(self._ls, evt, rendered)

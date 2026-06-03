@@ -23,14 +23,28 @@ from services.art_teacher_payroll import (
     generate_art_teacher_roster_xlsx,
     recompute_entry_amounts,
 )
+from services.finance.salary_access import has_full_salary_view
 from utils.auth import require_staff_permission
 from utils.excel_utils import SafeWorksheet
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
 
 router = APIRouter(prefix="/api", tags=["art-teacher-payroll"])
 
 logger = logging.getLogger(__name__)
+
+
+def _enforce_art_payroll_view(current_user: dict) -> None:
+    """才藝薪資明細 viewer 守衛：admin/hr（full salary view）或持 SALARY_WRITE（會計，
+    本就建立/管理才藝薪資）可看全部；僅持 SALARY_READ 者（如園長）不可越權看全所才藝
+    老師逐筆給付（與 api/salary 其他端點的 self-or-full 行為一致）。"""
+    if has_full_salary_view(current_user):
+        return
+    if has_permission(current_user.get("permission_names"), Permission.SALARY_WRITE):
+        return
+    raise HTTPException(
+        status_code=403, detail="才藝薪資明細僅限 admin/hr 或具編輯權限者檢視"
+    )
 
 
 class EntryCreate(BaseModel):
@@ -104,6 +118,7 @@ def list_entries(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """列出指定月份的才藝薪資明細，按工號 + entry id 排序。"""
+    _enforce_art_payroll_view(current_user)
     with session_scope() as session:
         q = (
             session.query(ArtTeacherPayrollEntry)
@@ -403,6 +418,7 @@ def export_roster(
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
 ):
     """匯出才藝老師薪資清冊 xlsx（對齊《義華薪資》才藝老師 sheet）。"""
+    _enforce_art_payroll_view(current_user)
     if month < 1 or month > 12:
         raise HTTPException(status_code=400, detail="month 須介於 1~12")
 

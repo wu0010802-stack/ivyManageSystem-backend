@@ -108,6 +108,31 @@ def _is_trusted(ip_str: str, trusted: tuple) -> bool:
     return any(ip in net for net in trusted)
 
 
+def _has_explicit_trusted_proxies() -> bool:
+    """raw env TRUSTED_PROXY_IPS 是否「明設」了至少一個合法 CIDR / IP。
+
+    RA-HIGH-2：只有明設可信代理時，才該信任 X-Forwarded-For / X-Real-IP。
+    未明設（空 / "*" / 全為無效 token）時回 False → get_client_ip 忽略轉發標頭，
+    直接回直連 peer，避免攻擊者偽造標頭繞過 per-IP 限流 / 嫁禍他人。
+
+    直接讀 raw 字串判斷（非比對 _parse_trusted_proxies 的回傳 tuple）：避免
+    「明設的 CIDR 剛好等於 RFC1918 預設」被誤判為未明設。
+    """
+    raw = (settings.network.trusted_proxy_ips or "").strip()
+    if not raw:
+        return False
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            ipaddress.ip_network(token, strict=False)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def get_client_ip(request: Request) -> Optional[str]:
     """回傳 best-effort 客戶端 IP；無法判定時回傳 None（不要回傳 'unknown' 字串）。
 
@@ -116,8 +141,18 @@ def get_client_ip(request: Request) -> Optional[str]:
     2. `X-Real-IP`（nginx `proxy_set_header X-Real-IP $remote_addr` 風格）
     3. `request.client.host`
 
+    RA-HIGH-2：只有「明設」可信代理（TRUSTED_PROXY_IPS 含合法 CIDR）時才信任
+    X-Forwarded-For / X-Real-IP。未明設時（空 / "*" / 全無效）一律忽略轉發標頭，
+    直接回直連 peer，避免攻擊者偽造標頭繞過 per-IP 限流 / 嫁禍他人。
+
     呼叫端若需要字串 fallback，自行 `or 'unknown'`。
     """
+    # 未明設可信代理 → 不信任任何轉發標頭，直接回直連 peer。
+    if not _has_explicit_trusted_proxies():
+        if request.client and request.client.host:
+            return request.client.host
+        return None
+
     trusted = _parse_trusted_proxies()
 
     xff = request.headers.get("x-forwarded-for", "")
@@ -130,7 +165,9 @@ def get_client_ip(request: Request) -> Optional[str]:
             return chain[0]
 
     xri = (request.headers.get("x-real-ip") or "").strip()
-    if xri:
+    # X-Real-IP 只在直接連線方（peer）是 trusted proxy 時採信（nginx 設此 header）；
+    # 否則為 client 可控、可偽造繞過 per-IP 限流 / 污染 audit IP，須忽略並 fall through。
+    if xri and request.client and _is_trusted(request.client.host, trusted):
         return xri
 
     if request.client and request.client.host:

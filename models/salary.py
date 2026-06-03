@@ -397,6 +397,15 @@ class SalarySnapshot(Base):
     bonus_separate = Column(Boolean, default=False)
     bonus_amount = Column(Money, default=0)
     supervisor_dividend = Column(Money, default=0)
+    # 與 SalaryRecord 對齊的獨立轉帳／拆分欄位（_copy_record_to_snapshot 依兩表交集
+    # 反射複製，漏欄即在快照遺失 → 稽核重印歷史薪條時憑空消失）。
+    supplementary_health_employee = Column(
+        Money, default=0, server_default="0", nullable=False
+    )
+    appraisal_year_end_bonus = Column(
+        Money, default=0, server_default="0", nullable=False
+    )
+    unused_leave_payout = Column(Money, default=0, server_default="0", nullable=False)
     remark = Column(Text, comment="複製自 SalaryRecord.remark")
 
     # ── 快照專屬 metadata ─────────────────────────────────────────────

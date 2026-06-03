@@ -6,6 +6,10 @@ from datetime import date, datetime
 from utils.taipei_time import today_taipei
 from typing import Optional, Set
 
+# 月中入職折算門檻：入職日 >= 此日（2 號起）才按自然日比例折算本月底薪；
+# 1 號（或更早月份入職）視為當月全額，不折算。
+_PRORATE_FROM_DAY = 2
+
 
 def _to_date(raw) -> Optional[date]:
     """將 str / datetime / date 正規化為 date，無法轉換時回傳 None。"""
@@ -67,8 +71,8 @@ def _prorate_base_salary(
     if (hire_d.year, hire_d.month) > (year, month):
         return 0.0
 
-    # 僅當入職年月與計算月份相同且非月初（day > 1）才折算
-    if hire_d.year != year or hire_d.month != month or hire_d.day <= 1:
+    # 僅當入職年月與計算月份相同且非月初（day >= _PRORATE_FROM_DAY）才折算
+    if hire_d.year != year or hire_d.month != month or hire_d.day < _PRORATE_FROM_DAY:
         return contracted_base
 
     _, month_days = _cal.monthrange(year, month)
@@ -134,7 +138,12 @@ def _prorate_for_period(
     start_day = 1
     end_day = month_days
 
-    if hire_d and hire_d.year == year and hire_d.month == month and hire_d.day >= 2:
+    if (
+        hire_d
+        and hire_d.year == year
+        and hire_d.month == month
+        and hire_d.day >= _PRORATE_FROM_DAY
+    ):
         start_day = hire_d.day
 
     if (

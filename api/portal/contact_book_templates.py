@@ -267,6 +267,10 @@ def promote_to_shared(
             raise HTTPException(status_code=404, detail="範本不存在")
         if tpl.scope == "shared":
             raise HTTPException(status_code=400, detail="此範本已是園所共用")
+        # 堵 IDOR：promote 別人的 personal 範本需 owner 或發布權限（對齊
+        # update/delete 的 _assert_can_modify；先前漏此檢查 → 任何 PORTFOLIO_WRITE
+        # 持有者可把他人 personal 範本升級為全園共用並清掉 owner）。
+        _assert_can_modify(tpl, current_user)
 
         tpl.scope = "shared"
         tpl.owner_user_id = None

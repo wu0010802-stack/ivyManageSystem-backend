@@ -76,3 +76,6 @@ from models.auth import PasswordHistory  # noqa: F401
 
 # A3 2026-06-01：before_flush listener 自動重算 student_id 顯示快取
 from . import student_events  # noqa: F401  註冊 before_flush listener
+
+# 2026-05-29 Ch2 data quality：每日 invariant 偵測結果表
+from models.data_quality import DataQualityReport  # noqa: F401

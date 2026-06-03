@@ -51,7 +51,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["employees"])
 
-_DATE_FIELDS = ("hire_date", "probation_end_date", "birthday")
+_DATE_FIELDS = (
+    "hire_date",
+    "probation_end_date",
+    "birthday",
+    "insurance_effective_date",
+)
 
 
 _salary_engine = None
@@ -122,6 +127,13 @@ def _format_employee_response(
         "address": emp.address,
         "emergency_contact_name": emp.emergency_contact_name,
         "emergency_contact_phone": emp.emergency_contact_phone,
+        "gender": emp.gender,
+        "email": emp.email,
+        "insurance_effective_date": (
+            emp.insurance_effective_date.isoformat()
+            if emp.insurance_effective_date
+            else None
+        ),
         "dependents": emp.dependents,
         # 特殊狀態旗標（會影響薪資/匯出流程）
         "no_employment_insurance": getattr(emp, "no_employment_insurance", False),
@@ -190,6 +202,10 @@ class EmployeeCreate(BaseModel):
     staff_role_category: Optional[str] = Field(None, max_length=20)
     teacher_cert_no: Optional[str] = Field(None, max_length=50)
     teacher_cert_type: Optional[str] = Field(None, max_length=20)
+    # 兩段式建檔新增欄位
+    gender: Optional[str] = Field(None, max_length=10)
+    email: Optional[str] = Field(None, max_length=100)
+    insurance_effective_date: Optional[str] = None
 
 
 class EmployeeUpdate(BaseModel):
@@ -239,6 +255,10 @@ class EmployeeUpdate(BaseModel):
     staff_role_category: Optional[str] = Field(None, max_length=20)
     teacher_cert_no: Optional[str] = Field(None, max_length=50)
     teacher_cert_type: Optional[str] = Field(None, max_length=20)
+    # 兩段式建檔新增欄位
+    gender: Optional[str] = Field(None, max_length=10)
+    email: Optional[str] = Field(None, max_length=100)
+    insurance_effective_date: Optional[str] = None
 
 
 class OffboardRequest(BaseModel):
@@ -646,6 +666,12 @@ def update_employee(
             ):  # Allow explicitly removing from classroom
                 setattr(db_employee, key, None)
             elif key == "supervisor_role" and value is None:
+                setattr(db_employee, key, None)
+            elif key == "gender" and value is None:
+                setattr(db_employee, key, None)
+            elif key == "email" and value is None:
+                setattr(db_employee, key, None)
+            elif key == "insurance_effective_date" and value is None:
                 setattr(db_employee, key, None)
 
         from services.salary.minimum_wage import validate_minimum_wage

@@ -4,6 +4,8 @@
 - POST /api/employees 不帶 employee_id → 成功建立，工號由 server 自動配發
 - 自動配號格式符合 {民國年:03d}{流水:03d}
 - 連續建立兩筆，工號不同
+- 新欄位 gender/email/insurance_effective_date 建立後讀回
+- 兩段式建檔：不填薪資欄仍可成功 / 編輯可清空新欄位
 """
 
 import os
@@ -96,9 +98,9 @@ def test_create_employee_auto_assigns_employee_id(employees_client):
     data = resp.json()
     assert "employee_id" in data
     # 格式：6 位數字，前 3 碼為民國年（≥100），後 3 碼為流水
-    assert re.fullmatch(r"\d{6,}", data["employee_id"]), (
-        f"工號格式不符：{data['employee_id']!r}"
-    )
+    assert re.fullmatch(
+        r"\d{6,}", data["employee_id"]
+    ), f"工號格式不符：{data['employee_id']!r}"
 
 
 def test_create_employee_sequential_ids_are_different(employees_client):
@@ -135,4 +137,72 @@ def test_create_employee_with_hire_date_uses_roc_year(employees_client):
     resp = client.post("/api/employees", json=payload)
     assert resp.status_code == 201, resp.json()
     eid = resp.json()["employee_id"]
-    assert eid.startswith("114"), f"hire_date 2025-09-01 → 民國 114 年，工號應以 114 開頭，實為 {eid!r}"
+    assert eid.startswith(
+        "114"
+    ), f"hire_date 2025-09-01 → 民國 114 年，工號應以 114 開頭，實為 {eid!r}"
+
+
+def test_create_employee_with_new_fields(employees_client):
+    """新增員工帶 gender / email / insurance_effective_date，能存能讀回。"""
+    client, sf = employees_client
+    _login_admin(client, sf)
+
+    payload = {
+        "name": "新欄位測試員",
+        "employee_type": "regular",
+        "gender": "女",
+        "email": "newfield@example.com",
+        "insurance_effective_date": "2026-07-01",
+    }
+    r = client.post("/api/employees", json=payload)
+    assert r.status_code == 201, r.text
+    emp_id = r.json()["id"]
+
+    detail = client.get(f"/api/employees/{emp_id}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["gender"] == "女"
+    assert body["email"] == "newfield@example.com"
+    assert body["insurance_effective_date"] == "2026-07-01"
+
+
+def test_create_employee_without_salary_two_stage(employees_client):
+    """兩段式回歸：不帶任何薪資欄位仍可建檔成功。"""
+    client, sf = employees_client
+    _login_admin(client, sf)
+
+    r = client.post(
+        "/api/employees",
+        json={"name": "只建人不填薪資", "employee_type": "regular"},
+    )
+    assert r.status_code == 201, r.text
+
+
+def test_update_employee_can_clear_new_fields(employees_client):
+    """編輯時把 gender / email / insurance_effective_date 設為 null 可清空。"""
+    client, sf = employees_client
+    _login_admin(client, sf)
+
+    created = client.post(
+        "/api/employees",
+        json={
+            "name": "可清空測試",
+            "employee_type": "regular",
+            "gender": "男",
+            "email": "clearme@example.com",
+            "insurance_effective_date": "2026-08-01",
+        },
+    )
+    assert created.status_code == 201, created.text
+    emp_id = created.json()["id"]
+
+    upd = client.put(
+        f"/api/employees/{emp_id}",
+        json={"gender": None, "email": None, "insurance_effective_date": None},
+    )
+    assert upd.status_code == 200, upd.text
+
+    body = client.get(f"/api/employees/{emp_id}").json()
+    assert body["gender"] is None
+    assert body["email"] is None
+    assert body["insurance_effective_date"] is None

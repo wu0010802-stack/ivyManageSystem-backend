@@ -180,8 +180,12 @@ def resolve_org_achievement_rate(
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select, text
+
+if TYPE_CHECKING:
+    from services.year_end.auto_derive import DeriveReport
 
 from models.employee import Employee
 from models.year_end import (
@@ -422,7 +426,7 @@ def refresh_enrollment_rates(db: Session, cycle: YearEndCycle) -> None:
 
 
 def gather_performance_rates(
-    db: Session, cycle: YearEndCycle, emp: Any
+    db: Session, cycle: YearEndCycle, emp: Any, *, school_rates=None
 ) -> PerformanceRates:
     """讀取 STORED rates 組 PerformanceRates（百分比）。
 
@@ -432,30 +436,39 @@ def gather_performance_rates(
     - class_returning_rate_*      ← ClassEnrollmentTarget.returning_student_rate × 100
     無帶班角色（STAFF/COOK/admin/領導職）→ class_* 全 None（引擎僅以全校率平均）。
     """
-    # 全校率（兩學期）
-    org_first = db.scalar(
-        select(OrgYearSettings).where(
-            OrgYearSettings.year_end_cycle_id == cycle.id,
-            OrgYearSettings.semester_first == True,  # noqa: E712
+    # 全校達成率（兩學期）只依 cycle、與員工無關：caller（build_settlements 迴圈）以
+    # school_rates 預先查一次傳入，避免 per-employee 2N 重查；未傳則自行查（standalone）。
+    if school_rates is not None:
+        school_first, school_second = school_rates
+    else:
+        org_first = db.scalar(
+            select(OrgYearSettings).where(
+                OrgYearSettings.year_end_cycle_id == cycle.id,
+                OrgYearSettings.semester_first == True,  # noqa: E712
+            )
         )
-    )
-    org_second = db.scalar(
-        select(OrgYearSettings).where(
-            OrgYearSettings.year_end_cycle_id == cycle.id,
-            OrgYearSettings.semester_first == False,  # noqa: E712
+        org_second = db.scalar(
+            select(OrgYearSettings).where(
+                OrgYearSettings.year_end_cycle_id == cycle.id,
+                OrgYearSettings.semester_first == False,  # noqa: E712
+            )
         )
-    )
-    school_first = (
-        Decimal(str(org_first.school_achievement_rate)) if org_first else None
-    )
-    school_second = (
-        Decimal(str(org_second.school_achievement_rate)) if org_second else None
-    )
+        school_first = (
+            Decimal(str(org_first.school_achievement_rate)) if org_first else None
+        )
+        school_second = (
+            Decimal(str(org_second.school_achievement_rate)) if org_second else None
+        )
 
     class_perf_first = class_perf_second = None
     class_ret_first = class_ret_second = None
 
     if _has_class_role(emp):
+        # B7 ⑥ 畢業班 fallback：班導有帶班角色但查不到對應 ClassEnrollmentTarget
+        # （班級已畢業/班導已離職 → 無 target row）時，class_returning_rate 用「全校
+        # 舊生率 × 100」而非 None（Excel footnote：114/07 畢業班老師舊生率依全校為主）。
+        # 全校率只在「至少一學期無 target」時才需要 → 迴圈內 lazy 取一次（None 表已快取）。
+        _school_wide_ret = _SENTINEL = object()
         for semester_first in (True, False):
             ct = db.scalar(
                 select(ClassEnrollmentTarget).where(
@@ -465,6 +478,20 @@ def gather_performance_rates(
                 )
             )
             if ct is None:
+                # 畢業班 fallback：class_returning_rate 用全校舊生率 ×100；
+                # class_performance_rate 維持 None（無班無經營績效）。helper 回 None → 維持 None。
+                if _school_wide_ret is _SENTINEL:
+                    from services.year_end.auto_derive.returning_rate import (
+                        school_wide_returning_rate,
+                    )
+
+                    _school_wide_ret = school_wide_returning_rate(db, cycle)
+                if _school_wide_ret is not None:
+                    ret_fb = _school_wide_ret * Decimal("100")
+                    if semester_first:
+                        class_ret_first = ret_fb
+                    else:
+                        class_ret_second = ret_fb
                 continue
             perf = Decimal(str(ct.class_performance_rate))
             ret = Decimal(str(ct.returning_student_rate)) * Decimal("100")
@@ -484,16 +511,11 @@ def gather_performance_rates(
 
 
 def gather_deductions(db: Session, cycle: YearEndCycle, emp: Any) -> DeductionBreakdown:
-    """Phase 1：扣項為人工維護值，從既有 YearEndSettlement 讀回（無則全 0）。
+    """組 DeductionBreakdown（B7 ⑤a wiring）。薄殼：查既有 settlement 後委派
+    ``_deductions_from_settlement``。
 
-    重跑 build 時可保留 HR 手動填入的扣款（再 upsert 時這些欄位不被歸零）。
-    對應：
-      deduction_leave_late  → leave_late_prev
-      deduction_disciplinary → disciplinary
-      deduction_meeting     → meeting
-      deduction_personal_leave → personal_leave
-      deduction_sick_leave  → sick_leave
-      deduction_late        → late_early
+    保留供外部/測試以 (db, cycle, emp) 呼叫；build_settlements 迴圈內已查得
+    ``existing`` → 直接呼叫 ``_deductions_from_settlement`` 免再查同一列（main N+1）。
     """
     existing = db.scalar(
         select(YearEndSettlement).where(
@@ -501,26 +523,82 @@ def gather_deductions(db: Session, cycle: YearEndCycle, emp: Any) -> DeductionBr
             YearEndSettlement.employee_id == emp.id,
         )
     )
-    return _deductions_from_settlement(existing)
+    return _deductions_from_settlement(db, cycle, emp, existing)
 
 
 def _deductions_from_settlement(
+    db: Session,
+    cycle: YearEndCycle,
+    emp: Any,
     existing: "YearEndSettlement | None",
 ) -> DeductionBreakdown:
-    """從已取得的 YearEndSettlement 列組 DeductionBreakdown（無則全 0）。
+    """用「已取得的 ``existing`` 列」組 DeductionBreakdown（B7 ⑤a wiring）。
 
-    抽出此純函式讓 build_settlements 直接用迴圈中已查得的 `existing`，
-    避免每位員工又重查一次同一列（N+1）。
+    抽出此函式讓 build_settlements 直接用迴圈中已查得的 ``existing``，避免每位員工
+    又重查一次同一列（main N+1 重構）。仍需 (db, cycle, emp) 跑 B5 自動扣款。
+
+    分兩類扣項：
+
+    **自動計算（4 欄，B5 ⑤a）**：meeting / personal_leave / sick_leave / late_early
+    一律由 ``derive_attendance_deductions(db, cycle, emp)`` 重算（Excel 年終定額罰則：
+    遲到/未打卡/事假/病假/會議缺席）。B5 回**負值**，與 engine 慣例一致
+    （compute_deduction_total 直接 Σ、payable = subtotal + deduction_total 相加），
+    **直接填入 DeductionBreakdown，不可再取負**。
+      - **override 優先**：若既有 settlement 的 ``calc_meta`` 有對應
+        ``deduction_<x>_override`` key（deduction_meeting_override /
+        deduction_personal_leave_override / deduction_sick_leave_override /
+        deduction_late_override）→ 採 override 值（防禦/未來；目前無 endpoint 設這些 key）。
+        以 ``is not None`` 判定（非 truthiness），讓 override="0" 也被尊重。值存字串。
+
+    **維持讀回既有值（2 欄，B5 不碰）**：
+      - leave_late_prev（deduction_leave_late，去年底前合併）
+      - disciplinary（deduction_disciplinary，手動獎懲，如大過 -6000）
+    這是 override 回歸的關鍵：HR 手填的 disciplinary 必須跨 re-build 存活。
+
+    對應：
+      deduction_leave_late      → leave_late_prev   （讀回既有）
+      deduction_disciplinary    → disciplinary      （讀回既有）
+      deduction_meeting         → meeting           （B5 / override）
+      deduction_personal_leave  → personal_leave    （B5 / override）
+      deduction_sick_leave      → sick_leave        （B5 / override）
+      deduction_late            → late_early        （B5 / override）
     """
+    from services.year_end.auto_derive.attendance_deductions import (
+        derive_attendance_deductions,
+    )
+
+    # B5 自動扣款（per-employee；負值或 0）
+    auto = derive_attendance_deductions(db, cycle, emp)
+
+    calc_meta = (existing.calc_meta or {}) if existing is not None else {}
+
+    def _resolve(meta_key: str, auto_value: Decimal) -> Decimal:
+        """override（calc_meta[meta_key]）優先；否則用 B5 計算值。
+
+        以 is not None 判定（非 truthiness），讓 override="0" 也被尊重。
+        """
+        override = calc_meta.get(meta_key)
+        if override is not None:
+            return Decimal(str(override))
+        return auto_value
+
+    # 讀回既有（B5 不碰）：leave_late_prev / disciplinary
     if existing is None:
-        return DeductionBreakdown()
+        leave_late_prev = Decimal("0")
+        disciplinary = Decimal("0")
+    else:
+        leave_late_prev = Decimal(str(existing.deduction_leave_late or 0))
+        disciplinary = Decimal(str(existing.deduction_disciplinary or 0))
+
     return DeductionBreakdown(
-        leave_late_prev=Decimal(str(existing.deduction_leave_late or 0)),
-        disciplinary=Decimal(str(existing.deduction_disciplinary or 0)),
-        meeting=Decimal(str(existing.deduction_meeting or 0)),
-        personal_leave=Decimal(str(existing.deduction_personal_leave or 0)),
-        sick_leave=Decimal(str(existing.deduction_sick_leave or 0)),
-        late_early=Decimal(str(existing.deduction_late or 0)),
+        leave_late_prev=leave_late_prev,
+        disciplinary=disciplinary,
+        meeting=_resolve("deduction_meeting_override", auto.meeting),
+        personal_leave=_resolve(
+            "deduction_personal_leave_override", auto.personal_leave
+        ),
+        sick_leave=_resolve("deduction_sick_leave_override", auto.sick_leave),
+        late_early=_resolve("deduction_late_override", auto.late),
     )
 
 
@@ -535,6 +613,9 @@ class BuildResult:
     skipped_finalized: int = (
         0  # skipped because already signed or finalized (non-DRAFT)
     )
+    # B7：refresh_rates=True 時帶回 auto_derive 編排結果（unmatched/fallback 提醒用）；
+    # refresh_rates=False（不跑 derive_all）時為 None。型別 auto_derive.DeriveReport。
+    derive_report: "DeriveReport | None" = None
 
 
 def _is_postgres(db: Session) -> bool:
@@ -578,8 +659,35 @@ def build_settlements(
     if cycle is None:
         raise ValueError(f"找不到 academic_year={academic_year} 的 YearEndCycle")
 
+    derive_report = None
     if refresh_rates:
         refresh_enrollment_rates(db, cycle)
+        # B7：refresh 階段（refresh_rates=True）才跑 auto_derive 編排（① ③ ④ ⑥）。
+        # 必須在 per-employee loop 之前——loop 內 gather_performance_rates 讀 ⑥ 寫的
+        # returning_student_rate、special_total sum 讀 ① ③ ④ 寫的 special_bonus_items。
+        # 內部 SalaryEngine(load_from_db=True) 自開 session 讀 BonusConfig：呼叫端須確保
+        # reference data 已 committed/一致（正常 HR 流程 config 早於 build 已 commit）。
+        from services.year_end.auto_derive import derive_all
+
+        # P1-2 finalized drift 護欄：查本 cycle 所有「非 DRAFT」settlement 的 employee_id
+        # 集合（鏡像下方 per-employee loop 的 skip 判定 status != DRAFT）。傳給 derive_all
+        # 讓 ① ③ ④ 不覆寫這些員工已凍結的 special_bonus_items（finalized settlement 在
+        # loop 開頭被 skip、金額凍結，底層 items 若被改 → 凍結總額與 items 漂移、稽核對不上）。
+        non_draft_ids = set(
+            db.scalars(
+                select(YearEndSettlement.employee_id).where(
+                    YearEndSettlement.year_end_cycle_id == cycle.id,
+                    YearEndSettlement.status != YearEndSettlementStatus.DRAFT,
+                )
+            ).all()
+        )
+        # P1-1：③ 參與者對齊 build（ACTIVE ∪ included_resigned_ids）；①④⑥ 不需。
+        derive_report = derive_all(
+            db,
+            cycle,
+            included_resigned_ids=included,
+            skip_settlement_employee_ids=non_draft_ids,
+        )
 
     # 參與者：ACTIVE ∪ included_resigned_ids
     employees = list(
@@ -599,12 +707,30 @@ def build_settlements(
     if only_employee_ids is not None:
         employees = [e for e in employees if e.id in only_employee_ids]
 
-    result = BuildResult()
+    result = BuildResult(derive_report=derive_report)
 
     # Fix 3: 職位薪資標準只載入一次，避免每位員工重建 SalaryEngine + 查一次 DB
     _standards = load_position_salary_standards(db)
     # 節慶基數只依角色（非員工），且查的是全域最新 BonusConfig；memoize 避免每位員工各查一次
     _festival_cache: dict["str | None", Decimal] = {}
+    # 全校達成率（兩學期）只依 cycle、與員工無關；迴圈外查一次避免 gather_performance_rates
+    # 每位員工各查兩列 OrgYearSettings（原 2N → 2）。
+    _org_first = db.scalar(
+        select(OrgYearSettings.school_achievement_rate).where(
+            OrgYearSettings.year_end_cycle_id == cycle.id,
+            OrgYearSettings.semester_first == True,  # noqa: E712
+        )
+    )
+    _org_second = db.scalar(
+        select(OrgYearSettings.school_achievement_rate).where(
+            OrgYearSettings.year_end_cycle_id == cycle.id,
+            OrgYearSettings.semester_first == False,  # noqa: E712
+        )
+    )
+    _school_rates = (
+        Decimal(str(_org_first)) if _org_first is not None else None,
+        Decimal(str(_org_second)) if _org_second is not None else None,
+    )
 
     for emp in employees:
         existing = db.scalar(
@@ -632,15 +758,16 @@ def build_settlements(
         )
         hire_months = Decimal(str(_override)) if _override is not None else auto_months
         worked_first, worked_second = worked_semesters(emp, cycle)
-        rates = gather_performance_rates(db, cycle, emp)
+        rates = gather_performance_rates(db, cycle, emp, school_rates=_school_rates)
         org_rate = resolve_org_achievement_rate(
             rates.school_rate_first,
             rates.school_rate_second,
             worked_first=worked_first,
             worked_second=worked_second,
         )
-        # existing 已在迴圈頂端查得；直接組 DeductionBreakdown，免再查同一列（N+1）
-        deductions = _deductions_from_settlement(existing)
+        # existing 已在迴圈頂端查得；直接組 DeductionBreakdown，免再查同一列（main N+1）。
+        # 仍傳 db/cycle/emp 供 B5 ⑤a 自動扣款（per-employee 查考勤/假/會議）。
+        deductions = _deductions_from_settlement(db, cycle, emp, existing)
 
         special_raw = db.scalar(
             select(func.coalesce(func.sum(SpecialBonusItem.amount), 0)).where(
@@ -716,7 +843,7 @@ def build_settlements(
         # step 3
         existing.org_achievement_rate = org_rate
         existing.subtotal_amount = computed.subtotal_amount
-        # step 4（人工扣項：保留 gather_deductions 讀回的值）
+        # step 4（扣項：自動 4 欄由 B5 ⑤a 重算/override；leave_late_prev/disciplinary 讀回既有；見 gather_deductions）
         existing.deduction_leave_late = deductions.leave_late_prev
         existing.deduction_disciplinary = deductions.disciplinary
         existing.deduction_meeting = deductions.meeting

@@ -65,6 +65,9 @@ def expire_comp_leave_grants(today: date, session: Session) -> dict:
             Employee.is_active.is_(True),
         )
         .order_by(OvertimeCompLeaveGrant.id)
+        # row lock：只鎖 grant 列（join 的 Employee 不鎖），與 consume/release 序列化，
+        # 避免 expiry 讀到舊 consumed_hours → 把幽靈未消耗額度換算成 payout 金額。
+        .with_for_update(of=OvertimeCompLeaveGrant)
         .all()
     )
 
