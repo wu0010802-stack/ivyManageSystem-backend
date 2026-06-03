@@ -5,12 +5,14 @@
 2. flag on + 已簽當期 policy → 通過（非 403）
 3. flag on + 簽的是舊版（再 seed 新 PolicyVersion）→ 403（重簽偵測）
 4. flag off → 不擋（即使沒簽）
-5. 寫端點 + DB error（mock session_scope 拋例外）→ 503
-6. 讀端點 + DB error → degraded 通過（非 503/403）
+5. POST 寫端點 + DB error（mock session_scope 拋例外）→ 503（fail-closed by method）
+6. GET 讀端點 + DB error → degraded 通過（非 503/403，fail-open by method）
 
-代表端點：
-- 讀端點：GET /api/parent/home/summary（掛 require_current_consent(write=False)）
-- 寫端點：POST /api/parent/messages/threads/{id}/messages（掛 require_current_consent(write=True)）
+代表端點（router 層級掛載，method-based fail-mode）：
+- 讀端點：GET /api/parent/home/summary（GET → degraded fail-open）
+- 寫端點：POST /api/parent/messages/threads/{id}/messages（POST → fail-closed 503）
+
+write/read 模式由 request.method 自動判定（不再需傳 write 參數）。
 """
 
 from __future__ import annotations
@@ -286,12 +288,13 @@ def test_flag_off_allows_without_consent(gate_client, monkeypatch):
     ), f"flag off 不應擋 consent，實際 {resp.status_code}: {resp.text}"
 
 
-# ── Case 5：寫端點 + DB error → 503（fail-closed）────────────────────────────────
+# ── Case 5：POST 寫端點 + DB error → 503（method-based fail-closed）──────────────
 
 
 def test_write_endpoint_db_error_returns_503(gate_client, monkeypatch):
-    """POST 寫端點 + session_scope 拋 DB error + write=True → 503（fail-closed）。
+    """POST 寫端點 + session_scope 拋 DB error → 503（fail-closed by method）。
 
+    gate 讀取 request.method == "POST" 判定為寫操作 → fail-closed。
     503 由 gate dependency 在 has_signed_current_policy 執行前就拋，
     故不需要 seed thread（端點 body 根本不會被執行）。
 
@@ -324,12 +327,13 @@ def test_write_endpoint_db_error_returns_503(gate_client, monkeypatch):
     ), f"寫端點 DB error 應 fail-closed 回 503，實際 {resp.status_code}: {resp.text}"
 
 
-# ── Case 6：讀端點 + DB error → degraded 通過（非 503/403）──────────────────────
+# ── Case 6：GET 讀端點 + DB error → degraded 通過（method-based fail-open）────────
 
 
 def test_read_endpoint_db_error_passes_degraded(gate_client, monkeypatch):
-    """GET 讀端點 + session_scope 拋 DB error + write=False → degraded fail-open（非 503/403）。
+    """GET 讀端點 + session_scope 拋 DB error → degraded fail-open（非 503/403）。
 
+    gate 讀取 request.method == "GET" 判定為讀操作 → fail-open（記 WARNING，放行）。
     讀路徑 DB 查詢失敗時，gate 記 WARNING 並回 current_user（降級放行），
     避免 DB 短暫異常讓所有家長無法查看自己的資料。
     """

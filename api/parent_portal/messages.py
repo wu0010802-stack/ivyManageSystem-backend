@@ -52,7 +52,6 @@ from services.parent_message_service import (
     mark_read,
 )
 from utils.auth import require_parent_role
-from api.parent_portal._consent_gate import require_current_consent
 from utils.file_upload import (
     read_upload_with_size_check,
     safe_attachment_filename,
@@ -415,7 +414,7 @@ def post_reply(
     thread_id: int,
     payload: ReplyMessage,
     request: Request,
-    current_user: dict = Depends(require_current_consent(write=True)),
+    current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
 ):
     """家長回覆既有 thread。沒附件純訊息亦允許 body=None（搭配後續 attach 上傳）。"""

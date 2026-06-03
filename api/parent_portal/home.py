@@ -28,7 +28,6 @@ from models.dismissal import StudentDismissalCall
 from models.portfolio import StudentMedicationOrder
 from models.student_leave import StudentLeaveRequest
 from utils.auth import require_parent_role
-from api.parent_portal._consent_gate import require_current_consent
 
 from services.parent_message_service import count_unread_for_parent
 
@@ -95,7 +94,7 @@ def _count_recent_leave_reviews(session, user_id: int, days: int = 7) -> int:
 
 @router.get("/summary")
 def home_summary(
-    current_user: dict = Depends(require_current_consent(write=False)),
+    current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
 ):
     """家長首頁一站式彙總。
