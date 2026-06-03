@@ -78,17 +78,20 @@ def _seed_db(session_factory):
     session.add(teacher)
     session.flush()  # 取得 id
 
-    # 建立幾筆 pending DSR（user_id = admin.id，FK 滿足）
+    # 建立幾筆 pending DSR（user_id = admin.id，FK 滿足）。
+    # Task 12 升級後 delete DSR 會做 ownership 重驗（Guardian 存在才能過）。
+    # 此處 seed 全用 correct 型別：Task 11 只測 status 更新行為，
+    # delete 分派測試在 tests/consent/test_dsr_approve_execute.py 補齊。
     for i in range(3):
         session.add(
             DsrRequest(
                 user_id=admin.id,
-                request_type=(
-                    DSR_REQUEST_TYPE_DELETE if i % 2 == 0 else DSR_REQUEST_TYPE_CORRECT
-                ),
+                request_type=DSR_REQUEST_TYPE_CORRECT,
                 status=DSR_STATUS_PENDING,
                 subject_entity_type="student",
                 subject_entity_id=i + 1,
+                field_name="name",
+                new_value=f"test value {i}",
                 reason=f"test reason {i}",
             )
         )

@@ -1,8 +1,10 @@
 """api/dsr_admin.py — admin DSR 請求佇列（個資法權利請求管理，P2-3）。
 
 DSR_MANAGE 權限守衛。提供 list / reject / approve。
-approve 的 delete→lifecycle GC / correct→手動更正執行為 Task 12；本檔 approve 僅做
-status 更新 + decision_note + audit（見 approve 內 TODO）。
+approve 按 request_type 分派（Task 12）：
+  - delete → ownership 重驗 + student_lifecycle.transition → WITHDRAWN → 365d GC 接手
+  - correct → 僅記 status=approved，admin 事後手動更正
+  - 其他 → 防禦性僅 set status
 """
 
 from __future__ import annotations
@@ -12,14 +14,18 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from models.classroom import LIFECYCLE_WITHDRAWN, Student
 from models.database import get_session_dep
 from models.dsr import (
+    DSR_REQUEST_TYPE_DELETE,
     DSR_STATUS_APPROVED,
     DSR_STATUS_PENDING,
     DSR_STATUS_REJECTED,
     DsrRequest,
 )
+from models.guardian import Guardian
 from schemas.dsr import DsrDecisionIn, DsrRequestAdminOut
+from services.student_lifecycle import LifecycleTransitionError, transition
 from utils.audit import write_explicit_audit
 from utils.auth import require_permission
 from utils.permissions import Permission
@@ -101,13 +107,22 @@ def approve_dsr_request(
 ):
     """核准 pending DSR 請求。
 
-    本端點僅做 status=approved + decision_note + audit。
-    TODO(Task 12): 按 request_type 分派 delete→student_lifecycle 終態→365d GC /
-    correct→admin 手動更正（不自動套用 new_value）；approve 前 ownership 重驗。
+    按 request_type 分派（Task 12）：
+    - delete：ownership 重驗 → student lifecycle → WITHDRAWN → 365d GC 接手 PII 抹除
+    - correct：僅 status=approved；admin 事後透過既有編輯工具手動更正（不自動套用 new_value）
+    - 其他（opt_out 等）：防禦性僅 set status（opt_out 已於 Task 9 即時自助不進 queue）
     """
     req = session.query(DsrRequest).filter(DsrRequest.id == req_id).first()
     if req is None or req.status != DSR_STATUS_PENDING:
         raise HTTPException(status_code=404, detail="申請不存在或已決議")
+
+    # ── 按 request_type 分派執行 ──────────────────────────────────────────
+    if req.request_type == DSR_REQUEST_TYPE_DELETE:
+        _execute_delete_dsr(session, req, payload, request, current_user)
+    # correct / opt_out / 其他：不自動套用，僅走後續 set status
+    # ─────────────────────────────────────────────────────────────────────
+
+    # 共用：set status + decided_* + decision_note + audit（單一 commit）
     req.status = DSR_STATUS_APPROVED
     req.decided_at = now_taipei_naive()
     req.decided_by = current_user["user_id"]
@@ -122,3 +137,56 @@ def approve_dsr_request(
     )
     session.commit()
     return _to_admin_out(req)
+
+
+def _execute_delete_dsr(
+    session: Session,
+    req: DsrRequest,
+    payload: DsrDecisionIn,
+    request: Request,
+    current_user: dict,
+) -> None:
+    """delete DSR 核准執行：ownership 重驗 → student lifecycle → WITHDRAWN。
+
+    - Guardian PII 抹除由既有 365d GC scheduler 接手，本函式不直接刪除資料。
+    - 出席/費用/薪資記錄屬法定保存，由 GC 既有邏輯處理，本端點不碰。
+    - 成功後直接 return；失敗時 raise HTTPException（呼叫端不應再 commit）。
+    """
+    # 1. ownership 重驗：申請家長必須為 subject student 的現有監護人
+    if req.subject_entity_type != "student":
+        # 非學生主體的 delete DSR 目前不支援自動執行，守衛後回 200（人工處理）
+        return
+
+    guardian = (
+        session.query(Guardian)
+        .filter(
+            Guardian.student_id == req.subject_entity_id,
+            Guardian.user_id == req.user_id,
+            Guardian.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if guardian is None:
+        raise HTTPException(
+            status_code=403,
+            detail="申請人與目標學生無監護關係，不可核准刪除",
+        )
+
+    # 2. 取 student；不存在 → 404
+    student = session.query(Student).filter(Student.id == req.subject_entity_id).first()
+    if student is None:
+        raise HTTPException(status_code=404, detail="目標學生不存在")
+
+    # 3. 走 lifecycle transition → WITHDRAWN（365d GC 接手抹除 Guardian PII）
+    try:
+        transition(
+            session,
+            student,
+            to_status=LIFECYCLE_WITHDRAWN,
+            reason="個資法 DSR 刪除申請",
+            notes=payload.decision_note,
+            recorded_by=current_user["user_id"],
+            request=request,
+        )
+    except LifecycleTransitionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
