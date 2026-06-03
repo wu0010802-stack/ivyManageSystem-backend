@@ -130,7 +130,9 @@ def get_client_ip(request: Request) -> Optional[str]:
             return chain[0]
 
     xri = (request.headers.get("x-real-ip") or "").strip()
-    if xri:
+    # X-Real-IP 只在直接連線方（peer）是 trusted proxy 時採信（nginx 設此 header）；
+    # 否則為 client 可控、可偽造繞過 per-IP 限流 / 污染 audit IP，須忽略並 fall through。
+    if xri and request.client and _is_trusted(request.client.host, trusted):
         return xri
 
     if request.client and request.client.host:
