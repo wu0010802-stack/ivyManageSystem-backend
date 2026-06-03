@@ -20,6 +20,7 @@ from models.classroom import Classroom, ClassGrade, Student
 from models.database import Employee
 from services.enrollment_roster_pdf import generate_enrollment_roster_pdf
 from utils.auth import require_staff_permission
+from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
 from utils.permissions import Permission
 from utils.academic import resolve_academic_term_filters
 
@@ -216,7 +217,7 @@ class RosterResponse(BaseModel):
 def get_enrollment_roster(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None),
-    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """取得花名冊格式的在籍記錄，含每班學生姓名、教師、員工名單。"""
     school_year, semester = resolve_academic_term_filters(school_year, semester)
@@ -256,6 +257,17 @@ def get_enrollment_roster(
             .order_by(ClassGrade.sort_order, Classroom.name)
             .all()
         )
+
+        # ── 班級 scope 守衛 ─────────────────────────────────────────────
+        # class-scoped 角色（STUDENTS_READ:own_class）只看自己班，比照 get_students；
+        # admin/hr/supervisor 或持 :all 者不受限。避免跨班學生姓名冊 over-read。
+        if not is_unrestricted(current_user, code=Permission.STUDENTS_READ.value):
+            allowed = set(
+                accessible_classroom_ids(
+                    session, current_user, code=Permission.STUDENTS_READ.value
+                )
+            )
+            classroom_rows = [r for r in classroom_rows if r.classroom_id in allowed]
 
         # ── 查詢各班學生 ────────────────────────────────────────────────
         classroom_ids = [r.classroom_id for r in classroom_rows]
@@ -369,10 +381,12 @@ def get_enrollment_roster(
 def print_enrollment_roster_pdf(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None),
-    _: None = Depends(require_staff_permission(Permission.STUDENTS_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
 ):
     """產生在籍花名冊 PDF（A4 橫向，繁中 embed Noto Sans TC）。"""
-    roster = get_enrollment_roster(school_year=school_year, semester=semester)
+    roster = get_enrollment_roster(
+        school_year=school_year, semester=semester, current_user=current_user
+    )
     # roster 是 Pydantic model；轉成 dict 餵 generator
     roster_dict = (
         roster.model_dump() if hasattr(roster, "model_dump") else roster.dict()
