@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import distinct
+from sqlalchemy import distinct, func
 from sqlalchemy.orm import Session
 
 from models.activity import ParentInquiry
@@ -204,18 +205,18 @@ def slice_by_source(
     回傳 [{source, lead, deposit, enrolled, conversion}, ...]
     conversion = enrolled / lead（防 0 除）
     """
-    sources = (
-        session.query(distinct(RecruitmentVisit.source))
+    # 一次載入所有 visit（month 為民國字串無法 SQL range 過濾，故 Python 端比對），
+    # 依 source 分組，消除原本逐 source 重複整表載入的 N+1。
+    by_source: dict = defaultdict(list)
+    for v in (
+        session.query(RecruitmentVisit)
         .filter(RecruitmentVisit.source.isnot(None))
         .all()
-    )
+    ):
+        if v.source:
+            by_source[v.source].append(v)
     rows = []
-    for (src,) in sources:
-        if not src:
-            continue
-        visits = (
-            session.query(RecruitmentVisit).filter(RecruitmentVisit.source == src).all()
-        )
+    for src, visits in by_source.items():
         in_range = [v for v in visits if _visit_in_range(v, start_date, end_date)]
         lead_n = len(in_range)
         deposit_n = sum(1 for v in in_range if v.has_deposit)
@@ -262,31 +263,36 @@ def slice_by_grade(
         "withdrawn",
     )
 
+    # 一次載入所有 visit 依 grade 分組（取代逐 grade 整表載入）
+    visits_by_grade: dict = defaultdict(list)
+    for v in session.query(RecruitmentVisit).all():
+        if v.grade:
+            visits_by_grade[v.grade].append(v)
+    # 一次 GROUP BY 取各 grade 在讀學生數（取代逐 grade .count() query）
+    active_counts = dict(
+        session.query(ClassGrade.name, func.count(Student.id))
+        .join(Classroom, Classroom.grade_id == ClassGrade.id)
+        .join(Student, Student.classroom_id == Classroom.id)
+        .filter(
+            Student.lifecycle_status.in_(enrolled_states),
+            Student.enrollment_date >= start_date,
+            Student.enrollment_date <= end_date,
+        )
+        .group_by(ClassGrade.name)
+        .all()
+    )
     rows = []
     for g in grades:
         v_in_range = [
             v
-            for v in session.query(RecruitmentVisit)
-            .filter(RecruitmentVisit.grade == g)
-            .all()
+            for v in visits_by_grade.get(g, [])
             if _visit_in_range(v, start_date, end_date)
         ]
         lead_n = len(v_in_range)
         deposit_n = sum(1 for v in v_in_range if v.has_deposit)
         enrolled_n = sum(1 for v in v_in_range if v.enrolled)
 
-        active_n = (
-            session.query(Student)
-            .join(Classroom, Student.classroom_id == Classroom.id)
-            .join(ClassGrade, Classroom.grade_id == ClassGrade.id)
-            .filter(
-                ClassGrade.name == g,
-                Student.lifecycle_status.in_(enrolled_states),
-                Student.enrollment_date >= start_date,
-                Student.enrollment_date <= end_date,
-            )
-            .count()
-        )
+        active_n = active_counts.get(g, 0)
         conversion = (enrolled_n / lead_n) if lead_n > 0 else 0.0
         rows.append(
             {
