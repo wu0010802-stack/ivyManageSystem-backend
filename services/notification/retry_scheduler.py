@@ -45,6 +45,9 @@ def tick_line_retry(now_provider=lambda: datetime.now(timezone.utc)) -> dict:
                 NotificationLog.line_retry_count < _MAX_RETRIES,
             )
             .limit(_TICK_LIMIT)
+            # row-level claim：多 worker 部署時各自鎖住並處理不同 row（skip 其他 worker
+            # 已鎖的），避免兩個 worker 撈到同批 row 而雙發 LINE。鎖持有至本 tick commit。
+            .with_for_update(skip_locked=True)
             .all()
         )
         metric["attempted"] = len(rows)
