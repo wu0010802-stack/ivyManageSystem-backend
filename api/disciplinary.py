@@ -1,7 +1,7 @@
 """懲處記錄 CRUD API。
 
 警告/小過/大過會於下一個獎金發放期自動從節慶+超額獎金扣減。
-已抵扣的懲處不可改金額（避免影響歷史薪資），可改 reason；刪除須 admin。
+已抵扣的懲處不可改金額（避免影響歷史薪資），可改 reason；刪除須 SALARY_WRITE 權限（hr/accountant/supervisor 等，非僅 admin），且已抵扣者不可刪。
 """
 
 from datetime import date as _date
