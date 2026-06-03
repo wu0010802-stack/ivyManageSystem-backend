@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 from models.database import get_session, Classroom, ClassGrade, Employee, Student
-from models.classroom import LIFECYCLE_GRADUATED
+from models.classroom import LIFECYCLE_ACTIVE, LIFECYCLE_GRADUATED
 from models.student_transfer import StudentClassroomTransfer
 from services.student_lifecycle import (
     transition as lifecycle_transition,
@@ -626,7 +626,10 @@ def get_classroom(
         session.close()
 
 
-@router.get("/classrooms/{classroom_id}/enrollment-composition", response_model=ClassroomEnrollmentCompositionOut)
+@router.get(
+    "/classrooms/{classroom_id}/enrollment-composition",
+    response_model=ClassroomEnrollmentCompositionOut,
+)
 def get_classroom_enrollment_composition(
     classroom_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
@@ -845,7 +848,11 @@ def update_classroom(
         session.close()
 
 
-@router.post("/classrooms/clone-term", status_code=201, response_model=ClassroomCloneTermResultOut)
+@router.post(
+    "/classrooms/clone-term",
+    status_code=201,
+    response_model=ClassroomCloneTermResultOut,
+)
 def clone_classrooms_to_term(
     item: ClassroomCloneTerm,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_WRITE)),
@@ -999,6 +1006,24 @@ def _count_active_students(session, classroom_id: int) -> int:
     )
 
 
+def _count_graduating_students(session, classroom_id: int) -> int:
+    """畢業候選人數：只計 lifecycle_status==active（排除 on_leave 休學）。
+
+    與 execute 畢業候選及 7/31 自動畢業 scheduler（list_upcoming_graduates）一致；
+    on_leave 學生 is_active 仍為 True，若用 _count_active_students 會被 preview 計為
+    畢業但 execute 不會畢業（休學生留原班 on_leave，可復原），造成 preview/execute 漂移。
+    """
+    return (
+        session.query(func.count(Student.id))
+        .filter(
+            Student.classroom_id == classroom_id,
+            Student.lifecycle_status == LIFECYCLE_ACTIVE,
+        )
+        .scalar()
+        or 0
+    )
+
+
 def _build_promotion_plan(
     session, item: "ClassroomPromoteAcademicYear"
 ) -> _PromotionPlan:
@@ -1107,7 +1132,11 @@ def _build_promotion_plan(
     # 逐班（非畢業）：目標年級有效性 + 可重用班是否仍有在讀學生（依原順序）
     for prep in plan.prepared_rows:
         if prep.will_graduate:
-            plan.will_graduate_count += prep.active_student_count
+            # 畢業計數只計在讀（lifecycle_status==active），排除 on_leave（休學）：
+            # 與 execute 畢業候選及 7/31 自動畢業 scheduler 一致（preview/execute 不漂移）。
+            plan.will_graduate_count += _count_graduating_students(
+                session, prep.source.id
+            )
             continue
         if prep.resolved_grade_id not in grade_map:
             plan.conflicts.append(
@@ -1199,7 +1228,11 @@ def promote_classrooms_to_academic_year(
                     session.query(Student)
                     .filter(
                         Student.classroom_id == source.id,
-                        Student.is_active == True,
+                        # 只畢業在讀學生（lifecycle_status==active），排除 on_leave（休學）：
+                        # 對齊 7/31 自動畢業 scheduler（list_upcoming_graduates）。on_leave→
+                        # graduated 不合法且不可逆，休學生留原班 on_leave（可復原），待復學
+                        # 後再隨當期 cohort 處理。
+                        Student.lifecycle_status == LIFECYCLE_ACTIVE,
                     )
                     .all()
                 )

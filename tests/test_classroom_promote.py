@@ -17,9 +17,12 @@ def _run_maybe_async(_result):
     """B2 async→def 遷移相容：handler 轉同步 def 後不再是 coroutine；
     僅 coroutine 才走 asyncio.run，否則直接回傳同步結果。"""
     import inspect as _inspect
+
     if _inspect.iscoroutine(_result):
         return asyncio.run(_result)
     return _result
+
+
 from datetime import date
 from unittest.mock import patch, MagicMock
 
@@ -436,6 +439,63 @@ class TestPromoteAcademicYear:
         )
         assert len(logs) >= 1
         assert any(log.recorded_by == 1 for log in logs)
+
+    def test_promote_excludes_on_leave_from_graduation(
+        self, session, grade_data, source_classrooms
+    ):
+        """P2-f：升班畢業只畢業在讀(active)學生，on_leave(休學)留原班不被靜默畢業。
+
+        on_leave 學生 is_active 仍為 True，原以 is_active 撈候選會嘗試 on_leave→graduated
+        （非法）→ LifecycleTransitionError 被靜默略過、preview 卻計入。改以 lifecycle_status
+        ==active 撈候選（對齊 7/31 自動畢業 scheduler）：on_leave 留原班 on_leave（可復原，
+        不做不可逆的強制畢業），且 preview/execute 一致。
+        """
+        from models.classroom import LIFECYCLE_ON_LEAVE
+
+        on_leave_stu = Student(
+            student_id="SD02",
+            name="大班休學生",
+            classroom_id=source_classrooms["大班A"].id,
+            lifecycle_status=LIFECYCLE_ON_LEAVE,
+            is_active=True,  # 休學仍 is_active=True
+        )
+        session.add(on_leave_stu)
+        session.commit()
+        on_leave_id = on_leave_stu.id
+
+        payload = {
+            "source_school_year": 114,
+            "source_semester": 2,
+            "target_school_year": 115,
+            "target_semester": 1,
+            "classrooms": [
+                {
+                    "source_classroom_id": source_classrooms["大班A"].id,
+                    "target_name": None,
+                    "target_grade_id": None,
+                    "copy_teachers": True,
+                    "move_students": True,
+                }
+            ],
+        }
+
+        # preview 只計在讀（active）1 人，不計 on_leave → 與 execute 一致
+        preview = self._preview(session, payload)
+        assert preview.will_graduate_count == 1
+
+        result = self._run(session, payload)
+        assert result["graduated_count"] == 1  # 只畢業 s_da（active）
+
+        s_da = source_classrooms["s_da"]
+        session.refresh(s_da)
+        assert s_da.lifecycle_status == "graduated"
+
+        # on_leave 學生未被畢業，留原班 on_leave（可復原）
+        on_leave_after = (
+            session.query(Student).filter(Student.id == on_leave_id).first()
+        )
+        assert on_leave_after.lifecycle_status == LIFECYCLE_ON_LEAVE
+        assert on_leave_after.classroom_id == source_classrooms["大班A"].id
 
     def test_duplicate_target_names_in_request_raises_409(
         self, session, grade_data, source_classrooms
