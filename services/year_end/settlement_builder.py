@@ -638,7 +638,25 @@ def build_settlements(
         # reference data 已 committed/一致（正常 HR 流程 config 早於 build 已 commit）。
         from services.year_end.auto_derive import derive_all
 
-        derive_report = derive_all(db, cycle)
+        # P1-2 finalized drift 護欄：查本 cycle 所有「非 DRAFT」settlement 的 employee_id
+        # 集合（鏡像下方 per-employee loop 的 skip 判定 status != DRAFT）。傳給 derive_all
+        # 讓 ① ③ ④ 不覆寫這些員工已凍結的 special_bonus_items（finalized settlement 在
+        # loop 開頭被 skip、金額凍結，底層 items 若被改 → 凍結總額與 items 漂移、稽核對不上）。
+        non_draft_ids = set(
+            db.scalars(
+                select(YearEndSettlement.employee_id).where(
+                    YearEndSettlement.year_end_cycle_id == cycle.id,
+                    YearEndSettlement.status != YearEndSettlementStatus.DRAFT,
+                )
+            ).all()
+        )
+        # P1-1：③ 參與者對齊 build（ACTIVE ∪ included_resigned_ids）；①④⑥ 不需。
+        derive_report = derive_all(
+            db,
+            cycle,
+            included_resigned_ids=included,
+            skip_settlement_employee_ids=non_draft_ids,
+        )
 
     # 參與者：ACTIVE ∪ included_resigned_ids
     employees = list(

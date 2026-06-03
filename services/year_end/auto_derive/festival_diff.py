@@ -297,16 +297,35 @@ def _build_meeting_absent_cache(
     return cache
 
 
-def derive_festival_diff(db: Session, cycle: YearEndCycle) -> FestivalDiffReport:
+def derive_festival_diff(
+    db: Session,
+    cycle: YearEndCycle,
+    *,
+    included_resigned_ids: "set[int] | None" = None,
+    skip_employee_ids: "set[int] | None" = None,
+) -> FestivalDiffReport:
     """推導 ③ 節慶差額 → upsert special_bonus_items（FESTIVAL_DIFF）。
 
     只 flush（由呼叫端 commit）。idempotent；手動筆不覆寫（見 __init__ override 慣例）。
-    參與者 = 在職且 festival 基數 > 0 的員工。
+
+    參與者（P1-1 對齊 build）= **(ACTIVE ∪ included_resigned_ids) 且 festival 基數 > 0**。
+      build_settlements 的參與者是 ACTIVE ∪ included_resigned_ids，且 ①④ 依
+      head_teacher（不看 is_active，已含離職班導）。故離職但 included 的班導應與
+      ①④ 一致地獲得 ③ true-up。included_resigned_ids 未傳（None/空）→ 退回僅 ACTIVE，
+      行為與舊版相同（B3 既有測試不傳此參數 → 綠）。
+      離職員工的逐月 festival accrual 可正常計算：engine.calculate_period_accrual_row
+      以 (employee_id, year, month) 反查當月班級/人數，不 gate on is_active；其在職月由
+      hire/resign 對應的人數/班級自然呈現，離職後月份無對應班級則 accrual 自然趨 0。
+
+    skip_employee_ids（P1-2 finalized drift 護欄）：收款人（員工本人 emp.id）settlement
+      非 DRAFT（金額已凍結）→ **不寫/不覆寫**其 auto item，避免凍結總額與底層 items 漂移。
 
     已發 = SalaryEngine.calculate_period_accrual_row（payroll 逐月 accrual，
            副班導/美師 per-class + 封頂 + 學期反查）。
     應領 = base × 年終人數 / 年終目標（未封頂，per-class/全校依角色）。
     """
+    included: set[int] = set(included_resigned_ids or set())
+    skip_ids: set[int] = skip_employee_ids or set()
     report = FestivalDiffReport()
     label = period_label(cycle)
     month_ends = _semester_month_ends(cycle, semester_first=True)
@@ -351,14 +370,28 @@ def derive_festival_diff(db: Session, cycle: YearEndCycle) -> FestivalDiffReport
     # count_students_active_on 算（見 _build_meeting_absent_cache docstring）。
     meeting_absent_cache = _build_meeting_absent_cache(db, month_ends)
 
+    # P1-1：參與者對齊 build = ACTIVE ∪ included_resigned_ids。
+    # 空 included → in_([]) 不匹配任何列 → 退回僅 ACTIVE（與舊版一致）。
     employees = list(
-        db.scalars(select(Employee).where(Employee.is_active.is_(True))).all()
+        db.scalars(
+            select(Employee).where(
+                or_(
+                    Employee.is_active.is_(True),
+                    Employee.id.in_(included),
+                )
+            )
+        ).all()
     )
 
     # payroll category（"帶班老師"）→ 應領 per-class；("主管"/"辦公室"/"其他") → 全校。
     _CLASS_CATEGORY = "帶班老師"
 
     for emp in employees:
+        # P1-2：收款人本人 settlement 非 DRAFT（凍結）→ 不寫其 auto item；
+        # 整段逐月計算亦可省（不影響其他員工/全校統計，③ 無跨員工累計）。
+        if emp.id in skip_ids:
+            continue
+
         festival_base = festival_base_for_role(db, role_key_of(emp))
         # festival 基數 = 0 的角色（廚房/護理/美語/無法分類）刻意排除，避免「全負回收」。
         if festival_base <= 0:

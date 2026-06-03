@@ -201,11 +201,23 @@ def _count_unmatched(db: Session, *, academic_year: int) -> int:
     )
 
 
-def derive_after_class_award(db: Session, cycle: YearEndCycle) -> AcaReport:
+def derive_after_class_award(
+    db: Session,
+    cycle: YearEndCycle,
+    *,
+    skip_employee_ids: "set[int] | None" = None,
+) -> AcaReport:
     """推導 ① 才藝鼓勵獎金 → upsert special_bonus_items（AFTER_CLASS_AWARD）。
 
     只 flush（由呼叫端 commit）。idempotent；手動筆不覆寫（見 __init__ override 慣例）。
+
+    skip_employee_ids（P1-2 finalized drift 護欄）：收款人 employee_id 落此集合者
+    （該員工的 settlement 非 DRAFT、金額已凍結）→ **不寫/不覆寫**其 auto item，
+    避免凍結總額與底層 items 漂移。判定對象為**收款人**：每班 award 看
+    head_teacher_employee_id；才藝老師段看各 art emp_id。**只 guard 寫入**，
+    total_enrollments 累計與 unmatched_count 全校統計照常計（餵其他收款人/全校報表）。
     """
+    skip_ids: set[int] = skip_employee_ids or set()
     report = AcaReport()
     academic_year = cycle.academic_year
 
@@ -236,10 +248,15 @@ def derive_after_class_award(db: Session, cycle: YearEndCycle) -> AcaReport:
         j = _count_enrollments(
             db, classroom_id=tgt.classroom_id, academic_year=academic_year
         )
-        total_enrollments += j
+        total_enrollments += j  # 全校總人次（餵才藝老師段）— 不受 skip 影響
 
         if tgt.head_teacher_employee_id is None:
             report.warnings.append(f"班「{classroom.name}」無班導，略過")
+            continue
+
+        # P1-2：收款人（班導）settlement 非 DRAFT（凍結）→ 不寫其 auto item。
+        # 須在 total_enrollments 累計之後（上方）才 skip，避免影響才藝老師段/全校報表。
+        if tgt.head_teacher_employee_id in skip_ids:
             continue
 
         if classroom.name not in unit_prices:
@@ -275,6 +292,9 @@ def derive_after_class_award(db: Session, cycle: YearEndCycle) -> AcaReport:
         art_amount = _q2(Decimal(str(total_enrollments)) * Decimal(str(art_price)))
         art_label = _art_teacher_period_label(cycle)
         for emp_id in art_ids:
+            # P1-2：才藝老師（收款人）settlement 非 DRAFT（凍結）→ 不寫其 auto item。
+            if emp_id in skip_ids:
+                continue
             wrote = _upsert_auto_item(
                 db,
                 cycle_id=cycle.id,

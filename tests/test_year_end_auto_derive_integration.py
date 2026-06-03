@@ -459,3 +459,325 @@ class TestGraduatedClassSchoolWideFallback:
         # helper None → fallback 不寫，class_returning_rate 維持 None
         assert rates.class_returning_rate_first is None
         assert rates.class_returning_rate_second is None
+
+
+# =========================================================================== #
+# P1-2 / P1-1 補修：finalized drift 護欄 + ③ 對齊 build 參與者（含 included_resigned）
+# =========================================================================== #
+
+
+class TestFinalizedItemsNotDriftedByRebuild:
+    """P1-2（最高優先，原零覆蓋）：refresh_rates=True 的 re-build 不得覆寫
+    finalized settlement 的底層 ①③④ auto items（凍結總額與 items 不漂移）。
+
+    場景（常見 workflow）：HR 對某員工 finalize 後，又對其他 DRAFT 員工 re-build
+    （refresh_rates=True 連帶跑 derive_all）。修補前 derive_all 不看 settlement.status，
+    會覆寫**所有**員工（含 finalized）的 ①③④ auto items → finalized settlement 在 build
+    loop 開頭被 skip（金額凍結）但底層 items 被改 → 漂移、稽核對不上。
+
+    判別力設計：
+      - finalized 員工（蔡宜倩）的 ①③④ auto items 預埋 derive **絕不會算出**的
+        7777 值（① 真值 = 5×100 = 500；故 7777 一旦被覆寫成 500 即可偵測）。
+      - frozen total_amount = 99999；finalized 在 loop 被 skip，total 不應變。
+      - 另加一名 DRAFT 班導（另一班），證明 skip 是**選擇性**而非全域 no-op
+        （DRAFT 者的 ① auto item 確實被寫入）。
+    """
+
+    def _draft_head_teacher_with_class(self, db, cycle):
+        """另建一名 DRAFT 班導 + 其專屬班級（含 ClassEnrollmentTarget 上/下 + 單價 +
+        2 筆 matched 報名 → ① = 2×100 = 200），用以證明 skip 為選擇性。"""
+        from models.year_end import YearEndSettlementStatus  # noqa: F401
+
+        # 該班需有 after_class_award 單價 → 補進現有 active BonusConfig 的 JSON。
+        cfg = db.scalar(
+            select(BonusConfig)
+            .where(BonusConfig.is_active == True)  # noqa: E712
+            .order_by(BonusConfig.id.desc())
+        )
+        prices = dict(cfg.after_class_award_unit_price or {})
+        prices["中班B"] = UNIT_PRICE
+        cfg.after_class_award_unit_price = prices
+
+        cls2 = Classroom(name="中班B", school_year=114, semester=1)
+        db.add(cls2)
+        db.flush()
+        emp2 = Employee(
+            employee_id="E_DRAFT",
+            name="林老師",
+            position="班導",
+            bonus_grade="b",
+            title="幼兒園教師",
+            base_salary=36160,
+            bypass_standard_base=False,
+            is_active=True,
+            classroom_id=cls2.id,
+            hire_date=date(2019, 1, 1),
+        )
+        db.add(emp2)
+        db.flush()
+        for sem_first in (True, False):
+            db.add(
+                ClassEnrollmentTarget(
+                    year_end_cycle_id=cycle.id,
+                    semester_first=sem_first,
+                    classroom_id=cls2.id,
+                    head_teacher_employee_id=emp2.id,
+                    head_count_target=4,
+                    class_performance_rate=_D("100.0"),
+                    returning_student_rate=_D("0.5"),
+                )
+            )
+        course2 = ActivityCourse(
+            name="音樂班", price=500, is_active=True, school_year=114, semester=1
+        )
+        db.add(course2)
+        db.flush()
+        for i in range(2):
+            reg = ActivityRegistration(
+                student_name=f"中{i}",
+                is_active=True,
+                school_year=114,
+                semester=1,
+                classroom_id=cls2.id,
+                match_status="matched",
+            )
+            db.add(reg)
+            db.flush()
+            db.add(
+                RegistrationCourse(
+                    registration_id=reg.id, course_id=course2.id, status="enrolled"
+                )
+            )
+        db.flush()
+        return emp2, cls2
+
+    def test_finalized_items_not_drifted_by_rebuild(self, test_db_session):
+        db = test_db_session
+        cycle, tsai, classroom = _seed(db)
+
+        from models.year_end import (
+            EmployeeYearEndSnapshot,
+            YearEndSettlementStatus,
+        )
+
+        # ── 蔡宜倩：FINALIZED settlement + 預埋 ①③④ auto items（值=7777）+ 凍結 total ──
+        snap = EmployeeYearEndSnapshot(year_end_cycle_id=cycle.id, employee_id=tsai.id)
+        db.add(snap)
+        db.flush()
+        finalized = YearEndSettlement(
+            year_end_cycle_id=cycle.id,
+            employee_id=tsai.id,
+            snapshot_id=snap.id,
+            status=YearEndSettlementStatus.FINALIZED,
+            total_amount=_D("99999"),
+        )
+        db.add(finalized)
+
+        # ① auto item（period_label 與 derive 寫入鍵一致 → 若無 guard 必被覆寫成 500）
+        aca_label = f"{ACADEMIC_YEAR}上-C{classroom.id}"
+        db.add(
+            SpecialBonusItem(
+                year_end_cycle_id=cycle.id,
+                employee_id=tsai.id,
+                bonus_type=SpecialBonusType.AFTER_CLASS_AWARD,
+                period_label=aca_label,
+                amount=_D("7777"),
+                classroom_id=classroom.id,
+                source_ref="auto:after_class_award",  # auto 筆（非手動）→ 平常會被覆寫
+            )
+        )
+        # ③ auto item
+        db.add(
+            SpecialBonusItem(
+                year_end_cycle_id=cycle.id,
+                employee_id=tsai.id,
+                bonus_type=SpecialBonusType.FESTIVAL_DIFF,
+                period_label=f"{ACADEMIC_YEAR}-FD",
+                amount=_D("7777"),
+                source_ref="auto:festival_diff",
+            )
+        )
+        # ④ auto item（上學期）
+        db.add(
+            SpecialBonusItem(
+                year_end_cycle_id=cycle.id,
+                employee_id=tsai.id,
+                bonus_type=SpecialBonusType.SEMESTER_DIVIDEND_FIRST,
+                period_label=f"{ACADEMIC_YEAR}上-C{classroom.id}",
+                amount=_D("7777"),
+                classroom_id=classroom.id,
+                source_ref="auto:semester_dividend",
+            )
+        )
+
+        # ── 另一名 DRAFT 班導（選擇性 skip 證明）──
+        emp2, cls2 = self._draft_head_teacher_with_class(db, cycle)
+
+        db.flush()
+        db.commit()  # split-brain：festival_diff 自開 session 讀 config
+
+        res = sb.build_settlements(
+            db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=True
+        )
+        db.commit()
+
+        # (a) finalized settlement 在 loop 被 skip（金額凍結不變）
+        assert res.skipped_finalized >= 1
+        st = _settlement(db, cycle, tsai)
+        assert st.status == YearEndSettlementStatus.FINALIZED
+        assert st.total_amount == _D(
+            "99999"
+        ), f"finalized total 應凍結 99999，got {st.total_amount}"
+
+        # (b) finalized 員工的底層 ①③④ auto items 未被覆寫（仍為 7777）
+        aca = _special_items(db, cycle, tsai, SpecialBonusType.AFTER_CLASS_AWARD)
+        assert len(aca) == 1 and aca[0].amount == _D(
+            "7777"
+        ), f"finalized ① 應未漂移（保持 7777），got {[r.amount for r in aca]}"
+        fd = _special_items(db, cycle, tsai, SpecialBonusType.FESTIVAL_DIFF)
+        assert len(fd) == 1 and fd[0].amount == _D(
+            "7777"
+        ), f"finalized ③ 應未漂移（保持 7777），got {[r.amount for r in fd]}"
+        sd = _special_items(db, cycle, tsai, SpecialBonusType.SEMESTER_DIVIDEND_FIRST)
+        assert len(sd) == 1 and sd[0].amount == _D(
+            "7777"
+        ), f"finalized ④ 應未漂移（保持 7777），got {[r.amount for r in sd]}"
+
+        # (c) 選擇性證明：DRAFT 班導的 ① auto item 確實被寫入（2×100 = 200）
+        aca2 = _special_items(db, cycle, emp2, SpecialBonusType.AFTER_CLASS_AWARD)
+        assert len(aca2) == 1 and aca2[0].amount == _D("200.00"), (
+            f"DRAFT 班導 ① 應被寫入 200（skip 非全域 no-op），got "
+            f"{[r.amount for r in aca2]}"
+        )
+
+
+class TestResignedIncludedFestivalDiffAligned:
+    """P1-1：離職但 included 的班導應與 ①④ 一致地得到 ③ FESTIVAL_DIFF
+    （build 參與者 = ACTIVE ∪ included_resigned_ids；③ 對齊）。
+
+    修補前 ③ 只 iterate is_active==True → 離職 included 班導無 ③（與其 ①④ 不一致）。
+    修補後 derive_all 把 included_resigned_ids 傳給 ③ → 其參與者含離職 included 班導。
+    """
+
+    def test_resigned_included_head_teacher_gets_festival_diff(self, test_db_session):
+        db = test_db_session
+        cycle, _tsai, _classroom = _seed(db)
+
+        # 離職但 included 的班導：帶自己的班 + ClassEnrollmentTarget（上/下，target>0）。
+        cls3 = Classroom(name="小班C", school_year=114, semester=1)
+        db.add(cls3)
+        db.flush()
+        resigned = Employee(
+            employee_id="E_RESIGNED",
+            name="陳老師",
+            position="班導",
+            bonus_grade="b",
+            title="幼兒園教師",
+            base_salary=36160,
+            bypass_standard_base=False,
+            is_active=False,  # 已離職
+            classroom_id=cls3.id,
+            hire_date=date(2015, 1, 1),
+            resign_date=date(2025, 11, 30),  # cycle 期間內離職
+        )
+        db.add(resigned)
+        db.flush()
+        for sem_first in (True, False):
+            db.add(
+                ClassEnrollmentTarget(
+                    year_end_cycle_id=cycle.id,
+                    semester_first=sem_first,
+                    classroom_id=cls3.id,
+                    head_teacher_employee_id=resigned.id,
+                    head_count_target=4,
+                    class_performance_rate=_D("100.0"),
+                    returning_student_rate=_D("0.5"),
+                )
+            )
+        db.flush()
+        db.commit()  # split-brain
+
+        # included_resigned_ids 帶入該離職班導
+        sb.build_settlements(
+            db, ACADEMIC_YEAR, {resigned.id}, actor_id=1, refresh_rates=True
+        )
+        db.commit()
+
+        # ③ FESTIVAL_DIFF：離職 included 班導應有一筆 auto（與 ①④ 一致）
+        fd = _special_items(db, cycle, resigned, SpecialBonusType.FESTIVAL_DIFF)
+        assert (
+            len(fd) == 1
+        ), f"離職 included 班導應得 ③ FESTIVAL_DIFF（對齊 build 參與者），got {len(fd)}"
+        assert (fd[0].source_ref or "").startswith("auto:")
+
+        # 對照：①④ 本就依 head_teacher 含離職班導（佐證一致性）
+        aca = _special_items(db, cycle, resigned, SpecialBonusType.AFTER_CLASS_AWARD)
+        sd = _special_items(
+            db, cycle, resigned, SpecialBonusType.SEMESTER_DIVIDEND_FIRST
+        )
+        # ①：小班C 無單價設定 → derive skip（warning），故可能 0 筆；④ 無單價依賴 → 應有筆
+        assert len(sd) == 1, f"離職 included 班導 ④ 應有筆，got {len(sd)}"
+        # ① 視單價而定，不強斷言筆數（小班C 未設單價）；此測試核心是 ③ 對齊。
+        _ = aca
+
+
+class TestDeductionOverrideBeatsNonZeroB5:
+    """P2 盲區修補：override 在 B5 計算值**非零**時仍勝出（判別力）。
+
+    既有 TestDeductionOverrideRespected 的 B5 = 0（無 Attendance），override -1234 勝出
+    無法區分「override 生效」與「B5 剛好 0」。本測試 seed 非零 Attendance（1 筆遲到 →
+    B5 late = -50），再設 deduction_late_override="-1234" → 斷言 -1234（override 勝過
+    非零 B5），證明 override 路徑真正生效。
+    """
+
+    def test_override_beats_nonzero_b5(self, test_db_session):
+        db = test_db_session
+        cycle, emp, classroom = _seed(db)
+
+        from models.attendance import Attendance
+        from models.year_end import (
+            EmployeeYearEndSnapshot,
+            YearEndSettlementStatus,
+        )
+
+        # 非零 B5：1 筆遲到，落在民國 114 = 西元 2025 的扣款期間（Jan–Dec 2025）。
+        # 費率 late_deduction_per_time=50（seed BonusConfig）→ B5 late = -50。
+        db.add(
+            Attendance(
+                employee_id=emp.id,
+                attendance_date=date(2025, 6, 15),
+                is_late=True,
+            )
+        )
+
+        snap = EmployeeYearEndSnapshot(year_end_cycle_id=cycle.id, employee_id=emp.id)
+        db.add(snap)
+        db.flush()
+        st = YearEndSettlement(
+            year_end_cycle_id=cycle.id,
+            employee_id=emp.id,
+            snapshot_id=snap.id,
+            status=YearEndSettlementStatus.DRAFT,
+            calc_meta={"deduction_late_override": "-1234"},
+        )
+        db.add(st)
+        db.flush()
+        db.commit()
+
+        # 先驗證 B5 計算值確為非零 -50（判別力前提：override 勝過的是非零值，非 0）
+        from services.year_end.auto_derive.attendance_deductions import (
+            derive_attendance_deductions,
+        )
+
+        auto = derive_attendance_deductions(db, cycle, emp)
+        assert auto.late == _D(
+            "-50.00"
+        ), f"判別力前提：B5 應算出非零 -50，got {auto.late}"
+
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=True)
+        db.commit()
+
+        st = _settlement(db, cycle, emp)
+        assert st.deduction_late == _D(
+            "-1234.00"
+        ), f"override -1234 應勝過非零 B5(-50)，got {st.deduction_late}"

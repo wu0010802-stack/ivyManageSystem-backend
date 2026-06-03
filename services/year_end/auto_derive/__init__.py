@@ -56,7 +56,13 @@ class DeriveReport:
     warnings: list[str] = field(default_factory=list)
 
 
-def derive_all(db: Session, cycle: YearEndCycle) -> DeriveReport:
+def derive_all(
+    db: Session,
+    cycle: YearEndCycle,
+    *,
+    included_resigned_ids: "set[int] | None" = None,
+    skip_settlement_employee_ids: "set[int] | None" = None,
+) -> DeriveReport:
     """編排 ① ③ ④ ⑥ 四個 auto-derive，彙整成單一 DeriveReport。
 
     順序（**⑥ 必須在 ④ 之前**）：
@@ -69,6 +75,23 @@ def derive_all(db: Session, cycle: YearEndCycle) -> DeriveReport:
 
     ⑤a 考勤扣款**不在此**：它是 per-employee 純計算，由 B7 在 gather_deductions wiring。
 
+    ---------------------------------------------------------------------------
+    參數（P1-1 / P1-2，由 build_settlements 傳入；皆 default 空 → 行為不變）
+    ---------------------------------------------------------------------------
+    included_resigned_ids（P1-1 對齊 build 參與者）：build 的參與者 =
+      ACTIVE ∪ included_resigned_ids；①④ 依 head_teacher 已含離職班導，但 ③ 原僅
+      iterate ACTIVE → 離職但 included 的班導得 ①④ 卻無 ③，不一致。傳給 ③ 讓其參與者
+      也 = ACTIVE ∪ included_resigned_ids。**只 ③ 需要**（①④⑥ 依 target/班級資料，
+      與員工 is_active 無關）。
+
+    skip_settlement_employee_ids（P1-2 finalized drift 護欄）：本 cycle 所有「非 DRAFT」
+      settlement 的 employee_id 集合。①③④ 對「收款人」落此集合者**不寫/不覆寫** auto
+      item（①④ 收款人 = head_teacher_employee_id；③ = 員工本人；① 才藝老師段 = 各 art
+      emp_id）。理由：finalized settlement 在 build loop 開頭被 skip（金額凍結），若底層
+      ①③④ items 仍被覆寫 → 凍結總額與底層 items 漂移、稽核對不上。
+      **⑥ 不套此 guard**：⑥ 寫 ClassEnrollmentTarget（班級資料），finalized settlement
+      已凍結自身 class_returning_rate_* 欄，覆寫 target 對其無害。
+
     split-brain 註記（③ festival_diff）：derive_festival_diff 內部建
     ``SalaryEngine(load_from_db=True)``，會**自開 session** 讀 BonusConfig/級距等
     reference data。故 derive_all 的呼叫端（build_settlements refresh 階段）必須確保
@@ -80,28 +103,36 @@ def derive_all(db: Session, cycle: YearEndCycle) -> DeriveReport:
     本函式只 flush（各 derive 內部 flush）；由呼叫端 commit。idempotent。
     """
     report = DeriveReport()
+    skip_ids: set[int] = skip_settlement_employee_ids or set()
 
     # 1. ⑥ 班級舊生率（必須先於 ④，④ 讀 returning_student_rate）
+    #    ⑥ 不套 skip guard（寫班級資料，對 finalized settlement 無害；見 docstring）。
     ret = derive_returning_rate(db, cycle)
     report.fallback_classes += ret.fallback_classes
     report.written += ret.written
     report.warnings.extend(ret.warnings)
 
-    # 2. ① 才藝鼓勵（unmatched_count 來源）
-    aca = derive_after_class_award(db, cycle)
+    # 2. ① 才藝鼓勵（unmatched_count 來源）— skip 收款人（班導/才藝老師）為 finalized 者。
+    aca = derive_after_class_award(db, cycle, skip_employee_ids=skip_ids)
     report.unmatched_count += aca.unmatched_count
     report.written += aca.written
     report.skipped_manual += aca.skipped_manual
     report.warnings.extend(aca.warnings)
 
-    # 3. ③ 節慶差額（①/③ 順序不拘）
-    fd = derive_festival_diff(db, cycle)
+    # 3. ③ 節慶差額（①/③ 順序不拘）— 參與者對齊 build（含 included_resigned）；
+    #    skip 收款人（員工本人）為 finalized 者。
+    fd = derive_festival_diff(
+        db,
+        cycle,
+        included_resigned_ids=included_resigned_ids,
+        skip_employee_ids=skip_ids,
+    )
     report.written += fd.written
     report.skipped_manual += fd.skipped_manual
     report.warnings.extend(fd.warnings)
 
-    # 4. ④ 學期紅利（讀 ⑥ 寫入的 returning_student_rate）
-    sd = derive_semester_dividend(db, cycle)
+    # 4. ④ 學期紅利（讀 ⑥ 寫入的 returning_student_rate）— skip 收款人（班導）為 finalized 者。
+    sd = derive_semester_dividend(db, cycle, skip_employee_ids=skip_ids)
     report.written += sd.written
     report.skipped_manual += sd.skipped_manual
     report.warnings.extend(sd.warnings)

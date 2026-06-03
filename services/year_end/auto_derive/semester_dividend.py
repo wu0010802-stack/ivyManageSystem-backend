@@ -227,13 +227,21 @@ def _upsert_auto_item(
 
 
 def derive_semester_dividend(
-    db: Session, cycle: YearEndCycle
+    db: Session,
+    cycle: YearEndCycle,
+    *,
+    skip_employee_ids: "set[int] | None" = None,
 ) -> SemesterDividendReport:
     """推導 ④ 學期紅利 → upsert special_bonus_items（SEMESTER_DIVIDEND_FIRST/SECOND）。
 
     只 flush（由呼叫端 commit）。idempotent；手動筆不覆寫。逐 ClassEnrollmentTarget
     （FIRST/SECOND 各列各算），舊生率讀 returning_student_rate、才藝率現算 distinct。
+
+    skip_employee_ids（P1-2 finalized drift 護欄）：收款人（班導
+    head_teacher_employee_id）settlement 非 DRAFT（金額已凍結）→ **不寫/不覆寫**其
+    auto item，避免凍結總額與底層 items 漂移。
     """
+    skip_ids: set[int] = skip_employee_ids or set()
     report = SemesterDividendReport()
     academic_year = cycle.academic_year
 
@@ -267,6 +275,10 @@ def derive_semester_dividend(
                 f"班 classroom_id={tgt.classroom_id} "
                 f"(semester_first={tgt.semester_first}) 無班導，略過"
             )
+            continue
+
+        # P1-2：收款人（班導）settlement 非 DRAFT（凍結）→ 不寫其 auto item。
+        if tgt.head_teacher_employee_id in skip_ids:
             continue
 
         classroom = db.get(Classroom, tgt.classroom_id)
