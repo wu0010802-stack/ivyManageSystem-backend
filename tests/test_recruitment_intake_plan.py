@@ -12,7 +12,12 @@ from sqlalchemy.pool import StaticPool
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models.base import Base
-from models.classroom import ClassGrade, Student, LIFECYCLE_ENROLLED
+from models.classroom import (
+    ClassGrade,
+    Student,
+    LIFECYCLE_ENROLLED,
+    LIFECYCLE_WITHDRAWN,
+)
 from models.recruitment import RecruitmentVisit, GradeIntakeTarget
 
 
@@ -57,3 +62,136 @@ def test_model_columns_and_target_table(session):
     assert got.target_school_year == 115
     assert got.target_semester == 1
     assert session.query(GradeIntakeTarget).first().target_seats == 30
+
+
+from services.recruitment_intake_plan import compute_intake_plan
+
+
+def _grade(session, name, order):
+    g = ClassGrade(name=name, sort_order=order)
+    session.add(g)
+    session.flush()
+    return g
+
+
+def test_compute_intake_plan_counts(session):
+    mid = _grade(session, "中班", 2)
+    big = _grade(session, "大班", 3)
+    session.add(
+        GradeIntakeTarget(grade_id=mid.id, school_year=115, semester=1, target_seats=30)
+    )
+    session.flush()
+
+    # 2 筆已保留（未轉換）中班
+    for nm in ("甲", "乙"):
+        session.add(
+            RecruitmentVisit(
+                month="115.03",
+                child_name=nm,
+                has_deposit=True,
+                provisional_grade_id=mid.id,
+                target_school_year=115,
+                target_semester=1,
+                enrolled=False,
+            )
+        )
+    # 1 筆已轉換中班 visit + 對應 Student（不應再算進「保留」，要算「註冊」）
+    conv = RecruitmentVisit(
+        month="115.03",
+        child_name="丙",
+        has_deposit=True,
+        provisional_grade_id=mid.id,
+        target_school_year=115,
+        target_semester=1,
+        enrolled=True,
+    )
+    session.add(conv)
+    session.flush()
+    # 顯式給 student_id（nullable=False；正常由 before_flush listener 自動填，
+    # 此處顯式設定以免測試依賴 listener 內部行為）
+    session.add(
+        Student(
+            student_id="115T001",
+            name="丙",
+            enrollment_school_year=115,
+            enrollment_seq=1,
+            lifecycle_status=LIFECYCLE_ENROLLED,
+            recruitment_visit_id=conv.id,
+        )
+    )
+    session.flush()
+
+    rows = compute_intake_plan(session, school_year=115, semester=1)
+    by_grade = {r["grade_id"]: r for r in rows}
+
+    assert by_grade[mid.id]["reserved_count"] == 2
+    assert by_grade[mid.id]["enrolled_count"] == 1
+    assert by_grade[mid.id]["target_seats"] == 30
+    assert by_grade[mid.id]["remaining"] == 27  # 30 - 2 - 1
+    assert by_grade[mid.id]["over_capacity"] is False
+    # 大班無 target、無保留/註冊 → target 0、remaining 0
+    assert by_grade[big.id]["target_seats"] == 0
+    assert by_grade[big.id]["remaining"] == 0
+
+
+def test_over_capacity_flag(session):
+    mid = _grade(session, "中班", 2)
+    session.add(
+        GradeIntakeTarget(grade_id=mid.id, school_year=115, semester=1, target_seats=1)
+    )
+    for nm in ("甲", "乙"):
+        session.add(
+            RecruitmentVisit(
+                month="115.03",
+                child_name=nm,
+                has_deposit=True,
+                provisional_grade_id=mid.id,
+                target_school_year=115,
+                target_semester=1,
+                enrolled=False,
+            )
+        )
+    session.flush()
+    rows = {
+        r["grade_id"]: r
+        for r in compute_intake_plan(session, school_year=115, semester=1)
+    }
+    assert rows[mid.id]["over_capacity"] is True
+    assert rows[mid.id]["remaining"] == -1
+
+
+def test_terminal_lifecycle_excluded_from_enrolled(session):
+    """終態（退學/轉出/畢業）的 Student 不算進 enrolled。"""
+    mid = _grade(session, "中班", 2)
+    session.add(
+        GradeIntakeTarget(grade_id=mid.id, school_year=115, semester=1, target_seats=30)
+    )
+    conv = RecruitmentVisit(
+        month="115.03",
+        child_name="退",
+        has_deposit=True,
+        provisional_grade_id=mid.id,
+        target_school_year=115,
+        target_semester=1,
+        enrolled=True,
+    )
+    session.add(conv)
+    session.flush()
+    session.add(
+        Student(
+            student_id="115T009",
+            name="退",
+            enrollment_school_year=115,
+            enrollment_seq=9,
+            lifecycle_status=LIFECYCLE_WITHDRAWN,
+            recruitment_visit_id=conv.id,
+        )
+    )
+    session.flush()
+    rows = {
+        r["grade_id"]: r
+        for r in compute_intake_plan(session, school_year=115, semester=1)
+    }
+    assert rows[mid.id]["enrolled_count"] == 0
+    assert rows[mid.id]["reserved_count"] == 0  # enrolled=True 不算保留
+    assert rows[mid.id]["remaining"] == 30
