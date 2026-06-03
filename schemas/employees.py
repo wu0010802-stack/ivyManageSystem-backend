@@ -81,6 +81,9 @@ class EmployeeOut(IvyBaseModel):
     address: Optional[str] = None  # pii-allow: 員工居住地址
     emergency_contact_name: Optional[str] = None  # pii-allow: 緊急聯絡人
     emergency_contact_phone: Optional[str] = None  # pii-allow: 緊急聯絡人電話
+    gender: Optional[str] = None  # pii-allow: 員工性別（admin 端記錄用，個人資料）
+    email: Optional[str] = None  # pii-allow: 員工聯絡 Email
+    insurance_effective_date: Optional[str] = None
     dependents: Optional[int] = None  # pii-allow: 扶養親屬數量（影響稅務/保險計算）
 
     # 特殊狀態旗標
