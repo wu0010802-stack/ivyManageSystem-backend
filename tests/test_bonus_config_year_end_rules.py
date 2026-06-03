@@ -186,9 +186,14 @@ def test_bonus_config_dividend_thresholds_defaults(session):
 
 
 def test_bonus_config_deduction_defaults(session):
-    """考勤扣款欄位未傳值時套用 model default。"""
+    """考勤扣款欄位未傳值時套用 model default。
+
+    B5（2026-06-02）：late default 100→50（Excel 年終遲到一覽表 -50/次）；
+    新增 missing_punch_deduction_per_time default 50。
+    """
     cfg = make_bonus_config(session)
-    assert cfg.late_deduction_per_time == 100
+    assert cfg.late_deduction_per_time == 50
+    assert cfg.missing_punch_deduction_per_time == 50
     assert cfg.personal_leave_deduction_per_day == 500
     assert cfg.sick_leave_deduction_per_day == 500
 

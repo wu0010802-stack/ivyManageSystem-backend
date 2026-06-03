@@ -165,8 +165,14 @@ class BonusConfig(Base):
     late_deduction_per_time = Column(
         Float,
         nullable=True,
-        default=100,
-        comment="遲到每次扣年終款（預設 100 元）",
+        default=50,
+        comment="遲到每次扣年終款（年終定額罰則，預設 50 元；Excel 遲到一覽表）",
+    )
+    missing_punch_deduction_per_time = Column(
+        Float,
+        nullable=True,
+        default=50,
+        comment="未打卡每次扣年終款（年終定額罰則，預設 50 元；Excel 遲到一覽表）",
     )
     personal_leave_deduction_per_day = Column(
         Float,

@@ -67,6 +67,7 @@ _BONUS_FIELDS = [
     "dividend_activity_threshold",
     "dividend_activity_amount",
     "late_deduction_per_time",
+    "missing_punch_deduction_per_time",
     "personal_leave_deduction_per_day",
     "sick_leave_deduction_per_day",
     "after_class_award_unit_price",
@@ -110,6 +111,7 @@ class BonusConfigUpdate(BaseModel):
     dividend_activity_threshold: Optional[float] = Field(None, ge=0, le=1)
     dividend_activity_amount: Optional[float] = Field(None, ge=0)
     late_deduction_per_time: Optional[float] = Field(None, ge=0, le=50000)
+    missing_punch_deduction_per_time: Optional[float] = Field(None, ge=0, le=50000)
     personal_leave_deduction_per_day: Optional[float] = Field(None, ge=0, le=50000)
     sick_leave_deduction_per_day: Optional[float] = Field(None, ge=0, le=50000)
     after_class_award_unit_price: Optional[dict] = Field(
@@ -178,6 +180,7 @@ def get_bonus_config(
             "dividend_activity_threshold": config.dividend_activity_threshold,
             "dividend_activity_amount": config.dividend_activity_amount,
             "late_deduction_per_time": config.late_deduction_per_time,
+            "missing_punch_deduction_per_time": config.missing_punch_deduction_per_time,
             "personal_leave_deduction_per_day": config.personal_leave_deduction_per_day,
             "sick_leave_deduction_per_day": config.sick_leave_deduction_per_day,
             "after_class_award_unit_price": config.after_class_award_unit_price,
