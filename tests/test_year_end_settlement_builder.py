@@ -467,12 +467,17 @@ class TestBuildSettlementsGoldReconciliation:
         # 此時 total = payable(30944.71) + special(11062) = 42006.71（扣項 0）
         assert st.total_amount == _D("42006.71")
 
-        # 種人工扣項：機構會議 -1000、遲到早退 -900（合計 -1900）
-        st.deduction_meeting = _D("-1000")
-        st.deduction_late = _D("-900")
+        # 種人工扣項：機構會議 -1000、遲到早退 -900（合計 -1900）。
+        # B7（⑤a wiring）後 meeting/late 4 欄改由 B5 重算（此 seed 無 Attendance/Meeting → 0），
+        # 手動值須走 calc_meta override path（deduction_<x>_override）才存活，對齊 prod 手填語意。
+        st.calc_meta = {
+            **(st.calc_meta or {}),
+            "deduction_meeting_override": "-1000",
+            "deduction_late_override": "-900",
+        }
         db.flush()
 
-        # 第二次 build：gather_deductions 讀回手動扣項 → 應對齊 Excel
+        # 第二次 build：gather_deductions 採 override → 應對齊 Excel
         sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
         st = _get_settlement(db, cycle, emp)
 
@@ -1121,14 +1126,19 @@ class TestGuoWenxiuPartialYearReconciliation:
         st = _get_settlement(db, cycle, emp)
 
         # ── 植入人工扣項（兩段 build 模式，對齊蔡宜倩扣項測試）──
-        st.deduction_personal_leave = _D("-1000")
-        st.deduction_sick_leave = _D("-7500")
-        st.deduction_late = _D("-1600")
-        # ── 植入 hire_months_override=10（產假排除後民國年 10 個月）──
-        st.calc_meta = {**(st.calc_meta or {}), "hire_months_override": "10"}
+        # B7（⑤a wiring）後 personal_leave/sick_leave/late 改由 B5 重算（此 seed 無
+        # Attendance/Leave → 0），手動值須走 calc_meta override path 才存活。
+        # ── 同時植入 hire_months_override=10（產假排除後民國年 10 個月）──
+        st.calc_meta = {
+            **(st.calc_meta or {}),
+            "hire_months_override": "10",
+            "deduction_personal_leave_override": "-1000",
+            "deduction_sick_leave_override": "-7500",
+            "deduction_late_override": "-1600",
+        }
         db.flush()
 
-        # 第二次 re-build：讀回扣項 + hire_months_override → 完整對帳
+        # 第二次 re-build：採 override 扣項 + hire_months_override → 完整對帳
         sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
         db.expire(st)
         st = _get_settlement(db, cycle, emp)

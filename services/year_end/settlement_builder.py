@@ -180,8 +180,12 @@ def resolve_org_achievement_rate(
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select, text
+
+if TYPE_CHECKING:
+    from services.year_end.auto_derive import DeriveReport
 
 from models.employee import Employee
 from models.year_end import (
@@ -452,6 +456,11 @@ def gather_performance_rates(
     class_ret_first = class_ret_second = None
 
     if _has_class_role(emp):
+        # B7 ⑥ 畢業班 fallback：班導有帶班角色但查不到對應 ClassEnrollmentTarget
+        # （班級已畢業/班導已離職 → 無 target row）時，class_returning_rate 用「全校
+        # 舊生率 × 100」而非 None（Excel footnote：114/07 畢業班老師舊生率依全校為主）。
+        # 全校率只在「至少一學期無 target」時才需要 → 迴圈內 lazy 取一次（None 表已快取）。
+        _school_wide_ret = _SENTINEL = object()
         for semester_first in (True, False):
             ct = db.scalar(
                 select(ClassEnrollmentTarget).where(
@@ -461,6 +470,20 @@ def gather_performance_rates(
                 )
             )
             if ct is None:
+                # 畢業班 fallback：class_returning_rate 用全校舊生率 ×100；
+                # class_performance_rate 維持 None（無班無經營績效）。helper 回 None → 維持 None。
+                if _school_wide_ret is _SENTINEL:
+                    from services.year_end.auto_derive.returning_rate import (
+                        school_wide_returning_rate,
+                    )
+
+                    _school_wide_ret = school_wide_returning_rate(db, cycle)
+                if _school_wide_ret is not None:
+                    ret_fb = _school_wide_ret * Decimal("100")
+                    if semester_first:
+                        class_ret_first = ret_fb
+                    else:
+                        class_ret_second = ret_fb
                 continue
             perf = Decimal(str(ct.class_performance_rate))
             ret = Decimal(str(ct.returning_student_rate)) * Decimal("100")
@@ -480,32 +503,77 @@ def gather_performance_rates(
 
 
 def gather_deductions(db: Session, cycle: YearEndCycle, emp: Any) -> DeductionBreakdown:
-    """Phase 1：扣項為人工維護值，從既有 YearEndSettlement 讀回（無則全 0）。
+    """組 DeductionBreakdown（B7 ⑤a wiring）。
 
-    重跑 build 時可保留 HR 手動填入的扣款（再 upsert 時這些欄位不被歸零）。
+    分兩類扣項：
+
+    **自動計算（4 欄，B5 ⑤a）**：meeting / personal_leave / sick_leave / late_early
+    一律由 ``derive_attendance_deductions(db, cycle, emp)`` 重算（Excel 年終定額罰則：
+    遲到/未打卡/事假/病假/會議缺席）。B5 回**負值**，與 engine 慣例一致
+    （compute_deduction_total 直接 Σ、payable = subtotal + deduction_total 相加），
+    **直接填入 DeductionBreakdown，不可再取負**。
+      - **override 優先**：若既有 settlement 的 ``calc_meta`` 有對應
+        ``deduction_<x>_override`` key（deduction_meeting_override /
+        deduction_personal_leave_override / deduction_sick_leave_override /
+        deduction_late_override）→ 採 override 值（防禦/未來；目前無 endpoint 設這些 key）。
+        以 ``is not None`` 判定（非 truthiness），讓 override="0" 也被尊重。值存字串。
+
+    **維持讀回既有值（2 欄，B5 不碰）**：
+      - leave_late_prev（deduction_leave_late，去年底前合併）
+      - disciplinary（deduction_disciplinary，手動獎懲，如大過 -6000）
+    這是 override 回歸的關鍵：HR 手填的 disciplinary 必須跨 re-build 存活。
+
     對應：
-      deduction_leave_late  → leave_late_prev
-      deduction_disciplinary → disciplinary
-      deduction_meeting     → meeting
-      deduction_personal_leave → personal_leave
-      deduction_sick_leave  → sick_leave
-      deduction_late        → late_early
+      deduction_leave_late      → leave_late_prev   （讀回既有）
+      deduction_disciplinary    → disciplinary      （讀回既有）
+      deduction_meeting         → meeting           （B5 / override）
+      deduction_personal_leave  → personal_leave    （B5 / override）
+      deduction_sick_leave      → sick_leave        （B5 / override）
+      deduction_late            → late_early        （B5 / override）
     """
+    from services.year_end.auto_derive.attendance_deductions import (
+        derive_attendance_deductions,
+    )
+
     existing = db.scalar(
         select(YearEndSettlement).where(
             YearEndSettlement.year_end_cycle_id == cycle.id,
             YearEndSettlement.employee_id == emp.id,
         )
     )
+
+    # B5 自動扣款（per-employee；負值或 0）
+    auto = derive_attendance_deductions(db, cycle, emp)
+
+    calc_meta = (existing.calc_meta or {}) if existing is not None else {}
+
+    def _resolve(meta_key: str, auto_value: Decimal) -> Decimal:
+        """override（calc_meta[meta_key]）優先；否則用 B5 計算值。
+
+        以 is not None 判定（非 truthiness），讓 override="0" 也被尊重。
+        """
+        override = calc_meta.get(meta_key)
+        if override is not None:
+            return Decimal(str(override))
+        return auto_value
+
+    # 讀回既有（B5 不碰）：leave_late_prev / disciplinary
     if existing is None:
-        return DeductionBreakdown()
+        leave_late_prev = Decimal("0")
+        disciplinary = Decimal("0")
+    else:
+        leave_late_prev = Decimal(str(existing.deduction_leave_late or 0))
+        disciplinary = Decimal(str(existing.deduction_disciplinary or 0))
+
     return DeductionBreakdown(
-        leave_late_prev=Decimal(str(existing.deduction_leave_late or 0)),
-        disciplinary=Decimal(str(existing.deduction_disciplinary or 0)),
-        meeting=Decimal(str(existing.deduction_meeting or 0)),
-        personal_leave=Decimal(str(existing.deduction_personal_leave or 0)),
-        sick_leave=Decimal(str(existing.deduction_sick_leave or 0)),
-        late_early=Decimal(str(existing.deduction_late or 0)),
+        leave_late_prev=leave_late_prev,
+        disciplinary=disciplinary,
+        meeting=_resolve("deduction_meeting_override", auto.meeting),
+        personal_leave=_resolve(
+            "deduction_personal_leave_override", auto.personal_leave
+        ),
+        sick_leave=_resolve("deduction_sick_leave_override", auto.sick_leave),
+        late_early=_resolve("deduction_late_override", auto.late),
     )
 
 
@@ -518,6 +586,9 @@ def gather_deductions(db: Session, cycle: YearEndCycle, emp: Any) -> DeductionBr
 class BuildResult:
     built: int = 0
     skipped_finalized: int = 0  # skipped because already signed or finalized (non-DRAFT)
+    # B7：refresh_rates=True 時帶回 auto_derive 編排結果（unmatched/fallback 提醒用）；
+    # refresh_rates=False（不跑 derive_all）時為 None。型別 auto_derive.DeriveReport。
+    derive_report: "DeriveReport | None" = None
 
 
 def _is_postgres(db: Session) -> bool:
@@ -557,8 +628,17 @@ def build_settlements(
     if cycle is None:
         raise ValueError(f"找不到 academic_year={academic_year} 的 YearEndCycle")
 
+    derive_report = None
     if refresh_rates:
         refresh_enrollment_rates(db, cycle)
+        # B7：refresh 階段（refresh_rates=True）才跑 auto_derive 編排（① ③ ④ ⑥）。
+        # 必須在 per-employee loop 之前——loop 內 gather_performance_rates 讀 ⑥ 寫的
+        # returning_student_rate、special_total sum 讀 ① ③ ④ 寫的 special_bonus_items。
+        # 內部 SalaryEngine(load_from_db=True) 自開 session 讀 BonusConfig：呼叫端須確保
+        # reference data 已 committed/一致（正常 HR 流程 config 早於 build 已 commit）。
+        from services.year_end.auto_derive import derive_all
+
+        derive_report = derive_all(db, cycle)
 
     # 參與者：ACTIVE ∪ included_resigned_ids
     employees = list(
@@ -574,7 +654,7 @@ def build_settlements(
                 employees.append(e)
                 seen_ids.add(e.id)
 
-    result = BuildResult()
+    result = BuildResult(derive_report=derive_report)
 
     # Fix 3: 職位薪資標準只載入一次，避免每位員工重建 SalaryEngine + 查一次 DB
     _standards = load_position_salary_standards(db)
@@ -686,7 +766,7 @@ def build_settlements(
         # step 3
         existing.org_achievement_rate = org_rate
         existing.subtotal_amount = computed.subtotal_amount
-        # step 4（人工扣項：保留 gather_deductions 讀回的值）
+        # step 4（扣項：自動 4 欄由 B5 ⑤a 重算/override；leave_late_prev/disciplinary 讀回既有；見 gather_deductions）
         existing.deduction_leave_late = deductions.leave_late_prev
         existing.deduction_disciplinary = deductions.disciplinary
         existing.deduction_meeting = deductions.meeting
