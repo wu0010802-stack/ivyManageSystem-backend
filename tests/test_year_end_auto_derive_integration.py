@@ -388,3 +388,74 @@ class TestDeriveReportSurfaces:
         assert res.derive_report is not None
         assert res.derive_report.unmatched_count >= 0
         assert res.derive_report.fallback_classes >= 0
+
+
+class TestGraduatedClassSchoolWideFallback:
+    """Part 2c：帶班角色但無對應 ClassEnrollmentTarget（畢業班/班導已離職）→
+    class_returning_rate 用全校舊生率 × 100；helper 回 None → 維持 None。
+
+    直接測 gather_performance_rates（refresh_rates=False 路徑，不觸 derive_all），
+    隔離 2c 邏輯。seed 全校：OrgYearSettings(target=20) + 4 在籍生（sy 113×3/114×1）
+    → school_wide_returning_rate = 3/20 = 0.150 → ×100 = 15.0。
+    """
+
+    def _grad_teacher(self, db, cycle):
+        """建一名「畢業班老師」：head_teacher_ab 角色（_has_class_role True），
+        但無任何 head_teacher_employee_id 指向他的 ClassEnrollmentTarget。"""
+        emp = Employee(
+            employee_id="E_GRAD",
+            name="畢業班老師",
+            position="班導",
+            bonus_grade="b",
+            title="幼兒園教師",
+            base_salary=36160,
+            bypass_standard_base=False,
+            is_active=True,
+            hire_date=date(2018, 1, 1),
+        )
+        db.add(emp)
+        db.flush()
+        return emp
+
+    def test_grad_class_uses_school_wide_returning_rate(self, test_db_session):
+        db = test_db_session
+        cycle, _tsai, _classroom = _seed(db)
+        grad = self._grad_teacher(db, cycle)
+
+        # 確認 _has_class_role 為 True 且確實無對應 target（fallback 前提）
+        assert sb._has_class_role(grad) is True
+        rates = sb.gather_performance_rates(db, cycle, grad)
+
+        # 全校舊生率 3/20 = 0.150 → ×100 = 15.0；上下學期皆 fallback
+        assert rates.class_returning_rate_first == _D("15.000")
+        assert rates.class_returning_rate_second == _D("15.000")
+        # 無班 → 經營績效維持 None
+        assert rates.class_performance_rate_first is None
+        assert rates.class_performance_rate_second is None
+
+    def test_grad_class_helper_none_stays_none(self, test_db_session):
+        db = test_db_session
+        cycle, _tsai, _classroom = _seed(db)
+        grad = self._grad_teacher(db, cycle)
+
+        # 讓 school_wide_returning_rate 回 None：刪掉 OrgYearSettings(semester_first=True)
+        # （helper：OrgYearSettings 列缺 → None）
+        org_first = db.scalar(
+            select(OrgYearSettings).where(
+                OrgYearSettings.year_end_cycle_id == cycle.id,
+                OrgYearSettings.semester_first == True,  # noqa: E712
+            )
+        )
+        db.delete(org_first)
+        db.flush()
+
+        from services.year_end.auto_derive.returning_rate import (
+            school_wide_returning_rate,
+        )
+
+        assert school_wide_returning_rate(db, cycle) is None  # 前提：helper 回 None
+
+        rates = sb.gather_performance_rates(db, cycle, grad)
+        # helper None → fallback 不寫，class_returning_rate 維持 None
+        assert rates.class_returning_rate_first is None
+        assert rates.class_returning_rate_second is None
