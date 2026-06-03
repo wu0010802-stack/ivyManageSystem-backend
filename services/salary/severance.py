@@ -22,6 +22,11 @@
 
 from datetime import date
 
+# 新制資遣費係數（勞工退休金條例第 12 條）：
+# 每滿 1 年發給 0.5 個月平均工資，最高以 6 個月為限。
+SEVERANCE_NEW_MONTHS_PER_YEAR = 0.5
+SEVERANCE_NEW_MAX_MONTHS = 6.0
+
 
 def calculate_service_years(hire_date: date, end_date: date) -> float:
     """年資（小數年）。離職日早於到職日回傳 0。"""
@@ -49,7 +54,9 @@ def calculate_severance_pay_new(service_years: float, avg_monthly_wage: float) -
     """新制資遣費（勞退條例第 12 條）：每滿 1 年 0.5 個月，上限 6 個月。"""
     if service_years <= 0 or avg_monthly_wage <= 0:
         return 0.0
-    months = min(service_years * 0.5, 6.0)
+    months = min(
+        service_years * SEVERANCE_NEW_MONTHS_PER_YEAR, SEVERANCE_NEW_MAX_MONTHS
+    )
     return avg_monthly_wage * months
 
 
