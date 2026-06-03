@@ -617,11 +617,11 @@ class TestTermChangeIntegration:
         db_session.add_all([new_row, legacy_row])
         db_session.flush()
 
-        found = _resolve_quota_row(db_session, emp.id, "annual")
+        found = _resolve_quota_row(db_session, emp.id, "annual", target_date=date(2026, 9, 1))
         assert found.id == new_row.id  # 學年優先
 
         # 刪掉 school_year row → fallback 西元年
         db_session.delete(new_row)
         db_session.flush()
-        fallback = _resolve_quota_row(db_session, emp.id, "annual")
+        fallback = _resolve_quota_row(db_session, emp.id, "annual", target_date=date(2026, 9, 1))
         assert fallback.id == legacy_row.id

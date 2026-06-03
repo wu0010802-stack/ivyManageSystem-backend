@@ -57,37 +57,13 @@ def resolve_current_academic_term(
 ) -> tuple[int, int]:
     """決定當前學年/學期（民國年）。
 
-    優先順序：
-    1. 若顯式傳 target_date → 純日期推算（不查 DB）
-    2. 否則查 AcademicTerm.is_current=true，找到就用該 row
-    3. 找不到 → fallback _resolve_by_date(today_taipei()) + logger.warning
-
-    session: caller 已有 session 就傳進來避免 reconnect；不傳則內部開短命 session。
+    學期是「今天日期」的純函數（上學期 8/1–隔年1/31、下學期 2/1–7/31），
+    不再讀 AcademicTerm.is_current；is_current 僅供 turnover 排程器當結轉標記。
+    session 參數保留以維持既有呼叫相容，但不再使用。
     """
-    if target_date is not None:
-        return _resolve_by_date(target_date)
-
-    # lazy import 避免 circular（models → utils → models）
-    from models.academic_term import AcademicTerm
-    from models.base import get_session
-
-    sess = session
-    owned = False
-    if sess is None:
-        sess = get_session()
-        owned = True
-    try:
-        row = sess.query(AcademicTerm).filter(AcademicTerm.is_current.is_(True)).first()
-        if row:
-            return row.school_year, row.semester
-        logger.warning(
-            "AcademicTerm.is_current 未設定，resolve_current_academic_term() "
-            "fallback 到日期推算（請至 /academic-terms UI 設定當前學期）"
-        )
-        return _resolve_by_date(today_taipei())
-    finally:
-        if owned:
-            sess.close()
+    return _resolve_by_date(
+        target_date if target_date is not None else today_taipei()
+    )
 
 
 def default_current_academic_term_for_column() -> tuple[int, int]:
