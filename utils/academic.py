@@ -36,6 +36,21 @@ def _resolve_by_date(target_date: date) -> tuple[int, int]:
     return target_date.year - 1 - 1911, 1
 
 
+def term_bounds(school_year: int, semester: int) -> tuple[date, date]:
+    """由民國學年 + 學期回推固定起訖日（學期日期是日期的純函數，無需設定）。
+
+    - 上學期（semester=1）：8/1 ~ 隔年 1/31
+    - 下學期（semester=2）：2/1 ~ 同年 7/31
+    西元 = 民國學年 + 1911。
+    """
+    base = school_year + 1911
+    if semester == 1:
+        return date(base, 8, 1), date(base + 1, 1, 31)
+    if semester == 2:
+        return date(base + 1, 2, 1), date(base + 1, 7, 31)
+    raise ValueError(f"semester must be 1 or 2, got {semester}")
+
+
 def resolve_current_academic_term(
     target_date: Optional[date] = None,
     session: Optional[Session] = None,
