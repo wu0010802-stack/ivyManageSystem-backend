@@ -430,6 +430,13 @@ class SalaryEngine:
                 "health_rate": self.insurance_service.health_rate,
                 "health_employee_ratio": self.insurance_service.health_employee_ratio,
                 "health_employer_ratio": self.insurance_service.health_employer_ratio,
+                # 二代健保補充保費費率/門檻：_apply_configs_for_month 會經
+                # update_rates_from_db 寫入該月版本，必須快照才能在離開
+                # config_for_month 時還原，否則歷史月重算後洩漏到 singleton。
+                "supplementary_health_rate": self.insurance_service.supplementary_health_rate,
+                "supplementary_health_threshold": (
+                    self.insurance_service.supplementary_health_threshold
+                ),
                 "pension_employer_rate": self.insurance_service.pension_employer_rate,
                 "average_dependents": self.insurance_service.average_dependents,
                 "labor_max_insured": self.insurance_service.labor_max_insured,
@@ -3131,7 +3138,18 @@ class SalaryEngine:
                 )
                 session.add(salary_record)
 
+            from services.salary.utils import (
+                snapshot_ytd_bonus,
+                mark_stale_if_ytd_bonus_changed,
+            )
+
+            _before_bonus = snapshot_ytd_bonus(salary_record)
             _fill_salary_record(salary_record, breakdown, self, session=session)
+            # 重算改變 YTD 累計獎金 → cascade 標同年後月 stale（補充保費 ytd_before 失準）。
+            # from_month=month+1：當月已連同當月補充保費重算、自身正確（見 helper docstring）。
+            mark_stale_if_ytd_bonus_changed(
+                session, emp.id, year, month, _before_bonus, salary_record
+            )
             session.flush()  # 取得 salary_record.id 供 discipline mark applied 用
 
             # 發放月才會有 period 累積 → 此時 mark applied pending 懲處
@@ -3154,7 +3172,13 @@ class SalaryEngine:
                     .first()
                 )
                 self._check_not_finalized(salary_record, emp.name, year, month)
+                # retry 也必須 cascade（snapshot→fill→mark 在「每次」commit 前），
+                # 否則 IntegrityError 重試路徑會靜默跳過後月 stale 傳播。
+                _before_bonus = snapshot_ytd_bonus(salary_record)
                 _fill_salary_record(salary_record, breakdown, self, session=session)
+                mark_stale_if_ytd_bonus_changed(
+                    session, emp.id, year, month, _before_bonus, salary_record
+                )
                 session.flush()
                 self._mark_discipline_applied(
                     session, emp.id, year, month, salary_record.id
@@ -3891,12 +3915,23 @@ class SalaryEngine:
             )
             session.add(salary_record)
 
+        from services.salary.utils import (
+            snapshot_ytd_bonus,
+            mark_stale_if_ytd_bonus_changed,
+        )
+
+        _before_bonus = snapshot_ytd_bonus(salary_record)
         _fill_salary_record(
             salary_record,
             breakdown,
             self,
             session=session,
             pending_logs=preload.pending_payout_by_emp.get(emp.id, []),
+        )
+        # 重算改變 YTD 累計獎金 → cascade 標同年後月 stale（與 single 路徑對齊）。
+        # cascade 的 UPDATE 在本員工 SAVEPOINT 內，隨外層 commit 原子落地。
+        mark_stale_if_ytd_bonus_changed(
+            session, emp.id, year, month, _before_bonus, salary_record
         )
         # 發放月：record 寫入後標記 pending 懲處為已抵扣（與 single 路徑對齊）。
         # flush 取得 salary_record.id；非發放月 _mark_discipline_applied 自動 no-op。

@@ -10,7 +10,9 @@ from models.database import (
     AnnouncementParentRecipient,
     Employee,
 )
-from services.announcement_publish_scheduler import tick
+from services.announcement_publish_scheduler import _initial_watermark, tick
+from utils.scheduler_watermark import get_watermark, set_watermark
+from utils.taipei_time import now_taipei_naive
 
 
 @pytest.fixture
@@ -75,3 +77,54 @@ def test_tick_idempotent_within_same_window(test_db_session, admin_emp):
     assert c1 == 1
     assert c2 == 0
     assert mock_fire.call_count == 1
+
+
+# ───────── watermark 持久化（重啟漏推 bug 回歸） ─────────
+
+
+def test_initial_watermark_uses_persisted_value(test_db_session):
+    """重啟後 seed 必須讀回持久化游標，而非用 now()。
+
+    這是漏推 bug 的根因：run loop 啟動把游標初始化成 now()，於是
+    (舊游標, now] 窗口內排程的公告永久不會推。修復後 seed 須來自 DB。
+    """
+    set_watermark(
+        test_db_session, "announcement_publish", datetime(2026, 5, 29, 7, 0, 0)
+    )
+    test_db_session.commit()
+
+    assert _initial_watermark(test_db_session) == datetime(2026, 5, 29, 7, 0, 0)
+
+
+def test_initial_watermark_falls_back_to_now_when_unset(test_db_session):
+    """首次啟動（無持久化游標）fallback now()，避免重推所有歷史排程公告。"""
+    before = now_taipei_naive()
+    seeded = _initial_watermark(test_db_session)
+    after = now_taipei_naive()
+
+    assert before <= seeded <= after
+
+
+def test_tick_persists_watermark_atomically(test_db_session, admin_emp):
+    """tick 推進游標須與 enqueue 同事務落地，重啟後可從 DB 讀回。"""
+    now = datetime(2026, 5, 29, 8, 0, 0)
+    last = datetime(2026, 5, 29, 7, 59, 0)
+    _mk_ann(test_db_session, admin_emp.id, datetime(2026, 5, 29, 7, 59, 30))
+    test_db_session.commit()
+
+    with patch("services.announcement_publish_scheduler._fire_announcement_push"):
+        tick(test_db_session, now=now, last_dispatched_at=last)
+
+    assert get_watermark(test_db_session, "announcement_publish") == now
+
+
+def test_tick_advances_watermark_even_with_no_rows(test_db_session):
+    """空窗口也要推進游標，否則重啟 seed 用舊游標會重推之後所有公告。"""
+    now = datetime(2026, 5, 29, 8, 0, 0)
+    last = datetime(2026, 5, 29, 7, 59, 0)
+
+    with patch("services.announcement_publish_scheduler._fire_announcement_push"):
+        count = tick(test_db_session, now=now, last_dispatched_at=last)
+
+    assert count == 0
+    assert get_watermark(test_db_session, "announcement_publish") == now
