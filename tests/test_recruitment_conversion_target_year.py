@@ -59,3 +59,24 @@ def test_falls_back_to_current_term_when_no_target(session):
     session.commit()
     student = session.query(Student).get(result.student_id)
     assert student.enrollment_school_year == cur_year
+
+
+def test_no_target_changelog_uses_current_semester(session):
+    """no-target 轉換的 ChangeLog 學年/學期應為當前值，不被 target_semester 殘值污染。"""
+    from utils.academic import resolve_current_academic_term
+    from models.student_log import StudentChangeLog
+
+    cur_year, cur_sem = resolve_current_academic_term()
+    v = RecruitmentVisit(month="115.03", child_name="丁", has_deposit=True)
+    session.add(v)
+    session.commit()
+    result = convert_recruitment_to_student(session, recruitment_visit_id=v.id)
+    session.commit()
+    log = (
+        session.query(StudentChangeLog)
+        .filter_by(student_id=result.student_id, event_type="入學")
+        .first()
+    )
+    assert log is not None
+    assert log.school_year == cur_year
+    assert log.semester == cur_sem

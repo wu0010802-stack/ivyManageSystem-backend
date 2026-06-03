@@ -60,7 +60,9 @@ class RecruitmentVisit(Base):
         Integer, ForeignKey("class_grades.id", ondelete="SET NULL"), nullable=True
     )  # 暫定年級
     target_school_year = Column(Integer, nullable=True)  # 目標學年（民國，如 115）
-    target_semester = Column(Integer, nullable=True, default=1)  # 目標學期（1=上）
+    target_semester = Column(
+        Integer, nullable=True
+    )  # 目標學期（1=上）；無預設，未保留座位時為 NULL
 
     created_at = Column(DateTime, default=now_taipei_naive)
     updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)

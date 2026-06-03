@@ -85,10 +85,14 @@ def convert_recruitment_to_student(
     from services.student_numbering import next_enrollment_seq
 
     cur_year, cur_sem = resolve_current_academic_term()
-    enroll_year = (
-        visit.target_school_year if visit.target_school_year is not None else cur_year
-    )
-    enroll_sem = visit.target_semester if visit.target_semester is not None else cur_sem
+    if visit.target_school_year is not None:
+        enroll_year = visit.target_school_year
+        enroll_sem = (
+            visit.target_semester if visit.target_semester is not None else cur_sem
+        )
+    else:
+        enroll_year = cur_year
+        enroll_sem = cur_sem
     seq = next_enrollment_seq(session, enroll_year)
 
     enroll_date = enrollment_date or today_taipei()
