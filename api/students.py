@@ -1504,9 +1504,8 @@ def create_guardian(
 ):
     session = get_session()
     try:
-        student = session.query(Student).filter(Student.id == student_id).first()
-        if student is None:
-            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        # F-025 班級 scope 守衛：與 list_guardians 對齊，class-scoped 角色不可跨班新增家長
+        student = assert_student_access(session, current_user, student_id)
 
         # 若設為主要聯絡人，先將其他主要聯絡人降級
         if item.is_primary:
@@ -1554,6 +1553,9 @@ def update_guardian(
         )
         if guardian is None:
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
+
+        # F-025 班級 scope 守衛：以 guardian 所屬學生判定，class-scoped 角色不可跨班改寫
+        assert_student_access(session, current_user, guardian.student_id)
 
         data = item.model_dump(exclude_unset=True)
         # 驗證 relation
@@ -1609,6 +1611,9 @@ def delete_guardian(
         )
         if guardian is None:
             raise HTTPException(status_code=404, detail="監護人不存在或已刪除")
+
+        # F-025 班級 scope 守衛：以 guardian 所屬學生判定，class-scoped 角色不可跨班刪除
+        assert_student_access(session, current_user, guardian.student_id)
 
         guardian.deleted_at = now_taipei_naive()
         mark_soft_delete(request, "guardian", guardian.name or str(guardian_id))
