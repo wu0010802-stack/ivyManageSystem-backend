@@ -54,6 +54,13 @@ class RecruitmentVisit(Base):
         String(30), nullable=True
     )  # 預計就讀月份標籤，create/update 時自動計算
 
+    # --- 暫定編班（保留座位；綁年級+目標學年，不綁具體班級 row） ---
+    provisional_grade_id = Column(
+        Integer, ForeignKey("class_grades.id", ondelete="SET NULL"), nullable=True
+    )  # 暫定年級
+    target_school_year = Column(Integer, nullable=True)  # 目標學年（民國，如 115）
+    target_semester = Column(Integer, nullable=True, default=1)  # 目標學期（1=上）
+
     created_at = Column(DateTime, default=now_taipei_naive)
     updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
@@ -66,6 +73,12 @@ class RecruitmentVisit(Base):
         Index("ix_rv_referrer_grade", "referrer", "grade"),
         Index("ix_rv_month_has_deposit", "month", "has_deposit"),
         Index("ix_rv_expected_start_label", "expected_start_label"),
+        Index(
+            "ix_rv_target_grade",
+            "target_school_year",
+            "target_semester",
+            "provisional_grade_id",
+        ),
     )
 
 
@@ -306,4 +319,30 @@ class RecruitmentEventLog(Base):
         ),
         Index("ix_recruitment_event_log_event_type", "event_type"),
         Index("ix_recruitment_event_log_actor", "actor_user_id"),
+    )
+
+
+class GradeIntakeTarget(Base):
+    """各年級各學年的招生「計畫名額」（名額規劃面板的 target 來源）。"""
+
+    __tablename__ = "grade_intake_targets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    grade_id = Column(
+        Integer, ForeignKey("class_grades.id", ondelete="CASCADE"), nullable=False
+    )
+    school_year = Column(Integer, nullable=False)  # 民國學年
+    semester = Column(Integer, nullable=False, default=1)
+    target_seats = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=now_taipei_naive)
+    updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
+
+    __table_args__ = (
+        Index(
+            "uq_grade_intake_target",
+            "grade_id",
+            "school_year",
+            "semester",
+            unique=True,
+        ),
     )
