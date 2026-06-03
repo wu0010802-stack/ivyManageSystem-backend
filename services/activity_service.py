@@ -1250,6 +1250,37 @@ class ActivityService:
                 course_id,
             )
 
+        # 通知家長：候補已升正式，須於 deadline 前確認。對稱同流程 reminder/expired
+        # 都推家長（_resolve_parent_user_ids_for_registration）；修補原本只推 staff、
+        # 啟動 48h 確認時鐘那則通知漏發家長的缺口。複用 waitlist_reminder event
+        # （升位即第一次「請確認」提醒；T-24h/T-6h 仍會臨期再提醒，家長端 deep_link）。
+        try:
+            from services.notification import dispatch
+
+            parent_uids = _resolve_parent_user_ids_for_registration(
+                session, rc.registration_id
+            )
+            for puid in parent_uids:
+                dispatch.enqueue(
+                    session=session,
+                    event_type="activity.waitlist_reminder",
+                    recipient_user_id=puid,
+                    context={
+                        "student_name": student_name or str(rc.registration_id),
+                        "course_name": course.name,
+                        "course_id": course_id,
+                        "deadline": deadline.isoformat() if deadline else None,
+                    },
+                    source_entity_type="registration_course",
+                    source_entity_id=rc.registration_id,
+                )
+        except Exception:
+            logger.exception(
+                "活動候補升正式家長通知 enqueue 失敗 reg=%s course=%s",
+                rc.registration_id,
+                course_id,
+            )
+
     # ------------------------------------------------------------------ #
     # 記錄修改紀錄
     # ------------------------------------------------------------------ #
