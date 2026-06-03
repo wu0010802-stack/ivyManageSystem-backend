@@ -54,6 +54,8 @@ def compute_intake_plan(
             RecruitmentVisit.target_school_year == school_year,
             RecruitmentVisit.target_semester == semester,
             RecruitmentVisit.enrolled.is_(False),
+            # 反轉移除預繳後仍掛保留欄位的 visit 不算進 reserved（spec §9）
+            RecruitmentVisit.has_deposit.is_(True),
         )
         .group_by(RecruitmentVisit.provisional_grade_id)
         .all()
@@ -135,9 +137,13 @@ def set_provisional_seat(
     if is_set and target_school_year is None:
         raise IntakePlanError("保留座位需指定目標學年")
 
+    # service 自洽：設定時若未給 target_semester 預設為 1（不依賴 caller 補）
+    resolved_semester = (
+        (target_semester if target_semester is not None else 1) if is_set else None
+    )
     visit.provisional_grade_id = provisional_grade_id
     visit.target_school_year = target_school_year
-    visit.target_semester = target_semester if is_set else None
+    visit.target_semester = resolved_semester
 
     log = RecruitmentEventLog(
         recruitment_visit_id=visit.id,
@@ -148,7 +154,7 @@ def set_provisional_seat(
         metadata_json={
             "grade_id": provisional_grade_id,
             "school_year": target_school_year,
-            "semester": target_semester if is_set else None,
+            "semester": resolved_semester,
         },
         created_at=now_taipei_naive(),
     )

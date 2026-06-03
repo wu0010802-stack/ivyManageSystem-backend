@@ -288,3 +288,48 @@ def test_upsert_intake_targets(session):
         session.query(GradeIntakeTarget).filter_by(grade_id=mid.id).one().target_seats
         == 40
     )
+
+
+def test_reserved_excludes_no_deposit_visit(session):
+    """已無預繳卻仍掛保留欄位的 visit（如 enrolled→visited 反轉後）不應算進 reserved。"""
+    mid = _grade(session, "中班", 2)
+    session.add(
+        GradeIntakeTarget(grade_id=mid.id, school_year=115, semester=1, target_seats=30)
+    )
+    # 模擬反轉後狀態：保留欄位還在，但 has_deposit 已被設回 False
+    session.add(
+        RecruitmentVisit(
+            month="115.03",
+            child_name="甲",
+            has_deposit=False,
+            provisional_grade_id=mid.id,
+            target_school_year=115,
+            target_semester=1,
+            enrolled=False,
+        )
+    )
+    session.flush()
+    rows = {
+        r["grade_id"]: r
+        for r in compute_intake_plan(session, school_year=115, semester=1)
+    }
+    assert rows[mid.id]["reserved_count"] == 0
+
+
+def test_set_provisional_seat_defaults_semester(session):
+    """set_provisional_seat 在 is_set 但未給 target_semester 時，service 自己預設為 1。"""
+    mid = _grade(session, "中班", 2)
+    v = RecruitmentVisit(month="115.03", child_name="乙", has_deposit=True)
+    session.add(v)
+    session.flush()
+    set_provisional_seat(
+        session,
+        visit_id=v.id,
+        provisional_grade_id=mid.id,
+        target_school_year=115,
+        target_semester=None,
+        actor_user_id=None,
+    )
+    session.flush()
+    got = session.query(RecruitmentVisit).get(v.id)
+    assert got.target_semester == 1
