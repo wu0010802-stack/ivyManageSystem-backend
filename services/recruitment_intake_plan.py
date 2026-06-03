@@ -26,7 +26,12 @@ from models.classroom import (
     LIFECYCLE_TRANSFERRED,
     LIFECYCLE_WITHDRAWN,
 )
-from models.recruitment import GradeIntakeTarget, RecruitmentVisit
+from models.recruitment import (
+    GradeIntakeTarget,
+    RecruitmentEventLog,
+    RecruitmentVisit,
+)
+from utils.taipei_time import now_taipei_naive
 
 _TERMINAL = (LIFECYCLE_GRADUATED, LIFECYCLE_TRANSFERRED, LIFECYCLE_WITHDRAWN)
 
@@ -104,3 +109,81 @@ def compute_intake_plan(
             }
         )
     return rows
+
+
+def set_provisional_seat(
+    session: Session,
+    *,
+    visit_id: int,
+    provisional_grade_id: Optional[int],
+    target_school_year: Optional[int],
+    target_semester: Optional[int],
+    actor_user_id: Optional[int],
+) -> RecruitmentVisit:
+    """設定（provisional_grade_id 非 None）或釋放（None）某訪視的保留座位。
+
+    守衛：設定時 visit.has_deposit 必須為 True。寫 recruitment_event_log。
+    Commit 由 caller 負責。
+    """
+    visit = session.query(RecruitmentVisit).filter_by(id=visit_id).first()
+    if visit is None:
+        raise IntakePlanError(f"招生訪視不存在：id={visit_id}")
+
+    is_set = provisional_grade_id is not None
+    if is_set and not visit.has_deposit:
+        raise IntakePlanError("未預繳的訪視不可保留座位")
+    if is_set and target_school_year is None:
+        raise IntakePlanError("保留座位需指定目標學年")
+
+    visit.provisional_grade_id = provisional_grade_id
+    visit.target_school_year = target_school_year
+    visit.target_semester = target_semester if is_set else None
+
+    log = RecruitmentEventLog(
+        recruitment_visit_id=visit.id,
+        event_type="seat_reserved" if is_set else "seat_released",
+        from_stage="deposited",
+        to_stage="deposited",
+        actor_user_id=actor_user_id,
+        metadata_json={
+            "grade_id": provisional_grade_id,
+            "school_year": target_school_year,
+            "semester": target_semester if is_set else None,
+        },
+        created_at=now_taipei_naive(),
+    )
+    session.add(log)
+    session.flush()
+    return visit
+
+
+def upsert_intake_targets(
+    session: Session,
+    *,
+    school_year: int,
+    semester: int,
+    targets: list[dict],
+) -> list[GradeIntakeTarget]:
+    """以 (grade_id, school_year, semester) upsert 計畫名額。Commit 由 caller 負責。"""
+    result: list[GradeIntakeTarget] = []
+    for item in targets:
+        gid = int(item["grade_id"])
+        seats = int(item["target_seats"])
+        row = (
+            session.query(GradeIntakeTarget)
+            .filter_by(grade_id=gid, school_year=school_year, semester=semester)
+            .first()
+        )
+        if row is None:
+            row = GradeIntakeTarget(
+                grade_id=gid,
+                school_year=school_year,
+                semester=semester,
+                target_seats=seats,
+            )
+            session.add(row)
+        else:
+            row.target_seats = seats
+        result.append(row)
+    session.flush()
+    return result

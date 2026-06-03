@@ -195,3 +195,96 @@ def test_terminal_lifecycle_excluded_from_enrolled(session):
     assert rows[mid.id]["enrolled_count"] == 0
     assert rows[mid.id]["reserved_count"] == 0  # enrolled=True 不算保留
     assert rows[mid.id]["remaining"] == 30
+
+
+from models.recruitment import RecruitmentEventLog
+from services.recruitment_intake_plan import (
+    IntakePlanError,
+    set_provisional_seat,
+    upsert_intake_targets,
+)
+
+
+def test_set_provisional_seat_requires_deposit(session):
+    mid = _grade(session, "中班", 2)
+    v = RecruitmentVisit(month="115.03", child_name="甲", has_deposit=False)
+    session.add(v)
+    session.flush()
+    with pytest.raises(IntakePlanError):
+        set_provisional_seat(
+            session,
+            visit_id=v.id,
+            provisional_grade_id=mid.id,
+            target_school_year=115,
+            target_semester=1,
+            actor_user_id=None,
+        )
+
+
+def test_set_then_release_provisional_seat(session):
+    mid = _grade(session, "中班", 2)
+    v = RecruitmentVisit(month="115.03", child_name="甲", has_deposit=True)
+    session.add(v)
+    session.flush()
+
+    set_provisional_seat(
+        session,
+        visit_id=v.id,
+        provisional_grade_id=mid.id,
+        target_school_year=115,
+        target_semester=1,
+        actor_user_id=7,
+    )
+    session.flush()
+    got = session.query(RecruitmentVisit).get(v.id)
+    assert got.provisional_grade_id == mid.id
+    assert got.target_school_year == 115
+    assert (
+        session.query(RecruitmentEventLog).filter_by(event_type="seat_reserved").count()
+        == 1
+    )
+
+    # 釋放
+    set_provisional_seat(
+        session,
+        visit_id=v.id,
+        provisional_grade_id=None,
+        target_school_year=None,
+        target_semester=None,
+        actor_user_id=7,
+    )
+    session.flush()
+    got = session.query(RecruitmentVisit).get(v.id)
+    assert got.provisional_grade_id is None
+    assert (
+        session.query(RecruitmentEventLog).filter_by(event_type="seat_released").count()
+        == 1
+    )
+
+
+def test_upsert_intake_targets(session):
+    mid = _grade(session, "中班", 2)
+    upsert_intake_targets(
+        session,
+        school_year=115,
+        semester=1,
+        targets=[{"grade_id": mid.id, "target_seats": 25}],
+    )
+    session.flush()
+    assert (
+        session.query(GradeIntakeTarget).filter_by(grade_id=mid.id).one().target_seats
+        == 25
+    )
+    # 再 upsert 同鍵 → 更新而非新增
+    upsert_intake_targets(
+        session,
+        school_year=115,
+        semester=1,
+        targets=[{"grade_id": mid.id, "target_seats": 40}],
+    )
+    session.flush()
+    assert session.query(GradeIntakeTarget).filter_by(grade_id=mid.id).count() == 1
+    assert (
+        session.query(GradeIntakeTarget).filter_by(grade_id=mid.id).one().target_seats
+        == 40
+    )
