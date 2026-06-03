@@ -176,6 +176,10 @@ def _consume_compensatory_grants_fifo(session, employee_id: int, hours: float) -
             OvertimeCompLeaveGrant.status == "active",
         )
         .order_by(OvertimeCompLeaveGrant.expires_at.asc())
+        # row lock：序列化同員工 grant 的併發 consume/release/expiry。approve 的
+        # advisory 鎖是薪資『月』粒度，跨月併發核准互不互斥，無此鎖會 lost-update
+        # 致補休超額核准 + ledger 漏記消耗。
+        .with_for_update()
         .all()
     )
     for g in grants:
@@ -207,6 +211,8 @@ def _release_compensatory_grants_fifo(session, employee_id: int, hours: float) -
             OvertimeCompLeaveGrant.consumed_hours > 0,
         )
         .order_by(OvertimeCompLeaveGrant.expires_at.asc())
+        # row lock：與 consume/expiry 同鎖序列化，避免 release 退回時的 lost-update。
+        .with_for_update()
         .all()
     )
     for g in grants:
