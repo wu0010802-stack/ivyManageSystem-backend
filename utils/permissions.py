@@ -101,6 +101,10 @@ class Permission(str, Enum):
     # 個資法 DSR（個人資料主體權利）申請審核
     DSR_MANAGE = "DSR_MANAGE"
 
+    # 資料品質報告（PR-B 2026-05-29）
+    DATA_QUALITY_READ = "DATA_QUALITY_READ"
+    DATA_QUALITY_WRITE = "DATA_QUALITY_WRITE"
+
 
 # 位元值凍結快照——僅供 alembic upgrade()/downgrade() backfill 使用。
 # 一旦 migration 跑過 prod，請勿變更此表（保持歷史 migration 可重跑）。
@@ -320,12 +324,14 @@ ROLE_LABELS: Dict[str, str] = {
     "parent": "家長",
 }
 
-# principal 角色：supervisor 全部 + 薪資審視 + 稽核 + 政府報表匯出
+# principal 角色：supervisor 全部 + 薪資審視 + 稽核 + 政府報表匯出 + 預覽教師端 + 資料品質報告
 ROLE_TEMPLATES["principal"] = ROLE_TEMPLATES["supervisor"] + [
     Permission.SALARY_READ.value,
     Permission.AUDIT_LOGS.value,
     Permission.GOV_REPORTS_EXPORT.value,
     Permission.PORTAL_PREVIEW.value,  # 園長可預覽老師教師端（唯讀）
+    Permission.DATA_QUALITY_READ.value,
+    Permission.DATA_QUALITY_WRITE.value,
 ]
 ROLE_LABELS["principal"] = "園長"
 
@@ -438,6 +444,9 @@ PERMISSION_LABELS: Dict[str, str] = {
     "PORTAL_IMPERSONATE": "代為操作教師端",
     # 個資法 DSR 申請審核
     "DSR_MANAGE": "個資權利請求管理",
+    # 資料品質報告 (PR-B 2026-05-29)
+    "DATA_QUALITY_READ": "資料品質報告 — 檢視",
+    "DATA_QUALITY_WRITE": "資料品質報告 — 處理",
 }
 
 # 權限分組 (供前端 UI 使用)
