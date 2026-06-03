@@ -101,6 +101,32 @@ def _cancel_active_dismissal_calls(session, student: Student) -> list[dict]:
     return broadcasts
 
 
+def _cancel_pending_student_leaves(session, student: Student) -> int:
+    """學生轉終態時取消其 pending 學生請假，避免幽靈待審假單卡在教師審核佇列。
+
+    對稱於 _cancel_active_dismissal_calls：同屬「學生離開系統 → 清在讀 in-flight 項」。
+    僅取消 pending（approved / 歷史已 upsert StudentAttendance，by-design 保留）。
+    回傳取消筆數。
+    """
+    from models.student_leave import StudentLeaveRequest
+
+    count = (
+        session.query(StudentLeaveRequest)
+        .filter(
+            StudentLeaveRequest.student_id == student.id,
+            StudentLeaveRequest.status == "pending",
+        )
+        .update({StudentLeaveRequest.status: "cancelled"}, synchronize_session=False)
+    )
+    if count:
+        logger.warning(
+            "學生離園：自動取消 %d 筆 pending 學生請假，student_id=%s",
+            count,
+            student.id,
+        )
+    return count
+
+
 def get_classroom_student_ids_at_date(
     session, classroom_id: int, at_date: date
 ) -> list[int]:
@@ -959,6 +985,7 @@ async def delete_student(
 
         # commit 前取消進行中通知，並收集廣播資料（需要 student.name）
         dismissal_broadcasts = _cancel_active_dismissal_calls(session, student)
+        _cancel_pending_student_leaves(session, student)
 
         student.is_active = False
         student.status = "已刪除"
@@ -1021,6 +1048,7 @@ async def graduate_student(
 
         # commit 前取消進行中通知（需要 student.name）
         dismissal_broadcasts = _cancel_active_dismissal_calls(session, student)
+        _cancel_pending_student_leaves(session, student)
 
         student.graduation_date = graduation_date
         student.status = item.status
@@ -1289,6 +1317,7 @@ async def transition_student_lifecycle(
         terminal_like = {"withdrawn", "transferred", "graduated"}
         if item.to_status in terminal_like:
             dismissal_broadcasts = _cancel_active_dismissal_calls(session, student)
+            _cancel_pending_student_leaves(session, student)
 
         try:
             result = transition(
