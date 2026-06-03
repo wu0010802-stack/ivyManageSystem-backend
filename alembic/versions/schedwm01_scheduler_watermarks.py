@@ -1,7 +1,7 @@
 """scheduler_watermarks：排程器時間游標持久化（修復重啟漏推排程公告）
 
 Revision ID: schedwm01
-Revises: studnum01
+Revises: yeatpunch01
 Create Date: 2026-06-03
 
 新增 scheduler_watermarks 表存放排程器時間游標。announcement publish
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "schedwm01"
-down_revision: Union[str, Sequence[str], None] = "studnum01"
+down_revision: Union[str, Sequence[str], None] = "yeatpunch01"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
