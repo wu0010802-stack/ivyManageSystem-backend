@@ -97,6 +97,20 @@ def _is_school_wifi(ip_str: str) -> bool:
         return False
 
 
+def warn_if_school_wifi_gate_disabled(is_production: bool) -> None:
+    """正式環境未設 SCHOOL_WIFI_IPS → 教師登入的學校 WiFi 閘形同停用（fail-open），
+    啟動時告警以避免 silent 失效（任何取得教師帳密者可從任意公網 IP 登入）。
+
+    不採 fail-fast raise（與 CORS 不同：WiFi 閘可被合法關閉，例如教師遠端辦公）；
+    僅 prod 下告警。若業主要硬性強制此閘，將 logger.warning 改為 raise 即可。
+    """
+    if is_production and not _get_school_wifi_networks():
+        logger.warning(
+            "SCHOOL_WIFI_IPS 未設定：正式環境下教師登入的學校 WiFi 閘形同停用，"
+            "任何取得教師帳密者可從任意公網 IP 登入。如需此閘請設定 SCHOOL_WIFI_IPS（CIDR 清單）。"
+        )
+
+
 def _assert_can_manage_user(
     current_user: dict,
     *,
