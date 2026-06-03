@@ -371,6 +371,24 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("招生漏斗升學期排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # Academic term turnover scheduler（學期自動切換：唯一的學期切換驅動器）
+    academic_term_turnover_task = None
+    academic_term_turnover_stop_event: asyncio.Event | None = None
+    try:
+        from services import academic_term_turnover_scheduler as _at_sched
+
+        if _at_sched.scheduler_enabled():
+            academic_term_turnover_stop_event = asyncio.Event()
+            academic_term_turnover_task = asyncio.create_task(
+                _at_sched.run_academic_term_turnover_scheduler(
+                    academic_term_turnover_stop_event
+                )
+            )
+            logger.info("academic term turnover scheduler 已啟用")
+    except Exception as e:
+        logger.warning("學期自動切換排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # Leave quota expiry scheduler（補休到期 + 特休週年 cutover）
     leave_quota_expiry_task = None
     leave_quota_expiry_stop_event: asyncio.Event | None = None
@@ -731,6 +749,17 @@ async def app_lifespan(app_instance: FastAPI):
                 recruitment_term_advance_task.cancel()
                 try:
                     await recruitment_term_advance_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if academic_term_turnover_task is not None:
+            if academic_term_turnover_stop_event is not None:
+                academic_term_turnover_stop_event.set()
+            try:
+                await asyncio.wait_for(academic_term_turnover_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                academic_term_turnover_task.cancel()
+                try:
+                    await academic_term_turnover_task
                 except (asyncio.CancelledError, Exception):
                     pass
         if leave_quota_expiry_task is not None:
