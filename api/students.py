@@ -1343,9 +1343,14 @@ async def transition_student_lifecycle(
     session = get_session()
     dismissal_broadcasts: list[dict] = []
     try:
-        student = session.query(Student).filter(Student.id == student_id).first()
-        if student is None:
-            raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
+        # 班級 scope 守衛（STUDENTS_LIFECYCLE_WRITE 為 scope-aware perm，own_class/all）：
+        # class-scoped 角色不可對他班學生做破壞性生命週期轉移。
+        student = assert_student_access(
+            session,
+            current_user,
+            student_id,
+            code=Permission.STUDENTS_LIFECYCLE_WRITE.value,
+        )
 
         terminal_like = {"withdrawn", "transferred", "graduated"}
         if item.to_status in terminal_like:
@@ -1392,6 +1397,8 @@ async def transition_student_lifecycle(
         )
         response = {
             "message": f"已轉為 {result.to_status}",
+            # response_model=MutationResultOut 需 id；缺此欄會 ResponseValidationError 500
+            "id": result.student_id,
             "student_id": result.student_id,
             "from_status": result.from_status,
             "to_status": result.to_status,
