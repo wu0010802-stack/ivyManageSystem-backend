@@ -70,10 +70,12 @@ jobs:
     name: Tests (TZ=${{ matrix.container_tz }})
     runs-on: ubuntu-latest
     timeout-minutes: 60  # 2026-05-25: 15→30→60. CI 64% @ 30 min；含 5000+ test + spike_rls auth setup overhead
-    # PR1 (2026-05-26) 引入 TZ matrix。UTC run 暫設 continue-on-error 因 pre-existing
-    # ~6 個 test 有 container TZ 隱性依賴；PR2/PR3 替換 datetime.now → now_taipei_naive
-    # 後這些 test 多半自動綠。PR3 收尾時移除此 continue-on-error。
-    continue-on-error: ${{ matrix.container_tz == 'UTC' }}
+    # PR1 (2026-05-26) 引入 TZ matrix；當時 UTC leg 暫以 continue-on-error 軟化
+    # pre-existing TZ-dependent fail 以解 CI deadlock（spec §7.5 載明「收尾時移除」）。
+    # 2026-06-02：datetime cutover 收尾 + 個案修復（如 security_gc 改 now_taipei_naive）後，
+    # TZ 敏感 test 在 UTC / Asia/Taipei 已對稱通過 → 移除 continue-on-error，UTC leg
+    # 恢復為 blocking gate（防新寫的 datetime.now()/date.today() 偷渡回 codebase；本 CI
+    # 在真 PG 雙時區跑全套，補足本地 SQLite 涵蓋不到的 DB 層 server_default/date_trunc）。
 
     strategy:
       fail-fast: false
