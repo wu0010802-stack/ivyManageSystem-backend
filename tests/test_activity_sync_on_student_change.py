@@ -33,6 +33,7 @@ from models.database import (
 
 # 確保 student_change_logs 表進入 metadata（graduate/bulk-transfer 端點會寫入此表）
 import models.student_log  # noqa: F401
+from models.classroom import LIFECYCLE_GRADUATED, LIFECYCLE_TRANSFERRED
 from utils.academic import resolve_current_academic_term
 from utils.auth import hash_password
 from utils.permissions import Permission
@@ -77,7 +78,12 @@ def _add_admin(session):
             username="admin",
             password_hash=hash_password("TempPass123"),
             role="admin",
-            permission_names=["STUDENTS_READ", "STUDENTS_WRITE", "ACTIVITY_READ", "ACTIVITY_WRITE"],
+            permission_names=[
+                "STUDENTS_READ",
+                "STUDENTS_WRITE",
+                "ACTIVITY_READ",
+                "ACTIVITY_WRITE",
+            ],
             is_active=True,
         )
     )
@@ -232,3 +238,47 @@ class TestDeactivateSync:
                 s.query(ActivityRegistration).filter_by(id=ids["registration_id"]).one()
             )
             assert reg.is_active is False
+
+
+class TestGraduateLifecycle:
+    """RA-MED-6 回歸：舊 /graduate 端點必須同步 lifecycle_status + terminal_entered_at。
+
+    否則家長 PII retention GC（依 terminal_entered_at 起算 365 天）永不啟動，
+    離園學生的家長 PII 將永久留存（個資法曝險）。
+    """
+
+    def test_graduate_sets_lifecycle_graduated_and_terminal_timestamp(
+        self, sync_client
+    ):
+        client, sf = sync_client
+        with sf() as s:
+            ids = _seed(s)
+        _login(client)
+
+        res = client.post(
+            f"/api/students/{ids['student_id']}/graduate",
+            json={"graduation_date": "2026-06-30", "status": "已畢業"},
+        )
+        assert res.status_code == 200
+
+        with sf() as s:
+            stu = s.query(Student).filter_by(id=ids["student_id"]).one()
+            assert stu.lifecycle_status == LIFECYCLE_GRADUATED
+            assert stu.terminal_entered_at is not None
+
+    def test_transfer_out_sets_lifecycle_transferred(self, sync_client):
+        client, sf = sync_client
+        with sf() as s:
+            ids = _seed(s)
+        _login(client)
+
+        res = client.post(
+            f"/api/students/{ids['student_id']}/graduate",
+            json={"graduation_date": "2026-06-30", "status": "已轉出"},
+        )
+        assert res.status_code == 200
+
+        with sf() as s:
+            stu = s.query(Student).filter_by(id=ids["student_id"]).one()
+            assert stu.lifecycle_status == LIFECYCLE_TRANSFERRED
+            assert stu.terminal_entered_at is not None
