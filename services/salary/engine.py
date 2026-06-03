@@ -430,6 +430,13 @@ class SalaryEngine:
                 "health_rate": self.insurance_service.health_rate,
                 "health_employee_ratio": self.insurance_service.health_employee_ratio,
                 "health_employer_ratio": self.insurance_service.health_employer_ratio,
+                # 二代健保補充保費費率/門檻：_apply_configs_for_month 會經
+                # update_rates_from_db 寫入該月版本，必須快照才能在離開
+                # config_for_month 時還原，否則歷史月重算後洩漏到 singleton。
+                "supplementary_health_rate": self.insurance_service.supplementary_health_rate,
+                "supplementary_health_threshold": (
+                    self.insurance_service.supplementary_health_threshold
+                ),
                 "pension_employer_rate": self.insurance_service.pension_employer_rate,
                 "average_dependents": self.insurance_service.average_dependents,
                 "labor_max_insured": self.insurance_service.labor_max_insured,
