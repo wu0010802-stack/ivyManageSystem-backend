@@ -175,13 +175,15 @@ def _consume_compensatory_grants_fifo(session, employee_id: int, hours: float) -
             OvertimeCompLeaveGrant.employee_id == employee_id,
             OvertimeCompLeaveGrant.status == "active",
         )
-        .order_by(OvertimeCompLeaveGrant.expires_at.asc())
-        # row lock：序列化同員工 grant 的併發 consume/release/expiry。approve 的
-        # advisory 鎖是薪資『月』粒度，跨月併發核准互不互斥，無此鎖會 lost-update
-        # 致補休超額核准 + ledger 漏記消耗。
+        # 鎖序統一用 id（與 expire_comp_leave_grants 一致），避免同員工 grant 在
+        # consume 與 expiry 反序搶鎖造成 deadlock；FIFO 消耗順序改在 Python 端依
+        # expires_at 排序，語意不變。row lock 序列化跨月併發核准（approve 的 advisory
+        # 鎖是薪資『月』粒度互不互斥），無此鎖會 lost-update 致超額核准 + ledger 漏記。
+        .order_by(OvertimeCompLeaveGrant.id)
         .with_for_update()
         .all()
     )
+    grants.sort(key=lambda g: (g.expires_at, g.id))
     for g in grants:
         if remaining <= 0:
             break
@@ -210,11 +212,13 @@ def _release_compensatory_grants_fifo(session, employee_id: int, hours: float) -
             OvertimeCompLeaveGrant.status == "active",
             OvertimeCompLeaveGrant.consumed_hours > 0,
         )
-        .order_by(OvertimeCompLeaveGrant.expires_at.asc())
-        # row lock：與 consume/expiry 同鎖序列化，避免 release 退回時的 lost-update。
+        # 鎖序統一用 id（與 consume/expiry 一致）避免反序搶鎖 deadlock；FIFO 退回順序
+        # 改在 Python 端依 expires_at 排序。row lock 序列化避免 release 的 lost-update。
+        .order_by(OvertimeCompLeaveGrant.id)
         .with_for_update()
         .all()
     )
+    grants.sort(key=lambda g: (g.expires_at, g.id))
     for g in grants:
         if remaining <= 0:
             break
