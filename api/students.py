@@ -1054,6 +1054,25 @@ async def graduate_student(
         student.status = item.status
         student.is_active = False
 
+        # 同步 lifecycle_status + terminal_entered_at（CLAUDE.md §9 不變式）：
+        # 終態 API 不可直接改 status 而繞過 set_lifecycle_status，否則 terminal_entered_at
+        # 永不寫入、家長 PII 365 天 GC（pii_retention_scheduler）永不觸發。此處只補狀態
+        # 戳記，不重複寫 ChangeLog（下方已寫 StudentChangeLog），故 audit=False。
+        from utils.student_lifecycle import set_lifecycle_status
+        from models.classroom import LIFECYCLE_GRADUATED, LIFECYCLE_TRANSFERRED
+
+        _status_to_lifecycle = {
+            "已畢業": LIFECYCLE_GRADUATED,
+            "已轉出": LIFECYCLE_TRANSFERRED,
+        }
+        set_lifecycle_status(
+            session,
+            student,
+            _status_to_lifecycle.get(item.status, LIFECYCLE_GRADUATED),
+            actor_user_id=current_user.get("user_id"),
+            audit=False,
+        )
+
         # 自動寫入異動紀錄（畢業/退學/轉出）
         from models.student_log import StudentChangeLog
 
