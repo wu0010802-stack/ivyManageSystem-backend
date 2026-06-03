@@ -227,7 +227,7 @@ def test_process_offboarding_creates_record_with_only_default_step_unimplemented
     assert record.opened_by_user_id == user.id
 
 
-def test_happy_path_all_5_steps_complete(
+def test_happy_path_all_6_steps_complete(
     db_session,
     employee_factory,
     user_factory,
@@ -267,6 +267,7 @@ def test_happy_path_all_5_steps_complete(
         "prefill_leave_payout",
         "revoke_user",
         "generate_certificate",
+        "homeroom_reassignment_check",
     ]
     assert all(s["status"] == "completed" for s in result["steps"])
     assert result["user_account_revoked"] is True

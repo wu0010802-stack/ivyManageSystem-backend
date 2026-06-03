@@ -35,3 +35,7 @@ ACTIVITY_ITEM_HIGH_PRICE_THRESHOLD = 30_000
 # Why: 員工算錯/故意多退之事前制衡；與 REFUND_APPROVAL_THRESHOLD（總額）獨立，
 # 兩道閘共存，任一觸發都要簽核。
 ACTIVITY_REFUND_DIFF_THRESHOLD = 100
+
+# 年級才藝達標獎金（分數）：年級報名達標率 >= 設定 target_pct 時給予的獎金分數。
+# 前端 src/constants/activity.ts FULL_ATTENDANCE_BONUS 須與此值一致（dashboard 顯示比對用）。
+GRADE_TARGET_BONUS = 1000

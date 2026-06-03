@@ -52,3 +52,16 @@ def test_render_parent_message_received_happy_path():
     assert "王老師" in r.title
     assert "小明" in r.title or "小明" in r.body
     assert r.deep_link is not None
+
+
+def test_render_punch_correction_submitted_happy_path():
+    ctx = {
+        "submitter_name": "李老師",
+        "target_date": "2026-06-01",
+        "correction_id": 88,
+    }
+    r = render("punch_correction.submitted", ctx)
+    assert "李老師" in r.title
+    assert "補打卡" in r.title
+    assert "2026-06-01" in r.body
+    assert r.deep_link == "/approvals/punch-corrections/88"

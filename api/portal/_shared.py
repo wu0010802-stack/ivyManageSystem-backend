@@ -58,6 +58,13 @@ class LeaveCreatePortal(BaseModel):
     def validate_leave_hours(cls, v):
         return validate_leave_hours_value(v)
 
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _normalize_time(cls, v):
+        # 與管理端 LeaveCreate/LeaveUpdate 一致：統一補零成 HH:MM，避免未補零
+        # 字串在重疊偵測時走字典序誤判（與 OvertimeCreatePortal 同檔已有此 validator）
+        return validate_hhmm_format(v)
+
     @model_validator(mode="after")
     def validate_date_order(self):
         validate_leave_date_order(self.start_date, self.end_date)

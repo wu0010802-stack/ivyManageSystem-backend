@@ -24,6 +24,7 @@ CHANNEL_MATRIX: dict[str, tuple[Channel, ...]] = {
     "overtime.submitted": ("in_app", "line"),
     "overtime.approved": ("in_app", "line"),
     "overtime.rejected": ("in_app", "line"),
+    "punch_correction.submitted": ("in_app", "line"),
     "punch_correction.approved": ("in_app", "line"),
     "punch_correction.rejected": ("in_app", "line"),
     "salary.batch_completed": ("in_app", "line"),

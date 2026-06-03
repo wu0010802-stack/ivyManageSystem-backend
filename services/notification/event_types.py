@@ -1,6 +1,6 @@
 """通知 event_type 命名空間：兩級 {domain}.{action}。
 
-v1 共 23 個 event（員工 13 + 家長 7 + 才藝家長 3）。新增 event 時：
+共 24 個 event（員工 14 + 家長 7 + 才藝家長 3）。新增 event 時：
 1. 加進此 frozenset
 2. 在 channel_matrix.py 加對應 channel tuple
 3. 在 renderers.py 加 @renderer 裝飾的函式
@@ -16,6 +16,7 @@ LEAVE_REJECTED = "leave.rejected"
 OVERTIME_SUBMITTED = "overtime.submitted"
 OVERTIME_APPROVED = "overtime.approved"
 OVERTIME_REJECTED = "overtime.rejected"
+PUNCH_CORRECTION_SUBMITTED = "punch_correction.submitted"
 PUNCH_CORRECTION_APPROVED = "punch_correction.approved"
 PUNCH_CORRECTION_REJECTED = "punch_correction.rejected"
 SALARY_BATCH_COMPLETED = "salary.batch_completed"
@@ -48,6 +49,7 @@ NOTIFICATION_EVENT_TYPES: frozenset[str] = frozenset(
         OVERTIME_SUBMITTED,
         OVERTIME_APPROVED,
         OVERTIME_REJECTED,
+        PUNCH_CORRECTION_SUBMITTED,
         PUNCH_CORRECTION_APPROVED,
         PUNCH_CORRECTION_REJECTED,
         SALARY_BATCH_COMPLETED,

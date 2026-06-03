@@ -826,6 +826,9 @@ def update_job_title(
         if not db_title:
             raise HTTPException(status_code=404, detail="Job title not found")
 
+        old_name = db_title.name
+        old_grade = db_title.bonus_grade
+
         db_title.name = title.name
         # Ensure it's active if we are updating it
         db_title.is_active = True
@@ -834,10 +837,48 @@ def update_job_title(
         # 若把 None 當「設為 NULL」會造成意外覆蓋。
         if title.bonus_grade is not None:
             db_title.bonus_grade = title.bonus_grade
+
+        # bonus_grade 真的變動 → 標記持該職稱員工未封存薪資 needs_recalc，否則 finalize
+        # 會以舊節慶獎金等級封存。引擎 grade_map = {JobTitle.name: bonus_grade}，員工以
+        # title_name（models.employee：job_title_rel FK 優先、fallback legacy title）對應。
+        # 過濾必須對齊此優先序——FK 分支涵蓋所有 job_title_id 連結員工（不論 title 值，
+        # 含 title 為 NULL/drift 的 legacy 殘列）；字串分支保留 job_title_id IS NULL 的
+        # legacy 員工。只用 title 字串會漏標 FK 連結員工 → 以舊等級錯帳。對稱依據：員工側
+        # bonus_grade 在 _SALARY_INPUT_FIELDS（api/employees.py）改動會標 stale。
+        grade_changed = title.bonus_grade is not None and title.bonus_grade != old_grade
+        stale_marked = 0
+        if grade_changed:
+            from models.database import Employee
+
+            affected_titles = {old_name, title.name}
+            stale_marked = (
+                session.query(SalaryRecord)
+                .filter(
+                    SalaryRecord.is_finalized != True,
+                    SalaryRecord.employee_id.in_(
+                        session.query(Employee.id).filter(
+                            # 不加 is_active 過濾：bulk 薪資以 hire_date/resign_date
+                            # 選人（_active_employees_in_month_filter，刻意不依 current
+                            # is_active），剛離職者最終在職月仍會被算節慶獎金。多掛
+                            # is_active==True 會漏標其未封存薪資 → finalize 以舊 grade
+                            # 錯帳。鎖定語意由 is_finalized 保證，over-mark 無金錢副作用。
+                            or_(
+                                Employee.job_title_id == db_title.id,
+                                Employee.title.in_(affected_titles),
+                            ),
+                        )
+                    ),
+                )
+                .update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
+            )
+
         session.commit()
         _clear_cache("titles")
         _trigger_engine_grade_reload()
-        return {"message": "Job title updated"}
+        return {
+            "message": "Job title updated",
+            "salary_records_marked_stale": stale_marked,
+        }
     except HTTPException:
         raise
     except Exception as e:

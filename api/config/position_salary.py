@@ -392,9 +392,21 @@ def sync_position_salary(
             )
 
         updated = []
+        synced_emp_ids = []
         for emp, old, standard, _delta in planned_updates:
             emp.base_salary = standard
+            synced_emp_ids.append(emp.id)
             updated.append({"name": emp.name, "old": old, "new": standard})
+
+        # 調薪後標記受影響員工未封存薪資 needs_recalc，否則 finalize 會以舊底薪封存
+        # （連帶勞健保 / 勞退 / 補充保費基底全錯）。對稱依據：PUT /employees 改 base_salary
+        # 走 _mark_employee_salary_stale；同檔 PUT /position-salary 走
+        # _mark_existing_salary_stale_for_config。封存的不動，維持結帳鎖定語意。
+        if synced_emp_ids:
+            session.query(SalaryRecord).filter(
+                SalaryRecord.employee_id.in_(synced_emp_ids),
+                SalaryRecord.is_finalized != True,
+            ).update({SalaryRecord.needs_recalc: True}, synchronize_session=False)
 
         session.commit()
         operator = current_user.get("username", "")

@@ -565,9 +565,8 @@ def _check_substitute_leave_conflict(
         # OT 無時段（罕見）→ 視為全日 → 衝突
         if not ot.start_time or not ot.end_time:
             raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
-        ot_start_str = ot.start_time.strftime("%H:%M")
-        ot_end_str = ot.end_time.strftime("%H:%M")
-        if max(start_time, ot_start_str) < min(end_time, ot_end_str):
+        # 用 times_overlap（內部 to_time 正規化），避免未補零字串字典序誤判
+        if times_overlap(start_time, end_time, ot.start_time, ot.end_time):
             raise HTTPException(status_code=409, detail=_GENERIC_DETAIL)
 
 

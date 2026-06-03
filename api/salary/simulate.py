@@ -325,6 +325,17 @@ def simulate_salary(
             engine._compute_period_accrual_totals(session, emp, year, month)
         )
 
+        # 與正式落帳（engine._finalize_breakdown 的首步）口徑一致：發放月須先從期間累積
+        # 扣減 pending 懲處（節慶優先扣完才動超額）。否則員工有未抵扣懲處時，simulate
+        # 顯示的 festival/overtime/gross 會高於實際 /calculate 落帳值（simulate↔actual
+        # 不對稱）。_adjust_period_totals_for_discipline 為純讀取、不寫 DB；simulate 是
+        # 沙盒，刻意不呼叫 _mark_discipline_applied（不標記抵扣、不留副作用）。
+        period_festival_total, period_overtime_total, _ = (
+            engine._adjust_period_totals_for_discipline(
+                session, emp, year, month, period_festival_total, period_overtime_total
+            )
+        )
+
         breakdown = engine.calculate_salary(
             employee=emp_dict,
             year=year,

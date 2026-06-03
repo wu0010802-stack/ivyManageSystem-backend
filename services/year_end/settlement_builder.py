@@ -286,7 +286,9 @@ def _has_class_role(emp: Any) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def year_end_base_salary(db: Session, emp: Any, standards: dict | None = None) -> Decimal:
+def year_end_base_salary(
+    db: Session, emp: Any, standards: dict | None = None
+) -> Decimal:
     """年終底薪 == 月薪底薪（決策①A）。
 
     複用 SalaryEngine._resolve_standard_base，但**用傳入的 db** 載入職位標準
@@ -300,7 +302,9 @@ def year_end_base_salary(db: Session, emp: Any, standards: dict | None = None) -
     回 Decimal（小數 2 位）。
     """
     engine = SalaryEngine(load_from_db=False)
-    engine._position_salary_standards = standards if standards is not None else load_position_salary_standards(db)
+    engine._position_salary_standards = (
+        standards if standards is not None else load_position_salary_standards(db)
+    )
     resolved = engine._resolve_standard_base(emp)
     return _q2(resolved)
 
@@ -497,6 +501,17 @@ def gather_deductions(db: Session, cycle: YearEndCycle, emp: Any) -> DeductionBr
             YearEndSettlement.employee_id == emp.id,
         )
     )
+    return _deductions_from_settlement(existing)
+
+
+def _deductions_from_settlement(
+    existing: "YearEndSettlement | None",
+) -> DeductionBreakdown:
+    """從已取得的 YearEndSettlement 列組 DeductionBreakdown（無則全 0）。
+
+    抽出此純函式讓 build_settlements 直接用迴圈中已查得的 `existing`，
+    避免每位員工又重查一次同一列（N+1）。
+    """
     if existing is None:
         return DeductionBreakdown()
     return DeductionBreakdown(
@@ -517,7 +532,9 @@ def gather_deductions(db: Session, cycle: YearEndCycle, emp: Any) -> DeductionBr
 @dataclass
 class BuildResult:
     built: int = 0
-    skipped_finalized: int = 0  # skipped because already signed or finalized (non-DRAFT)
+    skipped_finalized: int = (
+        0  # skipped because already signed or finalized (non-DRAFT)
+    )
 
 
 def _is_postgres(db: Session) -> bool:
@@ -541,12 +558,16 @@ def build_settlements(
     actor_id: int | None,
     *,
     refresh_rates: bool = True,
+    only_employee_ids: set[int] | None = None,
 ) -> BuildResult:
     """跨員工跑年終 6-step 引擎 + upsert snapshot/settlement（idempotent）。
 
     參與者 = ACTIVE 員工 ∪ included_resigned_ids（對齊 appraisal_sync 慣例）。
     非 DRAFT 的 settlement（已簽或已核定）不覆寫（skipped_finalized += 1）。
     本函式只 flush 不 commit；交由 router 層 transactional dep 與 audit middleware。
+
+    only_employee_ids 不為 None 時，僅重算這些員工（其餘不動、版本不 bump）。
+    供 manual_patch 單筆微調用，避免一次手調觸發整個 cycle 全員重算與版本 churn。
     """
     _advisory_lock_build(db, academic_year)
     included = set(included_resigned_ids or set())
@@ -574,10 +595,16 @@ def build_settlements(
                 employees.append(e)
                 seen_ids.add(e.id)
 
+    # only_employee_ids：單筆 manual_patch 重算用，縮到指定員工避免全 cohort 重算/版本 churn
+    if only_employee_ids is not None:
+        employees = [e for e in employees if e.id in only_employee_ids]
+
     result = BuildResult()
 
     # Fix 3: 職位薪資標準只載入一次，避免每位員工重建 SalaryEngine + 查一次 DB
     _standards = load_position_salary_standards(db)
+    # 節慶基數只依角色（非員工），且查的是全域最新 BonusConfig；memoize 避免每位員工各查一次
+    _festival_cache: dict["str | None", Decimal] = {}
 
     for emp in employees:
         existing = db.scalar(
@@ -586,21 +613,23 @@ def build_settlements(
                 YearEndSettlement.employee_id == emp.id,
             )
         )
-        if (
-            existing is not None
-            and existing.status != YearEndSettlementStatus.DRAFT
-        ):
+        if existing is not None and existing.status != YearEndSettlementStatus.DRAFT:
             result.skipped_finalized += 1
             continue
 
         base = year_end_base_salary(db, emp, standards=_standards)
-        festival = festival_base_for_role(db, role_key_of(emp))
+        _role_key = role_key_of(emp)
+        if _role_key not in _festival_cache:
+            _festival_cache[_role_key] = festival_base_for_role(db, _role_key)
+        festival = _festival_cache[_role_key]
         # Fix 1 (CRITICAL): 年終比例計算以民國曆年（Jan 1–Dec 31）為基準，非學年 Aug–Jul
         proration_start = date(cycle.academic_year + 1911, 1, 1)
         proration_end = date(cycle.academic_year + 1911, 12, 31)
         auto_months = compute_hire_months(emp, proration_start, proration_end)
         # Fix 2: 若已有人工覆寫值（Task 6 手動設定），優先採用；否則使用自動計算值
-        _override = (existing.calc_meta or {}).get("hire_months_override") if existing else None
+        _override = (
+            (existing.calc_meta or {}).get("hire_months_override") if existing else None
+        )
         hire_months = Decimal(str(_override)) if _override is not None else auto_months
         worked_first, worked_second = worked_semesters(emp, cycle)
         rates = gather_performance_rates(db, cycle, emp)
@@ -610,7 +639,8 @@ def build_settlements(
             worked_first=worked_first,
             worked_second=worked_second,
         )
-        deductions = gather_deductions(db, cycle, emp)
+        # existing 已在迴圈頂端查得；直接組 DeductionBreakdown，免再查同一列（N+1）
+        deductions = _deductions_from_settlement(existing)
 
         special_raw = db.scalar(
             select(func.coalesce(func.sum(SpecialBonusItem.amount), 0)).where(
