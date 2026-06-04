@@ -68,13 +68,32 @@ def test_adjustment_reason_too_short_rejected():
 def test_all_numeric_fields_have_upper_bound():
     """所有金額欄位都應定義 le 上限（守護新增欄位時忘了加）。
 
-    adjustment_reason 為 str，用 min_length 邊界守衛不在此斷言範圍。
+    文字欄位（adjustment_reason、extra_allowance_label）用 min/max_length 邊界守衛，
+    不在此 le 斷言範圍。
     """
+    _text_fields = {"adjustment_reason", "extra_allowance_label"}
     for field_name, field_info in SalaryManualAdjustRequest.model_fields.items():
-        if field_name == "adjustment_reason":
+        if field_name in _text_fields:
             continue
         constraints = getattr(field_info, "metadata", []) or []
         has_le = any(getattr(c, "le", None) is not None for c in constraints) or any(
             hasattr(c, "le") and c.le is not None for c in constraints
         )
         assert has_le, f"欄位 {field_name} 缺少 le 上限"
+
+
+def test_extra_allowance_label_max_length_enforced():
+    """名目欄位超過 50 字應拋 ValidationError。"""
+    with pytest.raises(ValidationError):
+        SalaryManualAdjustRequest(
+            adjustment_reason=_REASON, extra_allowance_label="值" * 51
+        )
+
+
+def test_extra_allowance_label_normal_accepted():
+    """正常名目（值週/活動加班費）應被接受。"""
+    req = SalaryManualAdjustRequest(
+        adjustment_reason=_REASON, extra_allowance=1241, extra_allowance_label="值週"
+    )
+    assert req.extra_allowance == 1241
+    assert req.extra_allowance_label == "值週"
