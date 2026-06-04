@@ -186,7 +186,8 @@ def test_sync_writes_14_item_codes_per_participant(client_with_db):
     with sf() as s:
         items = s.query(AppraisalScoreItem).filter_by(participant_id=pid).all()
         codes = {i.item_code for i in items}
-    assert codes == {c.value for c in ScoreItemCode}  # 14 條
+    # SPED 由 apxlal01(2025-08-01) seed，非此 fixture 的 calibrate 規則；故排除
+    assert codes == {c.value for c in ScoreItemCode if c.value != "SPED"}  # 14 條
 
 
 def test_sync_preserves_manual_rows(client_with_db):
@@ -298,6 +299,9 @@ def test_sync_new_source_ref_format(client_with_db):
             )
             .all()
         )
-    expected_refs = {f"auto:{c.value.lower()}:{cycle_id}" for c in ScoreItemCode}
+    # SPED 由 apxlal01(2025-08-01) seed，非此 fixture 的 calibrate 規則；故排除
+    expected_refs = {
+        f"auto:{c.value.lower()}:{cycle_id}" for c in ScoreItemCode if c.value != "SPED"
+    }
     actual_refs = {r.source_ref for r in auto_rows}
     assert actual_refs == expected_refs
