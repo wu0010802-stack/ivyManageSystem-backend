@@ -121,3 +121,39 @@ class TestReconciliationShouldRun:
 
         now = datetime(2026, 5, 29, 3, 0, tzinfo=TAIPEI)
         assert should_run_reconciliation(now, last_run_date=date(2026, 5, 29)) is False
+
+
+# ── data quality ─────────────────────────────────────────────────────────────
+class TestDataQualityShouldRun:
+    """data_quality 排程的觸發判斷。target 時刻可設定（不像 finance 是常數）。
+
+    回歸：原本 now.minute == target_minute 精準分鐘比對 + 60s 巡檢，相位漂移後
+    輪詢落在 target 分鐘之外即整天錯過；改為 >= 目標時刻 + 當日去重。
+    """
+
+    def test_runs_at_target_time(self):
+        from services.data_quality_scheduler import should_run_data_quality
+
+        now = datetime(2026, 5, 29, 3, 0, tzinfo=TAIPEI)
+        assert should_run_data_quality(now, 3, 0, last_run_date=None) is True
+
+    def test_catch_up_after_target_minute(self):
+        """輪詢相位漂移落在 03:05（非精準 03:00）仍應於當天觸發（原本整天錯過）。"""
+        from services.data_quality_scheduler import should_run_data_quality
+
+        now = datetime(2026, 5, 29, 3, 5, tzinfo=TAIPEI)
+        assert should_run_data_quality(now, 3, 0, last_run_date=None) is True
+
+    def test_not_run_before_target_time(self):
+        from services.data_quality_scheduler import should_run_data_quality
+
+        now = datetime(2026, 5, 29, 2, 59, tzinfo=TAIPEI)
+        assert should_run_data_quality(now, 3, 0, last_run_date=None) is False
+
+    def test_not_run_twice_same_day(self):
+        from services.data_quality_scheduler import should_run_data_quality
+
+        now = datetime(2026, 5, 29, 3, 5, tzinfo=TAIPEI)
+        assert (
+            should_run_data_quality(now, 3, 0, last_run_date=date(2026, 5, 29)) is False
+        )
