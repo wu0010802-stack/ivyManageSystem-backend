@@ -22,6 +22,7 @@ from api.portal._shared import (
 )
 from utils.broadcast import get_broadcast
 from utils.permissions import Permission, has_permission
+from utils.portfolio_access import is_unrestricted
 from utils.ws_connection_limiter import (
     WSConnectionLimitExceeded,
     assert_under_limit,
@@ -106,8 +107,19 @@ ws_router = APIRouter()
 
 @ws_router.websocket("/api/ws/portal/dismissal-calls")
 async def portal_dismissal_ws(ws: WebSocket):
-    """教師 Portal WebSocket：只推送自己班級的接送通知事件。
-    認證透過 httpOnly Cookie access_token（瀏覽器自動攜帶）。
+    """教師端接送通知 WebSocket：推送接送通知事件。
+
+    授權對齊同資源的 REST 端點 `/api/portal/dismissal-calls`
+    （require_permission(DISMISSAL_CALLS_READ)）——gate 在權限而非硬卡 role=="teacher"。
+    早期版本的 teacher-only 守衛比 REST 嚴格，導致 admin（持有此權限、直接檢視教師端）
+    REST 拿得到資料卻被 WS handshake 拒於門外（pre-accept close → 瀏覽器看到 1006），
+    前端重試耗盡退化成 polling，呈現「一打開就連不上」。
+
+    訂閱範圍同樣對齊 REST 的 is_unrestricted scope：
+      - :all（管理/資深角色，或 wildcard）→ 訂閱 admin channel 收全校事件
+      - :own_class（一般教師）→ 訂閱自己班級 channel
+    認證透過 httpOnly Cookie access_token（瀏覽器自動攜帶；園長預覽走 impersonate 後
+    cookie 已是 teacher token，與一般教師同路徑）。
     """
     token = _get_token_from_ws(ws)
     if not token:
@@ -124,17 +136,12 @@ async def portal_dismissal_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_INVALID_TOKEN, reason="Token 無效或已過期")
         return
 
-    employee_id = payload.get("employee_id")
-    if not employee_id:
-        await ws.close(code=WS_CLOSE_FORBIDDEN, reason="此帳號無對應教師身分")
-        return
-
-    # NV10：只允許 teacher 角色訂閱接送通知 WebSocket
-    role = payload.get("role", "")
-    if role != "teacher":
-        await ws.close(
-            code=WS_CLOSE_FORBIDDEN, reason="僅教師帳號可使用接送通知 WebSocket"
-        )
+    # 授權：與 REST 端點同一條 require_permission(DISMISSAL_CALLS_READ)。
+    # 不再硬卡 role=="teacher"——比 REST 嚴格的 WS 守衛正是原 bug 來源。
+    if not has_permission(
+        payload.get("permission_names"), Permission.DISMISSAL_CALLS_READ
+    ):
+        await ws.close(code=WS_CLOSE_FORBIDDEN, reason="權限不足，需要接送通知讀取權限")
         return
 
     user_id = payload.get("user_id")
@@ -148,20 +155,27 @@ async def portal_dismissal_ws(ws: WebSocket):
         await ws.close(code=1008, reason="ws_connection_limit_exceeded")
         return
 
-    classroom_ids = _get_teacher_classroom_ids(employee_id)
+    # 訂閱範圍對齊 REST scope（is_unrestricted 同一呼叫，保證 WS 收到的與 REST 回傳一致）。
     backend = get_broadcast()
-    if not classroom_ids:
-        # 若老師尚未分班，仍允許連線但不會收到任何班級事件
-        await ws.accept()
-        register(user_id, ws)
-        await _run_connection(ws, cleanup=lambda: unregister(ws))
-        return
+    if is_unrestricted(payload, code=Permission.DISMISSAL_CALLS_READ.value):
+        channels = [_ADMIN_CHANNEL]
+    else:
+        employee_id = payload.get("employee_id")
+        channels = (
+            [_classroom_channel(cid) for cid in _get_teacher_classroom_ids(employee_id)]
+            if employee_id
+            else []
+        )
 
     await ws.accept()
     register(user_id, ws)
-    for cid in classroom_ids:
-        backend.subscribe(_classroom_channel(cid), ws)
-    logger.info("教師 WS 已連線，班級 IDs: %s", classroom_ids)
+    for ch in channels:
+        backend.subscribe(ch, ws)
+    logger.info(
+        "Portal 接送通知 WS 已連線（role=%s, channels=%s）",
+        payload.get("role", ""),
+        channels,
+    )
 
     def _cleanup():
         backend.unsubscribe(ws)

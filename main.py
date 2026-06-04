@@ -829,23 +829,18 @@ async def app_lifespan(app_instance: FastAPI):
         except Exception as e:
             logger.warning("PDF worker shutdown 失敗: %s", e)
             capture_exception(e, level="warning")
-        # 關閉所有 WebSocket 連線
+        # 關閉所有 WebSocket 連線（shutdown 時主動踢，讓 client 重連到新 instance）。
+        # 連線追蹤已自 deprecated dismissal manager 遷移到 ws_connection_limiter
+        # 的統一 registry（涵蓋 dismissal admin/portal、contact_book 等所有 WS 端點），
+        # 不再依賴已移除的 manager._admin_conns / _teacher_conns（會丟 AttributeError）。
         try:
-            from api.dismissal_ws import manager as ws_manager
+            from utils.ws_connection_limiter import all_active_connections
 
-            for ws in list(ws_manager._admin_conns):
+            for ws in all_active_connections():
                 try:
                     await ws.close(code=1001, reason="Server shutting down")
                 except Exception:
                     pass
-            ws_manager._admin_conns.clear()
-            for classroom_conns in ws_manager._teacher_conns.values():
-                for ws in list(classroom_conns):
-                    try:
-                        await ws.close(code=1001, reason="Server shutting down")
-                    except Exception:
-                        pass
-                classroom_conns.clear()
             logger.info("WebSocket 連線已全部關閉")
         except Exception as e:
             logger.warning("WebSocket 關閉時發生錯誤: %s", e)
