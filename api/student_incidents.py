@@ -15,7 +15,11 @@ from models.database import session_scope, Student, StudentIncident, Classroom
 from utils.auth import require_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
-from utils.portfolio_access import is_unrestricted, student_ids_in_scope
+from utils.portfolio_access import (
+    assert_student_access,
+    is_unrestricted,
+    student_ids_in_scope,
+)
 from utils.record_formatters import incident_to_dict
 from utils.validators import validate_incident_fields, parse_date_range_params
 
@@ -167,8 +171,14 @@ def create_incident(
             )
             if not student:
                 raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
-            if student.classroom_id:
-                _require_classroom_access(session, current_user, student.classroom_id)
+            # 班級存取檢查：assert_student_access 會擋跨班、未分班(classroom_id=NULL)
+            # 與終態學生；不可用 `if student.classroom_id:` 包住（NULL 會繞過 → 越權）。
+            assert_student_access(
+                session,
+                current_user,
+                payload.student_id,
+                code=Permission.STUDENTS_WRITE.value,
+            )
 
             incident = StudentIncident(
                 student_id=payload.student_id,
@@ -178,7 +188,9 @@ def create_incident(
                 description=payload.description,
                 action_taken=payload.action_taken,
                 parent_notified=payload.parent_notified,
-                parent_notified_at=now_taipei_naive() if payload.parent_notified else None,
+                parent_notified_at=(
+                    now_taipei_naive() if payload.parent_notified else None
+                ),
                 recorded_by=current_user.get("user_id"),
             )
             session.add(incident)
@@ -215,11 +227,12 @@ def update_incident(
             if not incident:
                 raise HTTPException(status_code=404, detail="找不到該事件紀錄")
 
-            student = (
-                session.query(Student).filter(Student.id == incident.student_id).first()
+            student = assert_student_access(
+                session,
+                current_user,
+                incident.student_id,
+                code=Permission.STUDENTS_WRITE.value,
             )
-            if student and student.classroom_id:
-                _require_classroom_access(session, current_user, student.classroom_id)
 
             validate_incident_fields(
                 incident_type=payload.incident_type, severity=payload.severity
@@ -235,7 +248,7 @@ def update_incident(
                 if payload.parent_notified and not prev_notified:
                     incident.parent_notified_at = (
                         payload.parent_notified_at or now_taipei_naive()
-                        )
+                    )
                 elif not payload.parent_notified:
                     incident.parent_notified_at = None
 
@@ -274,13 +287,12 @@ def delete_incident(
             if not incident:
                 raise HTTPException(status_code=404, detail="找不到該事件紀錄")
 
-            student_for_access = (
-                session.query(Student).filter(Student.id == incident.student_id).first()
+            assert_student_access(
+                session,
+                current_user,
+                incident.student_id,
+                code=Permission.STUDENTS_WRITE.value,
             )
-            if student_for_access and student_for_access.classroom_id:
-                _require_classroom_access(
-                    session, current_user, student_for_access.classroom_id
-                )
 
             student_id_for_log = incident.student_id
             session.delete(incident)
