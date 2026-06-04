@@ -71,6 +71,7 @@ class Permission(str, Enum):
     STUDENTS_MEDICATION_ADMINISTER = "STUDENTS_MEDICATION_ADMINISTER"
     STUDENTS_SPECIAL_NEEDS_READ = "STUDENTS_SPECIAL_NEEDS_READ"
     STUDENTS_SPECIAL_NEEDS_WRITE = "STUDENTS_SPECIAL_NEEDS_WRITE"
+    STUDENTS_IEP_APPROVE = "STUDENTS_IEP_APPROVE"
 
     PARENT_MESSAGES_WRITE = "PARENT_MESSAGES_WRITE"
 
@@ -277,6 +278,7 @@ ROLE_TEMPLATES: Dict[str, List[str]] = {
         Permission.STUDENTS_MEDICATION_ADMINISTER.value,
         Permission.STUDENTS_SPECIAL_NEEDS_READ.value,
         Permission.STUDENTS_SPECIAL_NEEDS_WRITE.value,
+        Permission.STUDENTS_IEP_APPROVE.value,  # 主任以上批核/結案 IEP（取代 supervisor_role 旁路）
         # 家園溝通平台
         Permission.PARENT_MESSAGES_WRITE.value,
         # 教育部申報模組：主管可檢視（不可匯出）
@@ -419,6 +421,7 @@ PERMISSION_LABELS: Dict[str, str] = {
     "STUDENTS_MEDICATION_ADMINISTER": "餵藥執行與紀錄",
     "STUDENTS_SPECIAL_NEEDS_READ": "特殊需求 (檢視)",
     "STUDENTS_SPECIAL_NEEDS_WRITE": "特殊需求 (編輯 / IEP)",
+    "STUDENTS_IEP_APPROVE": "IEP 批核 / 結案",
     # 家園溝通平台
     "PARENT_MESSAGES_WRITE": "家長訊息 (發送/回覆)",
     # 教育部申報模組

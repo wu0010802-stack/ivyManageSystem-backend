@@ -111,24 +111,6 @@ def _assert_student_in_scope(db: Session, current_user: dict, student_id: int) -
     )
 
 
-def _is_supervisor_or_above(db: Session, current_user: dict) -> bool:
-    """admin / 園長 / 主任 可批核或結案 IEP。
-
-    JWT payload 不含 supervisor_role（見 api/auth.py：create_access_token 只放
-    user_id/employee_id/role/name/permissions/token_version），故對非 admin
-    用戶必須 DB lookup Employee 表 — 否則園長/主任 100% 卡 403。
-    """
-    if current_user.get("role") == "admin":
-        return True
-    employee_id = current_user.get("employee_id")
-    if not employee_id:
-        return False
-    from models.employee import Employee
-
-    emp = db.query(Employee).filter(Employee.id == employee_id).first()
-    return bool(emp and emp.supervisor_role in ("園長", "主任"))
-
-
 def _scoped_query(db: Session, current_user: dict):
     """班導/副班導 只看自己班級的 IEP；主任以上看全部。
 
@@ -251,13 +233,8 @@ def submit_iep(
 def approve_iep(
     iep_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.STUDENTS_IEP_APPROVE)),
 ):
-    if not _is_supervisor_or_above(db, current_user):
-        raise HTTPException(
-            status_code=403,
-            detail="Only 主任 or above can approve IEP",
-        )
     row = (
         db.query(StudentIEPRecord)
         .filter(
@@ -284,10 +261,8 @@ def approve_iep(
 def close_iep(
     iep_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission(Permission.STUDENTS_IEP_APPROVE)),
 ):
-    if not _is_supervisor_or_above(db, current_user):
-        raise HTTPException(status_code=403)
     row = (
         db.query(StudentIEPRecord)
         .filter(
