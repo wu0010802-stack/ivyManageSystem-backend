@@ -19,6 +19,7 @@ from models.leave import LeaveRecord
 from models.year_end import YearEndCycle
 from services.year_end.auto_derive import attendance_deductions as ad
 from services.provenance.attendance_provider import derive_attendance_provenance
+from services.provenance.base import resolve_provenance, KNOWN_KEYS
 
 _Q2 = Decimal("0.01")
 
@@ -181,3 +182,26 @@ def test_no_records_zero_no_error(base):
         assert result[key].value == Decimal("0.00")
         assert result[key].source_records == []
         assert "無紀錄" in result[key].formula_summary
+
+
+def test_registry_resolves_attendance_keys(base):
+    db, cycle, emp = base["db"], base["cycle"], base["emp"]
+    db.add(
+        Attendance(employee_id=emp.id, attendance_date=date(2025, 3, 1), is_late=True)
+    )
+    db.commit()
+    dv = resolve_provenance(db, cycle, emp, "attendance_late")
+    assert dv.value == Decimal("-50.00")
+    assert "attendance_late" in KNOWN_KEYS
+    assert {
+        "attendance_late",
+        "personal_leave",
+        "sick_leave",
+        "meeting_absence",
+    } <= KNOWN_KEYS
+
+
+def test_registry_unknown_key_raises(base):
+    db, cycle, emp = base["db"], base["cycle"], base["emp"]
+    with pytest.raises(KeyError):
+        resolve_provenance(db, cycle, emp, "no_such_key")
