@@ -220,11 +220,14 @@ def test_comment_blocks_self_approval(client_with_db):
         summary = _seed_summary(s, SummaryStatus.SUPERVISOR_SIGNED)
         summary_id = summary.id
         emp_id = summary.participant.employee_id
-        # 建一個與 summary 同 employee_id 的 user（教師本人）
+        # 建一個與 summary 同 employee_id 的 user（被考核者本人）。
+        # 用 staff 角色（supervisor）：管理端考核 router 自 2026-06-04 起一律
+        # require_staff_permission（教師走 portal /my-appraisals），故此處測「自簽核」
+        # 守衛必須用會真正抵達該檢查的 staff 角色，否則先被 staff guard 擋下。
         user = User(
             username="self_user",
             password_hash=hash_password("TempPass123"),
-            role="teacher",
+            role="supervisor",
             permission_names=["APPRAISAL_READ"],
             is_active=True,
             employee_id=emp_id,
