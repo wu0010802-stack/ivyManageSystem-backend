@@ -644,6 +644,7 @@ class RecruitmentVisitCreate(BaseModel):
         default=False,
         description="家長已口頭同意以本住址進行招生區位分析（送至 Google Maps）；業主決議預設不勾。",
     )
+
     @field_validator("month")
     @classmethod
     def validate_month_format(cls, v: str) -> str:
@@ -675,6 +676,7 @@ class RecruitmentVisitUpdate(BaseModel):
         default=None,
         description="None=不修改；True/False=修改 consent_at（True=寫 now()；False=寫 NULL）",
     )
+
     @field_validator("month")
     @classmethod
     def validate_month_format(cls, v: Optional[str]) -> Optional[str]:
@@ -784,6 +786,9 @@ def _to_dict(r: RecruitmentVisit) -> dict:
         "no_deposit_reason_detail": r.no_deposit_reason_detail,
         "enrolled": r.enrolled,
         "transfer_term": r.transfer_term,
+        "provisional_grade_id": r.provisional_grade_id,
+        "target_school_year": r.target_school_year,
+        "target_semester": r.target_semester,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
