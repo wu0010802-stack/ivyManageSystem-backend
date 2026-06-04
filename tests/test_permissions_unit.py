@@ -105,12 +105,12 @@ def test_resolve_parent_role_default_is_empty():
 
 
 def test_role_templates_all_use_valid_permission_names():
-    """ROLE_TEMPLATES 內每個 perm name 都在 Permission enum 中（或 wildcard）。"""
+    """ROLE_TEMPLATES 內每個 perm name 都合法（含 scope-aware :own_class/:all 後綴）。"""
+    from utils.permissions import validate_permission_names
+
     for role, perms in ROLE_TEMPLATES.items():
-        for p in perms:
-            assert (
-                p == WILDCARD or p in Permission.__members__
-            ), f"ROLE_TEMPLATES[{role}] 含非法 perm: {p}"
+        invalid = validate_permission_names(perms)
+        assert invalid == [], f"ROLE_TEMPLATES[{role}] 含非法 perm: {invalid}"
 
 
 def test_get_permission_list_wildcard_expands_all():

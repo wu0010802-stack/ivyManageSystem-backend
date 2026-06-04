@@ -301,13 +301,16 @@ ROLE_TEMPLATES: Dict[str, List[str]] = {
         Permission.DASHBOARD.value,
         Permission.CALENDAR.value,
         Permission.ANNOUNCEMENTS_READ.value,
-        Permission.DISMISSAL_CALLS_READ.value,
-        Permission.DISMISSAL_CALLS_WRITE.value,
-        Permission.PORTFOLIO_READ.value,
-        Permission.PORTFOLIO_WRITE.value,
-        Permission.STUDENTS_HEALTH_READ.value,
-        Permission.STUDENTS_MEDICATION_ADMINISTER.value,
-        Permission.STUDENTS_SPECIAL_NEEDS_READ.value,
+        # class-scoped：教師僅限自班，須帶 :own_class（對齊 DB roles 表 + permscope01-04）。
+        # 此處若用 bare code，resolve_grant 會解析成 :all → is_unrestricted 放行全園 →
+        # 對 permission_names=NULL（走本模板）的教師形同關閉 row-level scoping（提權）。
+        Permission.DISMISSAL_CALLS_READ.value + ":own_class",
+        Permission.DISMISSAL_CALLS_WRITE.value + ":own_class",
+        Permission.PORTFOLIO_READ.value + ":own_class",
+        Permission.PORTFOLIO_WRITE.value + ":own_class",
+        Permission.STUDENTS_HEALTH_READ.value + ":own_class",
+        Permission.STUDENTS_MEDICATION_ADMINISTER.value + ":own_class",
+        Permission.STUDENTS_SPECIAL_NEEDS_READ.value + ":own_class",
         Permission.PARENT_MESSAGES_WRITE.value,
         Permission.APPRAISAL_READ.value,
         Permission.APPRAISAL_EVENT_WRITE.value,
