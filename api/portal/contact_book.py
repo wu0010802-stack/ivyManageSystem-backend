@@ -53,6 +53,7 @@ from utils.file_upload import (
     validate_file_signature,
 )
 from utils.permissions import Permission
+from utils.portfolio_access import is_unrestricted
 from utils.portfolio_storage import heic_supported, is_heic_extension
 
 from schemas._common import DeleteResultOut
@@ -214,7 +215,7 @@ def list_classroom_day(
     try:
         emp = _get_employee(session, current_user)
         # admin/supervisor 路徑：permissions=-1 或具 admin 角色時允許跨班
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_READ.value):
             _assert_classroom_owned(session, emp.id, classroom_id)
         else:
             classroom = session.query(Classroom).get(classroom_id)
@@ -308,7 +309,7 @@ def batch_upsert(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_WRITE.value):
             _assert_classroom_owned(session, emp.id, payload.classroom_id)
 
         # 校驗 student 屬於該 classroom
@@ -402,7 +403,7 @@ def update_entry(
         )
         if not entry:
             raise HTTPException(status_code=404, detail="聯絡簿不存在")
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_WRITE.value):
             _assert_classroom_owned(session, emp.id, entry.classroom_id)
 
         if expected_version is not None and entry.version != expected_version:
@@ -460,7 +461,7 @@ def publish_endpoint(
         )
         if not entry or entry.deleted_at:
             raise HTTPException(status_code=404, detail="聯絡簿不存在")
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_WRITE.value):
             _assert_classroom_owned(session, emp.id, entry.classroom_id)
 
         was_already_published = entry.published_at is not None
@@ -512,7 +513,7 @@ async def upload_photo(
         )
         if not entry or entry.deleted_at:
             raise HTTPException(status_code=404, detail="聯絡簿不存在")
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_WRITE.value):
             _assert_classroom_owned(session, emp.id, entry.classroom_id)
 
         from services.consent.checker import enforce_student_cross_border
@@ -567,7 +568,7 @@ def list_unpublished(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_READ.value):
             _assert_classroom_owned(session, emp.id, classroom_id)
 
         entries = (
@@ -640,7 +641,7 @@ def copy_from_yesterday(
     session = get_session()
     try:
         emp = _get_employee(session, current_user)
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_WRITE.value):
             _assert_classroom_owned(session, emp.id, payload.classroom_id)
 
         created = copy_yesterday_to_today(
@@ -701,7 +702,7 @@ def apply_template(
             raise HTTPException(status_code=404, detail="找不到對應 entry")
 
         # 班級守衛：所有 entry 必須屬於教師管轄
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_WRITE.value):
             classroom_ids = {e.classroom_id for e in entries}
             for cid in classroom_ids:
                 _assert_classroom_owned(session, emp.id, cid)
@@ -764,7 +765,7 @@ def batch_publish(
             raise HTTPException(status_code=404, detail="找不到對應 entry")
 
         # 班級守衛
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_WRITE.value):
             classroom_ids = {e.classroom_id for e in entries}
             for cid in classroom_ids:
                 _assert_classroom_owned(session, emp.id, cid)
@@ -814,7 +815,7 @@ def delete_photo(
         )
         if not entry or entry.deleted_at:
             raise HTTPException(status_code=404, detail="聯絡簿不存在")
-        if current_user.get("role") == "teacher":
+        if not is_unrestricted(current_user, code=Permission.PORTFOLIO_WRITE.value):
             _assert_classroom_owned(session, emp.id, entry.classroom_id)
 
         att = (
