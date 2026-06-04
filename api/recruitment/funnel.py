@@ -29,7 +29,8 @@ from services.recruitment_funnel import (
 )
 from utils.academic import resolve_current_academic_term
 from utils.auth import require_staff_permission, get_current_user
-from utils.permissions import Permission, has_permission
+from utils.permissions import Permission
+from utils.portfolio_access import is_unrestricted
 
 router = APIRouter(prefix="/funnel", tags=["recruitment-funnel"])
 
@@ -125,6 +126,22 @@ def _required_permissions(from_stage: str, to_stage: str) -> list[Permission]:
     return [Permission.RECRUITMENT_WRITE]
 
 
+def _missing_unrestricted_permission(
+    current_user: dict, required: list[Permission]
+) -> Optional[Permission]:
+    """回傳第一個 caller 缺 unrestricted grant 的必要權限；全部具備則 None。
+
+    funnel transition 無班級 context，scope-qualified（:own_class）grant 在此無意義；
+    要求 unrestricted（bare / :all / wildcard）grant，避免自訂 scoped 角色越權轉換
+    任意 visit。bare 權限解析為 scope 'all'（resolve_grant 向後相容），正當招生
+    staff（持 bare RECRUITMENT_*/STUDENTS_WRITE）不受影響。
+    """
+    for p in required:
+        if not is_unrestricted(current_user, code=p.value):
+            return p
+    return None
+
+
 # === POST /visits/{visit_id}/transition ===
 @router.post("/visits/{visit_id}/transition", response_model=TransitionOut)
 def post_transition(
@@ -146,13 +163,12 @@ def post_transition(
     from_stage = derive_stage(visit, student)
 
     required = _required_permissions(from_stage, payload.to_stage)
-    user_perms = current_user.get("permission_names") or []
-    for p in required:
-        if not has_permission(user_perms, p):
-            raise HTTPException(
-                403,
-                detail={"code": "PERMISSION_DENIED", "message": f"missing {p.name}"},
-            )
+    missing = _missing_unrestricted_permission(current_user, required)
+    if missing is not None:
+        raise HTTPException(
+            403,
+            detail={"code": "PERMISSION_DENIED", "message": f"missing {missing.name}"},
+        )
 
     try:
         result = transition_visit(
