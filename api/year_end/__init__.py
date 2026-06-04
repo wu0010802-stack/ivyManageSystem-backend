@@ -347,12 +347,22 @@ def sign_accounting(
     )
     if s is None:
         raise HTTPException(404)
+    # 2-gate（會計從 DRAFT 直簽）與 3-gate（經主管）皆為設計支援的流程。
     if s.status not in (
         YearEndSettlementStatus.DRAFT,
         YearEndSettlementStatus.SUPERVISOR_SIGNED,
     ):
         raise HTTPException(400, f"非 DRAFT/主管已簽 (current={s.status.value})")
     assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
+    # pentest E2：職責分離——若已有主管簽核（3-gate），會計簽核人須與其不同，
+    # 防同一人連做兩關。2-gate 時 supervisor_signed_by 為 None，不受影響。
+    if (
+        s.supervisor_signed_by is not None
+        and current_user.get("user_id") == s.supervisor_signed_by
+    ):
+        raise HTTPException(
+            status_code=403, detail="會計簽核人需與主管簽核人為不同人（職責分離）"
+        )
     s.status = YearEndSettlementStatus.ACCOUNTING_SIGNED
     s.accounting_signed_by = current_user.get("user_id")
     from datetime import datetime, timezone
@@ -383,6 +393,11 @@ def finalize_settlement(
     if s.status != YearEndSettlementStatus.ACCOUNTING_SIGNED:
         raise HTTPException(400, f"非會計已簽 (current={s.status.value})")
     assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
+    # pentest E2：職責分離——核定人須與會計簽核人為不同人（防同一人連做兩關）。
+    if current_user.get("user_id") == s.accounting_signed_by:
+        raise HTTPException(
+            status_code=403, detail="核定人需與會計簽核人為不同人（職責分離）"
+        )
     s.status = YearEndSettlementStatus.FINALIZED
     s.finalized_by = current_user.get("user_id")
     from datetime import datetime, timezone
