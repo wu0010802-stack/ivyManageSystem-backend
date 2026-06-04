@@ -104,6 +104,7 @@ from api.parent_portal import (
 from api.student_leaves import router as student_leaves_router
 from api.appraisal import appraisal_router
 from api.year_end import year_end_router
+from api.provenance import provenance_router
 from api.calendar_admin import router as calendar_admin_router
 from api.offboarding import router as offboarding_router
 from services.leave_quota_expiry.comp_grant_reminder import (
@@ -967,6 +968,7 @@ app.include_router(parent_admin_router)
 app.include_router(student_leaves_router)
 app.include_router(appraisal_router)
 app.include_router(year_end_router)
+app.include_router(provenance_router)
 app.include_router(calendar_admin_router, prefix="/api/calendar")
 from api.permissions_admin import router as permissions_admin_router
 
