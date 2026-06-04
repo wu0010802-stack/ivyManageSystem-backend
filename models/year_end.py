@@ -31,6 +31,7 @@ from typing import Any, Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -359,6 +360,12 @@ class YearEndSettlement(Base):
             "employee_id",
             name="uq_year_end_settlement_cycle_emp",
         ),
+        # pentest E1：DB 層量級守衛（涵蓋繞過 Pydantic 的 Excel 匯入等路徑）。
+        # disciplinary「獎懲」可負（大過 -6000）→ 對稱 ±100 萬。
+        CheckConstraint(
+            "deduction_disciplinary >= -1000000 AND deduction_disciplinary <= 1000000",
+            name="ck_year_end_settlement_disciplinary_bound",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -561,6 +568,11 @@ class SpecialBonusItem(Base):
             "bonus_type",
             "period_label",
             name="uq_special_bonus_item",
+        ),
+        # pentest E1：DB 層量級守衛。FESTIVAL_DIFF 可為負（多退）→ 對稱 ±100 萬。
+        CheckConstraint(
+            "amount >= -1000000 AND amount <= 1000000",
+            name="ck_special_bonus_item_amount_bound",
         ),
     )
 
