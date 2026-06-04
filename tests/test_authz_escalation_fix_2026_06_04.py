@@ -150,3 +150,36 @@ def test_teacher_cannot_write_incident_for_unassigned_student(app_client):
     assert (
         resp.status_code == 403
     ), f"教師不應能寫未分班學生 incident，實得 {resp.status_code}"
+
+
+# ───────────────────────── #4 calendar admin_feed 考核 layer ─────────────────────────
+def test_teacher_cannot_see_appraisal_layer_in_calendar_feed(tmp_path):
+    """教師持 APPRAISAL_READ 不得在 calendar admin_feed 看到考核 cycle metadata。"""
+    from datetime import date
+
+    from api.calendar_admin import _fetch_appraisal
+    from models.appraisal import AppraisalCycle, Semester
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'cal.sqlite'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    s = session_factory()
+    s.add(
+        AppraisalCycle(
+            academic_year=114,
+            semester=Semester.FIRST,
+            start_date=date(2026, 1, 15),
+            end_date=date(2026, 1, 20),
+            base_score_calc_date=date(2026, 1, 18),
+        )
+    )
+    s.commit()
+
+    teacher = {"role": "teacher", "permission_names": ["APPRAISAL_READ", "CALENDAR"]}
+    items = _fetch_appraisal(s, date(2026, 1, 1), date(2026, 1, 31), teacher)
+    s.close()
+    engine.dispose()
+    assert items == [], f"教師不應看到考核 layer metadata，實得 {len(items)} 筆"
