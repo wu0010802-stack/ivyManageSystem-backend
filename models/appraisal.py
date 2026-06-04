@@ -128,6 +128,7 @@ class ScoreItemCode(str, enum.Enum):
     SELF_IMPROVEMENT_ACTIVITY = "SELF_IMPROVEMENT_ACTIVITY"
     CHILD_ACCIDENT = "CHILD_ACCIDENT"
     CLASS_HEADCOUNT_BONUS = "CLASS_HEADCOUNT_BONUS"
+    SPED = "SPED"  # 特教生加分（手填 count × +2，對齊 Excel P 欄）
     OTHER = "OTHER"
 
 

@@ -51,7 +51,8 @@ def migrated_db(test_db_session):
 def test_14_default_rules_inserted(migrated_db):
     rules = migrated_db.query(AppraisalScoringRule).all()
     codes = {r.item_code for r in rules}
-    expected = {c.value for c in ScoreItemCode}
+    # SPED 由 apxlal01(2025-08-01) seed，非此 calibrate 規則(2026-01-01)；故排除
+    expected = {c.value for c in ScoreItemCode if c.value != "SPED"}
     assert codes == expected, f"missing={expected - codes}"
     # 全部 effective_from = 2026-01-01
     assert all(str(r.effective_from) == "2026-01-01" for r in rules)

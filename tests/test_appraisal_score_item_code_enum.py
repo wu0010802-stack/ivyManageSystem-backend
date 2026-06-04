@@ -1,10 +1,13 @@
-"""ScoreItemCode enum 14 條完整性 + Permission bit 衝突檢查。"""
+"""ScoreItemCode enum 15 條完整性 + Permission bit 衝突檢查。
+
+原 14 條 + SPED（特教生手填加分，P1 新增）= 15 條。
+"""
 
 from utils.permissions import Permission
 from models.appraisal import ScoreItemCode
 
 
-def test_score_item_code_has_14_codes():
+def test_score_item_code_has_15_codes():
     expected = {
         "LATE_EARLY",
         "MISSING_PUNCH",
@@ -19,6 +22,7 @@ def test_score_item_code_has_14_codes():
         "SELF_IMPROVEMENT_ACTIVITY",
         "CHILD_ACCIDENT",
         "CLASS_HEADCOUNT_BONUS",
+        "SPED",
         "OTHER",
     }
     actual = {c.value for c in ScoreItemCode}
@@ -37,7 +41,7 @@ def test_score_item_code_auto_vs_manual_partition():
     }
     MANUAL = {c.value for c in ScoreItemCode} - AUTO
     assert len(AUTO) == 7
-    assert len(MANUAL) == 7
+    assert len(MANUAL) == 8  # 原 7 + SPED
 
 
 def test_appraisal_rule_write_permission_bit_unique():
