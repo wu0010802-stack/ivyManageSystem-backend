@@ -743,8 +743,19 @@ def recompute_summaries(
     )
     enrollment_target = cycle.enrollment_target or 0
     enrollment_actual = cycle.enrollment_actual or 0
+    # 對齊 Excel「未滿/未簽約不計算考核」：到職未滿此月數者跳過
+    MIN_TENURE_MONTHS = Decimal("2")
+    skip_ids = [
+        p.id
+        for p in participants
+        if p.hire_months_in_cycle is not None
+        and p.hire_months_in_cycle < MIN_TENURE_MONTHS
+    ]
+    skip_set = set(skip_ids)
     out: list[AppraisalSummary] = []
     for p in participants:
+        if p.id in skip_set:
+            continue
         deltas = [
             si.score_delta
             for si in session.query(AppraisalScoreItem)
@@ -783,6 +794,14 @@ def recompute_summaries(
             summary.bonus_amount = result.bonus_amount
             summary.version += 1
         out.append(summary)
+    if skip_ids:
+        # 先 flush upsert 結果，再 bulk delete 被跳過者的 stale summary。
+        # 保持 ORM INSERT-before-DELETE 順序，同時繞開 cascade/autoflush 干擾，
+        # 不需 no_autoflush / p.summary=None。
+        session.flush()
+        session.query(AppraisalSummary).filter(
+            AppraisalSummary.participant_id.in_(skip_ids)
+        ).delete(synchronize_session=False)
     session.commit()
     return out
 
