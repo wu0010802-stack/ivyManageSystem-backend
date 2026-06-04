@@ -143,6 +143,10 @@ def _build_earnings_table(record, font_name: str, money_fmt):
     if bonus_separate:
         festival_separate = festival_bonus_val + overtime_bonus_val
         earn_data.append(["節慶/超額獎金 (另行轉帳)", "", money_fmt(festival_separate)])
+    extra_allowance_val = getattr(record, "extra_allowance", 0) or 0
+    if extra_allowance_val:
+        extra_label = getattr(record, "extra_allowance_label", None) or "額外加給"
+        earn_data.append([extra_label, "", money_fmt(extra_allowance_val)])
     earn_data.append(["月薪應發合計", "", money_fmt(record.gross_salary)])
 
     earn_table = Table(earn_data, colWidths=[120, 100, 120])
@@ -375,7 +379,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
     money_fmt = "#,##0"
 
     # Title row
-    ws.merge_cells("A1:S1")
+    ws.merge_cells("A1:T1")
     ws["A1"] = f"{year}年{month}月 薪資總表"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].alignment = Alignment(horizontal="center")
@@ -391,6 +395,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
         "績效獎金",
         "主管紅利",
         "獨立獎金合計",
+        "額外加給",
         "月薪應發",
         "勞保",
         "健保",
@@ -439,6 +444,7 @@ def generate_salary_excel(records_with_employees, year: int, month: int) -> byte
             record.performance_bonus or 0,
             supervisor_dividend,
             independent_bonus,
+            record.extra_allowance or 0,
             record.gross_salary or 0,
             record.labor_insurance_employee or 0,
             record.health_insurance_employee or 0,

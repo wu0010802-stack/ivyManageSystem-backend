@@ -72,3 +72,39 @@ def test_snapshot_payload_columns_include_extra_allowance():
 
     assert "extra_allowance" in _PAYLOAD_COLUMNS
     assert "extra_allowance_label" in _PAYLOAD_COLUMNS
+
+
+def test_salary_slip_earnings_table_includes_extra_allowance():
+    """薪資單應領表格在 extra_allowance > 0 時多一列，顯示名目與金額。"""
+    from services.finance.salary_slip import _build_earnings_table
+
+    rec = _blank_record(
+        base_salary=30000, gross_salary=31241, extra_allowance=1241
+    )
+    rec.extra_allowance_label = "值週"
+    table = _build_earnings_table(rec, "Helvetica", lambda v: f"{float(v):,.0f}")
+    flat = [str(c) for row in table._cellvalues for c in row]
+    assert any("值週" in c for c in flat), f"名目未出現：{flat}"
+    assert any("1,241" in c for c in flat), f"金額未出現：{flat}"
+
+
+def test_salary_slip_earnings_fallback_label():
+    """名目空白時 fallback 顯示「額外加給」。"""
+    from services.finance.salary_slip import _build_earnings_table
+
+    rec = _blank_record(base_salary=30000, gross_salary=30500, extra_allowance=500)
+    rec.extra_allowance_label = None
+    table = _build_earnings_table(rec, "Helvetica", lambda v: f"{float(v):,.0f}")
+    flat = [str(c) for row in table._cellvalues for c in row]
+    assert any("額外加給" in c for c in flat), f"fallback 名目未出現：{flat}"
+
+
+def test_salary_slip_no_extra_row_when_zero():
+    """extra_allowance = 0 時不應多出該列。"""
+    from services.finance.salary_slip import _build_earnings_table
+
+    rec = _blank_record(base_salary=30000, gross_salary=30000, extra_allowance=0)
+    rec.extra_allowance_label = None
+    table = _build_earnings_table(rec, "Helvetica", lambda v: f"{float(v):,.0f}")
+    flat = [str(c) for row in table._cellvalues for c in row]
+    assert not any("額外加給" in c for c in flat)

@@ -172,6 +172,8 @@ def get_salary_breakdown(
                 "base_salary": record.base_salary or 0,
                 "meeting_overtime_pay": record.meeting_overtime_pay or 0,
                 "overtime_pay": record.overtime_pay or 0,
+                "extra_allowance": record.extra_allowance or 0,
+                "extra_allowance_label": record.extra_allowance_label,
                 "gross_salary": record.gross_salary or 0,
             },
             "bonuses": {
@@ -212,7 +214,10 @@ def get_salary_breakdown(
         return result
 
 
-@router.get("/salaries/{record_id}/field-breakdown", response_model=SalaryDetailFieldBreakdownOut)
+@router.get(
+    "/salaries/{record_id}/field-breakdown",
+    response_model=SalaryDetailFieldBreakdownOut,
+)
 def get_salary_field_breakdown(
     record_id: int,
     request: Request,
@@ -266,7 +271,10 @@ def get_salary_field_breakdown(
         return result
 
 
-@router.get("/salaries/{record_id}/unused-leave-payout-detail", response_model=SalaryDetailUnusedLeavePayoutOut)
+@router.get(
+    "/salaries/{record_id}/unused-leave-payout-detail",
+    response_model=SalaryDetailUnusedLeavePayoutOut,
+)
 def get_unused_leave_payout_detail(
     record_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.SALARY_READ)),
