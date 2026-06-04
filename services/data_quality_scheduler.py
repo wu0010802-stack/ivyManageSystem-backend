@@ -6,7 +6,7 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -27,6 +27,23 @@ def scheduler_enabled() -> bool:
 def _target_hm() -> tuple[int, int]:
     s = get_settings().scheduler
     return (s.data_quality_hour, s.data_quality_minute)
+
+
+def should_run_data_quality(
+    now: datetime,
+    target_hour: int,
+    target_minute: int,
+    last_run_date: Optional[date] = None,
+) -> bool:
+    """到/過每日目標時刻且當日尚未跑 → 觸發（純函式，便於單元測試）。
+
+    原本 now.minute == target_minute 精準分鐘比對 + 巡檢，相位漂移後輪詢落在
+    target 分鐘之外即整天錯過；改為 >= 目標時刻 + 當日去重，沿用
+    finance_reconciliation_scheduler.should_run_reconciliation 的修法。
+    """
+    if last_run_date == now.date():
+        return False
+    return now.time() >= time(target_hour, target_minute)
 
 
 def run_data_quality_once() -> dict:
@@ -81,11 +98,7 @@ async def run_data_quality_scheduler(stop_event: asyncio.Event) -> None:
 
         try:
             now = datetime.now(TAIPEI_TZ)
-            if (
-                now.hour == target_hour
-                and now.minute == target_minute
-                and last_run_date != now.date()
-            ):
+            if should_run_data_quality(now, target_hour, target_minute, last_run_date):
                 session = get_session()
                 try:
                     with try_scheduler_lock(
