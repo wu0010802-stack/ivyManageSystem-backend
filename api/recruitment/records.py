@@ -25,6 +25,8 @@ from services.recruitment_conversion import (
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
+from services.recruitment_timeline import build_visit_timeline, TimelineNotFound
+from schemas.recruitment_timeline import TimelineOut
 
 from api.recruitment.shared import (
     DATASET_SCOPE_ALL,
@@ -203,7 +205,9 @@ def update_recruitment_record(
         if not record:
             raise HTTPException(status_code=404, detail="紀錄不存在")
         old_month = record.month
-        update_data = payload.model_dump(exclude_unset=True, exclude={"geocoding_consent"})
+        update_data = payload.model_dump(
+            exclude_unset=True, exclude={"geocoding_consent"}
+        )
         for field, value in update_data.items():
             setattr(record, field, value)
         if payload.geocoding_consent is True:
@@ -235,7 +239,9 @@ def delete_recruitment_record(
         _auto_sync_periods_for_months(session, {month})
 
 
-@router.post("/import", status_code=201, response_model=RecruitmentRecordImportResultOut)
+@router.post(
+    "/import", status_code=201, response_model=RecruitmentRecordImportResultOut
+)
 def import_recruitment_records(
     records: List[ImportRecord],
     _=Depends(require_staff_permission(Permission.RECRUITMENT_WRITE)),
@@ -372,3 +378,23 @@ def convert_recruitment_record_to_student(
         raise
     except Exception as e:
         raise_safe_500(e, context="招生轉化失敗")
+
+
+@router.get("/visits/{visit_id}/timeline", response_model=TimelineOut)
+def get_visit_timeline(
+    visit_id: int,
+    _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
+):
+    """小孩參觀→入學歷程（招生事件 + 學生異動 union）。"""
+    try:
+        with session_scope() as session:
+            try:
+                events = build_visit_timeline(session, visit_id=visit_id)
+            except TimelineNotFound:
+                raise HTTPException(status_code=404, detail="訪視記錄不存在")
+            out = TimelineOut(events=events)
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_safe_500(e, context="歷程查詢失敗")

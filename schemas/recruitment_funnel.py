@@ -50,15 +50,5 @@ class TransitionOut(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class TimelineEvent(BaseModel):
-    source: Literal["recruitment", "student"]
-    event_type: str
-    from_stage: Optional[str]
-    to_stage: Optional[str]
-    actor_user_id: Optional[int]
-    reason: Optional[str]
-    created_at: datetime
-
-
-class TimelineOut(BaseModel):
-    events: list[TimelineEvent]
+# 歷程 schema 已搬到 recruitment_timeline；此處 re-export 保既有 import 不破
+from schemas.recruitment_timeline import TimelineEvent, TimelineOut  # noqa: E402,F401
