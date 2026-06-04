@@ -221,6 +221,13 @@ def _apply_auto_item(
             raw,
             f"警告 {d.warning_count} / 小過 {d.minor_count} / 大過 {d.major_count}",
         )
+    if code == "CLASS_HEADCOUNT_BONUS":
+        cnt = Decimal(status.headcount_over_target)
+        return (
+            apply_per_unit(rule, cnt, role_group),
+            cnt,
+            f"超編制 {status.headcount_over_target} 人",
+        )
     raise ValueError(f"_apply_auto_item: 未知 auto item_code {code}")
 
 
