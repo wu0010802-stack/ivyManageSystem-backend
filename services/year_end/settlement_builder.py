@@ -531,6 +531,7 @@ def _deductions_from_settlement(
     cycle: YearEndCycle,
     emp: Any,
     existing: "YearEndSettlement | None",
+    auto: "AttendanceDeductions | None" = None,
 ) -> DeductionBreakdown:
     """用「已取得的 ``existing`` 列」組 DeductionBreakdown（B7 ⑤a wiring）。
 
@@ -563,12 +564,14 @@ def _deductions_from_settlement(
       deduction_sick_leave      → sick_leave        （B5 / override）
       deduction_late            → late_early        （B5 / override）
     """
-    from services.year_end.auto_derive.attendance_deductions import (
-        derive_attendance_deductions,
-    )
+    # B5 自動扣款（負值或 0）。build loop 預算 batch（cfg 取一次）後以 auto 傳入，避免
+    # 每員工重取 cfg 的 N+1；單員工/測試路徑 auto=None 時 fallback per-employee 重算。
+    if auto is None:
+        from services.year_end.auto_derive.attendance_deductions import (
+            derive_attendance_deductions,
+        )
 
-    # B5 自動扣款（per-employee；負值或 0）
-    auto = derive_attendance_deductions(db, cycle, emp)
+        auto = derive_attendance_deductions(db, cycle, emp)
 
     calc_meta = (existing.calc_meta or {}) if existing is not None else {}
 
@@ -732,6 +735,13 @@ def build_settlements(
         Decimal(str(_org_second)) if _org_second is not None else None,
     )
 
+    # B5 ⑤a 考勤扣款 batch：cfg 只取一次，避免 build loop 每員工重取的 N+1。
+    from services.year_end.auto_derive.attendance_deductions import (
+        derive_all_attendance_deductions,
+    )
+
+    _auto_deductions = derive_all_attendance_deductions(db, cycle, employees)
+
     for emp in employees:
         existing = db.scalar(
             select(YearEndSettlement).where(
@@ -766,8 +776,11 @@ def build_settlements(
             worked_second=worked_second,
         )
         # existing 已在迴圈頂端查得；直接組 DeductionBreakdown，免再查同一列（main N+1）。
-        # 仍傳 db/cycle/emp 供 B5 ⑤a 自動扣款（per-employee 查考勤/假/會議）。
-        deductions = _deductions_from_settlement(db, cycle, emp, existing)
+        # B5 ⑤a 考勤扣款用迴圈外預算的 batch 結果（cfg 取一次）；缺漏則 auto=None
+        # fallback per-employee 重算。
+        deductions = _deductions_from_settlement(
+            db, cycle, emp, existing, auto=_auto_deductions.get(emp.id)
+        )
 
         special_raw = db.scalar(
             select(func.coalesce(func.sum(SpecialBonusItem.amount), 0)).where(
