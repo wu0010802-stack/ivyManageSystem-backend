@@ -67,6 +67,18 @@ def assert_under_limit(user_id: int) -> None:
         raise WSConnectionLimitExceeded()
 
 
+def all_active_connections() -> list[WebSocket]:
+    """目前所有 active WS（跨 user、跨端點）的快照。
+
+    供 graceful shutdown 主動關閉全部連線用；回傳 list（複製）避免呼叫端
+    在 close 過程中變動底層 dict。
+    """
+    out: list[WebSocket] = []
+    for ws_list in _active_ws.values():
+        out.extend(ws_list)
+    return out
+
+
 def reset_for_tests() -> None:
     """清掉 in-memory state；只用於 tests / dev 重啟模擬。"""
     _active_ws.clear()
