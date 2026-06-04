@@ -233,6 +233,8 @@ def _fill_salary_record(
     _apply("meeting_overtime_pay", breakdown.meeting_overtime_pay)
     _apply("meeting_absence_deduction", breakdown.meeting_absence_deduction)
     _apply("birthday_bonus", breakdown.birthday_bonus)
+    _apply("extra_allowance", breakdown.extra_allowance)
+    _apply("extra_allowance_label", breakdown.extra_allowance_label)
     _apply("labor_insurance_employee", breakdown.labor_insurance)
     _apply("health_insurance_employee", breakdown.health_insurance)
     _apply("supplementary_health_employee", breakdown.supplementary_health_employee)
@@ -1895,6 +1897,7 @@ class SalaryEngine:
                 + breakdown.special_bonus
                 + breakdown.supervisor_dividend
                 + breakdown.birthday_bonus
+                + breakdown.extra_allowance
             )
 
         self._calculate_deductions(

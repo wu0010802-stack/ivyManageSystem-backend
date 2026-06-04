@@ -29,6 +29,7 @@ def recompute_record_totals(record):
         + (record.meeting_overtime_pay or 0)
         + (record.birthday_bonus or 0)
         + (record.overtime_pay or 0)
+        + (record.extra_allowance or 0)
     )
     # ⚠ supplementary_health_employee 已併入 health_insurance_employee（hourly
     # 路徑 engine.py:1581 與獎金路徑 supplementary_premium.apply_bonus_supplementary_
