@@ -28,6 +28,8 @@ from typing import Optional
 from sqlalchemy import Integer, and_, case, func, or_
 from sqlalchemy.orm import Session
 
+import logging
+
 from models.activity import ActivityRegistration
 from models.appraisal import (
     AppraisalCycle,
@@ -39,7 +41,10 @@ from models.attendance import Attendance
 from models.classroom import LIFECYCLE_ACTIVE, Classroom, Student
 from models.disciplinary import DisciplinaryAction
 from models.employee import Employee
+from models.year_end import ClassEnrollmentTarget, YearEndCycle
 from utils.academic import semester_enum_to_int
+
+logger = logging.getLogger(__name__)
 
 # ===== Aggregate dataclasses =====
 
@@ -114,6 +119,9 @@ class ParticipantStatus:
     # manual item_code → count；主任在 ManualEventEntrySection 填的 7 條手動項。
     # non-participant 員工或無手填者為空 dict。
     manual_event_counts: dict[str, Decimal] = field(default_factory=dict)
+    # 帶班人數自動計算：max(0, 期末在籍 − 編制)；編制來自年終 ClassEnrollmentTarget。
+    # 無年終 cycle 或無對應班級編制時 fallback 為 0。
+    headcount_over_target: int = 0
 
 
 # ===== Sub-aggregators =====
@@ -355,6 +363,40 @@ def _aggregate_manual_event_counts(
     return out
 
 
+def _headcount_target_by_classroom(
+    session: Session, academic_year: int, semester_first: bool
+) -> dict[int, int]:
+    """各班編制（帶班人數 base）：複用年終 ClassEnrollmentTarget.head_count_target。
+
+    考核 academic_year → 年終 YearEndCycle（academic_year 唯一）→ 各班編制。
+    年終編制按學期分（ClassEnrollmentTarget.semester_first），故依考核學期對應取用，
+    不混用上/下學期編制。無對應年終 cycle 或該學期無記錄時回空 dict（caller fallback 0）。
+    """
+    ye_cycle = (
+        session.query(YearEndCycle)
+        .filter(YearEndCycle.academic_year == academic_year)
+        .first()
+    )
+    if ye_cycle is None:
+        logger.info(
+            "headcount 編制：無 academic_year=%s 年終 cycle，帶班人數 fallback 0",
+            academic_year,
+        )
+        return {}
+    rows = (
+        session.query(
+            ClassEnrollmentTarget.classroom_id,
+            ClassEnrollmentTarget.head_count_target,
+        )
+        .filter(
+            ClassEnrollmentTarget.year_end_cycle_id == ye_cycle.id,
+            ClassEnrollmentTarget.semester_first == semester_first,
+        )
+        .all()
+    )
+    return {classroom_id: target for classroom_id, target in rows}
+
+
 # ===== Facade =====
 
 
@@ -407,7 +449,7 @@ def aggregate_cycle_status(
         else {}
     )
     start = cycle.start_date
-    end = min(cycle.end_date, today_taipei())  
+    end = min(cycle.end_date, today_taipei())
     att_map = _aggregate_attendance(session, employee_ids_list, start, end)
     ret_map = _aggregate_class_retention(
         session, employee_to_classroom, classroom_name_by_id, start, end
@@ -420,8 +462,19 @@ def aggregate_cycle_status(
     )
     dis_map = _aggregate_disciplinary(session, employee_ids_list, start, end)
     manual_by_pid = _aggregate_manual_event_counts(session, cycle.id)
+    target_by_classroom = _headcount_target_by_classroom(
+        session, cycle.academic_year, semester_enum_to_int(cycle.semester) == 1
+    )
     out: list[ParticipantStatus] = []
     for p in participants:
+        ret = ret_map[p.employee_id]
+        target = (
+            target_by_classroom.get(p.classroom_id)
+            if p.classroom_id is not None
+            else None
+        )
+        # 帶班人數自動：max(0, 期末在籍 − 編制)；無編制來源 fallback 0
+        headcount_over = max(0, ret.final_count - target) if target is not None else 0
         out.append(
             ParticipantStatus(
                 participant_id=p.id,
@@ -434,12 +487,13 @@ def aggregate_cycle_status(
                 ),
                 classroom_id=p.classroom_id,
                 attendance=att_map[p.employee_id],
-                retention=ret_map[p.employee_id],
+                retention=ret,
                 activity=act_map[p.employee_id],
                 disciplinary=dis_map[p.employee_id],
                 is_participant=True,
                 hire_months_in_cycle=p.hire_months_in_cycle,
                 manual_event_counts=dict(manual_by_pid.get(p.id, {})),
+                headcount_over_target=headcount_over,
             )
         )
     return out
@@ -513,7 +567,7 @@ def aggregate_all_active_employees_status(
     )
 
     start = cycle.start_date
-    end = min(cycle.end_date, today_taipei())  
+    end = min(cycle.end_date, today_taipei())
     att_map = _aggregate_attendance(session, employee_ids, start, end)
     ret_map = _aggregate_class_retention(
         session, employee_to_classroom, classroom_name_by_id, start, end

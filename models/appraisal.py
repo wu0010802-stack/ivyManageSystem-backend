@@ -141,6 +141,7 @@ AUTO_ITEM_CODES = frozenset(
         ScoreItemCode.RETURNING_RATE_0315,
         ScoreItemCode.AFTER_CLASS_RATE,
         ScoreItemCode.REWARD_PUNISH,
+        ScoreItemCode.CLASS_HEADCOUNT_BONUS,
     }
 )
 MANUAL_ITEM_CODES = frozenset(set(ScoreItemCode) - AUTO_ITEM_CODES)
