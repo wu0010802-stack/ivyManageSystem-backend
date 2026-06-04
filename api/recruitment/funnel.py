@@ -5,7 +5,6 @@
 - GET  /visits/{visit_id}/timeline    → union of recruitment_event_log + student_change_logs
 """
 
-from datetime import datetime as _dt
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -13,8 +12,7 @@ from sqlalchemy.orm import Session
 
 from models.base import get_session_dep
 from models.classroom import Student
-from models.recruitment import RecruitmentVisit, RecruitmentEventLog
-from models.student_log import StudentChangeLog
+from models.recruitment import RecruitmentVisit
 from schemas.recruitment_funnel import (
     FunnelBoardOut,
     FunnelCard,
@@ -22,7 +20,6 @@ from schemas.recruitment_funnel import (
     Stage,
     TransitionIn,
     TransitionOut,
-    TimelineEvent,
     TimelineOut,
 )
 from services.recruitment_funnel import (
@@ -187,56 +184,18 @@ def get_timeline(
     session: Session = Depends(get_session_dep),
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
-    """Union of recruitment_event_log + student_change_logs, sorted by time."""
-    visit = session.query(RecruitmentVisit).filter_by(id=visit_id).first()
-    if visit is None:
+    """Union of recruitment_event_log + student_change_logs, sorted by time。
+
+    邏輯已抽到 services.recruitment_timeline.build_visit_timeline（與正確路由端點
+    /api/recruitment/visits/{id}/timeline 共用）；此 funnel route 已棄用但保留呼叫同 service。
+    """
+    from services.recruitment_timeline import (
+        build_visit_timeline,
+        TimelineNotFound,
+    )
+
+    try:
+        events = build_visit_timeline(session, visit_id=visit_id)
+    except TimelineNotFound:
         raise HTTPException(404, detail={"code": "VISIT_NOT_FOUND"})
-
-    rec_events = (
-        session.query(RecruitmentEventLog)
-        .filter_by(recruitment_visit_id=visit_id)
-        .all()
-    )
-    student = (
-        session.query(Student).filter(Student.recruitment_visit_id == visit_id).first()
-    )
-    student_events = []
-    if student is not None:
-        student_events = (
-            session.query(StudentChangeLog).filter_by(student_id=student.id).all()
-        )
-
-    events: list[TimelineEvent] = []
-    for e in rec_events:
-        events.append(
-            TimelineEvent(
-                source="recruitment",
-                event_type=e.event_type,
-                from_stage=e.from_stage,
-                to_stage=e.to_stage,
-                actor_user_id=e.actor_user_id,
-                reason=e.reason,
-                created_at=e.created_at,
-            )
-        )
-    for e in student_events:
-        # event_date is a date; cast to datetime for unified sorting
-        ts = (
-            e.event_date
-            if hasattr(e.event_date, "hour")
-            else _dt.combine(e.event_date, _dt.min.time())
-        )
-        events.append(
-            TimelineEvent(
-                source="student",
-                event_type=e.event_type,
-                from_stage=None,
-                to_stage=None,
-                actor_user_id=e.recorded_by,
-                reason=e.reason,
-                created_at=ts,
-            )
-        )
-
-    events.sort(key=lambda x: x.created_at)
     return TimelineOut(events=events)
