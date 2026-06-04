@@ -480,11 +480,13 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 
 ### 🟠 RA-MED-2：DB 失敗時 auth 限流完全 fail-open，且 in-process backstop 是死碼
 
+> **✅ 已修（2026-06-04，governance-gaps）**：`utils/rate_limit_db.count_recent_attempts` 加 `fail_closed` 參數（:192）；DB 失敗時 auth scope caller 傳 `fail_closed=True`，改用 in-process backstop per-worker 滑動視窗計數（:214），降級而非歸零。`api/auth.py` 5 處（login IP / 帳號鎖 / 改密 IP+帳號 / 重設，:253/268/305/322/361）與 `api/parent_portal/auth.py` bind / device-setup（:240/459）皆已 fail-closed；非 auth scope 維持 fail-open（寧放行）。回歸測試 `tests/test_rate_limit_failclosed.py`（fail-closed 降級 / 預設 fail-open / backstop 無紀錄不誤鎖 三情境）。原 finding 文字保留供稽核追溯。
+
 - **位置**：`utils/rate_limit_db.py`（`count_recent_attempts` 失敗回 0 → fail-open）；`api/auth.py:221-225`（`_ip_attempts`/`_account_failures` dict 註解宣稱是 fail-open 配套，實際 production 從不讀取，只有測試 `.clear()`）
 - **描述**：login / 改密 / 重設 / 家長 bind 限流全走 DB-backed limiter；DB 一旦失敗，暴力破解防線歸零，且宣稱的 in-process backstop 並未生效。fail-open 範圍涵蓋所有 auth 端點且未縮限。
 - **攻擊情境**：攻擊者先拖慢/打掛 limiter DB 寫入，再對 auth 端點無限制暴力破解。
 - **嚴重度**：Medium（升至 High 若 RA-HIGH-2 同時成立）
-- **驗證狀態**：confirmed（grep 證 backstop dict 無 production reader + 讀 except 區塊確認 fail-open）
+- **驗證狀態**：confirmed → **✅ 已修（2026-06-04，見本節開頭 note）**（原判：grep 證 backstop dict 無 production reader + 讀 except 區塊確認 fail-open）
 - **建議修法**：auth 端點限流 DB 失敗時 **fail-closed 或降級到真正生效的 in-process backstop**（把 backstop 接回 production 路徑）；非 auth 端點維持 fail-open。
 
 ### 🟠 RA-MED-3：醫療 reason-gate 對批量讀取路徑形同虛設
@@ -594,7 +596,7 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 |------|---------|------|------|
 | 1 | **RA-HIGH-3**（園長越權：GUARDIANS_WRITE 三端點補 `assert_student_access`/`require_unrestricted_role`）— 預設角色即可觸發，最優先 | 權限 | 1-2 小時 |
 | 2 | **RA-HIGH-1**（`has_permission` 對非 scope-aware code fail-closed + `POST/PUT /api/auth/users` 驗證 code/scope + **前端 `auth.ts:189` 同步**，見下方跨端註） | 權限 | 半天 |
-| 3 | RA-MED-2 + RA-HIGH-2（auth 限流韌性 fail-closed + 設 `TRUSTED_PROXY_IPS`） | 限流 | 半天 |
+| 3 | ✅ **程式碼已修（2026-06-04）** RA-MED-2（auth 限流 DB 失敗 fail-closed）+ RA-HIGH-2（`utils/request_ip` 只信「明設」可信代理，預設 fallback RFC1918）；**殘留為部署動作：prod 須設 `TRUSTED_PROXY_IPS` env 為 Zeabur edge 出口 CIDR** | 限流 | 部署設定 |
 | 4 | RA-MED-6（graduate 走 lifecycle）+ RA-MED-7（PII GC 連動 token 撤銷） | 個資法 PII 生命週期 | 半天 |
 | 5 | RA-MED-9（稽核表 FK CASCADE → RESTRICT/SET NULL，需 prod migration） | 稽核完整性 | 半天（含 migration） |
 | 6 | RA-MED-3（醫療解密收斂 §6 稽核）+ RA-L13（special_needs denylist 兩端） | 個資法醫療 | 半天 |

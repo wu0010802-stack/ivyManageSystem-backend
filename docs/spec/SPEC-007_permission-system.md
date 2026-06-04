@@ -449,7 +449,7 @@
 
 13. **新帳號／reset 密碼後強制改密**：`create_user` 與 `reset_password` 一律設 `must_change_password=True`；`get_current_user` 偵測到此旗標 + 請求路徑不在 `_PASSWORD_CHANGE_ALLOWED_PATHS`（`/api/auth/change-password`、`/api/auth/logout`）即 403。
 
-14. **登入雙層 rate limit**：IP 滑動視窗 5 分鐘 20 次（不分成敗）+ 帳號失敗鎖 5 次/15 分鐘；DB-backed counter（`rate_limit_buckets` 表）多 worker 一致；DB 失敗 fail-open。
+14. **登入雙層 rate limit**：IP 滑動視窗 5 分鐘 20 次（不分成敗）+ 帳號失敗鎖 5 次/15 分鐘；DB-backed counter（`rate_limit_buckets` 表）多 worker 一致；**DB 失敗時 auth 端點 fail-closed**（`count_recent_attempts(fail_closed=True)` 降級到 in-process backstop 計數，非歸零；RA-MED-2 修補，2026-06-04）；非 auth scope 仍 fail-open。
 
 15. **教師 WiFi 限制**：`role == teacher` 且 client IP 不在 `SCHOOL_WIFI_IPS` 白名單 → 403；未設白名單則全部放行。
 
