@@ -9,10 +9,13 @@
 （``test_pii_denylist_parity.py``）與 scope-aware parity 之外缺的「全表」缺口。
 
 策略：用 regex 從 permissions.ts 抽出 ``PERMISSION_NAMES`` 的值，跟 backend enum value
-雙向比對。前端不在預期路徑時，預設優雅 skip（不綁死 layout）；CI dedicated job
-（ci.yml: ``permission-parity``）設 ``PERMISSION_PARITY_REQUIRE_FRONTEND=1`` 時缺檔改
-fail 而非靜默 skip（否則此 gate 在前端不在預期 layout 的環境會給假信心）。
-``PERMISSION_PARITY_FRONTEND`` 可覆寫前端 permissions.ts 路徑（CI 指定 / 本機驗證用）。
+雙向比對。此為 **CI-only gate**（對齊 ``openapi-drift`` 的 CI-enforced 模式）：未設
+``PERMISSION_PARITY_REQUIRE_FRONTEND`` 時一律 skip——因為本機 / 一般 job 的 sibling 前端
+checkout 常不在 main（多 worktree / 分支並行），permission 集合會「合法地」與 main 不同，
+本機強制比對會誤報（不像 PII denylist 跨分支穩定，故不沿用其「檔在就比」策略）。dedicated
+CI job（ci.yml: ``permission-parity``）sibling checkout 前端 main + 設此 flag 才 enforce；
+此時缺檔則 fail（非靜默 skip）。``PERMISSION_PARITY_FRONTEND`` 可覆寫前端 permissions.ts
+路徑（CI 指定 / 本機驗證用）。
 """
 
 from __future__ import annotations
@@ -64,20 +67,22 @@ def _parse_fe_permission_names() -> frozenset[str]:
 
 
 def _requires_frontend():
-    if not _FRONTEND_PERMS.exists():
-        # CI 專屬 gate：dedicated job 會 sibling checkout 前端並設
-        # PERMISSION_PARITY_REQUIRE_FRONTEND=1，此時缺檔改 fail 而非 skip——否則此
-        # parity 守衛在前端不在預期 layout 的環境會「靜默 skip」給假信心。
-        # 本機與一般 CI job（無此 env、無前端 sibling）仍維持優雅 skip。
-        if os.getenv("PERMISSION_PARITY_REQUIRE_FRONTEND"):
-            pytest.fail(
-                f"PERMISSION_PARITY_REQUIRE_FRONTEND 已設，但前端 permissions.ts 不在預期路徑 "
-                f"{_FRONTEND_PERMS}；CI sibling checkout layout 可能壞了，"
-                f"請檢查 .github/workflows/ci.yml 的 permission-parity job。"
-            )
+    # CI-only gate：未設 PERMISSION_PARITY_REQUIRE_FRONTEND 時一律 skip。原因：本機 /
+    # 一般 job 的 sibling 前端 checkout 常不在 main（多 worktree / 分支並行），permission
+    # 集合會「合法地」與 main 不同，本機強制比對會誤報。只有 dedicated CI job
+    # （sibling checkout 前端 main）設此 flag 時才真正 enforce。
+    # 本機驗證：自設 PERMISSION_PARITY_REQUIRE_FRONTEND=1 [+ PERMISSION_PARITY_FRONTEND=<path>]。
+    if not os.getenv("PERMISSION_PARITY_REQUIRE_FRONTEND"):
         pytest.skip(
-            f"前端 permissions.ts 不在預期路徑 {_FRONTEND_PERMS}（CI checkout layout 不同？）；"
-            f"skip parity check。"
+            "未設 PERMISSION_PARITY_REQUIRE_FRONTEND（CI-only gate，對齊 openapi-drift）；"
+            "本機 / 一般 job skip。"
+        )
+    if not _FRONTEND_PERMS.exists():
+        # flag 已設但前端不在預期路徑 → fail（非靜默 skip），否則 gate 給假信心。
+        pytest.fail(
+            f"PERMISSION_PARITY_REQUIRE_FRONTEND 已設，但前端 permissions.ts 不在預期路徑 "
+            f"{_FRONTEND_PERMS}；CI sibling checkout layout 可能壞了，"
+            f"請檢查 .github/workflows/ci.yml 的 permission-parity job。"
         )
 
 
