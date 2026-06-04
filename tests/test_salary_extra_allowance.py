@@ -108,3 +108,12 @@ def test_salary_slip_no_extra_row_when_zero():
     table = _build_earnings_table(rec, "Helvetica", lambda v: f"{float(v):,.0f}")
     flat = [str(c) for row in table._cellvalues for c in row]
     assert not any("額外加給" in c for c in flat)
+
+
+def test_salary_records_item_out_includes_extra_allowance():
+    """GET /salaries/records 的 response_model 必須含 extra_allowance（否則 FastAPI 過濾掉
+    → 前端列無此值 → 編輯其他欄位時 manual_adjust 收到 0 把已存值靜默歸零）。"""
+    from schemas.salary_records import SalaryRecordItemOut
+
+    assert "extra_allowance" in SalaryRecordItemOut.model_fields
+    assert "extra_allowance_label" in SalaryRecordItemOut.model_fields

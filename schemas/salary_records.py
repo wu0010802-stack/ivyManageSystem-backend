@@ -56,6 +56,8 @@ class SalaryRecordItemOut(IvyBaseModel):
     meeting_overtime_pay: float  # pii-allow: 會議加班費
     meeting_absence_deduction: float  # pii-allow: 會議缺席扣款
     birthday_bonus: float  # pii-allow: 生日福利金
+    extra_allowance: float  # pii-allow: 額外加給（值週/活動加班費等）
+    extra_allowance_label: Optional[str] = None  # pii-allow: 額外加給名目
     performance_bonus: float  # pii-allow: 績效獎金
     special_bonus: float  # pii-allow: 特別獎金
     supervisor_dividend: float  # pii-allow: 主管分紅

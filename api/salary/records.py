@@ -115,6 +115,8 @@ def get_salary_records(
                     "meeting_overtime_pay": record.meeting_overtime_pay or 0,
                     "meeting_absence_deduction": record.meeting_absence_deduction or 0,
                     "birthday_bonus": record.birthday_bonus or 0,
+                    "extra_allowance": record.extra_allowance or 0,
+                    "extra_allowance_label": record.extra_allowance_label,
                     "performance_bonus": record.performance_bonus,
                     "special_bonus": record.special_bonus,
                     "supervisor_dividend": record.supervisor_dividend or 0,
