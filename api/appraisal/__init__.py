@@ -114,7 +114,7 @@ from services.appraisal.status_aggregator import (
 )
 from utils.academic import resolve_current_academic_term, semester_int_to_enum
 from utils.approval_helpers import assert_not_self_approval
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.taipei_time import today_taipei
 
@@ -128,7 +128,7 @@ appraisal_router = APIRouter(prefix="/api/appraisal", tags=["appraisal"])
 
 @appraisal_router.get("/cycles", response_model=list[CycleOut])
 def list_cycles(
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return (
@@ -142,7 +142,7 @@ def list_cycles(
 def get_current_cycle(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None, ge=1, le=2),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """取得當前學期 cycle；不存在回 null（200，**不**自動建立 / **不** 404）。
@@ -169,7 +169,7 @@ def get_current_cycle(
 @appraisal_router.get("/by_year/{academic_year}", response_model=list[CycleOut])
 def list_cycles_by_year(
     academic_year: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """取得某學年的所有 cycle（最多兩筆：上/下）。"""
@@ -237,7 +237,7 @@ def _build_participant_status_out(s) -> ParticipantStatusOut:
 )
 def get_aggregated_status(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """彙整 cycle 期間每位 participant 的四個指標（不寫 DB）。"""
@@ -262,7 +262,7 @@ def get_aggregated_status(
 )
 def get_all_employees_status(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """彙整 cycle 期間所有在職員工的四指標（包含未加入考核者）。
@@ -291,7 +291,9 @@ def get_all_employees_status(
 @appraisal_router.post("/cycles", response_model=CycleOut)
 def create_cycle(
     payload: CycleCreate,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_FINALIZE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     if (
@@ -329,7 +331,9 @@ def create_cycle(
 def update_cycle(
     cycle_id: int,
     payload: CycleUpdate,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_FINALIZE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     cycle = session.get(AppraisalCycle, cycle_id)
@@ -369,7 +373,7 @@ def update_cycle(
 
 @appraisal_router.get("/catalog", response_model=list[CatalogOut])
 def list_catalog(
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return (
@@ -387,7 +391,7 @@ def list_catalog(
 )
 def list_participants(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return (
@@ -402,7 +406,9 @@ def list_participants(
 def add_participant(
     cycle_id: int,
     payload: ParticipantCreate,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     if not session.get(AppraisalCycle, cycle_id):
@@ -427,7 +433,9 @@ def add_participant(
 def bulk_add_participants_from_active(
     cycle_id: int,
     payload: BulkAddParticipantsRequest,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     """把指定（或全部）在職員工自動加入 cycle。
@@ -486,7 +494,7 @@ def bulk_add_participants_from_active(
 )
 def list_score_items(
     participant_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return (
@@ -503,7 +511,9 @@ def list_score_items(
 def add_score_item(
     participant_id: int,
     payload: ScoreItemCreate,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     participant = session.get(AppraisalParticipant, participant_id)
@@ -537,7 +547,9 @@ def add_score_item(
 def sync_score_items(
     cycle_id: int,
     dry_run: bool = Query(False),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     """把 14 個 item_code 的 suggested_score_delta 寫入 appraisal_score_items。
@@ -703,7 +715,7 @@ def sync_score_items(
 @appraisal_router.get("/cycles/{cycle_id}/summaries", response_model=list[SummaryOut])
 def list_summaries(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return (
@@ -719,7 +731,9 @@ def list_summaries(
 )
 def recompute_summaries(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     """以引擎重算 cycle 內所有 participant 的 summary（5-step）。"""
@@ -812,7 +826,7 @@ def recompute_summaries(
 def sign_supervisor(
     summary_id: int,
     comment: str = "",
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_REVIEW)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_REVIEW)),
     session: Session = Depends(get_session_dep),
 ):
     # with_for_update：兩個 reviewer 同時簽核時，後贏者會覆蓋簽核人欄位
@@ -866,7 +880,9 @@ def sign_supervisor(
 def sign_accounting(
     summary_id: int,
     comment: str = "",
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_ACCOUNTING)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_ACCOUNTING)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
@@ -916,7 +932,9 @@ def sign_accounting(
 def finalize_summary(
     summary_id: int,
     comment: str = "",
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_FINALIZE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
@@ -983,7 +1001,7 @@ def _resolve_reject_permission(current_status: SummaryStatus) -> Permission:
 def reject_summary(
     summary_id: int,
     payload: RejectIn,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """退簽：寫 log + 更新 status 到 to_status（預設退一階）+ 清對應 sign 欄位。
@@ -1070,7 +1088,7 @@ def reject_summary(
 def comment_summary(
     summary_id: int,
     payload: CommentIn,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """留言：寫 AppraisalSummaryLog action=COMMENT，status 不變。
@@ -1109,7 +1127,7 @@ def comment_summary(
 def batch_sign_summaries(
     cycle_id: int,
     payload: BatchSignIn,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """批次簽核 summaries（SUPERVISOR / ACCOUNTING / FINALIZE）。
@@ -1241,7 +1259,7 @@ def batch_sign_summaries(
 )
 def get_summary_logs(
     summary_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """取得 summary 簽核軌跡（log）；desc by created_at + id。
@@ -1292,7 +1310,7 @@ def get_summary_logs(
 )
 def get_sign_status_summary(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """聚合 cycle 內所有 summary 的 sign status（排除 is_excluded participant）。
@@ -1358,7 +1376,7 @@ def get_sign_status_summary(
 
 @appraisal_router.get("/bonus_rates", response_model=list[BonusRateOut])
 def list_bonus_rates(
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return (
@@ -1375,7 +1393,9 @@ def list_bonus_rates(
 @appraisal_router.post("/bonus_rates", response_model=BonusRateOut)
 def create_bonus_rate(
     payload: BonusRateCreate,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_FINALIZE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     br = AppraisalBonusRate(
@@ -1428,7 +1448,9 @@ async def import_excel(
     start_date: date = Query(...),
     end_date: date = Query(...),
     base_score_calc_date: date = Query(...),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
+    ),
 ):
     """上傳半年考核 Excel（.xls 或 .xlsx）→ 建立/更新 cycle/participants/score_items/summaries。"""
     if not file.filename or not file.filename.lower().endswith((".xls", ".xlsx")):
@@ -1468,7 +1490,7 @@ async def import_excel(
 @appraisal_router.get("/cycles/{cycle_id}/export.xlsx")
 def export_excel(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """匯出半年考核成績表（與 Excel 原始版同欄位）。"""
@@ -1526,7 +1548,7 @@ def export_excel(
 @appraisal_router.get("/cycles/{cycle_id}/transfer_roster.xlsx")
 def export_transfer_roster(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """匯出轉帳名冊（只含 bonus > 0 的員工）。"""
@@ -1605,7 +1627,7 @@ def _row_to_scoring_rule_out(row: AppraisalScoringRule) -> ScoringRuleOut:
 @appraisal_router.get("/scoring_rules", response_model=list[ScoringRuleOut])
 def list_scoring_rules(
     effective_on: Optional[date] = Query(None),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """列出指定日期當前有效的所有規則（每個 item_code 只取最新版）。"""
@@ -1632,7 +1654,7 @@ def list_scoring_rules(
 @appraisal_router.get("/scoring_rules/history", response_model=list[ScoringRuleOut])
 def get_scoring_rule_history(
     item_code: str = Query(...),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """單一 item_code 的版本歷史，依 effective_from 由新到舊。"""
@@ -1648,7 +1670,9 @@ def get_scoring_rule_history(
 @appraisal_router.post("/scoring_rules", response_model=ScoringRuleOut, status_code=201)
 def create_scoring_rule(
     payload: ScoringRuleIn,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_RULE_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_RULE_WRITE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     """建立新版規則。
@@ -1700,7 +1724,7 @@ def create_scoring_rule(
 )
 def list_manual_event_counts(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """列出指定 cycle 已填的手填事件次數（含員工姓名）。"""
@@ -1742,7 +1766,9 @@ def list_manual_event_counts(
 def batch_upsert_manual_event_counts(
     cycle_id: int,
     payload: ManualEventCountBatchIn,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_EVENT_WRITE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_EVENT_WRITE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     """Batch UPSERT 手填事件次數；僅 OPEN 狀態的 cycle 可寫。"""
@@ -1786,7 +1812,7 @@ def batch_upsert_manual_event_counts(
 )
 def score_preview(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """Dry-run 算 14 條 delta + 對比目前 DB score_items 標 highlight。

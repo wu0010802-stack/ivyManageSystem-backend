@@ -21,7 +21,11 @@ from models.database import (
 from utils.auth import require_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
-from utils.portfolio_access import is_unrestricted, student_ids_in_scope
+from utils.portfolio_access import (
+    assert_student_access,
+    is_unrestricted,
+    student_ids_in_scope,
+)
 from utils.record_formatters import assessment_to_dict
 from utils.validators import validate_assessment_fields
 
@@ -208,8 +212,14 @@ def create_assessment(
             )
             if not student:
                 raise HTTPException(status_code=404, detail=STUDENT_NOT_FOUND)
-            if student.classroom_id:
-                _require_classroom_access(session, current_user, student.classroom_id)
+            # 班級存取檢查：擋跨班、未分班(classroom_id=NULL)與終態學生。
+            # 不可用 `if student.classroom_id:` 包住（NULL 會繞過 → 越權）。
+            assert_student_access(
+                session,
+                current_user,
+                payload.student_id,
+                code=Permission.STUDENTS_WRITE.value,
+            )
 
             related_incident = _validate_related_incident(
                 session, payload.student_id, payload.related_incident_id
@@ -267,13 +277,12 @@ def update_assessment(
             if not assessment:
                 raise HTTPException(status_code=404, detail="找不到該評量記錄")
 
-            student = (
-                session.query(Student)
-                .filter(Student.id == assessment.student_id)
-                .first()
+            student = assert_student_access(
+                session,
+                current_user,
+                assessment.student_id,
+                code=Permission.STUDENTS_WRITE.value,
             )
-            if student and student.classroom_id:
-                _require_classroom_access(session, current_user, student.classroom_id)
 
             validate_assessment_fields(
                 assessment_type=payload.assessment_type,
@@ -339,15 +348,12 @@ def delete_assessment(
             if not assessment:
                 raise HTTPException(status_code=404, detail="找不到該評量記錄")
 
-            student_for_access = (
-                session.query(Student)
-                .filter(Student.id == assessment.student_id)
-                .first()
+            assert_student_access(
+                session,
+                current_user,
+                assessment.student_id,
+                code=Permission.STUDENTS_WRITE.value,
             )
-            if student_for_access and student_for_access.classroom_id:
-                _require_classroom_access(
-                    session, current_user, student_for_access.classroom_id
-                )
 
             student_id_for_log = assessment.student_id
             session.delete(assessment)

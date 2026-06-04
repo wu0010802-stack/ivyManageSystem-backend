@@ -207,24 +207,16 @@ async def readiness(deep: bool = Query(False)):
     )
 
 
-
-
-class SchedulerHealthItem(IvyBaseModel):
-    """schedulers_health item shape."""
-
-    name: str
-    last_success_at: str | None = None
-    lag_seconds: float | None = None
-    expected_interval_seconds: int
-    consecutive_failures: int
-
-
 class SchedulersHealthOut(IvyBaseModel):
-    """GET /health/schedulers — UptimeRobot 公開 endpoint."""
+    """GET /health/schedulers — UptimeRobot 公開 endpoint。
+
+    僅回聚合狀態（HTTP status code + 非敏感計數）。scheduler 名稱 / lag /
+    失敗數等明細**不對未認證公開端外洩**（改記 server-side log 供 ops 排查）。
+    """
 
     status: str
-    schedulers: list[SchedulerHealthItem]
-    lagging: list[SchedulerHealthItem] | None = None
+    total: int
+    lagging_count: int
 
 
 @router.get("/schedulers", response_model=SchedulersHealthOut)
@@ -253,7 +245,9 @@ def schedulers_health():
                 is_lagging = lag_seconds > 2 * row.expected_interval_seconds
             item = {
                 "name": row.scheduler_name,
-                "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
+                "last_success_at": (
+                    row.last_success_at.isoformat() if row.last_success_at else None
+                ),
                 "lag_seconds": lag_seconds,
                 "expected_interval_seconds": row.expected_interval_seconds,
                 "consecutive_failures": row.consecutive_failures,
@@ -261,10 +255,22 @@ def schedulers_health():
             schedulers.append(item)
             if is_lagging:
                 lagging.append(item)
+    total = len(schedulers)
     if lagging:
+        # 明細（名稱/lag/失敗數）僅入 server log 供 ops 排查，不對未認證公開端外洩
+        logger.warning(
+            "scheduler 健康降級：%s",
+            ", ".join(
+                f"{x['name']}(lag={x['lag_seconds']:.0f}s,fail={x['consecutive_failures']})"
+                for x in lagging
+            ),
+        )
         return JSONResponse(
             status_code=503,
-            content={"status": "degraded", "lagging": lagging, "schedulers": schedulers},
+            content={
+                "status": "degraded",
+                "total": total,
+                "lagging_count": len(lagging),
+            },
         )
-    return {"status": "ok", "schedulers": schedulers}
-
+    return {"status": "ok", "total": total, "lagging_count": 0}

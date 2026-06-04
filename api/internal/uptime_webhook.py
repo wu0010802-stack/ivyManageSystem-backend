@@ -14,6 +14,7 @@ env：
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import TYPE_CHECKING
 
 from schemas._base import IvyBaseModel
@@ -57,12 +58,11 @@ def _build_message(monitor: str, alert_type: str, details: str) -> str:
         return f"ℹ️ 監控更新：{monitor}\n細節：{details}"
 
 
-
-
 class UptimeWebhookOut(IvyBaseModel):
     """POST /uptime-webhook — UptimeRobot callback ack."""
 
     status: str
+
 
 @router.post("/uptime-webhook", response_model=UptimeWebhookOut)
 async def uptime_webhook(token: str, request: Request):
@@ -72,7 +72,8 @@ async def uptime_webhook(token: str, request: Request):
     payload 為 UptimeRobot 標準 JSON：{monitorFriendlyName, alertType, alertDetails}。
     """
     expected_token = settings.ops_alert.uptime_robot_webhook_token
-    if not expected_token or token != expected_token:
+    # 常數時間比對，避免 token timing 側信道（與其餘端點 compare_digest 一致）
+    if not expected_token or not secrets.compare_digest(token, expected_token):
         raise HTTPException(status_code=401, detail="invalid token")
 
     payload = await request.json()

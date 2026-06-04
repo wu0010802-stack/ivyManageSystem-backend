@@ -292,7 +292,9 @@ def _fetch_appraisal(
     一個 AppraisalCycle 拆 start_date / end_date / base_score_calc_date 三筆，
     僅落 window 內者下發；id 用 `{cycle_id}:{milestone}` 區分。
     """
-    if not has_permission(
+    # 考核為管理端功能：教師走 portal /my-appraisals（自我 scope），不得在此看到
+    # 全校考核 cycle metadata（與 api/appraisal 管理端 router 的 staff-only 一致）。
+    if current_user.get("role") in ("teacher", "parent") or not has_permission(
         current_user.get("permission_names"), Permission.APPRAISAL_READ
     ):
         return []
