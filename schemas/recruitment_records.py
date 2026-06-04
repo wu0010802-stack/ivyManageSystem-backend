@@ -52,6 +52,10 @@ class RecruitmentRecordOut(IvyBaseModel):
     no_deposit_reason_detail: Optional[str] = None  # pii-allow: 未預繳細節描述
     enrolled: Optional[bool] = None
     transfer_term: Optional[bool] = None
+    # 暫定編班（保留座位）— recruitment_visits 既有欄位，班級頁準新生/訪視記錄顯示用
+    provisional_grade_id: Optional[int] = None
+    target_school_year: Optional[int] = None
+    target_semester: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
