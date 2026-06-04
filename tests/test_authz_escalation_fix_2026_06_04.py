@@ -183,3 +183,34 @@ def test_teacher_cannot_see_appraisal_layer_in_calendar_feed(tmp_path):
     s.close()
     engine.dispose()
     assert items == [], f"教師不應看到考核 layer metadata，實得 {len(items)} 筆"
+
+
+# ───────────────────────── #4 health/schedulers 資訊揭露 ─────────────────────────
+def test_schedulers_health_does_not_expose_scheduler_details(tmp_path):
+    """公開 /health/schedulers 不得洩漏 scheduler 名稱/lag/失敗數（僅回 status 聚合）。"""
+    from api.health import router as health_router
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'sched.sqlite'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    old_engine = base_module._engine
+    old_session_factory = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = sessionmaker(bind=engine)
+
+    app = FastAPI()
+    app.include_router(health_router)
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/health/schedulers")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert "schedulers" not in body, "公開端點不應回傳 scheduler 明細清單"
+            assert "name" not in resp.text, "公開端點不應洩漏 scheduler 名稱"
+            assert body.get("status") == "ok"
+    finally:
+        base_module._engine = old_engine
+        base_module._SessionFactory = old_session_factory
+        engine.dispose()

@@ -42,7 +42,10 @@ def test_schedulers_health_all_green(health_client, test_db_session):
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "ok"
-    assert any(s["name"] == "sched_a" for s in data["schedulers"])
+    assert data["total"] == 1
+    assert data["lagging_count"] == 0
+    # 明細（scheduler 名稱等）不再對未認證端外洩
+    assert "schedulers" not in data
 
 
 def test_schedulers_health_lagging_returns_503(health_client, test_db_session):
@@ -60,11 +63,9 @@ def test_schedulers_health_lagging_returns_503(health_client, test_db_session):
     assert r.status_code == 503
     data = r.json()
     assert data["status"] == "degraded"
-    assert any(item["name"] == "sched_b" for item in data["lagging"])
-    # lag info included
-    sb = next(item for item in data["lagging"] if item["name"] == "sched_b")
-    assert sb["lag_seconds"] > 600
-    assert sb["expected_interval_seconds"] == 300
+    assert data["lagging_count"] == 1
+    # 明細（名稱/lag）改記 server log，不對未認證端外洩
+    assert "lagging" not in data
 
 
 def test_schedulers_health_never_ran_not_lagging(health_client, test_db_session):
@@ -81,9 +82,9 @@ def test_schedulers_health_never_ran_not_lagging(health_client, test_db_session)
     r = health_client.get("/health/schedulers")
     assert r.status_code == 200
     data = r.json()
-    item = next(s for s in data["schedulers"] if s["name"] == "sched_c")
-    assert item["last_success_at"] is None
-    assert item["lag_seconds"] is None
+    # last_success_at IS NULL 不算 lagging
+    assert data["status"] == "ok"
+    assert data["lagging_count"] == 0
 
 
 def test_schedulers_health_mixed_green_and_lagging(health_client, test_db_session):
@@ -107,10 +108,8 @@ def test_schedulers_health_mixed_green_and_lagging(health_client, test_db_sessio
     r = health_client.get("/health/schedulers")
     assert r.status_code == 503
     data = r.json()
-    # lagging list 只含 sched_lag
-    assert {item["name"] for item in data["lagging"]} == {"sched_lag"}
-    # schedulers 含全部
-    assert {s["name"] for s in data["schedulers"]} >= {"sched_green", "sched_lag"}
+    assert data["total"] == 2
+    assert data["lagging_count"] == 1  # 只有 sched_lag lagging
 
 
 def test_schedulers_health_empty_returns_ok(health_client):
