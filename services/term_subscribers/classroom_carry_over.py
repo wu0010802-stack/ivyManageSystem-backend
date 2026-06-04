@@ -53,6 +53,22 @@ def _carry_over_same_year(
 ) -> None:
     """同學年 1→2：每個 old classroom 生新 row（複製欄位、新 id），
     再把該 classroom 名下 active student.classroom_id 重新指向新 row。"""
+    # 防重複：目標學期已存在班級 → 視為已 carry-over，跳過（排程器冪等保險）
+    already = (
+        session.query(Classroom)
+        .filter(
+            Classroom.school_year == new.school_year,
+            Classroom.semester == new.semester,
+        )
+        .first()
+    )
+    if already is not None:
+        logger.info(
+            "classroom_carry_over: 目標學期 %s-%s 已有班級，跳過 carry-over",
+            new.school_year,
+            new.semester,
+        )
+        return
     old_classrooms = (
         session.query(Classroom)
         .filter(

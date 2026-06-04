@@ -1,5 +1,5 @@
 """
-api/bonus_preview.py — 節慶獎金影響預覽 & 獎金達成儀表板 API
+api/bonus_preview.py — 節慶獎金影響預覽 API
 """
 
 import calendar
@@ -8,7 +8,7 @@ from datetime import date
 from utils.taipei_time import today_taipei
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
@@ -89,42 +89,6 @@ class BonusImpactResponse(BaseModel):
     month: int
     affected_classrooms: list[ClassroomImpact]
     school_wide_impact: list[SchoolWideImpact]
-
-
-class DashboardTeacher(BaseModel):
-    employee_id: int
-    name: str
-    role: str
-    # 金額欄位：對非 admin/hr caller 遮罩為 None（F-016）
-    estimated_bonus: Optional[int] = None
-    base_amount: Optional[int] = None
-
-
-class DashboardClassroom(BaseModel):
-    classroom_id: int
-    classroom_name: str
-    grade_name: str
-    current_enrollment: int
-    target_enrollment: int
-    achievement_rate: float
-    status: str  # "below" | "on_target" | "above"
-    teachers: list[DashboardTeacher]
-
-
-class DashboardSchoolWide(BaseModel):
-    total_enrollment: int
-    total_target: int
-    achievement_rate: float
-    # 金額欄位：對非 admin/hr caller 遮罩為 None（F-016）
-    estimated_total_bonus: Optional[int] = None
-
-
-class BonusDashboardResponse(BaseModel):
-    year: int
-    month: int
-    is_festival_month: bool
-    school_wide: DashboardSchoolWide
-    classrooms: list[DashboardClassroom]
 
 
 # ---------------------------------------------------------------------------
@@ -361,152 +325,4 @@ def preview_bonus_impact(
 
     except Exception as e:
         logger.exception("獎金影響預覽計算失敗")
-        raise_safe_500(e)
-
-
-# ---------------------------------------------------------------------------
-# GET /api/bonus-preview/dashboard
-# ---------------------------------------------------------------------------
-
-
-@router.get("/bonus-preview/dashboard", response_model=BonusDashboardResponse)
-def get_bonus_dashboard(
-    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_READ)),
-    year: Optional[int] = Query(None, ge=2000, le=2100),
-    month: Optional[int] = Query(None, ge=1, le=12),
-):
-    """獎金達成儀表板：各班在籍 vs 目標、達成率、預估獎金。
-
-    F-016：對非 admin/hr caller 遮罩 estimated_bonus / base_amount /
-    estimated_total_bonus 金額（保留班級在籍/目標/達成率，供主管評估招生）。
-    """
-    # F-016：非 admin/hr 不可看逐員獎金金額（即使持 STUDENTS_READ）
-    can_view_amount = has_full_salary_view(current_user)
-    from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
-
-    engine = (
-        _salary_engine if _salary_engine else RuntimeSalaryEngine(load_from_db=True)
-    )
-
-    today = today_taipei()
-    if year is None:
-        year = today.year
-    if month is None:
-        month = today.month
-
-    is_festival = get_bonus_distribution_month(month)
-
-    try:
-        with session_scope() as session:
-            _, month_last_day = calendar.monthrange(year, month)
-            month_end = date(year, month, month_last_day)
-
-            cls_count_map = classroom_student_count_map(session, month_end)
-            school_total = count_students_active_on(session, month_end)
-
-            all_bonus = _compute_all_bonus(
-                session, engine, year, month, cls_count_map, school_total
-            )
-
-            # 按班級分組帶班老師
-            classroom_teachers: dict[int, list[dict]] = {}
-            total_bonus = 0
-            school_wide_target = getattr(engine, "_school_wide_target", None) or 160
-
-            for item in all_bonus:
-                total_bonus += item.get("festivalBonus", 0)
-                cat = item.get("category", "")
-                cid = item.get("classroom_id")
-                if cat == "帶班老師" and cid:
-                    classroom_teachers.setdefault(cid, []).append(item)
-
-            # 建構班級列表
-            classrooms_data = []
-            all_classrooms = (
-                session.query(Classroom)
-                .options(joinedload(Classroom.grade))
-                .filter(Classroom.is_active == True)
-                .all()
-            )
-
-            for classroom in all_classrooms:
-                enrollment = cls_count_map.get(classroom.id, 0)
-                teachers_in_class = classroom_teachers.get(classroom.id, [])
-                if not teachers_in_class and enrollment == 0:
-                    continue
-
-                # 從教師獎金結果取得 target（各教師可能 target 不同，取班導的）
-                target = 0
-                for t in teachers_in_class:
-                    t_target = t.get("targetEnrollment", 0)
-                    if t_target > target:
-                        target = t_target
-
-                rate = enrollment / target if target > 0 else 0
-                if rate >= 1.0:
-                    status = "above"
-                elif rate >= 0.8:
-                    status = "on_target"
-                else:
-                    status = "below"
-
-                dashboard_teachers = []
-                for t in teachers_in_class:
-                    # 判斷角色顯示名稱
-                    remark = t.get("remark", "")
-                    if "主管" in t.get("category", ""):
-                        role_label = "主管"
-                    elif "兩班平均" in remark:
-                        role_label = "共用副班導"
-                    else:
-                        # 從 bonusBase 推斷
-                        base = t.get("bonusBase", 0)
-                        role_label = "班導" if base >= 1500 else "副班導"
-
-                    dashboard_teachers.append(
-                        DashboardTeacher(
-                            employee_id=t["employee_id"],
-                            name=t.get("name", ""),
-                            role=role_label,
-                            estimated_bonus=(
-                                t.get("festivalBonus", 0) if can_view_amount else None
-                            ),
-                            base_amount=(
-                                t.get("bonusBase", 0) if can_view_amount else None
-                            ),
-                        )
-                    )
-
-                classrooms_data.append(
-                    DashboardClassroom(
-                        classroom_id=classroom.id,
-                        classroom_name=classroom.name,
-                        grade_name=classroom.grade.name if classroom.grade else "",
-                        current_enrollment=enrollment,
-                        target_enrollment=target,
-                        achievement_rate=round(rate, 4),
-                        status=status,
-                        teachers=dashboard_teachers,
-                    )
-                )
-
-            school_rate = (
-                school_total / school_wide_target if school_wide_target > 0 else 0
-            )
-
-        return BonusDashboardResponse(
-            year=year,
-            month=month,
-            is_festival_month=is_festival,
-            school_wide=DashboardSchoolWide(
-                total_enrollment=school_total,
-                total_target=school_wide_target,
-                achievement_rate=round(school_rate, 4),
-                estimated_total_bonus=total_bonus if can_view_amount else None,
-            ),
-            classrooms=classrooms_data,
-        )
-
-    except Exception as e:
-        logger.exception("獎金達成儀表板查詢失敗")
         raise_safe_500(e)

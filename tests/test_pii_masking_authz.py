@@ -135,12 +135,12 @@ def _create_employee(session, employee_id_str: str, name: str) -> Employee:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# F-016：bonus_preview dashboard / impact-preview
+# F-016：bonus_preview impact-preview
 # ─────────────────────────────────────────────────────────────────────────
 
 
 class TestF016_BonusPreview:
-    """非 admin/hr 看不到逐員 estimated_bonus / current_bonus / projected_bonus 金額。"""
+    """非 admin/hr 看不到逐員 current_bonus / projected_bonus / change 金額。"""
 
     def _patch_compute(self, monkeypatch, classroom_id):
         """Patch _compute_all_bonus 回傳穩定的測試資料。"""
@@ -201,22 +201,6 @@ class TestF016_BonusPreview:
         self._patch_compute(monkeypatch, cls_id)
 
         _login(client, "sv_bonus")
-        # dashboard
-        res = client.get("/api/bonus-preview/dashboard?year=2026&month=4")
-        assert res.status_code == 200, res.text
-        data = res.json()
-        # 各班教師 estimated_bonus / base_amount 應被遮罩
-        for cr in data["classrooms"]:
-            for t in cr["teachers"]:
-                assert (
-                    t["estimated_bonus"] is None
-                ), f"estimated_bonus 應遮罩，實際 {t['estimated_bonus']}"
-                assert (
-                    t["base_amount"] is None
-                ), f"base_amount 應遮罩，實際 {t['base_amount']}"
-        # 全校總獎金亦應遮罩
-        assert data["school_wide"]["estimated_total_bonus"] is None
-
         # impact-preview
         res2 = client.post(
             "/api/bonus-impact-preview",
@@ -251,15 +235,24 @@ class TestF016_BonusPreview:
         self._patch_compute(monkeypatch, cls_id)
 
         _login(client, "adm_bonus")
-        res = client.get("/api/bonus-preview/dashboard?year=2026&month=4")
+        res = client.post(
+            "/api/bonus-impact-preview",
+            json={
+                "operation": "add",
+                "classroom_id": cls_id,
+                "student_count_change": 1,
+            },
+        )
         assert res.status_code == 200, res.text
-        data = res.json()
-        seen_amounts = []
-        for cr in data["classrooms"]:
-            for t in cr["teachers"]:
-                seen_amounts.append(t["estimated_bonus"])
-        assert 5000 in seen_amounts
-        assert data["school_wide"]["estimated_total_bonus"] == 5000 + 8000
+        d = res.json()
+        any_teacher = any(
+            t["current_bonus"] == 5000
+            for cr in d["affected_classrooms"]
+            for t in cr["teachers"]
+        )
+        any_school = any(sw["current_bonus"] == 8000 for sw in d["school_wide_impact"])
+        assert any_teacher
+        assert any_school
 
     def test_hr_sees_unmasked(self, pii_client, monkeypatch):
         client, sf = pii_client

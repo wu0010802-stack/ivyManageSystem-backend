@@ -1,6 +1,5 @@
 """學年度計算工具單元測試。"""
 
-import logging
 import os
 import sys
 from datetime import date
@@ -80,44 +79,15 @@ class TestResolveAcademicTermFilters:
         assert exc_info.value.status_code == 400
 
 
-class TestResolveDBAware:
-    """utils.academic DB-aware 測試（新增）。
+class TestResolveNeverQueriesDB:
+    """resolve_current_academic_term 改為純日期推導後：永不查 DB。
 
-    既有測試（純日期推算）保持不動；以下新增 4 個 case 驗證 DB 路徑。
+    （DB-aware 行為已移除；is_current 僅供 turnover 排程器當結轉標記。
+    新契約完整覆蓋見 tests/test_resolve_current_term_date_driven.py。）
     """
 
-    def test_resolve_uses_db_is_current_when_set(self, test_db_session):
-        """DB 有 is_current=true row 時回傳該 row 的 (school_year, semester)。"""
-        from models.academic_term import AcademicTerm
-        from utils.academic import default_current_academic_term_for_column
-
-        term = AcademicTerm(
-            school_year=114,
-            semester=2,
-            start_date=date(2026, 2, 1),
-            end_date=date(2026, 7, 31),
-            is_current=True,
-        )
-        test_db_session.add(term)
-        test_db_session.flush()
-
-        assert resolve_current_academic_term(session=test_db_session) == (114, 2)
-
-    def test_resolve_fallback_to_date_when_no_current(self, test_db_session, caplog):
-        """DB 無 is_current=true row 時 fallback 到日期推算 + 寫 warning。"""
-        with caplog.at_level(logging.WARNING):
-            sy, sem = resolve_current_academic_term(session=test_db_session)
-        # 日期推算應與 _resolve_by_date(date.today()) 一致
-        from utils.academic import _resolve_by_date
-
-        assert (sy, sem) == _resolve_by_date(date.today())
-        assert any(
-            "AcademicTerm.is_current 未設定" in record.message
-            for record in caplog.records
-        )
-
     def test_resolve_target_date_skips_db_query(self):
-        """顯式傳 target_date 不應查 DB。"""
+        """顯式傳 target_date 不查 DB。"""
         mock_session = MagicMock()
         result = resolve_current_academic_term(
             target_date=date(2025, 9, 1), session=mock_session
@@ -125,11 +95,16 @@ class TestResolveDBAware:
         assert result == (114, 1)
         mock_session.query.assert_not_called()
 
+    def test_resolve_no_target_date_also_skips_db_query(self):
+        """無 target_date 時也走日期推導、不查 DB。"""
+        mock_session = MagicMock()
+        resolve_current_academic_term(session=mock_session)
+        mock_session.query.assert_not_called()
+
     def test_default_for_column_never_queries_db(self):
         """Column default helper 永遠不查 DB（純日期推算）。"""
         from utils.academic import default_current_academic_term_for_column
 
-        # 無 session 參數可傳；如果內部有任何 DB query 會 raise
         result = default_current_academic_term_for_column()
         assert isinstance(result, tuple)
         assert len(result) == 2
