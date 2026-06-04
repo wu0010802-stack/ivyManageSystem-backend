@@ -1,4 +1,4 @@
-"""api/permissions_admin.py 整合測試（DB-driven 自訂權限/角色 CRUD）。"""
+"""api/permissions_admin.py 整合測試（DB-driven 自訂角色 CRUD）。"""
 
 import os
 import sys
@@ -120,123 +120,32 @@ def _teacher_login(client):
 
 
 # ====================================================================
-# PermissionDefinition CRUD
+# PermissionDefinition CRUD — 已移除（只保留角色管理）
 # ====================================================================
 
 
-class TestPermissionDefinitionCRUD:
-    def test_create_custom_definition_success(self, client):
+class TestPermissionDefinitionEndpointsRemoved:
+    """權限定義 CRUD 端點已移除，只保留角色管理。鎖住簡化，避免被加回。"""
+
+    def test_create_definition_route_removed(self, client):
         c, _ = client
         _admin_login(c)
         resp = c.post(
-            "/api/permissions/definitions",
-            json={
-                "code": "PARENT_SURVEY_WRITE",
-                "label": "家長問卷編輯",
-                "description": "編輯家長問卷模板",
-                "group_name": "家園溝通",
-            },
+            "/api/permissions/definitions", json={"code": "X_PERM", "label": "x"}
         )
-        assert resp.status_code == 200
-        assert resp.json()["code"] == "PARENT_SURVEY_WRITE"
-        assert resp.json()["is_core"] is False
-
-    def test_create_duplicate_code_returns_422(self, client):
-        c, _ = client
-        _admin_login(c)
-        resp = c.post(
-            "/api/permissions/definitions",
-            json={"code": "EMPLOYEES_READ", "label": "重複"},
-        )
-        assert resp.status_code == 422
-
-    def test_create_invalid_code_pattern_returns_422(self, client):
-        c, _ = client
-        _admin_login(c)
-        # lowercase 開頭、特殊符號等都該被 pattern 擋
-        for bad in ["lowercase", "WITH-DASH", "123_LEAD", ""]:
-            resp = c.post(
-                "/api/permissions/definitions", json={"code": bad, "label": "x"}
-            )
-            assert resp.status_code == 422, f"bad code {bad!r} should 422"
-
-    def test_create_requires_roles_manage(self, client):
-        c, _ = client
-        _teacher_login(c)  # teacher 無 ROLES_MANAGE
-        resp = c.post(
-            "/api/permissions/definitions", json={"code": "NEW_PERM", "label": "x"}
-        )
-        assert resp.status_code == 403
-
-    def test_update_is_core_label_success(self, client):
-        c, _ = client
-        _admin_login(c)
-        resp = c.put(
-            "/api/permissions/definitions/EMPLOYEES_READ",
-            json={"label": "員工檢視（改）"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["label"] == "員工檢視（改）"
-
-    def test_update_nonexistent_code_returns_404(self, client):
-        c, _ = client
-        _admin_login(c)
-        resp = c.put("/api/permissions/definitions/NONEXISTENT", json={"label": "x"})
         assert resp.status_code == 404
 
-    def test_delete_is_core_returns_409(self, client):
+    def test_update_definition_route_removed(self, client):
+        c, _ = client
+        _admin_login(c)
+        resp = c.put("/api/permissions/definitions/EMPLOYEES_READ", json={"label": "x"})
+        assert resp.status_code == 404
+
+    def test_delete_definition_route_removed(self, client):
         c, _ = client
         _admin_login(c)
         resp = c.delete("/api/permissions/definitions/EMPLOYEES_READ")
-        assert resp.status_code == 409
-        assert "核心" in resp.json()["detail"]
-
-    def test_delete_custom_definition_success(self, client):
-        c, _ = client
-        _admin_login(c)
-        c.post("/api/permissions/definitions", json={"code": "TMP_PERM", "label": "暫"})
-        resp = c.delete("/api/permissions/definitions/TMP_PERM")
-        assert resp.status_code == 200
-
-    def test_delete_custom_cascade_cleans_roles(self, client):
-        c, sf = client
-        _admin_login(c)
-        # 加自訂權限 → 加自訂角色含此權限 → 刪權限應清掉 role 內 reference
-        c.post("/api/permissions/definitions", json={"code": "TMP_X", "label": "x"})
-        c.post(
-            "/api/roles",
-            json={
-                "code": "tmp_role",
-                "label": "暫",
-                "permissions": ["DASHBOARD", "TMP_X"],
-            },
-        )
-        c.delete("/api/permissions/definitions/TMP_X")
-        # 驗證 role 內 TMP_X 已被清
-        session = sf()
-        role = session.query(Role).filter_by(code="tmp_role").first()
-        assert "TMP_X" not in role.permissions
-        assert "DASHBOARD" in role.permissions
-        session.close()
-
-    def test_delete_custom_cascade_cleans_users(self, client):
-        c, sf = client
-        _admin_login(c)
-        c.post("/api/permissions/definitions", json={"code": "TMP_Y", "label": "y"})
-        session = sf()
-        from models.database import User
-
-        u = session.query(User).filter_by(username="teacher_u").first()
-        u.permission_names = ["DASHBOARD", "TMP_Y"]
-        old_token_v = u.token_version
-        session.commit()
-        session.close()
-        c.delete("/api/permissions/definitions/TMP_Y")
-        session = sf()
-        u = session.query(User).filter_by(username="teacher_u").first()
-        assert "TMP_Y" not in u.permission_names
-        assert u.token_version > old_token_v  # token bump
-        session.close()
+        assert resp.status_code == 404
 
 
 # ====================================================================
