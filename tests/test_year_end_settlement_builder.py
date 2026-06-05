@@ -1276,3 +1276,76 @@ class TestSingleSemesterPerfRateGate:
             f"單學期在職者 avg 應只計在職學期全校率 80.0，非兩學期平均 70.0。"
             f"got={st.avg_performance_rate}"
         )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P1-B（金流審查 2026-06-05）：班級率 class_ret/class_perf 未隨全校率"
+            "按 worked_semesters gate（settlement_builder.py:484-519）。業主 "
+            "2026-06-05 的 GATE 決議註解目前僅明載『全校率』；待業主確認決議涵蓋"
+            "班級率後，於 484-519 比照 476-479 補 gate 並移除此 xfail。"
+        ),
+    )
+    def test_class_rate_gated_for_non_worked_semester(self, test_db_session):
+        """帶班老師單學期在職：未在職學期的班級率應與全校率一樣被 worked gate 成 None，
+        否則非在職學期的班級率會被計入 pair_avg 稀釋平均（通常少發單學期帶班老師年終）。"""
+        from models.year_end import YearEndCycle
+
+        db = test_db_session
+        cycle = YearEndCycle(
+            academic_year=ACADEMIC_YEAR,
+            start_date=CYCLE_START,
+            end_date=CYCLE_END,
+            bonus_calc_date=BONUS_CALC_DATE,
+        )
+        db.add(cycle)
+        db.flush()
+
+        classroom = Classroom(name="大班Z", school_year=114, semester=1)
+        db.add(classroom)
+        db.flush()
+
+        # 帶班（head_teacher）：上學期在職、下學期未在職 → worked=(True, False)
+        emp = Employee(
+            employee_id="E_HT_HALF",
+            name="林帶班",
+            position="班導",
+            title="幼兒園教師",
+            bonus_grade="b",
+            base_salary=36160,
+            bypass_standard_base=True,
+            is_active=True,
+            hire_date=date(2025, 8, 1),
+            resign_date=date(2025, 12, 31),
+        )
+        db.add(emp)
+        db.flush()
+
+        # 兩學期皆有 ClassEnrollmentTarget（非畢業班 fallback 路徑）
+        for sem_first in (True, False):
+            db.add(
+                ClassEnrollmentTarget(
+                    year_end_cycle_id=cycle.id,
+                    semester_first=sem_first,
+                    classroom_id=classroom.id,
+                    head_teacher_employee_id=emp.id,
+                    head_count_target=4,
+                    class_performance_rate=_D("100.0"),
+                    returning_student_rate=_D("0.9"),
+                )
+            )
+        db.flush()
+
+        rates = sb.gather_performance_rates(
+            db,
+            cycle,
+            emp,
+            school_rates=(None, None),
+            worked_first=True,
+            worked_second=False,
+        )
+
+        # 在職上學期保留；未在職下學期的班級率應被 gate 成 None
+        assert rates.class_returning_rate_first is not None
+        assert rates.class_returning_rate_second is None
+        assert rates.class_performance_rate_second is None
