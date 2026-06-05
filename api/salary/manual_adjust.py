@@ -106,6 +106,8 @@ class SalaryManualAdjustRequest(BaseModel):
     )
     absence_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
     other_deduction: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    extra_allowance: Optional[float] = Field(None, ge=0, le=_MANUAL_ADJUST_FIELD_MAX)
+    extra_allowance_label: Optional[str] = Field(None, max_length=50)
 
 
 EDITABLE_SALARY_FIELDS = {
@@ -128,6 +130,7 @@ EDITABLE_SALARY_FIELDS = {
     "meeting_absence_deduction": "節慶獎金扣減",
     "absence_deduction": "曠職扣款",
     "other_deduction": "其他扣款",
+    "extra_allowance": "額外加給",
 }
 
 
@@ -219,6 +222,18 @@ def manual_adjust_salary(
             )
             modified_fields.append(field)
             total_abs_delta += abs(new_value - old_value)
+
+        # 額外加給名目（文字欄，與數值欄分流）；設值時加入 manual_overrides，
+        # 使 _fill_salary_record 的 _apply 在重算時跳過覆寫、保留名目（與金額欄同步鎖定）。
+        if "extra_allowance_label" in payload:
+            new_label = (payload.get("extra_allowance_label") or "").strip() or None
+            old_label = record.extra_allowance_label
+            if new_label != old_label:
+                record.extra_allowance_label = new_label
+                changed_parts.append(
+                    f"額外加給名目 {old_label or '（空）'}→{new_label or '（空）'}"
+                )
+                modified_fields.append("extra_allowance_label")
 
         if not changed_parts:
             raise HTTPException(status_code=400, detail="沒有實際變更")
@@ -341,6 +356,8 @@ def manual_adjust_salary(
                 "supervisor_dividend": record.supervisor_dividend or 0,
                 "meeting_overtime_pay": record.meeting_overtime_pay or 0,
                 "birthday_bonus": record.birthday_bonus or 0,
+                "extra_allowance": record.extra_allowance or 0,
+                "extra_allowance_label": record.extra_allowance_label,
                 "leave_deduction": record.leave_deduction or 0,
                 "late_deduction": record.late_deduction or 0,
                 "early_leave_deduction": record.early_leave_deduction or 0,

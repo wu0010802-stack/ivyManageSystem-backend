@@ -365,3 +365,32 @@ class TestRecalculatePreservesHourlyTotal:
             assert f"#{record_id}" in summary, f"summary 缺 record_id：{summary!r}"
             # 至少含一個欄位變動描述
             assert "→" in summary, f"summary 缺欄位變動格式：{summary!r}"
+
+
+class TestExtraAllowanceManualAdjust:
+    """額外加給（值週/活動加班費）手填欄位的端點行為。"""
+
+    def test_set_extra_allowance_and_label(self, salary_client):
+        """填入 extra_allowance 金額 + 名目：併入 gross/net、兩欄進 manual_overrides、回應帶名目。"""
+        client, sf = salary_client
+        record_id = _seed_with_meeting_absence(sf)  # base 30000、festival 1800(不進 gross)
+        _login(client)
+
+        res = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={
+                "adjustment_reason": "補發值週費",
+                "extra_allowance": 1241,
+                "extra_allowance_label": "值週",
+            },
+        )
+        assert res.status_code == 200
+        rec = res.json()["record"]
+        assert rec["extra_allowance"] == 1241
+        assert rec["extra_allowance_label"] == "值週"
+        # gross = base 30000 + extra 1241（festival 不進 gross）
+        assert rec["gross_salary"] == 31241
+        assert rec["net_salary"] == 31241
+        # 金額與名目都應鎖定，重算時保留
+        assert "extra_allowance" in rec["manual_overrides"]
+        assert "extra_allowance_label" in rec["manual_overrides"]

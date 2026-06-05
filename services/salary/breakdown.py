@@ -26,6 +26,9 @@ class SalaryBreakdown:
     overtime_work_pay: float = 0  # 加班費
     meeting_overtime_pay: float = 0  # 園務會議加班費
     birthday_bonus: float = 0  # 生日禮金
+    # 額外加給（值週/活動加班費等，手填；引擎不自動算，恆為 0/None）
+    extra_allowance: float = 0
+    extra_allowance_label: "str | None" = None
 
     # 時薪制
     work_hours: float = 0

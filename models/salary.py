@@ -231,6 +231,11 @@ class SalaryRecord(Base):
     absence_deduction = Column(Money, default=0, comment="曠職扣款")
     other_deduction = Column(Money, default=0, comment="其他扣款")
 
+    extra_allowance = Column(
+        Money, default=0, comment="額外加給（值週/活動加班費等，手填）"
+    )
+    extra_allowance_label = Column(String(50), nullable=True, comment="額外加給名目")
+
     late_count = Column(Integer, default=0, comment="遲到次數")
     early_leave_count = Column(Integer, default=0, comment="早退次數")
     missing_punch_count = Column(Integer, default=0, comment="未打卡次數")
@@ -406,6 +411,8 @@ class SalarySnapshot(Base):
         Money, default=0, server_default="0", nullable=False
     )
     unused_leave_payout = Column(Money, default=0, server_default="0", nullable=False)
+    extra_allowance = Column(Money, default=0, server_default="0", nullable=False)
+    extra_allowance_label = Column(String(50), nullable=True)
     remark = Column(Text, comment="複製自 SalaryRecord.remark")
 
     # ── 快照專屬 metadata ─────────────────────────────────────────────
