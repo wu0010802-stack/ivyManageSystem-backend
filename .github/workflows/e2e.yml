@@ -23,6 +23,11 @@ name: E2E Smoke (cross-repo)
 
 on:
   workflow_dispatch:
+  # 暫時：push 到本迭代分支即觸發，方便在真實 runner 上把 job 跑穩。
+  # 跑綠後移除此區塊，改回純 workflow_dispatch（或開啟頂部註解的 PR/push gate）。
+  push:
+    branches:
+      - feat/e2e-ci-integration-2026-06-05-be
 
 permissions:
   contents: read
