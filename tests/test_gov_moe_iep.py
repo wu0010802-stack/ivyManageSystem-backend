@@ -596,6 +596,56 @@ def test_iep_班導_cannot_approve(gov_moe_client):
     assert r.status_code == 403, r.text
 
 
+def test_iep_approve_scoped_role_cannot_approve_out_of_scope(gov_moe_client):
+    """Finding I：持 STUDENTS_IEP_APPROVE 但 SPECIAL_NEEDS_WRITE:own_class 的自訂角色
+    不得核定 scope 外的 IEP——approve/close 須走 _scoped_query（與 list/update 一致）。
+
+    本案 approver 不擔任任何班級導師 → accessible_classroom_ids 為空 → scope=[]，
+    故對任一 IEP 的 approve 都應 404（查無此通知或無權），不得 200 直接核定。
+    """
+    from models.employee import Employee
+
+    client, sf = gov_moe_client
+    admin_tok = _login_admin(client, sf)
+    sid, _cls = _seed_student_and_classroom(sf)
+
+    with sf() as s:
+        emp = Employee(name="無班核定師", employee_id="T900", is_active=True)
+        s.add(emp)
+        s.commit()
+        s.refresh(emp)
+        u = User(
+            username="scoped_appr",
+            password_hash=hash_password("ScopedPass1"),
+            role="teacher",
+            permission_names=[
+                "STUDENTS_IEP_APPROVE",
+                "STUDENTS_SPECIAL_NEEDS_WRITE:own_class",
+            ],
+            is_active=True,
+            employee_id=emp.id,
+        )
+        s.add(u)
+        s.commit()
+
+    auth_admin = {"Authorization": f"Bearer {admin_tok}"}
+    iep = client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid, "school_year": 2026, "semester": 1},
+        headers=auth_admin,
+    ).json()
+    client.put(f"/api/gov-moe/iep/{iep['id']}/submit", headers=auth_admin)
+
+    resp = client.post(
+        "/api/auth/login", json={"username": "scoped_appr", "password": "ScopedPass1"}
+    )
+    tok = resp.json().get("access_token") or resp.cookies.get("access_token")
+    auth = {"Authorization": f"Bearer {tok}"}
+
+    r = client.put(f"/api/gov-moe/iep/{iep['id']}/approve", headers=auth)
+    assert r.status_code == 404, f"scope 外核定應 404，得 {r.status_code}: {r.text}"
+
+
 def test_iep_cannot_edit_after_approved(gov_moe_client):
     client, sf = gov_moe_client
     tok = _login_admin(client, sf)

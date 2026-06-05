@@ -235,14 +235,9 @@ def approve_iep(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission(Permission.STUDENTS_IEP_APPROVE)),
 ):
-    row = (
-        db.query(StudentIEPRecord)
-        .filter(
-            StudentIEPRecord.id == iep_id,
-            StudentIEPRecord.deleted_at == None,  # noqa: E711
-        )
-        .first()
-    )
+    # Finding I：approve 須走 _scoped_query（與 list/update/submit 一致），否則持
+    # bare STUDENTS_IEP_APPROVE 的自訂角色可核定 scope 外（跨班）IEP。
+    row = _scoped_query(db, current_user).filter(StudentIEPRecord.id == iep_id).first()
     if not row:
         raise HTTPException(status_code=404)
     if row.status != "pending_review":
@@ -263,14 +258,8 @@ def close_iep(
     db: Session = Depends(get_db),
     current_user: dict = Depends(require_permission(Permission.STUDENTS_IEP_APPROVE)),
 ):
-    row = (
-        db.query(StudentIEPRecord)
-        .filter(
-            StudentIEPRecord.id == iep_id,
-            StudentIEPRecord.deleted_at == None,  # noqa: E711
-        )
-        .first()
-    )
+    # Finding I：close 同 approve，須走 _scoped_query 防 scope 外結案。
+    row = _scoped_query(db, current_user).filter(StudentIEPRecord.id == iep_id).first()
     if not row:
         raise HTTPException(status_code=404)
     if row.status != "approved":
