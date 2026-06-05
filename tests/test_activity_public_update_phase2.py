@@ -388,3 +388,63 @@ class TestRegistrationChangeBusinessTrail:
                 .count()
             )
         assert count == 0
+
+
+# ── Finding K：public_update 不全刪重建，保留未變更課程的 RegistrationCourse id ──
+
+
+def test_public_update_preserves_unchanged_registration_course_id(phase2_client):
+    """未變更的課程須保留原 RegistrationCourse id（候補排序 by id；全刪重建會把
+    候補洗到隊尾、promoted_pending 跳 48h 確認窗）。
+
+    需第二個 reg 佔較高 id：否則 SQLite rowid 重用會在刪掉最高 rowid 後把同 id
+    指回新列，遮蔽 bug（PG 序列不重用）。reg2 佔較高 id → reg1 全刪重建必拿更大 id。
+    """
+    from models.activity import RegistrationCourse
+
+    client, sf = phase2_client
+    with sf() as s:
+        _seed(s)
+        s.commit()
+
+    # reg1（王小明）+ reg2（李小華）皆報名圍棋；reg2 的 RegistrationCourse id 較高。
+    assert _register(client).status_code in (200, 201)
+    q1 = _query(client).json()
+    reg1_id = q1["id"]
+    assert _register(client, name="李小華", phone="0922333444").status_code in (
+        200,
+        201,
+    )
+
+    with sf() as s:
+        reg1_rc = (
+            s.query(RegistrationCourse)
+            .filter(RegistrationCourse.registration_id == reg1_id)
+            .one()
+        )
+        original_id = reg1_rc.id
+
+    # reg1 改 class（保留圍棋課程）
+    res = client.post(
+        "/api/activity/public/update",
+        json={
+            "id": reg1_id,
+            "name": "王小明",
+            "birthday": "2020-05-10",
+            "parent_phone": "0912345678",
+            "class": q1["class_name"],
+            "courses": [{"name": "圍棋", "price": "1000"}],
+            "if_unmodified_since": q1["updated_at"],
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    with sf() as s:
+        reg1_rc = (
+            s.query(RegistrationCourse)
+            .filter(RegistrationCourse.registration_id == reg1_id)
+            .one()
+        )
+        assert (
+            reg1_rc.id == original_id
+        ), f"未變更課程的 RegistrationCourse id 不應改變（{original_id}→{reg1_rc.id}）"
