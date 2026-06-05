@@ -903,3 +903,59 @@ def test_create_cycle_clone_missing_source_422(client_with_db):
         },
     )
     assert res.status_code == 422, res.text
+
+
+def test_org_settings_upsert_override_and_effective(client_with_db):
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)  # 已種兩筆 org_settings
+    _login(client)
+    res = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "enrollment_target": 176,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "91.5",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert Decimal(str(body["school_achievement_rate_override"])) == Decimal("91.5")
+    assert Decimal(str(body["effective_school_achievement_rate"])) == Decimal("91.5")
+    got = client.get(f"/api/year_end/cycles/{cycle_id}/org_settings").json()
+    first = [o for o in got if o["semester_first"]][0]
+    assert Decimal(str(first["effective_school_achievement_rate"])) == Decimal("91.5")
+
+
+def test_clone_clears_school_rate_override(client_with_db):
+    client, sf = client_with_db
+    _seed_users(sf)
+    _seed_finalize_user(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)  # cycle 114
+    _login(client)
+    client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "enrollment_target": 176,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "91.5",
+        },
+    )
+    _login(client, "admin2")  # FINALIZE 權限才能建/clone cycle
+    res = client.post(
+        "/api/year_end/cycles",
+        json={
+            "academic_year": 115,
+            "start_date": "2026-08-01",
+            "end_date": "2027-07-31",
+            "bonus_calc_date": "2027-01-15",
+            "clone_from_academic_year": ACADEMIC_YEAR,
+        },
+    )
+    assert res.status_code == 200, res.text
+    new_id = res.json()["id"]
+    org = client.get(f"/api/year_end/cycles/{new_id}/org_settings").json()
+    first = [o for o in org if o["semester_first"]][0]
+    assert first["school_achievement_rate_override"] is None  # clone 不沿用覆寫

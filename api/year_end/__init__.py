@@ -140,6 +140,7 @@ def create_cycle(
                     enrollment_target=src_org.enrollment_target,
                     enrollment_actual=None,  # 重置：實際值待新週期填入
                     school_achievement_rate=Decimal("0"),  # 重置
+                    school_achievement_rate_override=None,  # 重置：HR 覆寫不沿用到新週期
                     org_achievement_rate=src_org.org_achievement_rate,
                     meeting_absence_deduction=src_org.meeting_absence_deduction,
                     festival_bonus_meta=dict(src_org.festival_bonus_meta or {}),
