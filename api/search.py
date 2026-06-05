@@ -349,6 +349,15 @@ def global_search(
 
     session = get_session()
     try:
+        # 各類逐一以 READ 權限把關（無權回空）。scope 注意：只有 STUDENTS_READ /
+        # GUARDIANS_READ 等「綁學生」的類別才有班級 scope 概念。STUDENTS_READ 是
+        # scope-aware code，故 _search_students 會對 own_class 角色套 classroom 過濾。
+        # 但 GUARDIANS_READ / FEES_READ / ACTIVITY_READ 不在 SCOPE_AWARE_CODES
+        # （utils/permissions.SCOPE_AWARE_CODES），故 has_permission 對 `<code>:own_class`
+        # 持有者回 False（RA-HIGH-1 fail-closed）→ 這些 gate 等同只放行 all-scope/wildcard。
+        # 結果：own_class 自訂角色拿不到家長/學費/才藝結果（fail-closed，無越權）；
+        # _search_guardians 內的 scope 分支對現行權限名單為防禦性死碼（GUARDIANS_READ
+        # 日後若改成 scope-aware 即生效）。
         students = (
             _search_students(session, pattern, current_user)
             if has_permission(perms, Permission.STUDENTS_READ)

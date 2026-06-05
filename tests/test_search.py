@@ -97,17 +97,15 @@ def test_short_query_returns_empty(client_with_db):
 
 def test_teacher_and_parent_are_forbidden(client_with_db):
     client, sf = client_with_db
-    uid, eid = _make_user(
-        sf,
-        username="teach1",
-        role="teacher",
-        permission_names=["STUDENTS_READ:own_class"],
-    )
-    headers = _login(
-        uid, eid, role="teacher", permission_names=["STUDENTS_READ:own_class"]
-    )
-    r = client.get("/api/search", params={"q": "abc"}, headers=headers)
-    assert r.status_code == 403
+    # teacher 走 portal/search、parent 走家長端，兩者都不可撞後台 /api/search
+    for uname, role, perms in [
+        ("teach1", "teacher", ["STUDENTS_READ:own_class"]),
+        ("par1", "parent", []),
+    ]:
+        uid, eid = _make_user(sf, username=uname, role=role, permission_names=perms)
+        headers = _login(uid, eid, role=role, permission_names=perms)
+        r = client.get("/api/search", params={"q": "abc"}, headers=headers)
+        assert r.status_code == 403, f"{role} 應被擋下 (got {r.status_code})"
 
 
 def test_students_section_and_permission_gate(client_with_db):
@@ -306,3 +304,115 @@ def test_search_writes_read_audit(client_with_db):
         assert rows[0].action == "READ"
     finally:
         s.close()
+
+
+def test_student_scope_limits_to_own_class(client_with_db):
+    """own_class scope 角色（非 admin/teacher）只看到自己擔任班級的學生。"""
+    client, sf = client_with_db
+    from models.database import Classroom, Student
+
+    # 先建受限使用者（STUDENTS_READ:own_class，scope-aware），取得 employee id
+    uid, eid = _make_user(
+        sf,
+        username="owncls",
+        role="supervisor",
+        permission_names=["STUDENTS_READ:own_class"],
+    )
+    s = sf()
+    my_cr = Classroom(
+        name="我的班", school_year=114, semester=1, is_active=True, head_teacher_id=eid
+    )
+    other_cr = Classroom(name="別人的班", school_year=114, semester=1, is_active=True)
+    s.add(my_cr)
+    s.add(other_cr)
+    s.flush()
+    s.add(
+        Student(
+            name="阿甲同學",
+            student_id="SC1",
+            classroom_id=my_cr.id,
+            is_active=True,
+            lifecycle_status="active",
+        )
+    )
+    s.add(
+        Student(
+            name="阿乙同學",
+            student_id="SC2",
+            classroom_id=other_cr.id,
+            is_active=True,
+            lifecycle_status="active",
+        )
+    )
+    s.commit()
+    s.close()
+    h = _login(
+        uid, eid, role="supervisor", permission_names=["STUDENTS_READ:own_class"]
+    )
+    names = [
+        x["name"]
+        for x in client.get("/api/search", params={"q": "同學"}, headers=h).json()[
+            "students"
+        ]
+    ]
+    assert "阿甲同學" in names and "阿乙同學" not in names
+
+
+def test_terminal_students_excluded(client_with_db):
+    """畢業/退學/轉出（終態）學生不出現在全域搜尋（即使 admin）。"""
+    client, sf = client_with_db
+    from models.database import Classroom, Student
+
+    s = sf()
+    cr = Classroom(name="終態班", school_year=114, semester=1, is_active=True)
+    s.add(cr)
+    s.flush()
+    s.add(
+        Student(
+            name="畢業生甲",
+            student_id="GR1",
+            classroom_id=cr.id,
+            is_active=True,
+            lifecycle_status="graduated",
+        )
+    )
+    s.add(
+        Student(
+            name="在校生甲",
+            student_id="AC1",
+            classroom_id=cr.id,
+            is_active=True,
+            lifecycle_status="active",
+        )
+    )
+    s.commit()
+    s.close()
+    uid, eid = _make_user(sf, username="adm", role="admin", permission_names=["*"])
+    h = _login(uid, eid, role="admin", permission_names=["*"])
+    names = [
+        x["name"]
+        for x in client.get("/api/search", params={"q": "生甲"}, headers=h).json()[
+            "students"
+        ]
+    ]
+    assert "在校生甲" in names and "畢業生甲" not in names
+
+
+def test_per_category_limit(client_with_db):
+    """同一類別最多回 SECTION_LIMIT(8) 筆。"""
+    client, sf = client_with_db
+    from models.database import Employee
+
+    s = sf()
+    for i in range(10):
+        s.add(
+            Employee(employee_id=f"EE{i:02d}", name=f"測試員工{i:02d}", is_active=True)
+        )
+    s.commit()
+    s.close()
+    uid, eid = _make_user(sf, username="adm", role="admin", permission_names=["*"])
+    h = _login(uid, eid, role="admin", permission_names=["*"])
+    rows = client.get("/api/search", params={"q": "測試員工"}, headers=h).json()[
+        "employees"
+    ]
+    assert len(rows) == 8
