@@ -56,3 +56,21 @@ def test_out_schema_exposes_effective():
     out = OrgYearSettingsOut.model_validate(o)
     assert out.school_achievement_rate_override == Decimal("91.5")
     assert out.effective_school_achievement_rate == Decimal("91.5")
+
+
+from services.year_end.settlement_builder import resolve_org_achievement_rate
+from services.year_end.engine import compute_gross_amount, compute_subtotal_amount
+
+
+def test_override_propagates_to_excel_amount_lvyu_lijhen():
+    # HR 覆寫：下學期 75.6 / 上學期 91.5（園所 Excel 值）
+    org_rate = resolve_org_achievement_rate(
+        Decimal("75.6"), Decimal("91.5"), worked_first=True, worked_second=True
+    )
+    assert org_rate == Decimal(
+        "83.6"
+    )  # _q1((75.6+91.5)/2)=83.55→83.6（vs 自算91.48→83.5）
+    # 呂麗珍：base 44300 + 節慶 6500、平均績效 89.6%
+    gross = compute_gross_amount(Decimal("44300"), Decimal("6500"), Decimal("89.6"))
+    subtotal = compute_subtotal_amount(gross, org_rate)
+    assert subtotal == Decimal("38052.04")  # ＝義華 Excel「年終獎金」呂麗珍小計
