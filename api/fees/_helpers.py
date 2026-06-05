@@ -13,7 +13,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import case, func, tuple_
+from sqlalchemy import case, func, select, tuple_
 
 from api.activity._shared import validate_payment_date
 from models.fees import StudentFeeAdjustment, StudentFeeRecord
@@ -249,14 +249,18 @@ def compute_fee_summary(
     total_paid = int(row.total_paid or 0)
 
     # 折抵聚合：scope 至 filtered records 的 (student_id, period) 組合。
-    record_keys = q.with_entities(
-        StudentFeeRecord.student_id, StudentFeeRecord.period
-    ).distinct()
+    # 用顯式 select(subquery) 而非 coerce ORM Query，避免 row-value IN 的方言/
+    # coercion 歧義（PostgreSQL/SQLite 皆原生支援 (a,b) IN (SELECT a,b ...)）。
+    record_keys = (
+        q.with_entities(StudentFeeRecord.student_id, StudentFeeRecord.period)
+        .distinct()
+        .subquery()
+    )
     total_adjustment = int(
         session.query(func.coalesce(func.sum(StudentFeeAdjustment.amount), 0))
         .filter(
             tuple_(StudentFeeAdjustment.student_id, StudentFeeAdjustment.period).in_(
-                record_keys
+                select(record_keys.c.student_id, record_keys.c.period)
             )
         )
         .scalar()
