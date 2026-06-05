@@ -78,9 +78,7 @@ def test_salary_slip_earnings_table_includes_extra_allowance():
     """薪資單應領表格在 extra_allowance > 0 時多一列，顯示名目與金額。"""
     from services.finance.salary_slip import _build_earnings_table
 
-    rec = _blank_record(
-        base_salary=30000, gross_salary=31241, extra_allowance=1241
-    )
+    rec = _blank_record(base_salary=30000, gross_salary=31241, extra_allowance=1241)
     rec.extra_allowance_label = "值週"
     table = _build_earnings_table(rec, "Helvetica", lambda v: f"{float(v):,.0f}")
     flat = [str(c) for row in table._cellvalues for c in row]
@@ -117,3 +115,14 @@ def test_salary_records_item_out_includes_extra_allowance():
 
     assert "extra_allowance" in SalaryRecordItemOut.model_fields
     assert "extra_allowance_label" in SalaryRecordItemOut.model_fields
+
+
+def test_salary_records_item_out_includes_unused_leave_payout():
+    """GET /salaries/records 的 response_model 必須含 unused_leave_payout（P1-8）。
+
+    原本 list payload 與 schema 都漏此欄 → 前端 `unused_leave_payout > 0` 恆 false
+    → 「未休折現」欄即使有補休到期/特休週年/離職折現也永遠顯示「—」。
+    """
+    from schemas.salary_records import SalaryRecordItemOut
+
+    assert "unused_leave_payout" in SalaryRecordItemOut.model_fields

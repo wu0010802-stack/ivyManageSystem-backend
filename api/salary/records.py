@@ -138,6 +138,9 @@ def get_salary_records(
                     "gross_salary": record.gross_salary,
                     "total_deduction": record.total_deduction,
                     "net_salary": record.net_salary,
+                    # 未休特休折現（補休到期/特休週年/離職結算）；list 原漏回此欄
+                    # 致前端「未休折現」欄恆顯示「—」（P1-8）。
+                    "unused_leave_payout": record.unused_leave_payout or 0,
                     "is_finalized": record.is_finalized,
                     "finalized_at": (
                         record.finalized_at.isoformat() if record.finalized_at else None

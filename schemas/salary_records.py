@@ -75,6 +75,7 @@ class SalaryRecordItemOut(IvyBaseModel):
     gross_salary: float  # pii-allow: 應發
     total_deduction: float  # pii-allow: 扣項合計
     net_salary: float  # pii-allow: 實發
+    unused_leave_payout: float = 0  # pii-allow: 未休特休折現
 
     # 封存 / 稽核
     is_finalized: bool
