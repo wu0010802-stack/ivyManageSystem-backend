@@ -144,7 +144,7 @@ def _mk_config(
     activity_amount: float = 1000,
 ) -> BonusConfig:
     cfg = BonusConfig(
-        config_year=_ACADEMIC_YEAR,
+        config_year=_ACADEMIC_YEAR + 1911,  # 民國曆年（學年114→西元2025）
         is_active=is_active,
         dividend_returning_threshold=returning_threshold,
         dividend_returning_amount=returning_amount,

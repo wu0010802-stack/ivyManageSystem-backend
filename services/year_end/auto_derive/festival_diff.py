@@ -392,7 +392,9 @@ def derive_festival_diff(
         if emp.id in skip_ids:
             continue
 
-        festival_base = festival_base_for_role(db, role_key_of(emp))
+        festival_base = festival_base_for_role(
+            db, role_key_of(emp), cycle.academic_year
+        )
         # festival 基數 = 0 的角色（廚房/護理/美語/無法分類）刻意排除，避免「全負回收」。
         if festival_base <= 0:
             continue

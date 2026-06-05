@@ -184,8 +184,9 @@ def seed(test_db_session):
     db.flush()
 
     # BonusConfig：角色節慶基數（festival_base_for_role 查表）。
+    # config_year = 民國曆年（學年114→西元2025 = academic_year+1911）。
     cfg = BonusConfig(
-        config_year=114,
+        config_year=2025,
         is_active=True,
         head_teacher_ab=2000,
         assistant_teacher_ab=1200,

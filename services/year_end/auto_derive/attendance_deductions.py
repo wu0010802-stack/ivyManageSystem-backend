@@ -250,7 +250,9 @@ def derive_attendance_deductions(
     （由 B7 在 gather_deductions wiring 處理）。
     """
     start, end = _period_bounds(cycle)
-    cfg = _latest_active_bonus_config(db)
+    from services.year_end.settlement_builder import bonus_config_for_academic_year
+
+    cfg = bonus_config_for_academic_year(db, cycle.academic_year)
     return _compute(db, emp.id, start, end, cfg)
 
 
@@ -263,7 +265,9 @@ def derive_all_attendance_deductions(
     回 dict[employee_id, AttendanceDeductions]。per-employee 版才是主要介面。
     """
     start, end = _period_bounds(cycle)
-    cfg = _latest_active_bonus_config(db)
+    from services.year_end.settlement_builder import bonus_config_for_academic_year
+
+    cfg = bonus_config_for_academic_year(db, cycle.academic_year)
 
     if employees is None:
         from models.employee import Employee

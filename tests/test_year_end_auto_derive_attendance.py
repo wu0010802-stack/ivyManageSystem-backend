@@ -114,7 +114,7 @@ def _mk_config(
     meeting_penalty=100,
 ):
     cfg = BonusConfig(
-        config_year=114,
+        config_year=2025,  # 民國曆年（學年114→西元2025 = academic_year+1911）
         is_active=True,
         late_deduction_per_time=late,
         missing_punch_deduction_per_time=missing_punch,

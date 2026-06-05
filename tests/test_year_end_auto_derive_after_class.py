@@ -155,7 +155,7 @@ def seed(test_db_session):
 
     # BonusConfig（最新 active）：班名 → K 單價
     cfg = BonusConfig(
-        config_year=114,
+        config_year=2025,  # 民國曆年（學年114→西元2025 = academic_year+1911）
         is_active=True,
         after_class_award_unit_price={"天堂鳥": 75, "牡丹": 85},
         art_teacher_unit_price=None,  # 無才藝老師單價 → 跳過 art segment
@@ -516,7 +516,7 @@ def test_after_class_award_zero_enrollment_writes_zero_row(test_db_session):
 
     # BonusConfig：有單價
     cfg = BonusConfig(
-        config_year=114,
+        config_year=2025,  # 民國曆年（學年114→西元2025 = academic_year+1911）
         is_active=True,
         after_class_award_unit_price={"零人次班": 75},
         art_teacher_unit_price=None,
