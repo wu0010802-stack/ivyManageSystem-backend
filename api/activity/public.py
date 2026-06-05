@@ -202,9 +202,16 @@ def get_public_courses(request: Request, response: Response):
     """前台：取得課程列表"""
     session = get_session()
     try:
+        # E1：只回當學期課程，避免上一學期/「複製上學期」遺留的 is_active 課程
+        # 在公開報名頁同名重複列出（register 寫入路徑本就過濾學期，讀取端對齊）。
+        sy, sem = resolve_academic_term_filters(None, None, session)
         courses = (
             session.query(ActivityCourse)
-            .filter(ActivityCourse.is_active.is_(True))
+            .filter(
+                ActivityCourse.is_active.is_(True),
+                ActivityCourse.school_year == sy,
+                ActivityCourse.semester == sem,
+            )
             .order_by(ActivityCourse.id)
             .all()
         )
@@ -239,9 +246,15 @@ def get_public_supplies(request: Request, response: Response):
     """前台：取得用品列表"""
     session = get_session()
     try:
+        # E1：只回當學期用品（同 /public/courses 理由）。
+        sy, sem = resolve_academic_term_filters(None, None, session)
         supplies = (
             session.query(ActivitySupply)
-            .filter(ActivitySupply.is_active.is_(True))
+            .filter(
+                ActivitySupply.is_active.is_(True),
+                ActivitySupply.school_year == sy,
+                ActivitySupply.semester == sem,
+            )
             .order_by(ActivitySupply.id)
             .all()
         )
@@ -273,9 +286,16 @@ def _compute_availability(session) -> dict:
 
     佔容量 = enrolled + promoted_pending（兩者皆已佔名額，避免超發候補通知）。
     """
+    # E1：只計當學期課程，避免跨學期同名課以 course.name 當 key 互相碰撞、
+    # 顯示錯學期的剩餘名額。
+    sy, sem = resolve_academic_term_filters(None, None, session)
     courses = (
         session.query(ActivityCourse)
-        .filter(ActivityCourse.is_active.is_(True))
+        .filter(
+            ActivityCourse.is_active.is_(True),
+            ActivityCourse.school_year == sy,
+            ActivityCourse.semester == sem,
+        )
         .all()
     )
     course_ids = [c.id for c in courses]
@@ -491,7 +511,9 @@ def public_query_by_token(
         session.close()
 
 
-@router.post("/public/register", status_code=201, response_model=PublicRegisterResultOut)
+@router.post(
+    "/public/register", status_code=201, response_model=PublicRegisterResultOut
+)
 def public_register(
     body: PublicRegistrationPayload,
     _: None = Depends(_public_register_limiter),
