@@ -171,7 +171,14 @@ def _resolve_health_insured_salary(emp_dict: dict, insurance_service) -> float:
         return 0.0
     bracket_amount = float(insurance_service.get_bracket(raw)["amount"])
     health_ins = emp_dict.get("health_insured_salary")
-    return float(health_ins) if health_ins is not None else bracket_amount
+    resolved = float(health_ins) if health_ins is not None else bracket_amount
+    # clamp 至健保最高投保金額（與 InsuranceService.calculate 的 health cap 對齊）；
+    # 否則超上限投保額會推高 threshold(=4×投保額)→excess 偏小→少扣補充保費。
+    # service 未提供上限時不 clamp（保留原行為、不引入回歸）。
+    health_cap = float(getattr(insurance_service, "health_max_insured", 0) or 0)
+    if health_cap > 0:
+        resolved = min(resolved, health_cap)
+    return resolved
 
 
 def apply_bonus_supplementary_to_breakdown(
@@ -191,13 +198,14 @@ def apply_bonus_supplementary_to_breakdown(
     時薪制既有「兼職薪資路徑」（engine.py:1567）已將其 supplementary_health_employee
     設值，本函式以 += 累計，兩條路徑共存（hourly 員工同時拿獎金時兩者都會扣）。
     """
-    rate = float(
-        getattr(
-            insurance_service,
-            "supplementary_health_rate",
-            DEFAULT_SUPPLEMENTARY_PREMIUM_RATE,
-        )
-        or DEFAULT_SUPPLEMENTARY_PREMIUM_RATE
+    # 費率優先取 insurance_service 設定；僅在「屬性缺失或為 None」時退回預設。
+    # 不可用 `or DEFAULT`——明確設定的 0.0 是 falsy，會被無聲退回 2.11%，
+    # 使「費率設 0 停扣」失效（與兼職路徑 engine.py 的 `or 0` 語意相反）。
+    _rate_setting = getattr(insurance_service, "supplementary_health_rate", None)
+    rate = (
+        DEFAULT_SUPPLEMENTARY_PREMIUM_RATE
+        if _rate_setting is None
+        else float(_rate_setting)
     )
     health_insured_salary = _resolve_health_insured_salary(emp_dict, insurance_service)
     if health_insured_salary <= 0 or rate <= 0:

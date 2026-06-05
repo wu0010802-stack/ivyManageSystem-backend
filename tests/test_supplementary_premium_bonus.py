@@ -39,8 +39,6 @@ def _add_salary_record(session, *, year, month, **bonus_fields):
     return rec
 
 
-
-
 class TestQueryYtdBonusBefore:
     def test_empty_history_returns_zero(self, test_db_session):
         assert query_ytd_bonus_before(test_db_session, EMP_ID, 2026, 6) == 0
@@ -105,9 +103,7 @@ class TestCalculateBonusSupplementaryFee:
         )
         assert fee == 0
 
-    def test_first_breach_charges_only_excess(
-        self, test_db_session
-    ):
+    def test_first_breach_charges_only_excess(self, test_db_session):
         # threshold=120000, prior=100000, this_month=80000 → ytd_after=180000
         # basis = max(100000, 120000) = 120000 → excess=60000 → 60000×0.0211=1266
         _add_salary_record(test_db_session, year=2026, month=2, festival_bonus=100000)
@@ -149,9 +145,7 @@ class TestCalculateBonusSupplementaryFee:
         )
         assert fee == 0
 
-    def test_threshold_uses_current_month_insured_salary(
-        self, test_db_session
-    ):
+    def test_threshold_uses_current_month_insured_salary(self, test_db_session):
         # 同一 prior_ytd=100K + this_month=80K=180K
         # 6 月投保 30K → threshold=120K → excess=60K → 1266
         # 9 月投保 36.3K → threshold=145.2K → excess=34.8K → 734
@@ -316,9 +310,7 @@ class TestApplyBonusSupplementaryToBreakdown:
             bd.supplementary_health_employee,
         ) == bd_before
 
-    def test_first_breach_mutates_four_fields(
-        self, test_db_session
-    ):
+    def test_first_breach_mutates_four_fields(self, test_db_session):
         _add_salary_record(test_db_session, year=2026, month=2, festival_bonus=100000)
         bd = self._make_breakdown(festival_bonus=80000)
         emp_dict = {
@@ -524,3 +516,116 @@ class TestSupplementaryHealthPersistedToRecord:
 
         assert rec.supplementary_health_employee == 1266
         assert rec.health_insurance_employee == 458 + 1266
+
+
+class TestSupplementaryRateZero:
+    """P2-A：費率設明確 0.0 時，獎金路徑應停扣（不可被 `or DEFAULT` 退化回 2.11%）。"""
+
+    class _ZeroRateInsuranceService:
+        supplementary_health_rate = 0.0
+        health_max_insured = 219500
+
+        def get_bracket(self, raw):
+            return {"amount": raw}
+
+    def test_rate_zero_disables_bonus_supplementary(self, test_db_session):
+        # 若費率正常(2.11%)，此情境會扣 1266；費率設明確 0 必須停扣、breakdown 不動。
+        _add_salary_record(test_db_session, year=2026, month=2, festival_bonus=100000)
+        bd = SalaryBreakdown(
+            employee_name="Test",
+            employee_id="E001",
+            year=2026,
+            month=6,
+            base_salary=30000,
+            gross_salary=120000,
+            health_insurance=458,
+            total_deduction=2000,
+        )
+        bd.festival_bonus = 80000
+        emp_dict = {
+            "employee_type": "regular",
+            "base_salary": 30000,
+            "insurance_salary": 30000,
+            "health_insured_salary": None,
+        }
+        fee = apply_bonus_supplementary_to_breakdown(
+            test_db_session,
+            emp_dict,
+            bd,
+            2026,
+            6,
+            self._ZeroRateInsuranceService(),
+            EMP_ID,
+        )
+        assert fee == 0
+        assert bd.health_insurance == 458
+        assert bd.total_deduction == 2000
+
+
+class TestHealthInsuredSalaryCap:
+    """P2-B：健保投保薪資超上限(219500)時，補充保費門檻須以上限 clamp，否則少扣。"""
+
+    class _CappedInsuranceService:
+        supplementary_health_rate = 0.0211
+        health_max_insured = 219500
+
+        def get_bracket(self, raw):
+            return {"amount": raw}
+
+    class _OverCapBracketInsuranceService:
+        supplementary_health_rate = 0.0211
+        health_max_insured = 219500
+
+        def get_bracket(self, raw):
+            # 模擬共用級距表對高薪回超健保上限的級距金額（如 313000）
+            return {"amount": 313000}
+
+    def test_explicit_insured_salary_clamped_to_health_cap(self, test_db_session):
+        # 投保額 250000 > 上限 219500。
+        # clamp 後 threshold=4×219500=878000；ytd_before=900000、ytd_after=1,000,000
+        # basis=max(900000,878000)=900000 → excess=100000 → 100000×0.0211=2110
+        # （未 clamp 時 threshold=1,000,000 → excess=0 → 少扣）
+        _add_salary_record(test_db_session, year=2026, month=2, festival_bonus=900000)
+        bd = SalaryBreakdown(
+            employee_name="Test",
+            employee_id="E001",
+            year=2026,
+            month=6,
+            base_salary=30000,
+            gross_salary=1100000,
+            health_insurance=458,
+            total_deduction=2000,
+        )
+        bd.festival_bonus = 100000
+        emp_dict = {
+            "employee_type": "regular",
+            "base_salary": 30000,
+            "insurance_salary": 30000,
+            "health_insured_salary": 250000,
+        }
+        fee = apply_bonus_supplementary_to_breakdown(
+            test_db_session,
+            emp_dict,
+            bd,
+            2026,
+            6,
+            self._CappedInsuranceService(),
+            EMP_ID,
+        )
+        assert fee == 2110
+
+    def test_resolve_clamps_bracket_fallback_to_cap(self):
+        from services.salary.supplementary_premium import (
+            _resolve_health_insured_salary,
+        )
+
+        emp_dict = {
+            "employee_type": "regular",
+            "base_salary": 300000,
+            "insurance_salary": None,
+            "health_insured_salary": None,
+        }
+        resolved = _resolve_health_insured_salary(
+            emp_dict, self._OverCapBracketInsuranceService()
+        )
+        assert resolved == 219500.0
