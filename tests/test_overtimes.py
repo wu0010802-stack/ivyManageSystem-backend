@@ -449,6 +449,92 @@ class TestOvertimeTimeOrderValidation:
         assert obj.start_time == "18:00"
         assert obj.end_time == "20:00"
 
+
+# ──────────────────────────────────────────────
+# P1-2 回歸：hours 不可超過 start_time~end_time 時段差（防超報溢付）
+# 業主 2026-06-05 定案：hours ≤ 時段差（允許中間休息不計薪），非嚴格相等。
+# ──────────────────────────────────────────────
+class TestOvertimeHoursWithinSpan:
+    def test_create_hours_exceeds_span_raises(self):
+        """hours 大於 start~end 時段差 → 422（超報溢付）"""
+        import pytest
+        from pydantic import ValidationError
+        from api.overtimes import OvertimeCreate
+        from datetime import date as _date
+
+        with pytest.raises(ValidationError) as exc_info:
+            OvertimeCreate(
+                employee_id=1,
+                overtime_date=_date(2026, 3, 20),
+                overtime_type="weekday",
+                start_time="18:00",
+                end_time="20:00",  # 時段差僅 2h
+                hours=8.0,  # 超報
+            )
+        assert "時段" in str(exc_info.value) or "超過" in str(exc_info.value)
+
+    def test_create_hours_within_span_passes(self):
+        """hours ≤ 時段差（含中間休息）→ 通過"""
+        from api.overtimes import OvertimeCreate
+        from datetime import date as _date
+
+        obj = OvertimeCreate(
+            employee_id=1,
+            overtime_date=_date(2026, 3, 20),
+            overtime_type="weekday",
+            start_time="09:00",
+            end_time="18:00",  # 時段差 9h
+            hours=8.0,  # 扣 1h 午休
+        )
+        assert obj.hours == 8.0
+
+    def test_create_no_times_skips_span_check(self):
+        """未填 start/end → 不做時段對帳（hours 獨立）"""
+        from api.overtimes import OvertimeCreate
+        from datetime import date as _date
+
+        obj = OvertimeCreate(
+            employee_id=1,
+            overtime_date=_date(2026, 3, 20),
+            overtime_type="weekday",
+            hours=8.0,
+        )
+        assert obj.hours == 8.0
+
+    def test_batch_employee_hours_exceeds_span_raises(self):
+        """批次：某員工 hours 超過共用時段差 → 422"""
+        import pytest
+        from pydantic import ValidationError
+        from api.overtimes import BatchOvertimeCreate
+        from datetime import date as _date
+
+        with pytest.raises(ValidationError) as exc_info:
+            BatchOvertimeCreate(
+                overtime_date=_date(2026, 3, 20),
+                overtime_type="weekday",
+                start_time="18:00",
+                end_time="20:00",  # 共用時段差 2h
+                employees=[{"employee_id": 1, "hours": 8.0}],  # 超報
+            )
+        assert "時段" in str(exc_info.value) or "超過" in str(exc_info.value)
+
+    def test_batch_employee_hours_within_span_passes(self):
+        """批次：各員工 hours ≤ 共用時段差 → 通過"""
+        from api.overtimes import BatchOvertimeCreate
+        from datetime import date as _date
+
+        obj = BatchOvertimeCreate(
+            overtime_date=_date(2026, 3, 20),
+            overtime_type="weekday",
+            start_time="09:00",
+            end_time="18:00",  # 9h
+            employees=[
+                {"employee_id": 1, "hours": 8.0},
+                {"employee_id": 2, "hours": 2.0},
+            ],
+        )
+        assert len(obj.employees) == 2
+
     def test_create_no_times_passes(self):
         """start_time / end_time 皆為 None 時，不觸發時間順序驗證"""
         from api.overtimes import OvertimeCreate

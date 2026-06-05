@@ -21,9 +21,12 @@ def _run_maybe_async(_result):
     """B2 async→def 遷移相容：handler 轉同步 def 後不再是 coroutine；
     僅 coroutine 才走 asyncio.run，否則直接回傳同步結果。"""
     import inspect as _inspect
+
     if _inspect.iscoroutine(_result):
         return asyncio.run(_result)
     return _result
+
+
 import sys
 import os
 from contextlib import contextmanager
@@ -228,6 +231,10 @@ def test_portal_contact_book_delete_photo_sets_soft_delete_summary():
         "username": "admin",
         "role": "admin",
         "employee_id": 7,
+        # 真 admin token 帶 wildcard；contact_book delete_photo 改用
+        # is_unrestricted(code=PORTFOLIO_WRITE) 後，mock 須帶 permission_names 才能
+        # 反映生產（否則被當無權限 → _assert_classroom_owned 403）。
+        "permission_names": ["*"],
     }
 
     import api.portal.contact_book as cb_module

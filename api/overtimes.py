@@ -380,6 +380,25 @@ from services.overtime_conflict_service import (  # noqa: E402,F401
 # ============ Pydantic Models ============
 
 
+def _assert_hours_within_span(
+    hours: float, start_time: "Optional[str]", end_time: "Optional[str]"
+) -> None:
+    """P1-2：加班 hours 不可超過 start~end 時段差（防超報溢付）。
+
+    允許 hours <= 時段差（容許中間休息不計薪，業主 2026-06-05 定案 ≤ 而非嚴格相等）。
+    start_time/end_time 為已過 validate_hhmm_format 的 HH:MM 字串；任一為 None 不檢查。
+    """
+    if not start_time or not end_time:
+        return
+    start_min = int(start_time[:2]) * 60 + int(start_time[3:5])
+    end_min = int(end_time[:2]) * 60 + int(end_time[3:5])
+    span_hours = (end_min - start_min) / 60
+    if hours > span_hours + 1e-6:
+        raise ValueError(
+            f"加班時數（{hours}）不可超過起迄時段差（{span_hours} 小時）"
+        )
+
+
 class OvertimeCreate(BaseModel):
     employee_id: int
     overtime_date: date
@@ -417,6 +436,7 @@ class OvertimeCreate(BaseModel):
         if self.start_time and self.end_time:
             if self.start_time >= self.end_time:
                 raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+            _assert_hours_within_span(self.hours, self.start_time, self.end_time)
         return self
 
 
@@ -463,6 +483,10 @@ class BatchOvertimeCreate(BaseModel):
         if self.start_time and self.end_time:
             if self.start_time >= self.end_time:
                 raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+            for _emp in self.employees:
+                _assert_hours_within_span(
+                    _emp.hours, self.start_time, self.end_time
+                )
         return self
 
 
@@ -988,6 +1012,17 @@ def update_overtime(
 
         # 修改後的時數驗證月上限（排除自己）
         new_hours_val = data.hours if data.hours is not None else ot.hours
+        # P1-2：最終 hours 不可超過最終起迄時段差（涵蓋改時段 / 僅改時數對既存時段兩路徑）。
+        if new_start_dt is not None and new_end_dt is not None:
+            _span_h = (new_end_dt - new_start_dt).total_seconds() / 3600
+            if new_hours_val > _span_h + 1e-6:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"加班時數（{new_hours_val}）不可超過起迄時段差"
+                        f"（{_span_h} 小時）"
+                    ),
+                )
         _check_monthly_overtime_cap(
             session,
             ot.employee_id,
@@ -1903,6 +1938,14 @@ def _import_overtimes_sync(content: bytes) -> dict:
 
                 if start_dt is not None and end_dt is not None and start_dt >= end_dt:
                     raise ValueError("開始時間必須早於結束時間（不支援跨日加班）")
+
+                # P1-2：匯入路徑 hours 不可超過起迄時段差（防超報溢付，業主定案 ≤ 時段差）
+                if start_dt is not None and end_dt is not None:
+                    _span_h = (end_dt - start_dt).total_seconds() / 3600
+                    if hours > _span_h + 1e-6:
+                        raise ValueError(
+                            f"加班時數（{hours}）不可超過起迄時段差（{_span_h} 小時）"
+                        )
 
                 comp_raw = row.use_comp_leave
                 use_comp_leave = False
