@@ -13,7 +13,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from sqlalchemy import case, func, or_
+from sqlalchemy import and_, case, func, or_
 
 from models.approval import ApprovalStatus
 from models.database import (
@@ -49,7 +49,20 @@ def get_today_attendance_summary(
         # SQL aggregate 取代 Python 逐行計算
         today_counts = (
             session.query(
-                func.count(Attendance.id).label("present"),
+                # R4-8：出勤 = 至少有一個真實打卡的列；雙缺卡（無任何打卡）不算出勤，
+                # 否則只有缺卡列的員工會虛增 present、虛減 absent。
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                Attendance.is_missing_punch_in == True,
+                                Attendance.is_missing_punch_out == True,
+                            ),
+                            0,
+                        ),
+                        else_=1,
+                    )
+                ).label("present"),
                 func.sum(case((Attendance.is_late == True, 1), else_=0)).label("late"),
                 func.sum(
                     case(
