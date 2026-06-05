@@ -1012,6 +1012,17 @@ def update_overtime(
 
         # 修改後的時數驗證月上限（排除自己）
         new_hours_val = data.hours if data.hours is not None else ot.hours
+        # P1-2：最終 hours 不可超過最終起迄時段差（涵蓋改時段 / 僅改時數對既存時段兩路徑）。
+        if new_start_dt is not None and new_end_dt is not None:
+            _span_h = (new_end_dt - new_start_dt).total_seconds() / 3600
+            if new_hours_val > _span_h + 1e-6:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"加班時數（{new_hours_val}）不可超過起迄時段差"
+                        f"（{_span_h} 小時）"
+                    ),
+                )
         _check_monthly_overtime_cap(
             session,
             ot.employee_id,
@@ -1927,6 +1938,14 @@ def _import_overtimes_sync(content: bytes) -> dict:
 
                 if start_dt is not None and end_dt is not None and start_dt >= end_dt:
                     raise ValueError("開始時間必須早於結束時間（不支援跨日加班）")
+
+                # P1-2：匯入路徑 hours 不可超過起迄時段差（防超報溢付，業主定案 ≤ 時段差）
+                if start_dt is not None and end_dt is not None:
+                    _span_h = (end_dt - start_dt).total_seconds() / 3600
+                    if hours > _span_h + 1e-6:
+                        raise ValueError(
+                            f"加班時數（{hours}）不可超過起迄時段差（{_span_h} 小時）"
+                        )
 
                 comp_raw = row.use_comp_leave
                 use_comp_leave = False
