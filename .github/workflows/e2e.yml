@@ -80,6 +80,9 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
           path: ivy-frontend
+          # 暫時：指向 offboarding 路由修正分支（e2e 抓到的 default-deny 鎖死）。
+          # 該分支併進前端 main 後，移除此 ref 改回預設 main。
+          ref: fix/offboarding-route-perm-2026-06-05-fe
 
       - name: Set up Python
         uses: actions/setup-python@v5
