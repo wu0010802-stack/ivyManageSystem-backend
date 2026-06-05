@@ -222,8 +222,10 @@ def _seed_year_end_settlement(sf, target_status: YearEndSettlementStatus):
     with sf() as s:
         boss_emp = _make_employee(s, "園長", "BY01")
         other_emp = _make_employee(s, "別人", "OY01")
+        third_emp = _make_employee(s, "第三人", "TY01")
         _create_user_with_employee(s, "boss_ye", YEAR_END_ALL, boss_emp.id)
         _create_user_with_employee(s, "other_ye_signer", YEAR_END_ALL, other_emp.id)
+        _create_user_with_employee(s, "third_ye_signer", YEAR_END_ALL, third_emp.id)
 
         cycle = YearEndCycle(
             academic_year=114,
@@ -285,4 +287,63 @@ class TestYearEndSelfApproval:
         sid = _seed_year_end_settlement(sf, YearEndSettlementStatus.DRAFT)
         _login(client, "other_ye_signer")
         res = client.post(f"/api/year_end/settlements/{sid}/sign_supervisor")
+        assert res.status_code == 200, res.text
+
+
+class TestYearEndSignSegregation:
+    """pentest E2：年終簽核職責分離（不可跳主管關、同一人不可連做兩關）。"""
+
+    def _url(self, sid, stage):
+        return f"/api/year_end/settlements/{sid}/{stage}"
+
+    def test_two_gate_flow_allowed_and_blocks_same_signer(self, client_with_db):
+        # 2-gate（會計從 DRAFT 直簽 → 核定）為設計支援流程；
+        # 但同一人不可既簽會計又核定（職責分離）。
+        client, sf = client_with_db
+        sid = _seed_year_end_settlement(sf, YearEndSettlementStatus.DRAFT)
+        _login(client, "other_ye_signer")  # A 會計從 DRAFT 直簽（合法）
+        assert client.post(self._url(sid, "sign_accounting")).status_code == 200
+        res = client.post(self._url(sid, "finalize"))  # A 又核定 → 擋
+        assert res.status_code == 403, res.text
+
+    def test_two_gate_distinct_signers_succeeds(self, client_with_db):
+        # 2-gate 正向：會計(A)從 DRAFT 直簽 → 核定(B≠A) 成功
+        client, sf = client_with_db
+        sid = _seed_year_end_settlement(sf, YearEndSettlementStatus.DRAFT)
+        _login(client, "other_ye_signer")  # A
+        assert client.post(self._url(sid, "sign_accounting")).status_code == 200
+        _login(client, "third_ye_signer")  # B
+        res = client.post(self._url(sid, "finalize"))
+        assert res.status_code == 200, res.text
+
+    def test_same_person_supervisor_then_accounting_rejected(self, client_with_db):
+        # E2：同一人簽完主管關不能再簽會計關
+        client, sf = client_with_db
+        sid = _seed_year_end_settlement(sf, YearEndSettlementStatus.DRAFT)
+        _login(client, "other_ye_signer")
+        assert client.post(self._url(sid, "sign_supervisor")).status_code == 200
+        res = client.post(self._url(sid, "sign_accounting"))
+        assert res.status_code == 403, res.text
+
+    def test_finalize_rejects_same_as_accounting(self, client_with_db):
+        # E2：核定人不能就是會計簽核人
+        client, sf = client_with_db
+        sid = _seed_year_end_settlement(sf, YearEndSettlementStatus.DRAFT)
+        _login(client, "other_ye_signer")
+        assert client.post(self._url(sid, "sign_supervisor")).status_code == 200
+        _login(client, "third_ye_signer")
+        assert client.post(self._url(sid, "sign_accounting")).status_code == 200
+        res = client.post(self._url(sid, "finalize"))  # third 同時是會計
+        assert res.status_code == 403, res.text
+
+    def test_full_flow_two_distinct_signers_succeeds(self, client_with_db):
+        # 正向：主管(A)→會計(B≠A)→核定(A≠B) 兩個不同人即可完成（maker-checker）
+        client, sf = client_with_db
+        sid = _seed_year_end_settlement(sf, YearEndSettlementStatus.DRAFT)
+        _login(client, "other_ye_signer")  # A
+        assert client.post(self._url(sid, "sign_supervisor")).status_code == 200
+        _login(client, "third_ye_signer")  # B
+        assert client.post(self._url(sid, "sign_accounting")).status_code == 200
+        _login(client, "other_ye_signer")  # A 核定（≠B 會計）
+        res = client.post(self._url(sid, "finalize"))
         assert res.status_code == 200, res.text

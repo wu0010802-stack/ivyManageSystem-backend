@@ -55,6 +55,7 @@ _PII_KEY_SUBSTRINGS: frozenset[str] = frozenset(
         "allergy",
         "disability",
         "iep",
+        "special_needs",
         "health",
         "diagnosis",
         "growth",

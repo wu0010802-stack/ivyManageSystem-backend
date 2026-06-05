@@ -14,6 +14,11 @@ from models.year_end import (
     YearEndSettlementStatus,
 )
 
+# 年終手動調整金額「量級」上限（pentest 2026-06-05 E1）：保留合法負值
+# （FESTIVAL_DIFF 多退、disciplinary 獎懲），但擋荒謬注入（如 9,999,999）。
+# 與薪資 manual_adjust 的 _MANUAL_ADJUST_FIELD_MAX(500k) 同精神，年終單列放寬至 100 萬。
+_YEAR_END_AMOUNT_ABS_MAX = 1_000_000
+
 # ===== YearEndCycle =====
 
 
@@ -109,7 +114,8 @@ class SpecialBonusItemCreate(BaseModel):
     employee_id: int
     bonus_type: SpecialBonusType
     period_label: str
-    amount: Decimal
+    # FESTIVAL_DIFF 可為負（多退）→ 對稱量級上限保留負值、擋荒謬注入（pentest E1）
+    amount: Decimal = Field(ge=-_YEAR_END_AMOUNT_ABS_MAX, le=_YEAR_END_AMOUNT_ABS_MAX)
     classroom_id: Optional[int] = None
     calc_meta: dict[str, Any] = Field(default_factory=dict)
     source_ref: Optional[str] = None
@@ -212,9 +218,15 @@ class GridRowOut(BaseModel):
 
 
 class ManualPatchRequest(BaseModel):
-    deduction_disciplinary: Optional[Decimal] = None
-    excess_amount: Optional[Decimal] = None
-    hire_months_override: Optional[Decimal] = None
+    # pentest E1：金額/月數邊界。disciplinary「獎懲」可負（大過 -6000）→ 對稱量級；
+    # excess（超額編制獎金）無負值語意 → ge=0；hire_months 為在職月數 → 0~12。
+    deduction_disciplinary: Optional[Decimal] = Field(
+        default=None, ge=-_YEAR_END_AMOUNT_ABS_MAX, le=_YEAR_END_AMOUNT_ABS_MAX
+    )
+    excess_amount: Optional[Decimal] = Field(
+        default=None, ge=0, le=_YEAR_END_AMOUNT_ABS_MAX
+    )
+    hire_months_override: Optional[Decimal] = Field(default=None, ge=0, le=12)
 
 
 # ===== B1: class_targets upsert 請求 schema =====
@@ -226,4 +238,5 @@ class ClassEnrollmentTargetUpsert(BaseModel):
     head_teacher_employee_id: Optional[int] = None
     assistant_employee_id: Optional[int] = None
     head_count_target: int
-    returning_student_rate: Decimal = Decimal("0")
+    # pentest E3：舊生率為分數（×100 得百分比）→ 0~1
+    returning_student_rate: Decimal = Field(default=Decimal("0"), ge=0, le=1)
