@@ -81,7 +81,20 @@ export default async function globalSetup(): Promise<void> {
     )
   }
 
-  await ctx.storageState({ path: STORAGE_STATE_PATH })
+  // 前端以 localStorage['userInfo'] 判定登入態（auth token 走 httpOnly cookie，
+  // src/utils/auth.getUserInfo() 讀此 key；router guard canAccessRoute 用它）。
+  // API request context 的 storageState 只含 cookie、無 localStorage，瀏覽器頁面會因
+  // getUserInfo()===null 被導去 /login（auth-admin 瀏覽器 spec 全形同未登入，只是
+  // admin-pages-render 只查 console error 故沒抓到）。
+  // → 手動把 login 回傳的 user 注入 storageState 的 frontend origin localStorage。
+  const state = await ctx.storageState()
+  state.origins = [
+    {
+      origin: baseURL,
+      localStorage: [{ name: 'userInfo', value: JSON.stringify(loginBody.user) }],
+    },
+  ]
+  await fs.writeFile(STORAGE_STATE_PATH, JSON.stringify(state, null, 2))
   await fs.writeFile(
     path.join(__dirname, '..', '.smoke-context.json'),
     JSON.stringify(
