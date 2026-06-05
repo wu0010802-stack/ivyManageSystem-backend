@@ -380,6 +380,25 @@ from services.overtime_conflict_service import (  # noqa: E402,F401
 # ============ Pydantic Models ============
 
 
+def _assert_hours_within_span(
+    hours: float, start_time: "Optional[str]", end_time: "Optional[str]"
+) -> None:
+    """P1-2：加班 hours 不可超過 start~end 時段差（防超報溢付）。
+
+    允許 hours <= 時段差（容許中間休息不計薪，業主 2026-06-05 定案 ≤ 而非嚴格相等）。
+    start_time/end_time 為已過 validate_hhmm_format 的 HH:MM 字串；任一為 None 不檢查。
+    """
+    if not start_time or not end_time:
+        return
+    start_min = int(start_time[:2]) * 60 + int(start_time[3:5])
+    end_min = int(end_time[:2]) * 60 + int(end_time[3:5])
+    span_hours = (end_min - start_min) / 60
+    if hours > span_hours + 1e-6:
+        raise ValueError(
+            f"加班時數（{hours}）不可超過起迄時段差（{span_hours} 小時）"
+        )
+
+
 class OvertimeCreate(BaseModel):
     employee_id: int
     overtime_date: date
@@ -417,6 +436,7 @@ class OvertimeCreate(BaseModel):
         if self.start_time and self.end_time:
             if self.start_time >= self.end_time:
                 raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+            _assert_hours_within_span(self.hours, self.start_time, self.end_time)
         return self
 
 
@@ -463,6 +483,10 @@ class BatchOvertimeCreate(BaseModel):
         if self.start_time and self.end_time:
             if self.start_time >= self.end_time:
                 raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
+            for _emp in self.employees:
+                _assert_hours_within_span(
+                    _emp.hours, self.start_time, self.end_time
+                )
         return self
 
 
