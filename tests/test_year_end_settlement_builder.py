@@ -1184,3 +1184,95 @@ class TestGuoWenxiuPartialYearReconciliation:
             f"引擎合計 {st.total_amount} 與實際核發單 19354 差距應 ≤1，"
             f"得 {abs(st.total_amount - _D('19354'))}"
         )
+
+
+class TestSingleSemesterPerfRateGate:
+    """P1-1（QA 2026-06-04，業主 2026-06-05 定案 GATE 方向）：單學期在職員工 step1
+    全校率只計在職學期，與 step3 resolve_org_achievement_rate 一致。
+
+    無班級角色（行政）員工隔離全校率分量：上學期在職、下學期離職 → worked=(True,False)；
+    上學期全校率 80 / 下學期 60。bug（無 gate）avg=(80+60)/2=70；gate 後只取 80。
+    """
+
+    def test_avg_excludes_non_worked_semester_school_rate(self, test_db_session):
+        from models.year_end import OrgYearSettings, YearEndCycle
+
+        db = test_db_session
+        db.add(
+            PositionSalaryConfig(
+                head_teacher_a=39240, head_teacher_b=36160, head_teacher_c=33000
+            )
+        )
+        db.add(
+            BonusConfig(
+                config_year=2025,
+                version=1,
+                is_active=True,
+                head_teacher_ab=2000,
+                head_teacher_c=1500,
+                assistant_teacher_ab=1200,
+                assistant_teacher_c=1200,
+                principal_festival=6500,
+                director_festival=3500,
+                leader_festival=2000,
+                driver_festival=1000,
+                designer_festival=1000,
+                admin_festival=2000,
+                art_teacher_festival=2000,
+            )
+        )
+        db.flush()
+
+        cycle = YearEndCycle(
+            academic_year=ACADEMIC_YEAR,
+            start_date=CYCLE_START,
+            end_date=CYCLE_END,
+            bonus_calc_date=BONUS_CALC_DATE,
+        )
+        db.add(cycle)
+        db.flush()
+
+        # 兩學期全校達成率「不等」是鑑別關鍵：上 80 / 下 60
+        db.add(
+            OrgYearSettings(
+                year_end_cycle_id=cycle.id,
+                semester_first=True,
+                enrollment_target=160,
+                school_achievement_rate=_D("80.0"),
+                org_achievement_rate=_D("0"),
+            )
+        )
+        db.add(
+            OrgYearSettings(
+                year_end_cycle_id=cycle.id,
+                semester_first=False,
+                enrollment_target=160,
+                school_achievement_rate=_D("60.0"),
+                org_achievement_rate=_D("0"),
+            )
+        )
+
+        # 無班級角色（行政）+ 下學期未在職（hire 1/1、resign 10/31 → worked=(True,False)）
+        emp = Employee(
+            employee_id="E_STAFF_HALF",
+            name="王行政",
+            position="行政",
+            title="職員",
+            base_salary=30000,
+            bypass_standard_base=True,
+            is_active=True,
+            hire_date=date(2025, 1, 1),
+            resign_date=date(2025, 10, 31),
+        )
+        db.add(emp)
+        db.flush()
+
+        sb.build_settlements(db, ACADEMIC_YEAR, set(), actor_id=1, refresh_rates=False)
+        st = _get_settlement(db, cycle, emp)
+
+        # 只在職上學期 → avg 應只取上學期全校率 80.0（class_* 全 None）；
+        # bug（無 gate）：兩學期平均 (80+60)/2 = 70.0
+        assert st.avg_performance_rate == _D("80.0"), (
+            f"單學期在職者 avg 應只計在職學期全校率 80.0，非兩學期平均 70.0。"
+            f"got={st.avg_performance_rate}"
+        )

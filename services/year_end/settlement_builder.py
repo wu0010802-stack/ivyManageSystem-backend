@@ -426,7 +426,13 @@ def refresh_enrollment_rates(db: Session, cycle: YearEndCycle) -> None:
 
 
 def gather_performance_rates(
-    db: Session, cycle: YearEndCycle, emp: Any, *, school_rates=None
+    db: Session,
+    cycle: YearEndCycle,
+    emp: Any,
+    *,
+    school_rates=None,
+    worked_first: bool = True,
+    worked_second: bool = True,
 ) -> PerformanceRates:
     """讀取 STORED rates 組 PerformanceRates（百分比）。
 
@@ -435,6 +441,10 @@ def gather_performance_rates(
                                     （head_teacher_employee_id == emp.id 的那班；無→None）
     - class_returning_rate_*      ← ClassEnrollmentTarget.returning_student_rate × 100
     無帶班角色（STAFF/COOK/admin/領導職）→ class_* 全 None（引擎僅以全校率平均）。
+
+    worked_first/worked_second：員工是否於該學期在職（由 worked_semesters 判定）。
+    未在職學期的全校率 → None，使 compute_avg_performance_rate 只計在職學期
+    （與 step3 resolve_org_achievement_rate 對齊）。預設 True 維持 standalone 向後相容。
     """
     # 全校達成率（兩學期）只依 cycle、與員工無關：caller（build_settlements 迴圈）以
     # school_rates 預先查一次傳入，避免 per-employee 2N 重查；未傳則自行查（standalone）。
@@ -459,6 +469,14 @@ def gather_performance_rates(
         school_second = (
             Decimal(str(org_second.school_achievement_rate)) if org_second else None
         )
+
+    # P1-1（業主 2026-06-05 定案 GATE 方向）：單學期在職員工的全校率只計在職學期
+    # （worked_semesters gate）。未在職學期 → None，compute_avg_performance_rate.pair_avg
+    # 自動跳過。置於 passed-in 與 standalone 兩路徑匯合後，故兩者皆受 gate（與 step3 一致）。
+    if not worked_first:
+        school_first = None
+    if not worked_second:
+        school_second = None
 
     class_perf_first = class_perf_second = None
     class_ret_first = class_ret_second = None
@@ -768,7 +786,14 @@ def build_settlements(
         )
         hire_months = Decimal(str(_override)) if _override is not None else auto_months
         worked_first, worked_second = worked_semesters(emp, cycle)
-        rates = gather_performance_rates(db, cycle, emp, school_rates=_school_rates)
+        rates = gather_performance_rates(
+            db,
+            cycle,
+            emp,
+            school_rates=_school_rates,
+            worked_first=worked_first,
+            worked_second=worked_second,
+        )
         org_rate = resolve_org_achievement_rate(
             rates.school_rate_first,
             rates.school_rate_second,
