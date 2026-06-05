@@ -23,11 +23,14 @@ name: E2E Smoke (cross-repo)
 
 on:
   workflow_dispatch:
-  # 暫時：push 到本迭代分支即觸發，方便在真實 runner 上把 job 跑穩。
-  # 跑綠後移除此區塊，改回純 workflow_dispatch（或開啟頂部註解的 PR/push gate）。
-  push:
-    branches:
-      - feat/e2e-ci-integration-2026-06-05-be
+  # PR gate：對 main 的 PR 會跑 critical-path smoke（已在真實 runner 驗證綠）。
+  # 若日後 runner timing 偶發 flaky 造成噪音，可改為 push:[main] 事後驗證或加
+  # paths 限縮。瀏覽器頁面渲染 spec 的真登入態為 follow-up（見 offboarding.spec.ts）。
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
 
 permissions:
   contents: read
