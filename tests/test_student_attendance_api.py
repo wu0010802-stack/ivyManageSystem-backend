@@ -2,7 +2,7 @@
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -170,10 +170,19 @@ class TestStudentAttendanceOverviewApi:
         assert res.status_code == 403
 
     def test_batch_save_invalidates_home_summary_and_monthly_cache(
-        self, client_with_db
+        self, client_with_db, monkeypatch
     ):
         client, session_factory = client_with_db
+        # 用最近一個平日：completion_rate 只算上學日（_build_calendar_days 排除週末），
+        # 原本用 date.today() 在週末/假日會因當日非上學日恆為 0 而 flaky。
+        # summary 的 recorded_count 以 today_taipei() 過濾「當日」記錄，故同步把
+        # dashboard_query_service 的 today_taipei mock 到 target_date 對齊。
         target_date = date.today()
+        while target_date.weekday() >= 5:
+            target_date -= timedelta(days=1)
+        import services.dashboard_query_service as _dqs
+
+        monkeypatch.setattr(_dqs, "today_taipei", lambda: target_date)
         with session_factory() as session:
             _create_user(
                 session,
