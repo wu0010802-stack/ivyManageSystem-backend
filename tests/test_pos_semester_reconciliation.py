@@ -376,3 +376,33 @@ def test_invalid_approval_status_rejected(pos_client):
     assert _login(client).status_code == 200
     res = _get(client, approval_status="not_a_valid_state")
     assert res.status_code == 400
+
+
+def test_voided_refund_excluded_from_offline_paid(pos_client):
+    """Finding C / backlog ④：學期對帳 bucket 必須排除 voided 流水。
+
+    場景：一筆 active POS 收款 1000（未結日 → pending）+ 一筆已作廢(voided)退費 1000。
+    reg.paid_amount 是排除 voided 後的權威值（1000）。若 bucket 把 voided refund
+    算進 pending_refund，pending_net 會被砍到 0 → offline_paid = paid − 0 = 1000，
+    把正常 POS 收款誤歸成「非 POS 離線已繳」。修前 offline=1000、修後應為 0。"""
+    client, sf = pos_client
+    d1 = date.today()  # 未結日 → pending
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="作廢退費", paid_amount=1000, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=1000, payment_date=d1)
+        refund = _add_payment(
+            s, reg_id=reg.id, amount=1000, payment_date=d1, type_="refund"
+        )
+        refund.voided_at = datetime.now()
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert (
+        it["offline_paid_amount"] == 0
+    ), "voided refund 不應讓正常 POS 收款被歸成離線已繳"
+    assert it["pending_paid_amount"] == 1000
