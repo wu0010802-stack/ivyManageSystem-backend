@@ -10,11 +10,11 @@ from utils.taipei_time import now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import case, func
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from models.base import session_scope
-from models.fees import StudentFeeAdjustment, StudentFeePayment, StudentFeeRecord
+from models.fees import StudentFeePayment, StudentFeeRecord
 from utils.audit import write_audit_in_session
 from utils.auth import require_staff_permission
 from utils.finance_guards import require_finance_approve
@@ -26,6 +26,7 @@ from ._helpers import (
     PayRequest,
     _apply_fee_record_filters,
     _invalidate_finance_summary_cache,
+    compute_fee_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -401,52 +402,10 @@ def fee_summary(
             detail="非管理角色不得讀取全校費用統計",
         )
     with session_scope() as session:
-        q = _apply_fee_record_filters(
-            session.query(StudentFeeRecord),
+        return compute_fee_summary(
+            session,
             period=period,
             classroom_name=classroom_name,
             status=status,
             student_name=student_name,
         )
-
-        agg_q = q.with_entities(
-            func.count(StudentFeeRecord.id).label("total_count"),
-            func.coalesce(
-                func.sum(case((StudentFeeRecord.status == "paid", 1), else_=0)), 0
-            ).label("paid_count"),
-            func.coalesce(
-                func.sum(case((StudentFeeRecord.status == "partial", 1), else_=0)), 0
-            ).label("partial_count"),
-            func.coalesce(func.sum(StudentFeeRecord.amount_due), 0).label("total_due"),
-            func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0).label(
-                "total_paid"
-            ),
-        )
-        row = agg_q.one()
-        total_count = row.total_count or 0
-        paid_count = int(row.paid_count or 0)
-        partial_count = int(row.partial_count or 0)
-        total_due = int(row.total_due or 0)
-        total_paid = int(row.total_paid or 0)
-
-        # 折抵聚合：依 filtered records 的 student_id 集合 + period filter 加總
-        # adjustment.amount，扣抵 unpaid 與應收。classroom/status filter 透過
-        # student_id IN（filtered records）間接套用。
-        student_id_q = q.with_entities(StudentFeeRecord.student_id).distinct()
-        adj_q = session.query(
-            func.coalesce(func.sum(StudentFeeAdjustment.amount), 0)
-        ).filter(StudentFeeAdjustment.student_id.in_(student_id_q))
-        if period:
-            adj_q = adj_q.filter(StudentFeeAdjustment.period == period)
-        total_adjustment = int(adj_q.scalar() or 0)
-
-        return {
-            "total_count": total_count,
-            "paid_count": paid_count,
-            "partial_count": partial_count,
-            "unpaid_count": total_count - paid_count - partial_count,
-            "total_due": total_due,
-            "total_paid": total_paid,
-            "total_unpaid": max(0, total_due - total_paid - total_adjustment),
-            "total_adjustment": total_adjustment,
-        }
