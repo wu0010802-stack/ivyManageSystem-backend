@@ -107,6 +107,7 @@ from api.year_end import year_end_router
 from api.provenance import provenance_router
 from api.calendar_admin import router as calendar_admin_router
 from api.offboarding import router as offboarding_router
+from api.search import router as search_router
 from services.leave_quota_expiry.comp_grant_reminder import (
     init_comp_grant_reminder_line_service,
 )
@@ -1034,6 +1035,7 @@ from api.policies_admin import router as policies_admin_router
 
 app.include_router(policies_admin_router)
 app.include_router(offboarding_router, prefix="/api")
+app.include_router(search_router)
 
 from api import leave_quota_expiry as _lqe_api
 

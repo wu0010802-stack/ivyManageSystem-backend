@@ -1,0 +1,308 @@
+"""後台全域搜尋 /api/search 測試。"""
+
+import os
+import sys
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import models.base as base_module
+from api.auth import router as auth_router
+from api.auth import _account_failures, _ip_attempts
+from api.search import router as search_router
+from models.database import Base, Employee, User
+from utils.auth import hash_password, create_access_token
+
+
+@pytest.fixture
+def client_with_db(tmp_path):
+    db_path = tmp_path / "search.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    session_factory = sessionmaker(bind=engine)
+    old_engine, old_sf = base_module._engine, base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = session_factory
+    Base.metadata.create_all(engine)
+    _ip_attempts.clear()
+    _account_failures.clear()
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(search_router)
+    try:
+        with TestClient(app) as client:
+            yield client, session_factory
+    finally:
+        base_module._engine = old_engine
+        base_module._SessionFactory = old_sf
+
+
+def _make_user(session_factory, *, username, role, permission_names):
+    """建立 User（附一個最小 Employee），回傳 user_id 與 employee_id。"""
+    s = session_factory()
+    try:
+        emp = Employee(employee_id=f"E-{username}", name=username, is_active=True)
+        s.add(emp)
+        s.flush()
+        u = User(
+            username=username,
+            password_hash=hash_password("pw123456"),
+            role=role,
+            employee_id=emp.id,
+            permission_names=permission_names,
+            is_active=True,
+        )
+        s.add(u)
+        s.flush()
+        uid = u.id
+        eid = emp.id
+        s.commit()
+        return uid, eid
+    finally:
+        s.close()
+
+
+def _login(uid, eid, *, role, permission_names, username=""):
+    """直接 mint JWT（仿 test_portal_search.py），繞過登入流程守衛。"""
+    token = create_access_token(
+        {
+            "user_id": uid,
+            "employee_id": eid,
+            "role": role,
+            "name": username,
+            "permission_names": permission_names,
+            "token_version": 0,
+        }
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_short_query_returns_empty(client_with_db):
+    client, sf = client_with_db
+    uid, eid = _make_user(sf, username="admin1", role="admin", permission_names=["*"])
+    headers = _login(uid, eid, role="admin", permission_names=["*"])
+    r = client.get("/api/search", params={"q": "a"}, headers=headers)  # < 2 字
+    assert r.status_code == 200
+    body = r.json()
+    assert body["q"] == "a"
+    assert body["students"] == [] and body["employees"] == []
+
+
+def test_teacher_and_parent_are_forbidden(client_with_db):
+    client, sf = client_with_db
+    uid, eid = _make_user(
+        sf,
+        username="teach1",
+        role="teacher",
+        permission_names=["STUDENTS_READ:own_class"],
+    )
+    headers = _login(
+        uid, eid, role="teacher", permission_names=["STUDENTS_READ:own_class"]
+    )
+    r = client.get("/api/search", params={"q": "abc"}, headers=headers)
+    assert r.status_code == 403
+
+
+def test_students_section_and_permission_gate(client_with_db):
+    client, sf = client_with_db
+    # 建班級 + 兩個學生
+    from models.database import Classroom, Student
+
+    s = sf()
+    cr = Classroom(name="向日葵班", school_year=114, semester=1, is_active=True)
+    s.add(cr)
+    s.flush()
+    s.add(
+        Student(
+            name="王小明",
+            student_id="S001",
+            classroom_id=cr.id,
+            is_active=True,
+            lifecycle_status="active",
+        )
+    )
+    s.add(
+        Student(
+            name="李大華",
+            student_id="S002",
+            classroom_id=cr.id,
+            is_active=True,
+            lifecycle_status="active",
+        )
+    )
+    s.commit()
+    s.close()
+
+    # 有 STUDENTS_READ → 搜得到
+    uid, eid = _make_user(
+        sf, username="reader", role="supervisor", permission_names=["STUDENTS_READ"]
+    )
+    h = _login(uid, eid, role="supervisor", permission_names=["STUDENTS_READ"])
+    r = client.get("/api/search", params={"q": "王小"}, headers=h)
+    assert r.status_code == 200
+    names = [x["name"] for x in r.json()["students"]]
+    assert "王小明" in names and "李大華" not in names
+
+    # 無 STUDENTS_READ → 學生區塊空
+    uid2, eid2 = _make_user(
+        sf, username="noread", role="accountant", permission_names=["FEES_READ"]
+    )
+    h2 = _login(uid2, eid2, role="accountant", permission_names=["FEES_READ"])
+    r2 = client.get("/api/search", params={"q": "王小"}, headers=h2)
+    assert r2.json()["students"] == []
+
+
+def test_employees_section(client_with_db):
+    client, sf = client_with_db
+    from models.database import Employee
+
+    s = sf()
+    s.add(Employee(employee_id="E100", name="陳老師", is_active=True, title="教師"))
+    s.add(Employee(employee_id="E200", name="林主任", is_active=False))  # 離職不出現
+    s.commit()
+    s.close()
+    uid, eid = _make_user(
+        sf, username="hr1", role="hr", permission_names=["EMPLOYEES_READ"]
+    )
+    h = _login(uid, eid, role="hr", permission_names=["EMPLOYEES_READ"])
+    # 注意：單一 CJK 字（如「陳」）len==1，會被 MIN_QUERY_LEN=2 門檻擋掉，用 2 字
+    r = client.get("/api/search", params={"q": "陳老"}, headers=h)
+    rows = r.json()["employees"]
+    assert any(x["name"] == "陳老師" and x["title"] == "教師" for x in rows)
+    # 無 EMPLOYEES_READ → 空
+    uid0, eid0 = _make_user(
+        sf, username="hr0", role="supervisor", permission_names=["STUDENTS_READ"]
+    )
+    h0 = _login(uid0, eid0, role="supervisor", permission_names=["STUDENTS_READ"])
+    assert (
+        client.get("/api/search", params={"q": "陳老"}, headers=h0).json()["employees"]
+        == []
+    )
+
+
+def test_guardians_section_masks_phone(client_with_db):
+    client, sf = client_with_db
+    from models.database import Classroom, Student, Guardian
+
+    s = sf()
+    cr = Classroom(name="A班", school_year=114, semester=1, is_active=True)
+    s.add(cr)
+    s.flush()
+    stu = Student(
+        name="王小明",
+        student_id="S001",
+        classroom_id=cr.id,
+        is_active=True,
+        lifecycle_status="active",
+    )
+    s.add(stu)
+    s.flush()
+    stu_id = stu.id  # session close 後 ORM 物件 detach，先取出 id
+    s.add(
+        Guardian(student_id=stu.id, name="王大華", phone="0912345678", is_primary=True)
+    )
+    s.commit()
+    s.close()
+    uid, eid = _make_user(
+        sf, username="sup1", role="supervisor", permission_names=["GUARDIANS_READ"]
+    )
+    h = _login(uid, eid, role="supervisor", permission_names=["GUARDIANS_READ"])
+    r = client.get("/api/search", params={"q": "王大"}, headers=h)
+    rows = r.json()["guardians"]
+    assert rows and rows[0]["name"] == "王大華"
+    assert rows[0]["child_name"] == "王小明" and rows[0]["student_id"] == stu_id
+    assert "0912345678" not in rows[0]["phone_masked"]  # 已遮罩
+
+
+def test_classrooms_and_announcements_sections(client_with_db):
+    client, sf = client_with_db
+    from models.database import Classroom
+    from models.event import Announcement
+
+    # 先建 admin（取得 employee id 供 Announcement.created_by FK→employees.id 用）
+    uid, eid = _make_user(sf, username="adm", role="admin", permission_names=["*"])
+    s = sf()
+    s.add(Classroom(name="彩虹班", school_year=114, semester=1, is_active=True))
+    s.add(Announcement(title="彩虹班親師座談", content="內容", created_by=eid))
+    s.commit()
+    s.close()
+    h = _login(uid, eid, role="admin", permission_names=["*"])
+    r = client.get("/api/search", params={"q": "彩虹"}, headers=h)
+    body = r.json()
+    assert any(c["name"] == "彩虹班" for c in body["classrooms"])
+    assert any(a["title"] == "彩虹班親師座談" for a in body["announcements"])
+
+
+def test_fees_activity_recruitment_sections(client_with_db):
+    client, sf = client_with_db
+    from models.fees import StudentFeeRecord
+    from models.activity import ActivityRegistration
+    from models.recruitment import RecruitmentVisit
+
+    s = sf()
+    s.add(
+        StudentFeeRecord(
+            student_id=1,
+            student_name="趙小妹",
+            classroom_name="A班",
+            fee_item_name="月費",
+            period="114-1",
+            status="unpaid",
+            amount_due=5000,
+        )
+    )
+    s.add(
+        ActivityRegistration(
+            student_name="趙小妹",
+            class_name="A班",
+            parent_phone="0911222333",
+            is_active=True,
+            match_status="matched",
+        )
+    )
+    s.add(
+        RecruitmentVisit(
+            child_name="趙小寶",
+            target_school_year=115,
+            enrolled=False,
+            month="115.03",
+        )
+    )
+    s.commit()
+    s.close()
+    uid, eid = _make_user(sf, username="adm", role="admin", permission_names=["*"])
+    h = _login(uid, eid, role="admin", permission_names=["*"])
+    rf = client.get("/api/search", params={"q": "趙小妹"}, headers=h).json()
+    assert any(x["student_name"] == "趙小妹" for x in rf["fees"])
+    assert any(x["student_name"] == "趙小妹" for x in rf["activity_registrations"])
+    rr = client.get("/api/search", params={"q": "趙小寶"}, headers=h).json()
+    assert any(x["child_name"] == "趙小寶" for x in rr["recruitment"])
+
+
+def test_search_writes_read_audit(client_with_db):
+    client, sf = client_with_db
+    uid, eid = _make_user(sf, username="adm", role="admin", permission_names=["*"])
+    h = _login(uid, eid, role="admin", permission_names=["*"])
+    r = client.get("/api/search", params={"q": "測試"}, headers=h)
+    assert r.status_code == 200
+    # 查 audit 表是否有一筆 admin_global_search READ
+    from models.audit import AuditLog
+
+    s = sf()
+    try:
+        rows = (
+            s.query(AuditLog)
+            .filter(AuditLog.entity_type == "admin_global_search")
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].action == "READ"
+    finally:
+        s.close()
