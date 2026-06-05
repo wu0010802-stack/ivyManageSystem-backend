@@ -5,7 +5,7 @@ Refs: docs/superpowers/specs/2026-05-28-audit-pii-redact-retention-design.md §4
 
 from __future__ import annotations
 
-from utils.audit_redact import _FILTERED, redact_pii
+from utils.audit_redact import _FILTERED, redact_pii, redact_pii_text
 
 # ── 基本遮罩 ──
 
@@ -28,6 +28,38 @@ def test_address_is_redacted():
 def test_email_is_redacted():
     out = redact_pii({"email": "p@example.com"})
     assert out == {"email": _FILTERED}
+
+
+# ── Finding H：自由文字 summary 的強識別子遮罩（redact_pii_text）──
+
+
+def test_text_masks_tw_national_id():
+    out = redact_pii_text("家長申請刪除 身分證 A123456789 之資料")
+    assert "A123456789" not in out
+    assert _FILTERED in out
+
+
+def test_text_masks_mobile_phone():
+    out = redact_pii_text("聯絡電話 0912345678 已更新")
+    assert "0912345678" not in out
+    assert _FILTERED in out
+
+
+def test_text_masks_landline_with_dash():
+    out = redact_pii_text("市話 02-12345678 變更")
+    assert "02-12345678" not in out
+
+
+def test_text_keeps_operational_ids_and_names():
+    """admin-only 稽核面需保留可讀性：純數字操作 ID 與姓名不得被誤遮。"""
+    s = "操作者 林佳穎（user_id=123）切換為 employee_id=45，金額 NT$50000"
+    out = redact_pii_text(s)
+    assert out == s  # 無強識別子 → 原樣保留
+
+
+def test_text_handles_none_and_nonstr():
+    assert redact_pii_text(None) is None
+    assert redact_pii_text("") == ""
 
 
 # ── Amount 保留（audit 例外）──

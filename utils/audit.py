@@ -497,6 +497,18 @@ def _compute_ua_hash(request: Request) -> str | None:
     return hashlib.sha256(ua.encode("utf-8", errors="ignore")).hexdigest()[:32]
 
 
+def _redact_summary(summary):
+    """Finding H：對自由文字 summary 遮罩強識別子（身分證/手機/市話）。
+
+    summary 由各端點自由組字串，key-based redact_pii 對它無效；這層擋的是未來
+    某端點不慎把 id_number/phone 塞進 summary 而繞過 changes 遮罩明文落 DB。
+    lazy import 與既有 redact_pii 用法一致，避免 import 循環。
+    """
+    from utils.audit_redact import redact_pii_text
+
+    return redact_pii_text(summary)
+
+
 def _write_audit_sync(payload: dict) -> None:
     """在 threadpool 中執行的同步寫入，不可拋出例外到上層。
 
@@ -530,6 +542,9 @@ def _write_audit_sync(payload: dict) -> None:
                         e,
                     )
                     # fail-open: 繼續用 admin connection 寫入；trigger 仍主防線
+            # Finding H：summary 遮罩強識別子（explicit/login/middleware 共同 sink）
+            if "summary" in payload:
+                payload["summary"] = _redact_summary(payload.get("summary"))
             session.add(AuditLog(**payload))
             session.commit()
         finally:
@@ -604,7 +619,7 @@ def write_audit_in_session(
         action=action,
         entity_type=entity_type,
         entity_id=str(entity_id) if entity_id is not None else None,
-        summary=summary,
+        summary=_redact_summary(summary),
         changes=changes_json,
         ip_address=ip,
         user_agent_hash=_compute_ua_hash(request),
@@ -643,7 +658,9 @@ def write_explicit_audit(
     """
     try:
         user_id, username = _extract_user_from_header(request)
-        impersonated_by, impersonated_by_name = _extract_impersonation_from_header(request)
+        impersonated_by, impersonated_by_name = _extract_impersonation_from_header(
+            request
+        )
         if dedup and not _should_audit_read(user_id, entity_type, entity_id):
             return
         ip = get_client_ip(request)
@@ -800,7 +817,9 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         try:
             user_id, username = _extract_user_from_header(request)
-            impersonated_by, impersonated_by_name = _extract_impersonation_from_header(request)
+            impersonated_by, impersonated_by_name = _extract_impersonation_from_header(
+                request
+            )
             # endpoint 可透過 request.state 覆寫摘要與 entity_id
             entity_id = getattr(
                 request.state, "audit_entity_id", None
