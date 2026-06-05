@@ -603,8 +603,9 @@ class SalaryEngine:
         if rate is not None:
             self.insurance_service.update_rates_from_db(rate)
 
-        # 歷史月份重算：以該月份所屬年度載入級距表（避免用今年級距算去年薪資）
-        self.insurance_service.load_brackets_from_db(year)
+        # 歷史月份重算：以該月份所屬年度載入級距表（避免用今年級距算去年薪資）。
+        # require_year=True：表有級距但缺該年度即 fail-loud（整表空時仍沿用 hardcode）。
+        self.insurance_service.load_brackets_from_db(year, require_year=True)
         # 歷史月份重算：以該月所屬年度載入職位標準底薪（空表→預設，見 load_position_salary_standards）
         self._position_salary_standards = load_position_salary_standards(
             session, year=year
