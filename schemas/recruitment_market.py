@@ -116,7 +116,7 @@ class RecruitmentMarketDistrictRowOut(IvyBaseModel):
     town_code: Optional[str] = None
     lead_count_30d: int
     lead_count_90d: int
-    deposit_rate_90d: float
+    deposit_rate_90d: Optional[float] = None  # 樣本<10 時 service 回 None（業主決議）
     avg_travel_minutes: Optional[float] = None
     population_density: Optional[float] = None
     population_0_6: Optional[int] = None

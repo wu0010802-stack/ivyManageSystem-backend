@@ -3,7 +3,7 @@ Portal shared constants, Pydantic models, and helper functions.
 """
 
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 from utils.taipei_time import today_taipei
 from types import SimpleNamespace
 from typing import Optional
@@ -312,7 +312,12 @@ def check_last_modified(request: Request, last_modified) -> FastAPIResponse | No
 
 
 def add_last_modified_header(response: FastAPIResponse, last_modified) -> None:
-    response.headers["Last-Modified"] = format_datetime(last_modified, usegmt=True)
+    dt = last_modified
+    # 系統慣例:naive datetime 為台北時間;HTTP Last-Modified 的 usegmt 需 UTC-aware
+    # datetime,否則 email.utils.format_datetime raise ValueError。
+    if dt is not None and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone(timedelta(hours=8))).astimezone(timezone.utc)
+    response.headers["Last-Modified"] = format_datetime(dt, usegmt=True)
 
 
 def check_etag(request: Request, etag: str) -> FastAPIResponse | None:
