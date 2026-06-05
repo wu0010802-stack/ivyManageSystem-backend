@@ -20,9 +20,10 @@ from models.classroom import Classroom
 from models.gov_moe import MonthlyEnrollmentSnapshot
 from services.gov_moe.monthly_calculator import build_snapshot_rows
 from services.gov_moe.monthly_excel_writer import build_monthly_xlsx_bytes
-from utils.audit import write_audit_in_session
+from utils.audit import write_audit_in_session, write_explicit_audit
 from utils.auth import require_staff_permission
-from utils.permissions import Permission
+from utils.permissions import Permission, has_permission
+from utils.portfolio_access import is_unrestricted
 
 # 重用 disability_documents 的 get_db，確保測試環境 _SessionFactory 替換正確生效
 from api.gov_moe.disability_documents import get_db
@@ -80,6 +81,25 @@ def _identity_from_user(user: dict) -> str:
 
 def _classroom_name_map(db: Session) -> dict[int, str]:
     return {c.id: c.name for c in db.query(Classroom).all()}
+
+
+def _has_student_pii_access(current_user: dict) -> bool:
+    """Finding E：是否可看完整幼生身分證。
+
+    GOV_REPORTS_VIEW 受眾含 accountant/supervisor 等；其中純財務角色（accountant）
+    無任何 STUDENTS_* 權限，不應看到全園幼生身分證。判定：unrestricted（admin/hr/
+    supervisor 或 wildcard）或持 STUDENTS_READ 才放行完整身分證。
+    """
+    return is_unrestricted(current_user) or has_permission(
+        current_user.get("permission_names"), Permission.STUDENTS_READ
+    )
+
+
+def _mask_id_number(value):
+    """遮罩身分證：只留首碼，其餘星號。非字串/空值原樣回傳。"""
+    if not isinstance(value, str) or not value:
+        return value
+    return value[0] + "*" * (len(value) - 1)
 
 
 @router.post(
@@ -176,14 +196,13 @@ def generate_monthly_report(
     )
 
 
-@router.get(
-    "",
-    dependencies=[Depends(require_staff_permission(Permission.GOV_REPORTS_VIEW))],
-)
+@router.get("")
 def get_monthly_report(
+    request: Request,
     year: int = Query(..., ge=2020, le=2100),
     month: int = Query(..., ge=1, le=12),
     db: Session = Depends(get_db),
+    current_user: dict = Depends(require_staff_permission(Permission.GOV_REPORTS_VIEW)),
 ):
     snapshot_rows = (
         db.query(MonthlyEnrollmentSnapshot)
@@ -241,6 +260,23 @@ def get_monthly_report(
     for sd in student_details:
         sd["classroom_name"] = cls_map.get(sd.get("classroom_id"), "(未分班)")
 
+    # Finding E：無 student 權限的角色（如 accountant）不得看到全園幼生身分證。
+    full_id = _has_student_pii_access(current_user)
+    if not full_id:
+        for sd in student_details:
+            sd["id_number"] = _mask_id_number(sd.get("id_number"))
+
+    # GET 不被 AuditMiddleware 記錄；顯式留痕（誰、何月、是否取得完整身分證）。
+    write_explicit_audit(
+        request,
+        action="READ",
+        entity_type="gov_moe_monthly",
+        entity_id=f"{year}-{month:02d}",
+        summary=f"檢視 {year}/{month} 教育部月報（{len(student_details)} 名幼生明細）",
+        changes={"year": year, "month": month, "is_full_id_number": full_id},
+        dedup=True,
+    )
+
     overview = {
         "total_students": total_students,
         "by_age_group": by_age_group,
@@ -280,15 +316,16 @@ def get_monthly_report(
     }
 
 
-@router.get(
-    "/export",
-    dependencies=[Depends(require_staff_permission(Permission.GOV_REPORTS_EXPORT))],
-)
+@router.get("/export")
 def export_monthly_report(
+    request: Request,
     year: int = Query(..., ge=2020, le=2100),
     month: int = Query(..., ge=1, le=12),
     fmt: Literal["xlsx"] = Query("xlsx", alias="format"),
     db: Session = Depends(get_db),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.GOV_REPORTS_EXPORT)
+    ),
 ):
 
     snapshot_rows = (
@@ -374,6 +411,17 @@ def export_monthly_report(
     }
 
     xlsx_bytes = build_monthly_xlsx_bytes(rows_payload, student_details, overview)
+
+    # Finding E：匯出含全園幼生完整身分證，留下不可推卸稽核痕跡（對齊 gov_reports.py）。
+    write_explicit_audit(
+        request,
+        action="EXPORT",
+        entity_type="gov_moe_monthly",
+        entity_id=f"{year}-{month:02d}",
+        summary=f"匯出 {year}/{month} 教育部月報 Excel（{len(student_details)} 名幼生，含身分證）",
+        changes={"year": year, "month": month, "is_full_id_number": True},
+    )
+
     today_str = now_taipei_naive().strftime("%Y-%m-%d")
     filename = f"義華幼兒園_月報_{year}-{month:02d}_產生於{today_str}.xlsx"
 
