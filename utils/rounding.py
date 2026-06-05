@@ -27,7 +27,7 @@ Refs:
 
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Union
 
 Number = Union[int, float, Decimal]
@@ -63,3 +63,32 @@ def round_half_up(value: Number, ndigits: int = 0) -> Union[int, float]:
         return int(d.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     quant = Decimal("1").scaleb(-ndigits)
     return float(d.quantize(quant, rounding=ROUND_HALF_UP))
+
+
+def round_down(value: Number, ndigits: int = 0) -> Union[int, float]:
+    """無條件捨去（ROUND_DOWN，朝零方向截斷）。
+
+    用於員工端扣款（請假、遲到、早退）以對齊園所實務：扣款金額一律捨去小數，
+    對員工有利（不會因進位多扣 1 元）。與 round_half_up 並存——勞健保/政府單據仍用
+    round_half_up。
+
+    >>> round_down(491.67)
+    491
+    >>> round_down(245.83)
+    245
+    >>> round_down(696.75)
+    696
+
+    Args:
+        value:   待捨去的數值（int / float / Decimal 皆可，None 視為 0）
+        ndigits: 保留小數位數，預設 0（回 int）
+    Returns:
+        ndigits == 0 → int；ndigits > 0 → float
+    """
+    if value is None:
+        return 0 if ndigits == 0 else 0.0
+    d = Decimal(str(value))
+    if ndigits == 0:
+        return int(d.quantize(Decimal("1"), rounding=ROUND_DOWN))
+    quant = Decimal("1").scaleb(-ndigits)
+    return float(d.quantize(quant, rounding=ROUND_DOWN))

@@ -11,6 +11,7 @@ from .constants import (
     SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS,
 )
 from services.workday_rules import classify_day, load_day_rule_maps
+from utils.rounding import round_down
 
 
 def is_attendance_waived(att) -> bool:
@@ -71,14 +72,17 @@ def _sum_leave_deduction_legacy(
             lv.deduction_ratio is not None and lv.deduction_ratio != standard_sick_ratio
         )
         if is_genuine_override:
-            total += (hours / 8) * daily_salary * lv.deduction_ratio
+            # 無條件捨去（對齊園所實務：扣款捨小數、對員工有利）
+            total += round_down((hours / 8) * daily_salary * lv.deduction_ratio)
         else:
             half_paid = max(
                 0.0, min(SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS - sick_used, hours)
             )
             unpaid = hours - half_paid
-            total += (half_paid / 8) * daily_salary * 0.5
-            total += (unpaid / 8) * daily_salary * 1.0
+            # 同一筆病假的半薪段 + 全薪段合併後再捨去
+            total += round_down(
+                (half_paid / 8) * daily_salary * 0.5 + (unpaid / 8) * daily_salary * 1.0
+            )
         sick_used += hours
 
     for lv in other_leaves:
@@ -87,7 +91,7 @@ def _sum_leave_deduction_legacy(
             if lv.deduction_ratio is not None
             else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
         )
-        total += (lv.leave_hours / 8) * daily_salary * ratio
+        total += round_down((lv.leave_hours / 8) * daily_salary * ratio)
     return total
 
 
@@ -143,14 +147,17 @@ def _sum_leave_deduction(
             lv.deduction_ratio is not None and lv.deduction_ratio != standard_sick_ratio
         )
         if is_genuine_override:
-            total += (hours / 8) * daily_salary * lv.deduction_ratio
+            # 無條件捨去（對齊園所實務：扣款捨小數、對員工有利）
+            total += round_down((hours / 8) * daily_salary * lv.deduction_ratio)
         else:
             half_paid = max(
                 0.0, min(SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS - sick_used, hours)
             )
             unpaid = hours - half_paid
-            total += (half_paid / 8) * daily_salary * 0.5
-            total += (unpaid / 8) * daily_salary * 1.0
+            # 同一筆病假的半薪段 + 全薪段合併後再捨去
+            total += round_down(
+                (half_paid / 8) * daily_salary * 0.5 + (unpaid / 8) * daily_salary * 1.0
+            )
         sick_used += hours
 
     for att, lv in other_pairs:
@@ -162,7 +169,7 @@ def _sum_leave_deduction(
             if lv.deduction_ratio is not None
             else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
         )
-        total += (hours / 8) * daily_salary * ratio
+        total += round_down((hours / 8) * daily_salary * ratio)
 
     return total
 

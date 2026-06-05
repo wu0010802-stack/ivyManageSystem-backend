@@ -178,13 +178,13 @@ class TestAttendanceDeduction:
         assert result["missing_punch_deduction"] == 0
 
     def test_late_per_minute(self, engine):
-        """遲到按分鐘比例扣款（中間值保留浮點，不提前 round）"""
+        """遲到按分鐘比例扣款，無條件捨去（對齊園所 Excel：扣款捨小數、對員工有利）"""
         att = self._make_attendance(late_count=1, total_late_minutes=30)
         result = engine.calculate_attendance_deduction(
             att, daily_salary=1000, base_salary=30000, late_details=[30]
         )
-        per_minute = 30000 / 14400
-        assert result["late_deduction"] == 30 * per_minute  # 62.5，不提前舍入
+        # 30 × (30000/14400) = 62.5 → 無條件捨去 62
+        assert result["late_deduction"] == 62
 
     def test_late_over_120_min_per_minute(self, engine):
         """遲到超過 120 分鐘仍按實際分鐘比例扣款（依勞基法，不得溢扣）"""
@@ -192,8 +192,8 @@ class TestAttendanceDeduction:
         result = engine.calculate_attendance_deduction(
             att, daily_salary=1000, base_salary=30000, late_details=[150]
         )
-        per_minute = 30000 / 14400
-        assert result["late_deduction"] == 150 * per_minute  # 312.5，不提前舍入
+        # 150 × (30000/14400) = 312.5 → 無條件捨去 312
+        assert result["late_deduction"] == 312
         assert "auto_leave_count" not in result
         assert "auto_leave_deduction" not in result
 
@@ -214,10 +214,8 @@ class TestAttendanceDeduction:
         result = engine.calculate_attendance_deduction(
             att, daily_salary=1000, base_salary=30000
         )
-        per_minute = 30000 / 14400
-        assert (
-            result["early_leave_deduction"] == 20 * per_minute
-        )  # 41.666...，不提前舍入
+        # 20 × (30000/14400) = 41.67 → 無條件捨去 41
+        assert result["early_leave_deduction"] == 41
 
     def test_missing_punch_no_deduction(self, engine):
         """缺卡不扣款，僅記錄"""
@@ -2255,8 +2253,8 @@ class TestCombinedDeductions:
 
         base = 30000
         daily = base / 30
-        # 引擎的 per_minute_rate = base / (30 * 8 * 60)
-        expected_late = base / (30 * 8 * 60) * 30
+        # 引擎的 per_minute_rate = base / (30 * 8 * 60)；遲到扣款無條件捨去（對齊園所 Excel）
+        expected_late = int(base / (30 * 8 * 60) * 30)
         att = AttendanceResult(
             employee_name="王小明",
             total_days=22,

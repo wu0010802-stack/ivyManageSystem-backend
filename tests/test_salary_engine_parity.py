@@ -584,7 +584,7 @@ def test_sanity_3day_personal_leaves(db_session, sample_employee):
 
 
 def test_sanity_hourly_personal_15h(db_session, sample_employee):
-    """小時事假 1.5h：扣款應為 187.5（1000 × 1.5/8）"""
+    """小時事假 1.5h：1000 × 1.5/8 = 187.5 → 無條件捨去 187（對齊園所 Excel）"""
     lv = build_leave_with_attendance(
         db_session,
         emp_id=sample_employee.id,
@@ -600,7 +600,7 @@ def test_sanity_hourly_personal_15h(db_session, sample_employee):
 
     pairs = collect_pairs(db_session, lv)
     new_val = _sum_leave_deduction(pairs, DAILY_SALARY)
-    expected = (1.5 / 8) * DAILY_SALARY * 1.0  # 187.5
+    expected = int((1.5 / 8) * DAILY_SALARY * 1.0)  # 187.5 → 無條件捨去 187
     assert abs(new_val - expected) < 0.01, f"expected {expected}, got {new_val}"
 
 
