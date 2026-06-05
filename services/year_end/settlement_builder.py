@@ -504,10 +504,14 @@ def gather_performance_rates(
             )
         )
         school_first = (
-            Decimal(str(org_first.school_achievement_rate)) if org_first else None
+            Decimal(str(org_first.effective_school_achievement_rate))
+            if org_first
+            else None
         )
         school_second = (
-            Decimal(str(org_second.school_achievement_rate)) if org_second else None
+            Decimal(str(org_second.effective_school_achievement_rate))
+            if org_second
+            else None
         )
 
     # P1-1（業主 2026-06-05 定案 GATE 方向）：單學期在職員工的全校率只計在職學期
@@ -777,20 +781,28 @@ def build_settlements(
     # 全校達成率（兩學期）只依 cycle、與員工無關；迴圈外查一次避免 gather_performance_rates
     # 每位員工各查兩列 OrgYearSettings（原 2N → 2）。
     _org_first = db.scalar(
-        select(OrgYearSettings.school_achievement_rate).where(
+        select(OrgYearSettings).where(
             OrgYearSettings.year_end_cycle_id == cycle.id,
             OrgYearSettings.semester_first == True,  # noqa: E712
         )
     )
     _org_second = db.scalar(
-        select(OrgYearSettings.school_achievement_rate).where(
+        select(OrgYearSettings).where(
             OrgYearSettings.year_end_cycle_id == cycle.id,
             OrgYearSettings.semester_first == False,  # noqa: E712
         )
     )
     _school_rates = (
-        Decimal(str(_org_first)) if _org_first is not None else None,
-        Decimal(str(_org_second)) if _org_second is not None else None,
+        (
+            Decimal(str(_org_first.effective_school_achievement_rate))
+            if _org_first is not None
+            else None
+        ),
+        (
+            Decimal(str(_org_second.effective_school_achievement_rate))
+            if _org_second is not None
+            else None
+        ),
     )
 
     # B5 ⑤a 考勤扣款 batch：cfg 只取一次，避免 build loop 每員工重取的 N+1。

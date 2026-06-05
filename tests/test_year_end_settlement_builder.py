@@ -1370,3 +1370,68 @@ class TestSingleSemesterPerfRateGate:
             f"班導下學期未在職，畢業班 fallback 不應設 class_ret_second。"
             f"got={rates.class_returning_rate_second}"
         )
+
+
+from datetime import date as _date
+from decimal import Decimal as _D
+from models.year_end import OrgYearSettings as _Org, YearEndCycle as _Cycle
+
+
+def _mk_cycle(session):
+    cyc = _Cycle(
+        academic_year=114,
+        start_date=_date(2025, 2, 1),
+        end_date=_date(2026, 1, 31),
+        bonus_calc_date=_date(2026, 1, 15),
+    )
+    session.add(cyc)
+    session.flush()
+    return cyc
+
+
+def test_gather_uses_override_school_rate(session):
+    cyc = _mk_cycle(session)
+    # 上學期(first)：自算 91.48、HR 覆寫 91.5
+    session.add(
+        _Org(
+            year_end_cycle_id=cyc.id,
+            semester_first=True,
+            enrollment_target=176,
+            school_achievement_rate=_D("91.48"),
+            school_achievement_rate_override=_D("91.5"),
+            org_achievement_rate=_D("0"),
+        )
+    )
+    # 下學期(second)：只有自算 75.6、無覆寫
+    session.add(
+        _Org(
+            year_end_cycle_id=cyc.id,
+            semester_first=False,
+            enrollment_target=160,
+            school_achievement_rate=_D("75.6"),
+            school_achievement_rate_override=None,
+            org_achievement_rate=_D("0"),
+        )
+    )
+    session.flush()
+    rates = sb.gather_performance_rates(session, cyc, _emp(), school_rates=None)
+    assert rates.school_rate_first == _D("91.5")  # 用覆寫
+    assert rates.school_rate_second == _D("75.6")  # 無覆寫→自算
+
+
+def test_refresh_enrollment_rates_does_not_clobber_override(session):
+    """spec §3.6 #5：refresh 只回填自算欄，不可洗掉 HR 覆寫。"""
+    cyc = _mk_cycle(session)
+    org = _Org(
+        year_end_cycle_id=cyc.id,
+        semester_first=True,
+        enrollment_target=176,
+        school_achievement_rate=_D("91.48"),
+        school_achievement_rate_override=_D("91.5"),
+        org_achievement_rate=_D("0"),
+    )
+    session.add(org)
+    session.flush()
+    sb.refresh_enrollment_rates(session, cyc)  # 無學生→自算欄會被重算（可能變 0）
+    session.refresh(org)
+    assert org.school_achievement_rate_override == _D("91.5")  # 覆寫不被動
