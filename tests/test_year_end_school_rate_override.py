@@ -62,7 +62,7 @@ from services.year_end.settlement_builder import resolve_org_achievement_rate
 from services.year_end.engine import compute_gross_amount, compute_subtotal_amount
 
 
-def test_override_propagates_to_excel_amount_lvyu_lijhen():
+def test_override_rates_produce_excel_amount_lvyu_lijhen():
     # HR 覆寫：下學期 75.6 / 上學期 91.5（園所 Excel 值）
     org_rate = resolve_org_achievement_rate(
         Decimal("75.6"), Decimal("91.5"), worked_first=True, worked_second=True

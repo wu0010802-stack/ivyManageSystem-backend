@@ -205,12 +205,12 @@ def upsert_org_settings(
         existing = OrgYearSettings(year_end_cycle_id=cycle_id, **payload.model_dump())
         session.add(existing)
     else:
-        # school_achievement_rate 為伺服器擁有欄位（僅 refresh_enrollment_rates 寫入自算值）。
-        # override-only 的 upsert 會省略它（Pydantic 預設 0），若一併 setattr 會把既有自算
-        # 值洗成 0（spec §3.1）。更新既有列時排除此 key，保留現存自算值；override 與其餘
-        # 手動欄位（enrollment_target / org_achievement_rate / school_achievement_rate_override
-        # 等）照常寫入。新建列走上面分支沿用預設 0，由 refresh 後續回填。
-        for k, v in payload.model_dump(exclude={"school_achievement_rate"}).items():
+        # 只寫 client 真正送出的欄位（exclude_unset），保留所有未送出的伺服器/設定欄位；
+        # 顯式送 null 的 override 仍會清除。
+        # 例：override-only POST 省略 enrollment_target → 既有 176 保留（不被預設 160 覆寫）；
+        #      省略 school_achievement_rate → 伺服器自算值保留（不被預設 0 洗掉）。
+        # 新建列走上面分支沿用 Pydantic 預設值（enrollment_target=160 等），由 refresh 後續回填。
+        for k, v in payload.model_dump(exclude_unset=True).items():
             setattr(existing, k, v)
     session.commit()
     session.refresh(existing)

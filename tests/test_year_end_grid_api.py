@@ -966,6 +966,54 @@ def test_org_settings_override_only_preserves_auto_rate(client_with_db):
     assert Decimal(str(first["effective_school_achievement_rate"])) == Decimal("91.0")
 
 
+def test_org_settings_partial_upsert_preserves_enrollment_target(client_with_db):
+    """Finding A 延伸：partial upsert 省略 enrollment_target 時，既有 176 不應被預設 160 覆寫。
+
+    Steps:
+    1. 先用帶 enrollment_target=176 的 POST 將上學期設成 176。
+    2. 再發一個 override-only POST（省略 enrollment_target）。
+    3. 驗證 enrollment_target 仍為 176（而非 Pydantic 預設的 160）。
+
+    此測試在舊 ``exclude={"school_achievement_rate"}`` 實作下 FAIL（176→160），
+    在 ``exclude_unset=True`` 實作下 PASS。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)  # 上學期 enrollment_target=160
+    _login(client)
+
+    # Step 1：先把 enrollment_target 改成 176
+    r1 = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "enrollment_target": 176,
+            "org_achievement_rate": "0",
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["enrollment_target"] == 176
+
+    # Step 2：override-only POST，故意省略 enrollment_target（Pydantic 預設 160）
+    r2 = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "91.0",
+            # enrollment_target 刻意省略
+        },
+    )
+    assert r2.status_code == 200, r2.text
+
+    # Step 3：確認 enrollment_target 仍為 176
+    got = client.get(f"/api/year_end/cycles/{cycle_id}/org_settings").json()
+    first = [o for o in got if o["semester_first"]][0]
+    assert (
+        first["enrollment_target"] == 176
+    ), f"enrollment_target 應保留 176（exclude_unset），got {first['enrollment_target']}"
+
+
 def test_clone_clears_school_rate_override(client_with_db):
     client, sf = client_with_db
     _seed_users(sf)
