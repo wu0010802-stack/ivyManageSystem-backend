@@ -17,6 +17,21 @@
 
 ---
 
+## ⚠ 實作期間的設計精煉（2026-06-05，Task 3 落地時定案）— 空表 fallback
+
+**原 spec 是「純 fail-loud」（缺該年度設定即擋）。實作時發現純 fail-loud 過激**：許多既有整合測試（以及 dev 的 `position_salary_configs` 空表）在「設定表完全沒資料」時，歷來靠引擎內建常數計算（改動前 `_select_active_at` 回 None → caller `if x is not None` 跳過 → 用預設）。純 fail-loud 會把這些全擋掉（實測薪資子集 22 個測試紅）。
+
+**最終語意（已與 advisor 確認、優於純 fail-loud，且與改動前行為相容）：**
+- **該 model 整表「完全無設定列」** → 回 None，caller 沿用引擎預設常數（dev / 測試 / 全新部署；數字零漂移）。
+- **表「有設定列但缺該年度」** → fail-loud（`PayrollConfigMissingError`）。這才是業主在意的「行政漏建某年度設定」真實誤設。
+- **`resolve_config` 本身維持純嚴格**（缺即 raise）；空表判斷放在**呼叫端**（`_select_active_at` / `load_position_salary_standards` / `load_brackets_from_db`），讓 API 預檢等明確 caller 仍可要求硬失敗。
+
+dev DB 現況（決策依據）：`insurance_rates`=1列(2026)、`bonus_configs`=1列(2026)、`position_salary_configs`=**0列**。故 insurance/bonus 的年度解析對非-2026 重算是活的；position_salary 一直靠常數。
+
+**對後續 task 的影響**：Task 4（底薪）與 Task 5（級距）的「年度解析」都必須沿用此「空表→預設、有料缺年度→fail-loud」語意，不可對空表 fail-loud。
+
+---
+
 ## Task 1: 新增 config_resolver 模組（純函式，可獨立測試）
 
 **Files:**
