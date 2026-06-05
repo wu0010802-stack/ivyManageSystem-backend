@@ -86,15 +86,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger("seed_114_2")
 
-# ===== 學期常數 =====
+# ===== 學期定義（全 114 學年：上學期 2025/08 + 下學期 2026/02）=====
+# today：該學期生資料的上限。上學期全在過去 → 鋪滿；下學期 = 今天(2026-06-05) → 不生未來。
+TERMS = {
+    "114_1": dict(
+        school_year=114,
+        semester=1,
+        start=date(2025, 8, 1),
+        end=date(2026, 1, 20),
+        today=date(2026, 1, 20),
+    ),
+    "114_2": dict(
+        school_year=114,
+        semester=2,
+        start=date(2026, 2, 1),
+        end=date(2026, 7, 31),
+        today=date(2026, 6, 5),
+    ),
+}
+
+# 模組級可變狀態，逐學期步驟皆讀這些 global；由 set_term() 切換。
+# 預設下學期（向後相容既有以 PERIOD/TERM_START 為 114/2 的呼叫）。
 SCHOOL_YEAR = 114
 SEMESTER = 2
-PERIOD = f"{SCHOOL_YEAR}-{SEMESTER}"
-
-# 114/2 = 2026/02 - 2026/07
+PERIOD = "114-2"
 TERM_START = date(2026, 2, 1)
 TERM_END = date(2026, 7, 31)
-TODAY = date(2026, 4, 19)
+TODAY = date(2026, 6, 5)
+
+
+def set_term(key: str) -> None:
+    """切換模組級學期常數。所有逐學期 step 在執行時讀這些 global。"""
+    global SCHOOL_YEAR, SEMESTER, PERIOD, TERM_START, TERM_END, TODAY
+    t = TERMS[key]
+    SCHOOL_YEAR = t["school_year"]
+    SEMESTER = t["semester"]
+    PERIOD = f'{t["school_year"]}-{t["semester"]}'
+    TERM_START = t["start"]
+    TERM_END = t["end"]
+    TODAY = t["today"]
+
 
 # 115/1 → 114/2 班級降級映射(學生回到上學期應屬班)
 GRADE_DOWN_MAP = {
@@ -385,14 +416,18 @@ def step_guardians():
 # ============================================================
 # Step 3: 學費(fee_items + student_fee_records)
 # ============================================================
-FEE_TEMPLATES = [
-    {"name": "114下學期 學費", "amount": 35000, "classroom_id": None},
-    {"name": "114下學期 月費", "amount": 6000, "classroom_id": None},
-    {"name": "114下學期 餐點費", "amount": 4500, "classroom_id": None},
-    {"name": "114下學期 教材費", "amount": 2000, "classroom_id": None},
-    {"name": "114下學期 校外教學費", "amount": 1500, "classroom_id": None},
-    {"name": "114下學期 保險費", "amount": 350, "classroom_id": None},
-]
+def fee_templates():
+    """依當前學期(SCHOOL_YEAR/SEMESTER global)產生學費項目；上/下學期名稱不同 → period 也不同，互不覆蓋。"""
+    label = "上學期" if SEMESTER == 1 else "下學期"
+    yr = SCHOOL_YEAR
+    return [
+        {"name": f"{yr}{label} 學費", "amount": 35000, "classroom_id": None},
+        {"name": f"{yr}{label} 月費", "amount": 6000, "classroom_id": None},
+        {"name": f"{yr}{label} 餐點費", "amount": 4500, "classroom_id": None},
+        {"name": f"{yr}{label} 教材費", "amount": 2000, "classroom_id": None},
+        {"name": f"{yr}{label} 校外教學費", "amount": 1500, "classroom_id": None},
+        {"name": f"{yr}{label} 保險費", "amount": 350, "classroom_id": None},
+    ]
 
 
 def step_fees():
@@ -417,7 +452,7 @@ def step_fees():
                 if stu.classroom_id
                 else None
             )
-            for tpl in FEE_TEMPLATES:
+            for tpl in fee_templates():
                 # 班級限定的項目跳過不符班級
                 if tpl.get("classroom_id") and (
                     not stu.classroom_id or stu.classroom_id != tpl["classroom_id"]
@@ -439,12 +474,16 @@ def step_fees():
                 if roll < 0.7:
                     paid = tpl["amount"]
                     status = "paid"
-                    pay_date = date(2026, 2, random.randint(10, 28))
+                    pay_date = date(
+                        TERM_START.year, TERM_START.month, random.randint(10, 28)
+                    )
                     method = random.choice(["現金", "轉帳"])
                 elif roll < 0.95:
                     paid = tpl["amount"] // 2
                     status = "unpaid"
-                    pay_date = date(2026, 2, random.randint(10, 28))
+                    pay_date = date(
+                        TERM_START.year, TERM_START.month, random.randint(10, 28)
+                    )
                     method = "現金"
                 else:
                     paid = 0
@@ -648,6 +687,8 @@ def step_shifts():
 def step_overtime_punch():
     logger.info("=== Step 6: 加班、補打卡、請假配額 ===")
     with session_scope() as session:
+        # 決定性 RNG(per 學期):取樣的「人」與補打卡「日期」固定，重跑才冪等
+        rng = random.Random("otp:" + PERIOD)
         emps = (
             session.query(Employee).filter(Employee.is_active == True).all()
         )  # noqa: E712
@@ -657,10 +698,15 @@ def step_overtime_punch():
             if (e.title or "").endswith("教師") or "教保" in (e.title or "")
         ]
 
-        # 加班(週六加班 5 筆)
-        sample = random.sample(teachers, min(5, len(teachers)))
+        # 加班(週六加班 5 筆)；基準日由當前學期推導(本學期第一個週六 + 數週)
+        first_sat = TERM_START
+        while first_sat.weekday() != 5:  # 5 = 週六
+            first_sat += timedelta(days=1)
+        sample = rng.sample(teachers, min(5, len(teachers)))
         for i, emp in enumerate(sample):
-            d = date(2026, 3, 7) + timedelta(days=i * 7)
+            d = first_sat + timedelta(days=(i + 4) * 7)
+            if d > TODAY:
+                continue
             exists = (
                 session.query(OvertimeRecord)
                 .filter_by(
@@ -687,9 +733,9 @@ def step_overtime_punch():
             )
 
         # 補打卡 3 筆
-        sample2 = random.sample(emps, min(3, len(emps)))
+        sample2 = rng.sample(emps, min(3, len(emps)))
         for emp in sample2:
-            d = date(2026, 3, random.randint(10, 28))
+            d = date(TERM_START.year, TERM_START.month, rng.randint(10, 28))
             exists = (
                 session.query(PunchCorrectionRequest)
                 .filter_by(
@@ -711,7 +757,8 @@ def step_overtime_punch():
                 )
             )
 
-        # 請假配額(2026 全員)
+        # 請假配額(該學年曆年全員)
+        quota_year = TERM_START.year
         for emp in emps:
             for lt, hours in [
                 ("annual", 56),
@@ -723,7 +770,7 @@ def step_overtime_punch():
                     session.query(LeaveQuota)
                     .filter_by(
                         employee_id=emp.id,
-                        year=2026,
+                        year=quota_year,
                         leave_type=lt,
                     )
                     .first()
@@ -733,7 +780,7 @@ def step_overtime_punch():
                 session.add(
                     LeaveQuota(
                         employee_id=emp.id,
-                        year=2026,
+                        year=quota_year,
                         leave_type=lt,
                         total_hours=hours,
                     )
@@ -860,7 +907,8 @@ def step_activities():
                 )
                 .count()
             )
-            need = max(0, random.randint(8, 12) - already)
+            # 每門課只在「首次(尚無報名)」時灌 8-12 名;之後重跑 already>0 → 不再加,確保冪等
+            need = 0 if already else random.randint(8, 12)
             # 排除:已報滿 2 門 + 已報該課的學生
             candidates = [
                 s
@@ -1323,39 +1371,59 @@ def step_allowances():
 # Step 11: 補薪資 6, 7 月(簡化:複製 5 月並標 finalized=False)
 # ============================================================
 def step_salary():
-    logger.info("=== Step 11: 補薪資 6, 7 月 ===")
+    """以最完整月份(2026/3 全員)為範本，鋪該學期各發薪月。
+
+    - salary_year 隨月份跨 2025/2026(上學期 2025/08–2026/01；下學期 2026/02 起)。
+    - festival_bonus 只在 2 月(春節)保留，其餘月份歸 0。
+    - 僅補缺、不覆蓋既有(例如既有 2026/2,3,6)；不生未來(上限 = TODAY 當月)。
+    """
+    logger.info("=== Step 11: 補薪資(學期 %s) ===", PERIOD)
     with session_scope() as session:
-        # 取每個員工的 5 月薪資
-        may_records = (
+        template = (
             session.query(SalaryRecord)
-            .filter_by(
-                salary_year=2026,
-                salary_month=5,
-            )
+            .filter_by(salary_year=2026, salary_month=3)
             .all()
         )
-        for src in may_records:
-            for tgt_month in [6, 7]:
+        if not template:
+            template = (
+                session.query(SalaryRecord)
+                .filter_by(salary_year=2026, salary_month=6)
+                .all()
+            )
+        if not template:
+            logger.warning("找不到薪資範本(2026/3 或 2026/6),跳過")
+            return
+
+        # 該學期發薪月 (year, month) 列表，不超過 TODAY 當月(不生未來)
+        months = []
+        y, mo = TERM_START.year, TERM_START.month
+        last = min(TERM_END, TODAY)
+        while (y, mo) <= (last.year, last.month):
+            months.append((y, mo))
+            y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+
+        added = 0
+        for src in template:
+            for yr, mon in months:
                 exists = (
                     session.query(SalaryRecord)
                     .filter_by(
                         employee_id=src.employee_id,
-                        salary_year=2026,
-                        salary_month=tgt_month,
+                        salary_year=yr,
+                        salary_month=mon,
                     )
                     .first()
                 )
                 if exists:
                     continue
-                # 複製主要欄位
                 copy = SalaryRecord(
                     employee_id=src.employee_id,
                     bonus_config_id=src.bonus_config_id,
                     attendance_policy_id=src.attendance_policy_id,
-                    salary_year=2026,
-                    salary_month=tgt_month,
+                    salary_year=yr,
+                    salary_month=mon,
                     base_salary=src.base_salary,
-                    festival_bonus=src.festival_bonus if tgt_month == 6 else 0,
+                    festival_bonus=src.festival_bonus if mon == 2 else 0,
                     overtime_bonus=src.overtime_bonus,
                     performance_bonus=src.performance_bonus,
                     special_bonus=src.special_bonus,
@@ -1375,9 +1443,11 @@ def step_salary():
                     total_deduction=src.total_deduction,
                     net_salary=src.net_salary,
                     is_finalized=False,
-                    remark=f"[seed] 由 5 月複製,待重新計算",
+                    remark="[seed] 由 2026/3 範本複製",
                 )
                 session.add(copy)
+                added += 1
+        logger.info("已新增 %d 筆薪資記錄", added)
 
 
 # ============================================================
@@ -1389,7 +1459,21 @@ def step_meetings():
         emps = (
             session.query(Employee).filter(Employee.is_active == True).all()
         )  # noqa: E712
-        meeting_dates = [date(2026, 2, 14), date(2026, 3, 14), date(2026, 4, 11)]
+        # 各月第二個週五開一次園務會議，且不超過 TODAY(不生未來)
+        meeting_dates = []
+        m = date(TERM_START.year, TERM_START.month, 1)
+        while m <= min(TERM_END, TODAY):
+            d0 = m
+            while d0.weekday() != 4:  # 4 = 週五
+                d0 += timedelta(days=1)
+            second_fri = d0 + timedelta(days=7)
+            if TERM_START <= second_fri <= TODAY:
+                meeting_dates.append(second_fri)
+            m = (
+                date(m.year + 1, 1, 1)
+                if m.month == 12
+                else date(m.year, m.month + 1, 1)
+            )
         for d in meeting_dates:
             for emp in emps:
                 exists = (
@@ -1416,22 +1500,170 @@ def step_meetings():
 
 
 # ============================================================
+# Step 13: 學生每日出缺勤（逐學期，最高量；bulk insert + per-student-term gate）
+# ============================================================
+def step_student_attendance():
+    """為每位 active 學生補當前學期每個工作日的出缺勤點名。
+
+    冪等以「學生-學期」為粒度:該學生在 [TERM_START, TODAY] 已有任何點名 → 整段跳過,
+    避免逐日 exists 查詢(數萬筆)。狀態分布約 88% 出席 / 4% 病假 / 3% 事假 / 3% 遲到 / 2% 缺席。
+    """
+    logger.info("=== Step 13: 學生每日出缺勤(學期 %s) ===", PERIOD)
+    with session_scope() as session:
+        holidays = {
+            h.date
+            for h in session.query(Holiday)
+            .filter(Holiday.date >= TERM_START, Holiday.date <= TODAY)
+            .all()
+        }
+        workday_overrides = {
+            w.date
+            for w in session.query(WorkdayOverride)
+            .filter(WorkdayOverride.date >= TERM_START, WorkdayOverride.date <= TODAY)
+            .all()
+        }
+        workdays = [
+            d
+            for d in _date_range(TERM_START, TODAY)
+            if _is_workday(d, holidays, workday_overrides)
+        ]
+        if not workdays:
+            logger.info("本學期無工作日,跳過")
+            return
+
+        students = (
+            session.query(Student).filter(Student.is_active == True).all()
+        )  # noqa: E712
+
+        def _roll_status() -> str:
+            r = random.random()
+            if r < 0.88:
+                return "出席"
+            if r < 0.92:
+                return "病假"
+            if r < 0.95:
+                return "事假"
+            if r < 0.98:
+                return "遲到"
+            return "缺席"
+
+        mappings = []
+        skipped = 0
+        for stu in students:
+            already = (
+                session.query(StudentAttendance.id)
+                .filter(
+                    StudentAttendance.student_id == stu.id,
+                    StudentAttendance.date >= TERM_START,
+                    StudentAttendance.date <= TODAY,
+                )
+                .first()
+            )
+            if already:
+                skipped += 1
+                continue
+            for d in workdays:
+                mappings.append(
+                    {"student_id": stu.id, "date": d, "status": _roll_status()}
+                )
+
+        added = 0
+        for i in range(0, len(mappings), 2000):
+            chunk = mappings[i : i + 2000]
+            session.bulk_insert_mappings(StudentAttendance, chunk)
+            added += len(chunk)
+        logger.info("學生出缺勤:新增 %d 筆(%d 名學生已有資料跳過)", added, skipped)
+
+
+# ============================================================
+# Step 14: 員工請假（逐學期，每員工數筆）
+# ============================================================
+def step_employee_leaves():
+    """為每位 active 員工補當前學期 1-2 筆請假；冪等以「員工-學期」粒度跳過。"""
+    logger.info("=== Step 14: 員工請假(學期 %s) ===", PERIOD)
+    with session_scope() as session:
+        emps = (
+            session.query(Employee).filter(Employee.is_active == True).all()
+        )  # noqa: E712
+        holidays = {
+            h.date
+            for h in session.query(Holiday)
+            .filter(Holiday.date >= TERM_START, Holiday.date <= TODAY)
+            .all()
+        }
+        workdays = [
+            d for d in _date_range(TERM_START, TODAY) if _is_workday(d, holidays, set())
+        ]
+        if not workdays:
+            return
+        leave_pool = [
+            ("annual", "家庭旅遊", 8.0),
+            ("sick", "感冒就醫", 8.0),
+            ("personal", "處理私務", 4.0),
+            ("sick", "腸胃不適", 4.0),
+            ("annual", "返鄉", 8.0),
+        ]
+        added = 0
+        for emp in emps:
+            has_leave = (
+                session.query(LeaveRecord.id)
+                .filter(
+                    LeaveRecord.employee_id == emp.id,
+                    LeaveRecord.start_date >= TERM_START,
+                    LeaveRecord.start_date <= TODAY,
+                )
+                .first()
+            )
+            if has_leave:
+                continue
+            n = random.randint(1, 2)
+            picks = random.sample(leave_pool, n)
+            chosen_days = random.sample(workdays, min(n, len(workdays)))
+            for (lt, reason, hours), d in zip(picks, chosen_days):
+                status = "approved" if random.random() < 0.8 else "pending"
+                session.add(
+                    LeaveRecord(
+                        employee_id=emp.id,
+                        leave_type=lt,
+                        start_date=d,
+                        end_date=d,
+                        start_time="08:00" if hours >= 8 else "08:00",
+                        end_time="17:00" if hours >= 8 else "12:00",
+                        leave_hours=hours,
+                        is_deductible=(lt in ("personal", "sick")),
+                        reason=reason,
+                        status=status,
+                        approved_by="admin" if status == "approved" else None,
+                    )
+                )
+                added += 1
+        logger.info("員工請假:新增 %d 筆", added)
+
+
+# ============================================================
 # 主程式
 # ============================================================
-ALL_STEPS = {
+# 一次性步驟(整學年只跑一次):學生班級遷移、家長、扣款/獎金類型、公告/校曆
+ONE_TIME_STEPS = {
     "students": step_students,
     "guardians": step_guardians,
+    "allowances": step_allowances,
+    "announcements": step_announcements_events,
+}
+# 逐學期步驟(每學期各跑一次,讀 set_term() 切換的 global)
+TERM_STEPS = {
     "fees": step_fees,
     "attendance": step_attendance,
+    "student_attendance": step_student_attendance,
     "shifts": step_shifts,
     "overtime": step_overtime_punch,
+    "employee_leaves": step_employee_leaves,
     "activities": step_activities,
-    "announcements": step_announcements_events,
     "student_records": step_student_records,
-    "allowances": step_allowances,
     "salary": step_salary,
     "meetings": step_meetings,
 }
+ALL_STEPS = {**ONE_TIME_STEPS, **TERM_STEPS}
 
 
 def main():
@@ -1441,6 +1673,11 @@ def main():
         default="all",
         help=f"逗號分隔。可選:all 或 {','.join(ALL_STEPS.keys())}",
     )
+    parser.add_argument(
+        "--term",
+        default="all",
+        help="學期:all(上+下) 或 114_1 / 114_2。逐學期步驟會依此 loop。",
+    )
     args = parser.parse_args()
 
     if args.step == "all":
@@ -1448,15 +1685,40 @@ def main():
     else:
         steps = [s.strip() for s in args.step.split(",") if s.strip()]
 
-    for s in steps:
-        if s not in ALL_STEPS:
-            logger.error("未知 step: %s", s)
+    if args.term == "all":
+        terms = ["114_1", "114_2"]
+    else:
+        terms = [args.term]
+    for t in terms:
+        if t not in TERMS:
+            logger.error("未知 term: %s", t)
             sys.exit(1)
+
+    # 1) 一次性步驟先跑(整學年一次)
+    one_time = [s for s in steps if s in ONE_TIME_STEPS]
+    term_scoped = [s for s in steps if s in TERM_STEPS]
+    unknown = [s for s in steps if s not in ALL_STEPS]
+    if unknown:
+        logger.error("未知 step: %s", ",".join(unknown))
+        sys.exit(1)
+
+    for s in one_time:
         try:
-            ALL_STEPS[s]()
+            ONE_TIME_STEPS[s]()
         except Exception:
-            logger.exception("Step %s 失敗", s)
+            logger.exception("一次性 step %s 失敗", s)
             sys.exit(1)
+
+    # 2) 逐學期步驟:每個學期 set_term 後跑一輪
+    for t in terms:
+        set_term(t)
+        logger.info("########## 學期 %s (%s ~ %s) ##########", t, TERM_START, TODAY)
+        for s in term_scoped:
+            try:
+                TERM_STEPS[s]()
+            except Exception:
+                logger.exception("Step %s(學期 %s) 失敗", s, t)
+                sys.exit(1)
     logger.info("所有 step 執行完成")
 
 
