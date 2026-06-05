@@ -16,6 +16,7 @@ from datetime import timedelta
 from hashlib import sha256
 
 from fastapi import HTTPException
+from sqlalchemy import func
 
 from models.auth import User
 from models.base import get_session, session_scope
@@ -125,6 +126,44 @@ def rotate_refresh_token(
             )
             raise HTTPException(
                 status_code=401, detail="refresh token 重用，整批已撤銷"
+            )
+
+        # F1：family absolute session lifetime——從 family 最早 token（首次登入）起算
+        # 超過上限即拒絕 rotation 並撤整 family。rotation 路徑原本無此檢查（僅 JWT
+        # fallback 路徑有），而每個正常員工 session 都走 rotation → S2 absolute lifetime
+        # 對所有現役 session 失效，失竊/棄置的 refresh cookie 可無限期 rotate 延續登入。
+        from utils.auth import JWT_ABSOLUTE_LIFETIME_HOURS
+
+        family_birth = (
+            session.query(func.min(StaffRefreshToken.created_at))
+            .filter(StaffRefreshToken.family_id == rt.family_id)
+            .scalar()
+        )
+        if (
+            family_birth is not None
+            and (now_taipei_naive() - family_birth).total_seconds() / 3600
+            > JWT_ABSOLUTE_LIFETIME_HOURS
+        ):
+            session.query(StaffRefreshToken).filter(
+                StaffRefreshToken.family_id == rt.family_id,
+                StaffRefreshToken.revoked_at.is_(None),
+            ).update(
+                {"revoked_at": now_taipei_naive()},
+                synchronize_session=False,
+            )
+            # commit BEFORE raise（與 reuse 分支一致；get_session 路徑無自動 rollback 保護）
+            session.commit()
+            logger.warning(
+                "[staff-refresh] absolute lifetime exceeded user_id=%s family_id=%s",
+                rt.user_id,
+                rt.family_id,
+            )
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    f"登入工作階段已超過 {JWT_ABSOLUTE_LIFETIME_HOURS} 小時上限，"
+                    "請重新登入"
+                ),
             )
 
         # 正常 rotation：mark old token used + 生成新 token

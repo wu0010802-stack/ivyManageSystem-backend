@@ -201,3 +201,30 @@ def test_revoked_token_rejected(test_db_session, staff_user):
         rotate_refresh_token(raw, "curl", "1.1.1.1")
     assert exc_info.value.status_code == 401
     assert "撤銷" in exc_info.value.detail
+
+
+# ── Finding F1：family absolute session lifetime ──
+
+
+def test_rotate_rejected_when_family_exceeds_absolute_lifetime(
+    test_db_session, staff_user
+):
+    """family 從首次登入起算超過 absolute lifetime → rotation 須 401 + 撤整 family，
+    封死「失竊/棄置 refresh cookie 無限期 rotate 延續登入」。"""
+    raw, rt_id = issue_refresh_token(staff_user.id, user_agent="curl", ip="1.1.1.1")
+    rt = test_db_session.get(StaffRefreshToken, rt_id)
+    # family 誕生在很久以前（遠超 absolute lifetime），但 token 本身尚未過期
+    rt.created_at = datetime.now() - timedelta(hours=100000)
+    test_db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        rotate_refresh_token(raw, "curl", "1.1.1.1")
+    assert exc_info.value.status_code == 401
+
+    test_db_session.expire_all()
+    tokens = (
+        test_db_session.query(StaffRefreshToken).filter_by(user_id=staff_user.id).all()
+    )
+    assert all(
+        t.revoked_at is not None for t in tokens
+    ), "超過 absolute lifetime 的 family 須全撤銷"
