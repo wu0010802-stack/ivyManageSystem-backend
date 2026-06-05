@@ -91,6 +91,19 @@ def test_local_public_url_rejects_unknown_module(local_root):
         backend.public_url("attendance_imports", "x.xlsx")
 
 
+def test_local_path_rejects_sibling_prefix_traversal(local_root):
+    """Finding 檔Low-2：traversal 守衛須用 trailing separator，否則 sibling-prefix
+    （leave_attachments_evil）會通過 startswith(leave_attachments) 繞過。"""
+    backend = LocalStorage()
+    with pytest.raises(ValueError):
+        backend.save(
+            "leave_attachments",
+            "../leave_attachments_evil/x.txt",
+            b"x",
+            "text/plain",
+        )
+
+
 def test_get_backend_default_is_local(local_root):
     backend = get_backend()
     assert isinstance(backend, LocalStorage)
