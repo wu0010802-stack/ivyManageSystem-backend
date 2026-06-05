@@ -928,6 +928,44 @@ def test_org_settings_upsert_override_and_effective(client_with_db):
     assert Decimal(str(first["effective_school_achievement_rate"])) == Decimal("91.5")
 
 
+def test_org_settings_override_only_preserves_auto_rate(client_with_db):
+    """Finding A：override-only upsert 不可洗掉伺服器自算的 school_achievement_rate。
+
+    school_achievement_rate 為伺服器擁有欄位（僅由 refresh_enrollment_rates 寫入）。
+    HR 只送 override 的 upsert（payload 省略 school_achievement_rate，預設 0）若直接
+    setattr 會把既有自算值覆寫為 0。本測試釘住：override-only POST 後，自算值仍為
+    原始 91.5（_seed_cycle_and_employee 上學期種 91.5），且 override=91.0、
+    effective=91.0（override 優先）。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(
+        sf
+    )  # 上學期自算 school_achievement_rate=91.5
+    _login(client)
+
+    res = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "enrollment_target": 176,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "91.0",
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    got = client.get(f"/api/year_end/cycles/{cycle_id}/org_settings").json()
+    first = [o for o in got if o["semester_first"]][0]
+    # 自算值仍為原始 91.5（未被 override-only payload 洗成 0）
+    assert Decimal(str(first["school_achievement_rate"])) == Decimal(
+        "91.5"
+    ), f"自算 school_achievement_rate 應保留 91.5，got {first['school_achievement_rate']}"
+    # override / effective 反映 HR 填的 91.0
+    assert Decimal(str(first["school_achievement_rate_override"])) == Decimal("91.0")
+    assert Decimal(str(first["effective_school_achievement_rate"])) == Decimal("91.0")
+
+
 def test_clone_clears_school_rate_override(client_with_db):
     client, sf = client_with_db
     _seed_users(sf)
