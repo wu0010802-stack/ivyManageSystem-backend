@@ -476,21 +476,11 @@ async def upload_attendance(
                                 else 0
                             )
 
-                        elif punch_in_time and punch_out_time:
-                            duration_minutes = int(
-                                (punch_out_time - punch_in_time).total_seconds() / 60
-                            )
-                            if is_driver:
-                                required_duration = 480
-                            else:
-                                required_duration = 540
-
-                            if duration_minutes >= required_duration:
-                                is_late = False
-                                is_early_leave = False
-                                status = "normal"
-                                late_minutes = 0
-                                early_leave_minutes = 0
+                        # R4-4（業主 2026-06-06 決策：遲到照扣）：移除「無排班員工當日
+                        # 工時 ≥540/480 分即清零遲到/早退扣款」的 reset。此 reset 只在 Excel
+                        # 匯入路徑（records.py 單筆 / upload-csv 都沒有）→ 同員工同日匯入 vs
+                        # 手填扣款不同。移除後，無排班員工沿用上方依預設工時算出的
+                        # late/early（行 365-408），三條寫入路徑一致。請勿復原此 reset。
 
                         department = str(row.get("部門", "")).strip()
                         existing = attendance_cache.get((employee.id, attendance_date))
@@ -731,16 +721,9 @@ async def upload_attendance(
                                 else:
                                     status = "normal"
 
-                        elif dt_in_full and dt_out_full:
-                            duration_minutes = int(
-                                (dt_out_full - dt_in_full).total_seconds() / 60
-                            )
-                            required_duration = 480 if is_driver else 540
-
-                            if duration_minutes >= required_duration:
-                                status = "normal"
-                                is_late = False
-                                is_early_leave = False
+                        # R4-4（業主 2026-06-06 決策：遲到照扣）：同新格式，移除 legacy
+                        # 匯入路徑「工時滿額即清零遲到/早退」的 reset。三條寫入路徑一致。
+                        # 請勿復原此 reset。
 
                         existing = legacy_attendance_cache.get((employee.id, a_date))
 
