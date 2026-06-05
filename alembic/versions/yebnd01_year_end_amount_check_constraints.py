@@ -1,7 +1,7 @@
 """pentest E1：年終金額 DB 層 CheckConstraint（量級守衛）
 
 Revision ID: yebnd01
-Revises: allergyenc01
+Revises: xtraallw01
 Create Date: 2026-06-05
 
 對 special_bonus_items.amount 與 year_end_settlements.deduction_disciplinary 加
@@ -15,7 +15,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "yebnd01"
-down_revision: Union[str, Sequence[str], None] = "allergyenc01"
+down_revision: Union[str, Sequence[str], None] = "xtraallw01"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

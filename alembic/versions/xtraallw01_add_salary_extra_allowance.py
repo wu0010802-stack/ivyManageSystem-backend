@@ -4,7 +4,7 @@
 salary_snapshots 兩表（snapshot service 依兩表欄位交集反射複製，漏欄則快照遺失）。
 
 Revision ID: xtraallw01
-Revises: allergyenc01
+Revises: latededu01
 Create Date: 2026-06-04
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "xtraallw01"
-down_revision = "allergyenc01"
+down_revision = "latededu01"
 branch_labels = None
 depends_on = None
 
