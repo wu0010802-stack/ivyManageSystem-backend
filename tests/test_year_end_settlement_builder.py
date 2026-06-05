@@ -1276,3 +1276,97 @@ class TestSingleSemesterPerfRateGate:
             f"單學期在職者 avg 應只計在職學期全校率 80.0，非兩學期平均 70.0。"
             f"got={st.avg_performance_rate}"
         )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="第二 gap（待業主定案單學期方向後另開 RED 修）：班導 class_ret "
+        "畢業班 fallback 未按 worked gate；本 commit 只修 school_rate 分量。"
+        "診斷實測 class_ret_second=0.600（應為 None）。",
+    )
+    def test_head_teacher_class_returning_second_gated_when_not_worked(self, session):
+        """診斷（第二 gap，xfail 記錄）：班導下學期未在職時，畢業班 fallback 從
+        school_wide_returning 設 class_ret_second，未按 worked gate。
+
+        本 commit 只 gate school_rate 分量；subagent/advisor flag 的 class_ret
+        畢業班 fallback 共享同一 gating gap。此測試以 number 證明該 gap 存在
+        （直接調 gather_performance_rates，避開 build_settlements 整鏈）：實測
+        class_ret_second=0.600（fallback 設值），非預期的 None。待業主以 gold
+        Excel 定案單學期班導 class_ret 方向後，另開 RED 修並移除此 xfail。
+        """
+        db = session
+        from models.classroom import LIFECYCLE_ACTIVE, Classroom, Student
+        from models.employee import Employee
+        from models.year_end import (
+            ClassEnrollmentTarget,
+            OrgYearSettings,
+            YearEndCycle,
+        )
+        from services.year_end.settlement_builder import gather_performance_rates
+
+        cycle = YearEndCycle(
+            academic_year=ACADEMIC_YEAR,
+            start_date=CYCLE_START,
+            end_date=CYCLE_END,
+            bonus_calc_date=BONUS_CALC_DATE,
+        )
+        db.add(cycle)
+        db.flush()
+        # OrgYearSettings first（enrollment_target>0，school_wide_returning 才非 None）
+        db.add(
+            OrgYearSettings(
+                year_end_cycle_id=cycle.id,
+                semester_first=True,
+                enrollment_target=160,
+                school_achievement_rate=_D("80.0"),
+                org_achievement_rate=_D("0"),
+            )
+        )
+        cls = Classroom(name="天堂鳥", school_year=ACADEMIC_YEAR, semester=1)
+        db.add(cls)
+        db.flush()
+        emp = Employee(
+            employee_id="E_HEAD_HALF",
+            name="林班導",
+            position="班導",
+            bonus_grade="b",
+            title="幼兒園教師",
+            base_salary=36160,
+            is_active=True,
+            hire_date=date(2025, 1, 1),
+            resign_date=date(2025, 10, 31),
+        )
+        db.add(emp)
+        db.flush()
+        # 只上學期有 ClassEnrollmentTarget（班導帶班）；下學期無 → 觸發畢業班 fallback
+        db.add(
+            ClassEnrollmentTarget(
+                year_end_cycle_id=cycle.id,
+                semester_first=True,
+                classroom_id=cls.id,
+                head_teacher_employee_id=emp.id,
+                head_count_target=24,
+                class_performance_rate=_D("90.0"),
+                returning_student_rate=_D("0.95"),
+            )
+        )
+        # 1 名舊生（enrollment_school_year 113 < 114）使 school_wide_returning 非 None
+        db.add(
+            Student(
+                student_id="S0001",
+                name="舊生",
+                classroom_id=cls.id,
+                enrollment_school_year=113,
+                enrollment_date=date(2024, 9, 1),
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            )
+        )
+        db.flush()
+
+        rates = gather_performance_rates(
+            db, cycle, emp, worked_first=True, worked_second=False
+        )
+        # 下學期未在職 → class_ret_second 應為 None（與 school_rate 一致 gate）
+        assert rates.class_returning_rate_second is None, (
+            f"班導下學期未在職，畢業班 fallback 不應設 class_ret_second。"
+            f"got={rates.class_returning_rate_second}"
+        )
