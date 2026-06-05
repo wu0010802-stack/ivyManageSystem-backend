@@ -13,7 +13,7 @@ import logging
 from services.attendance_parser import AttendanceResult
 
 from .constants import MONTHLY_BASE_DAYS
-from utils.rounding import round_half_up
+from utils.rounding import round_down, round_half_up
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +68,10 @@ def calculate_attendance_deduction(
     )
 
     return {
-        "late_deduction": late_deduction,
+        # 無條件捨去（對齊園所實務：扣款捨小數、對員工有利）
+        "late_deduction": round_down(late_deduction),
         "missing_punch_deduction": 0,
-        "early_leave_deduction": early_deduction,
+        "early_leave_deduction": round_down(early_deduction),
         "late_count": attendance.late_count,
         "early_leave_count": attendance.early_leave_count,
         "missing_punch_count": missing_count,
