@@ -218,7 +218,6 @@ def create_assessment(
                 session,
                 current_user,
                 payload.student_id,
-                code=Permission.STUDENTS_WRITE.value,
             )
 
             related_incident = _validate_related_incident(
@@ -281,7 +280,6 @@ def update_assessment(
                 session,
                 current_user,
                 assessment.student_id,
-                code=Permission.STUDENTS_WRITE.value,
             )
 
             validate_assessment_fields(
@@ -352,7 +350,6 @@ def delete_assessment(
                 session,
                 current_user,
                 assessment.student_id,
-                code=Permission.STUDENTS_WRITE.value,
             )
 
             student_id_for_log = assessment.student_id

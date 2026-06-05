@@ -177,7 +177,6 @@ def create_incident(
                 session,
                 current_user,
                 payload.student_id,
-                code=Permission.STUDENTS_WRITE.value,
             )
 
             incident = StudentIncident(
@@ -231,7 +230,6 @@ def update_incident(
                 session,
                 current_user,
                 incident.student_id,
-                code=Permission.STUDENTS_WRITE.value,
             )
 
             validate_incident_fields(
@@ -291,7 +289,6 @@ def delete_incident(
                 session,
                 current_user,
                 incident.student_id,
-                code=Permission.STUDENTS_WRITE.value,
             )
 
             student_id_for_log = incident.student_id
