@@ -1277,18 +1277,10 @@ class TestSingleSemesterPerfRateGate:
             f"got={st.avg_performance_rate}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P1-B（金流審查 2026-06-05）：班級率 class_ret/class_perf 未隨全校率"
-            "按 worked_semesters gate（settlement_builder.py:484-519）。業主 "
-            "2026-06-05 的 GATE 決議註解目前僅明載『全校率』；待業主確認決議涵蓋"
-            "班級率後，於 484-519 比照 476-479 補 gate 並移除此 xfail。"
-        ),
-    )
     def test_class_rate_gated_for_non_worked_semester(self, test_db_session):
-        """帶班老師單學期在職：未在職學期的班級率應與全校率一樣被 worked gate 成 None，
-        否則非在職學期的班級率會被計入 pair_avg 稀釋平均（通常少發單學期帶班老師年終）。"""
+        """P1-B（金流審查 2026-06-05，已修）：帶班老師單學期在職時，未在職學期的班級率
+        須與全校率一樣被 worked gate 成 None，否則非在職學期的班級率會被計入 pair_avg
+        稀釋平均（通常少發單學期帶班老師年終）。沿用業主 2026-06-05 已定案的 GATE 方向。"""
         from models.year_end import YearEndCycle
 
         db = test_db_session
