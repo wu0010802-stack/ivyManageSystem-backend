@@ -459,3 +459,20 @@ class TestDestructiveReverts:
         assert "revert_activated" in types
         assert "revert_converted" in types
         assert "deposit_removed" in types
+
+
+# ── R4-7：非法跨段轉換拋 RecruitmentFunnelError（caller→400），非 500 ──
+
+
+def test_illegal_cross_stage_raises_funnel_error_not_internimplemented(session):
+    """visited→enrolled（跳過 deposited）等非法跨段轉換須拋 RecruitmentFunnelError
+    （caller catch → 400），而非未捕捉的 NotImplementedError（→ 500）。"""
+    visit = _make_visit(session, has_deposit=False)
+    with pytest.raises(RecruitmentFunnelError) as exc:
+        transition_visit(
+            session,
+            visit_id=visit.id,
+            to_stage="enrolled",
+            actor_user_id=1,
+        )
+    assert exc.value.code == "ILLEGAL_TRANSITION"

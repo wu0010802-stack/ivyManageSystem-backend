@@ -68,6 +68,9 @@ def compute_intake_plan(
         .join(Student, Student.recruitment_visit_id == RecruitmentVisit.id)
         .filter(
             RecruitmentVisit.provisional_grade_id.isnot(None),
+            # R4-5：enrolled 與 reserved 用同一年鍵（visit.target_school_year），避免
+            # 轉換後改 target_school_year 時同一人在某年算 enrolled、另一年算 reserved。
+            RecruitmentVisit.target_school_year == school_year,
             RecruitmentVisit.target_semester == semester,
             Student.enrollment_school_year == school_year,
             Student.lifecycle_status.notin_(_TERMINAL),
