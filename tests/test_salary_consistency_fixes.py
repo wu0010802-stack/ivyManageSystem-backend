@@ -782,83 +782,22 @@ class TestManualAdjustWritesOverrides:
 
 
 class TestConfigForMonth:
-    def test_swap_uses_version_active_at_month_end(self, consistency_client):
-        _, sf, _ = consistency_client
-
-        # 建兩個版本:v1(2026-01-15)、v2(2026-04-20)
-        with sf() as session:
-            v1 = DBBonusConfig(
-                is_active=False,
-                version=1,
-                config_year=2026,
-                head_teacher_ab=1000,
-                head_teacher_c=900,
-                assistant_teacher_ab=800,
-                assistant_teacher_c=700,
-                principal_festival=5000,
-                director_festival=3000,
-                leader_festival=1500,
-                driver_festival=800,
-                designer_festival=900,
-                admin_festival=1100,
-                principal_dividend=4000,
-                director_dividend=3500,
-                leader_dividend=2500,
-                vice_leader_dividend=1200,
-                overtime_head_normal=300,
-                overtime_head_baby=350,
-                overtime_assistant_normal=80,
-                overtime_assistant_baby=120,
-                school_wide_target=140,
-                created_at=datetime(2026, 1, 15),
-            )
-            session.add(v1)
-            session.commit()
-            v2 = DBBonusConfig(
-                is_active=True,
-                version=2,
-                config_year=2026,
-                head_teacher_ab=9999,  # 故意大數字
-                head_teacher_c=8888,
-                assistant_teacher_ab=7777,
-                assistant_teacher_c=6666,
-                principal_festival=5000,
-                director_festival=3000,
-                leader_festival=1500,
-                driver_festival=800,
-                designer_festival=900,
-                admin_festival=1100,
-                principal_dividend=4000,
-                director_dividend=3500,
-                leader_dividend=2500,
-                vice_leader_dividend=1200,
-                overtime_head_normal=300,
-                overtime_head_baby=350,
-                overtime_assistant_normal=80,
-                overtime_assistant_baby=120,
-                school_wide_target=180,
-                created_at=datetime(2026, 4, 20),
-            )
-            session.add(v2)
-            session.commit()
-            v1_id = v1.id
-            v2_id = v2.id
-
+    def test_swap_uses_version_active_at_month_end(self, test_db_session):
+        """設定切換改以『年度 + 最高 version』解析（取代舊 created_at<=月底 語意）。"""
+        from models.database import BonusConfig
         from services.salary.engine import SalaryEngine
 
-        engine = SalaryEngine(load_from_db=False)
+        s = test_db_session
+        s.add(BonusConfig(config_year=2026, version=1, head_teacher_ab=2000))
+        s.add(BonusConfig(config_year=2026, version=2, head_teacher_ab=2500))
+        s.add(BonusConfig(config_year=2025, version=1, head_teacher_ab=1800))
+        s.flush()
 
-        with sf() as session:
-            # 重算 2026-02:應拿到 v1
-            with engine.config_for_month(session, 2026, 2):
-                assert engine._bonus_config_id == v1_id
-                assert engine._bonus_base["head_teacher"]["A"] == 1000
-                assert engine._school_wide_target == 140
-            # 重算 2026-05:應拿到 v2
-            with engine.config_for_month(session, 2026, 5):
-                assert engine._bonus_config_id == v2_id
-                assert engine._bonus_base["head_teacher"]["A"] == 9999
-                assert engine._school_wide_target == 180
+        row_2026 = SalaryEngine._select_active_at(s, BonusConfig, 2026, 12)
+        assert row_2026.version == 2 and row_2026.head_teacher_ab == 2500
+
+        row_2025 = SalaryEngine._select_active_at(s, BonusConfig, 2025, 12)
+        assert row_2025.config_year == 2025 and row_2025.head_teacher_ab == 1800
 
     def test_state_restored_after_context_exit(self, consistency_client):
         """離開 context 後 engine state 回到原值,即使 swap 過數次。"""

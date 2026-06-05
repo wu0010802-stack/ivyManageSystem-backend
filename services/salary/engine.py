@@ -80,23 +80,36 @@ _POSITION_SALARY_DEFAULTS = {
 }
 
 
-def load_position_salary_standards(session) -> dict:
+def load_position_salary_standards(session, year: int | None = None) -> dict:
     """從傳入 session 讀取職位標準底薪（key: 'head_teacher_b'/'driver'/… → float|None）。
 
     模組層 helper，供 SalaryEngine.load_config_from_db 與年終 builder
     (services/year_end/settlement_builder.year_end_base_salary) 共用，確保兩處
     底薪解析來源一致，不會各自漂移。
 
-    - 取 PositionSalaryConfig 最新一列（id desc）；無列時全用 _POSITION_SALARY_DEFAULTS。
-    - director / principal 允許為 None（留空表示不套標準，回個人 emp.base_salary）。
+    - year 指定（薪資引擎當期/歷史路徑）：以 config_year 走 period-aware resolver；
+      但沿用「空表 fallback」語意——整表無設定列時用 _POSITION_SALARY_DEFAULTS（dev/全新部署，
+      與舊行為一致），表有料但缺該年度才 fail-loud（PayrollConfigMissingError）。
+    - year=None（年終 builder 等未遷移 caller）：維持舊行為，取最新一列（id desc）。
+    - 無列時全用 _POSITION_SALARY_DEFAULTS；director / principal 允許 None（留空=不套標準，
+      回個人 emp.base_salary）。
     """
     from models.database import PositionSalaryConfig
 
-    pos_cfg = (
-        session.query(PositionSalaryConfig)
-        .order_by(PositionSalaryConfig.id.desc())
-        .first()
-    )
+    if year is not None and session.query(PositionSalaryConfig.id).first() is not None:
+        # 表有資料 → 依年度解析（缺該年度即 fail-loud）
+        from services.salary.config_resolver import resolve_config
+
+        pos_cfg = resolve_config(
+            session, PositionSalaryConfig, year, year_col="config_year"
+        )
+    else:
+        # 空表（沿用預設）或 year=None（舊行為，取最新）
+        pos_cfg = (
+            session.query(PositionSalaryConfig)
+            .order_by(PositionSalaryConfig.id.desc())
+            .first()
+        )
     standards = {
         k: float(getattr(pos_cfg, k, None) or v) if pos_cfg else float(v)
         for k, v in _POSITION_SALARY_DEFAULTS.items()
@@ -423,6 +436,7 @@ class SalaryEngine:
             "attendance_policy": dict(self._attendance_policy),
             "meeting_absence_penalty": self._meeting_absence_penalty,
             "position_grade_map": dict(self._position_grade_map),
+            "position_salary_standards": dict(self._position_salary_standards),
             # InsuranceService 的 instance 屬性
             "insurance": {
                 "labor_rate": self.insurance_service.labor_rate,
@@ -465,6 +479,9 @@ class SalaryEngine:
         # 園規常數（KeyError 防禦：舊 snapshot 沒 key 時退回現值）
         if "meeting_absence_penalty" in snapshot:
             self._meeting_absence_penalty = snapshot["meeting_absence_penalty"]
+        # 職位標準底薪（歷史月份重算依年度載入，須還原避免洩漏到 baseline singleton）
+        if "position_salary_standards" in snapshot:
+            self._position_salary_standards = snapshot["position_salary_standards"]
         # 職稱→等級對應（同步注入給 festival module cache，否則切換歷史月期間
         # festival.py 仍用上層 caller 留下的 map，造成 grade 判定錯亂）
         if "position_grade_map" in snapshot:
@@ -475,40 +492,35 @@ class SalaryEngine:
         for k, v in snapshot["insurance"].items():
             setattr(self.insurance_service, k, v)
 
+    # 設定 model → 年度欄位（西元）對照；period-aware 解析用
+    _CONFIG_YEAR_COL_BY_NAME = {
+        "InsuranceRate": "rate_year",
+        "AttendancePolicy": "config_year",
+        "BonusConfig": "config_year",
+    }
+
     @staticmethod
     def _select_active_at(session, model, year: int, month: int):
-        """選出該月最後一日(含)前最新建立的 row;若無則 fallback 最舊 row。
+        """以「該年度最新 version」解析設定（period-aware）。
 
-        Why created_at: BonusConfig / InsuranceRate 沒有 effective_date 欄位,
-        AttendancePolicy 雖有但歷史資料未必填;以 created_at 推估等同「設定上線當下生效」,
-        對純歷史重算來說與直觀預期一致(改設定當天才會影響當月以後計算)。
+        取代舊的 `created_at <= 當月最後一日` 邏輯：改用設定表年度欄位 + 最高 version，
+        讓年中訂正回溯套用整年。month 參數保留以維持呼叫端介面，不再參與解析。
 
-        Why NOT filter is_active: 歷史 config 改版後舊版本通常會被設為
-        is_active=False（見 test_swap_uses_version_active_at_month_end），但
-        歷史月份重算仍須能找到「該月當下生效」的版本。一律過濾 is_active=True
-        會讓所有歷史月份都拿到目前最新版本，破壞歷史對帳。
-
-        留意攻擊面：admin 持 SALARY_WRITE 可建惡意金額且 is_active=False 的
-        BonusConfig/InsuranceRate，等歷史補算被 id desc 撿到。緩解：
-        (a) BonusConfig / InsuranceRate / AttendancePolicy 的 INSERT/UPDATE
-            必須走 finance_approve + audit（目前 api/config.py / api/insurance.py
-            缺此守衛，待補）；
-        (b) 上線一筆 needs_recalc 全標守衛（變更設定即時 mark_stale）。
-        Refs: 邏輯漏洞 audit 2026-05-07 P0 (#10) — 由衝突回歸測試
-        test_swap_uses_version_active_at_month_end 重新評估後決議：原建議
-        is_active filter 不採用，改走守衛+稽核路線。
+        空表 vs 缺年度（與舊行為相容的 fail-loud）：
+        - 該 model 整表「完全無設定列」（dev / 測試 / 全新部署，歷來靠引擎內建常數）
+          → 回 None，caller 沿用引擎預設（與改動前 `_select_active_at` 回 None 後
+          `if x is not None` 跳過的行為一致，數字零漂移）。
+        - 表「有設定列但缺該年度」（行政漏建某年度設定的真實誤設）
+          → resolve_config raise PayrollConfigMissingError（fail-loud）。
+        Refs: spec 2026-06-05-period-aware-salary-config-resolver-design.md
         """
-        last_day = calendar.monthrange(year, month)[1]
-        cutoff = datetime(year, month, last_day, 23, 59, 59)
-        row = (
-            session.query(model)
-            .filter(model.created_at <= cutoff)
-            .order_by(model.id.desc())
-            .first()
-        )
-        if row is None:
-            row = session.query(model).order_by(model.id.asc()).first()
-        return row
+        # 整表無任何設定列 → 沿用引擎預設常數（bootstrap / dev / 測試）。
+        if session.query(model.id).first() is None:
+            return None
+        from services.salary.config_resolver import resolve_config
+
+        year_col = SalaryEngine._CONFIG_YEAR_COL_BY_NAME[model.__name__]
+        return resolve_config(session, model, year, year_col=year_col)
 
     def _apply_bonus_record_locked(self, bonus) -> None:
         """把 BonusConfig record 套用到 engine state；caller 必須持 _config_swap_lock。
@@ -591,8 +603,13 @@ class SalaryEngine:
         if rate is not None:
             self.insurance_service.update_rates_from_db(rate)
 
-        # 歷史月份重算：以該月份所屬年度載入級距表（避免用今年級距算去年薪資）
-        self.insurance_service.load_brackets_from_db(year)
+        # 歷史月份重算：以該月份所屬年度載入級距表（避免用今年級距算去年薪資）。
+        # require_year=True：表有級距但缺該年度即 fail-loud（整表空時仍沿用 hardcode）。
+        self.insurance_service.load_brackets_from_db(year, require_year=True)
+        # 歷史月份重算：以該月所屬年度載入職位標準底薪（空表→預設，見 load_position_salary_standards）
+        self._position_salary_standards = load_position_salary_standards(
+            session, year=year
+        )
         # 職稱→等級 grade_map 不分年度，呼叫 load 補上 module-level cache
         self._load_grade_map_from_db(session)
 

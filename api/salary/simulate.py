@@ -22,6 +22,7 @@ from sqlalchemy.orm import joinedload
 
 from models.base import session_scope
 from models.database import Attendance, Employee, SalaryRecord
+from services.salary.config_resolver import PayrollConfigMissingError
 from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
 from services.salary.utils import calc_daily_salary
 from utils.auth import require_staff_permission
@@ -321,9 +322,14 @@ def simulate_salary(
         # 發放月（2/6/9/12）試算須與正式落帳口徑一致：
         # 用期間累積的 festival/overtime 覆蓋單月值，否則 simulate vs actual 的 diff
         # 在發放月會被「單月 vs 期間累積」的口徑差異污染。
-        period_festival_total, period_overtime_total = (
-            engine._compute_period_accrual_totals(session, emp, year, month)
-        )
+        # _compute_period_accrual_totals 內部對各累積月份進 config_for_month → 解析設定。
+        # 若試算的年度（含跨年累積月）設定未建，fail-loud；轉 422 + 可讀訊息（非 500）。
+        try:
+            period_festival_total, period_overtime_total = (
+                engine._compute_period_accrual_totals(session, emp, year, month)
+            )
+        except PayrollConfigMissingError as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
         # 與正式落帳（engine._finalize_breakdown 的首步）口徑一致：發放月須先從期間累積
         # 扣減 pending 懲處（節慶優先扣完才動超額）。否則員工有未抵扣懲處時，simulate

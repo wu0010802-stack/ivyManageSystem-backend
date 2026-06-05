@@ -1,0 +1,177 @@
+# E2E Smoke（跨 repo critical-path）
+#
+# 覆蓋 workspace e2e/ 的 5 個 mutation（登入 / 打卡 / 送假 / 簽核 / 月底結薪試算）
+# + admin 頁面渲染 + a11y baseline。後端為主控（CLAUDE.md follow-up：「兩 repo 互相
+# checkout 起後端跑 smoke」），跨 repo checkout 前端 sibling、起兩端 dev server 後跑
+# Playwright。
+#
+# ── 觸發策略 ──────────────────────────────────────────────────────────────
+# 目前只掛 workflow_dispatch（手動）。理由：此 job 在真實 GitHub runner 上的雙
+# server 啟動 / vite proxy / timing 尚未經實機驗證（本機只驗了 seed script 與 YAML
+# 結構），第一次跑多半要迭代微調。先手動跑到穩定綠，再把 pull_request / push
+# 觸發打開當 merge gate（屆時取消下方註解即可）。
+#
+#   pull_request:
+#     branches: [main]
+#     paths-ignore: ['**.md', 'docs/**']
+#   push:
+#     branches: [main]
+#     paths-ignore: ['**.md', 'docs/**']
+# ──────────────────────────────────────────────────────────────────────────
+
+name: E2E Smoke (cross-repo)
+
+on:
+  workflow_dispatch:
+  # PR gate：對 main 的 PR 會跑 critical-path smoke（已在真實 runner 驗證綠）。
+  # 若日後 runner timing 偶發 flaky 造成噪音，可改為 push:[main] 事後驗證或加
+  # paths 限縮。瀏覽器頁面渲染 spec 的真登入態為 follow-up（見 offboarding.spec.ts）。
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  e2e-smoke:
+    name: E2E critical-path smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: ivymanagement_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # 後端 / DB
+      DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_e2e
+      ENV: development
+      JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+      # e2e 帳號（CI 專用測試憑證，seed 與 globalSetup 共用同一組）
+      E2E_ADMIN_USERNAME: e2e_admin
+      E2E_ADMIN_PASSWORD: e2e_admin_pw_ci_only
+      # 前端 5173（vite dev，/api proxy 到 127.0.0.1:8088）；globalSetup 直打後端 8088
+      E2E_BASE_URL: http://localhost:5173
+      E2E_API_URL: http://localhost:8088
+
+    steps:
+      - name: Checkout ivy-backend
+        uses: actions/checkout@v4
+        with:
+          path: ivy-backend
+
+      - name: Checkout ivy-frontend (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
+          path: ivy-frontend
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ivy-backend/requirements.txt
+
+      - name: Install backend deps
+        working-directory: ivy-backend
+        run: pip install -r requirements.txt
+
+      - name: Materialize schema (create_all + stamp heads)
+        # 與 ci.yml Tests job 同法：空 DB 不能直接 alembic upgrade（baseline migration
+        # 假設 schema 已存在），改 ORM create_all 建表再 stamp 到 head。
+        working-directory: ivy-backend
+        run: |
+          python -c "from models.database import Base; from models.base import get_engine; Base.metadata.create_all(get_engine())"
+          alembic stamp heads
+
+      - name: Seed e2e data + capture target employee id
+        working-directory: ivy-backend
+        run: |
+          EMP_ID=$(python scripts/seed_e2e_ci.py \
+            --admin-username "$E2E_ADMIN_USERNAME" \
+            --admin-password "$E2E_ADMIN_PASSWORD" \
+            | grep '^E2E_TEST_EMPLOYEE_ID=' | cut -d= -f2)
+          if [ -z "$EMP_ID" ]; then echo "::error::seed 未輸出 E2E_TEST_EMPLOYEE_ID"; exit 1; fi
+          echo "E2E_TEST_EMPLOYEE_ID=$EMP_ID" >> "$GITHUB_ENV"
+          echo "Seeded target employee id=$EMP_ID"
+
+      - name: Start backend (uvicorn, background)
+        working-directory: ivy-backend
+        run: |
+          nohup python -m uvicorn main:app --host 0.0.0.0 --port 8088 > backend.log 2>&1 &
+          echo "等待後端就緒（/api/auth/me 回 401 = app up + auth guard 存在）..."
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8088/api/auth/me || echo 000)
+            if [ "$code" = "401" ] || [ "$code" = "200" ]; then echo "後端就緒 (HTTP $code)"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::後端 45×2s 內未就緒"; tail -50 backend.log; exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ivy-frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: ivy-frontend
+        run: npm ci
+
+      - name: Start frontend (vite dev, background)
+        working-directory: ivy-frontend
+        run: |
+          nohup npm run dev -- --host --port 5173 --strictPort > frontend.log 2>&1 &
+          echo "等待前端就緒..."
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5173 || echo 000)
+            if [ "$code" = "200" ]; then echo "前端就緒 (HTTP $code)"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::前端 45×2s 內未就緒"; tail -50 frontend.log; exit 1
+
+      - name: Install e2e deps + Playwright chromium
+        working-directory: ivy-backend/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run e2e smoke
+        working-directory: ivy-backend/e2e
+        env:
+          CI: "1"
+          # offboarding 破壞性測試預設 skip（不設此 flag）→ 不會毀掉 seed 員工
+          # TEST_OFFBOARDING_DESTRUCTIVE: "1"
+        run: npm test
+
+      - name: Upload Playwright report + logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            ivy-backend/e2e/playwright-report
+            ivy-backend/e2e/test-results
+            ivy-backend/backend.log
+            ivy-frontend/frontend.log
+          retention-days: 14
+          if-no-files-found: ignore

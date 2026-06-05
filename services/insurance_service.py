@@ -767,7 +767,7 @@ class InsuranceService:
         # 級距表來源年度（DB 載入時會覆寫，未載入則為 hardcode 年度）
         self.brackets_year: int = CURRENT_INSURANCE_YEAR
 
-        current = today_taipei().year  
+        current = today_taipei().year
         if current > CURRENT_INSURANCE_YEAR:
             logger.warning(
                 "勞健保級距表已過期：表年度 %d、系統年度 %d。"
@@ -779,7 +779,11 @@ class InsuranceService:
             )
 
     def load_brackets_from_db(
-        self, year: int | None = None, *, strict: bool = False
+        self,
+        year: int | None = None,
+        *,
+        strict: bool = False,
+        require_year: bool = False,
     ) -> bool:
         """從 DB insurance_brackets 載入級距表。
 
@@ -789,12 +793,19 @@ class InsuranceService:
                 Admin CRUD 後的 reload 應該 strict=True，避免管理員以為 DB 已生效但
                 計算仍走 hardcode。Startup 路徑保持 strict=False 確保 fresh deploy
                 與測試可啟動。
+            require_year: True=「表有級距但缺該年度」即 fail-loud
+                （raise PayrollConfigMissingError）。薪資引擎歷史/當期路徑用 True，
+                確保不靜默套到別年度級距。整表完全無級距時不 raise（沿用 hardcode，
+                與其他設定的空表 fallback 語意一致，供 dev/全新部署）。
         Returns:
             True=成功覆寫 self.table；False=DB 無資料或讀取失敗，沿用 hardcode。
             strict=True 時失敗會 raise 而非回 False。
         """
         if year is None:
-            year = today_taipei().year  
+            year = today_taipei().year
+        # require_year fail-loud 用；放方法層讓 raise 點與 except 子句都解析得到
+        from services.salary.config_resolver import PayrollConfigMissingError
+
         try:
             # 延遲 import，避免 service 模組在 DB 尚未初始化前被引用時 ImportError
             from models.database import InsuranceBracket, get_session
@@ -808,6 +819,14 @@ class InsuranceService:
                     .all()
                 )
                 if not rows:
+                    if require_year:
+                        any_bracket = (
+                            session.query(InsuranceBracket.id).first() is not None
+                        )
+                        if any_bracket:
+                            # 表有級距但缺該年度 → fail-loud（行政漏建該年度級距）。
+                            # 整表空時不進此分支，落到下方既有 hardcode fallback。
+                            raise PayrollConfigMissingError("InsuranceBracket", year)
                     # 該年度無資料：可能尚未公告，fallback 到當前年度往下找最近一年
                     fallback_year = (
                         session.query(InsuranceBracket.effective_year)
@@ -847,6 +866,10 @@ class InsuranceService:
                 return True
             finally:
                 session.close()
+        except PayrollConfigMissingError:
+            # require_year fail-loud：不可被下方 except Exception 吞成 return False，
+            # 必須往外傳（無論 strict）讓 config_for_month / API 層接住。
+            raise
         except Exception:
             # 真正的 exception（DB 連線失敗 / import 失敗 / SQL 錯誤等）
             # strict=True 必須往外丟，否則 admin CRUD 寫入成功但 reload 失敗會被靜默吞掉

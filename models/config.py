@@ -32,6 +32,7 @@ class AttendancePolicy(Base):
     __tablename__ = "attendance_policies"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    config_year = Column(Integer, nullable=False, default=0, comment="適用年度（西元）")
     version = Column(
         Integer, default=1, nullable=False, comment="版本號（每次更新遞增）"
     )
@@ -326,6 +327,7 @@ class PositionSalaryConfig(Base):
     __tablename__ = "position_salary_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    config_year = Column(Integer, nullable=False, default=0, comment="適用年度（西元）")
     head_teacher_a = Column(Float, default=39240, comment="A 級班導師標準底薪")
     head_teacher_b = Column(Float, default=37160, comment="B 級班導師標準底薪")
     head_teacher_c = Column(Float, default=33000, comment="C 級班導師標準底薪")
