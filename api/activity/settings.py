@@ -16,7 +16,7 @@ from models.database import (
 )
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
-from utils.file_upload import read_upload_with_size_check, validate_file_signature
+from utils.file_upload import read_upload_with_size_check
 from utils.permissions import Permission
 
 from ._shared import RegistrationTimeSettings
@@ -120,9 +120,10 @@ async def upload_activity_poster(
             detail=f"不支援的檔案格式，允許：{'、'.join(sorted(_POSTER_ALLOWED_EXT))}",
         )
 
-    content = await read_upload_with_size_check(file)
-    # webp 無 magic bytes 條目，validate_file_signature 會略過；其餘會驗證
-    validate_file_signature(content, ext)
+    # Finding 檔Low-1：帶 extension=ext 才會走 validate + image EXIF strip。
+    # webp 無 magic bytes 條目，validate 會略過，唯一防線是 strip 的 PIL 重解碼；
+    # 不帶 extension 則兩者皆跳過 → 假 webp（HTML）原樣落盤再由公開端點回給訪客。
+    content = await read_upload_with_size_check(file, extension=ext)
 
     from utils.storage import get_backend
 
