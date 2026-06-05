@@ -16,6 +16,7 @@ from utils.auth import require_permission
 from utils.error_messages import STUDENT_NOT_FOUND
 from utils.permissions import Permission
 from utils.portfolio_access import (
+    _TEACHER_BLOCKED_LIFECYCLE,
     assert_student_access,
     is_unrestricted,
     student_ids_in_scope,
@@ -104,6 +105,14 @@ def list_incidents(
         query = session.query(StudentIncident, Student).join(
             Student, StudentIncident.student_id == Student.id
         )
+
+        # R5-1：非管理角色一律排除終態（畢業/退學/轉出）學生（_require_classroom_access
+        # 漏 lifecycle 過濾，終態學生保留 classroom_id）。對齊 assert_student_access /
+        # student_ids_in_scope。admin/hr/supervisor 仍可查歷史。
+        if not is_unrestricted(current_user):
+            query = query.filter(
+                ~Student.lifecycle_status.in_(_TEACHER_BLOCKED_LIFECYCLE)
+            )
 
         # F-023：student_id / classroom_id 都未帶時，非 is_unrestricted caller
         # 自動限縮至自己班級的學生（雙重防線：保留下方既有 helper 呼叫）
