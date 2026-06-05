@@ -90,6 +90,7 @@ def engine_with_db(tmp_path):
             AttendancePolicy(
                 is_active=True,
                 version=1,
+                config_year=2026,
                 festival_bonus_months=3,
             )
         )
@@ -97,7 +98,7 @@ def engine_with_db(tmp_path):
             InsuranceRate(
                 is_active=True,
                 version=1,
-                rate_year=2025,
+                rate_year=2026,
                 labor_rate=0.105,
                 health_rate=0.0517,
             )

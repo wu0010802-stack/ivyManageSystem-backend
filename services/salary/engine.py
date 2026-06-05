@@ -475,40 +475,35 @@ class SalaryEngine:
         for k, v in snapshot["insurance"].items():
             setattr(self.insurance_service, k, v)
 
+    # 設定 model → 年度欄位（西元）對照；period-aware 解析用
+    _CONFIG_YEAR_COL_BY_NAME = {
+        "InsuranceRate": "rate_year",
+        "AttendancePolicy": "config_year",
+        "BonusConfig": "config_year",
+    }
+
     @staticmethod
     def _select_active_at(session, model, year: int, month: int):
-        """選出該月最後一日(含)前最新建立的 row;若無則 fallback 最舊 row。
+        """以「該年度最新 version」解析設定（period-aware）。
 
-        Why created_at: BonusConfig / InsuranceRate 沒有 effective_date 欄位,
-        AttendancePolicy 雖有但歷史資料未必填;以 created_at 推估等同「設定上線當下生效」,
-        對純歷史重算來說與直觀預期一致(改設定當天才會影響當月以後計算)。
+        取代舊的 `created_at <= 當月最後一日` 邏輯：改用設定表年度欄位 + 最高 version，
+        讓年中訂正回溯套用整年。month 參數保留以維持呼叫端介面，不再參與解析。
 
-        Why NOT filter is_active: 歷史 config 改版後舊版本通常會被設為
-        is_active=False（見 test_swap_uses_version_active_at_month_end），但
-        歷史月份重算仍須能找到「該月當下生效」的版本。一律過濾 is_active=True
-        會讓所有歷史月份都拿到目前最新版本，破壞歷史對帳。
-
-        留意攻擊面：admin 持 SALARY_WRITE 可建惡意金額且 is_active=False 的
-        BonusConfig/InsuranceRate，等歷史補算被 id desc 撿到。緩解：
-        (a) BonusConfig / InsuranceRate / AttendancePolicy 的 INSERT/UPDATE
-            必須走 finance_approve + audit（目前 api/config.py / api/insurance.py
-            缺此守衛，待補）；
-        (b) 上線一筆 needs_recalc 全標守衛（變更設定即時 mark_stale）。
-        Refs: 邏輯漏洞 audit 2026-05-07 P0 (#10) — 由衝突回歸測試
-        test_swap_uses_version_active_at_month_end 重新評估後決議：原建議
-        is_active filter 不採用，改走守衛+稽核路線。
+        空表 vs 缺年度（與舊行為相容的 fail-loud）：
+        - 該 model 整表「完全無設定列」（dev / 測試 / 全新部署，歷來靠引擎內建常數）
+          → 回 None，caller 沿用引擎預設（與改動前 `_select_active_at` 回 None 後
+          `if x is not None` 跳過的行為一致，數字零漂移）。
+        - 表「有設定列但缺該年度」（行政漏建某年度設定的真實誤設）
+          → resolve_config raise PayrollConfigMissingError（fail-loud）。
+        Refs: spec 2026-06-05-period-aware-salary-config-resolver-design.md
         """
-        last_day = calendar.monthrange(year, month)[1]
-        cutoff = datetime(year, month, last_day, 23, 59, 59)
-        row = (
-            session.query(model)
-            .filter(model.created_at <= cutoff)
-            .order_by(model.id.desc())
-            .first()
-        )
-        if row is None:
-            row = session.query(model).order_by(model.id.asc()).first()
-        return row
+        # 整表無任何設定列 → 沿用引擎預設常數（bootstrap / dev / 測試）。
+        if session.query(model.id).first() is None:
+            return None
+        from services.salary.config_resolver import resolve_config
+
+        year_col = SalaryEngine._CONFIG_YEAR_COL_BY_NAME[model.__name__]
+        return resolve_config(session, model, year, year_col=year_col)
 
     def _apply_bonus_record_locked(self, bonus) -> None:
         """把 BonusConfig record 套用到 engine state；caller 必須持 _config_swap_lock。
