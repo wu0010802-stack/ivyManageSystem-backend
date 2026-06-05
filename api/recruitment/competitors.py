@@ -24,7 +24,7 @@ def get_geocode_pending_count(
 ):
     """查詢尚無座標的 competitor_school 數量（輕量查詢，不消耗 Google API）。"""
     with session_scope() as session:
-        from models.competitor_school import CompetitorSchool
+        from models.recruitment import CompetitorSchool
 
         count = (
             session.query(CompetitorSchool)

@@ -462,9 +462,13 @@ def _build_funnel_event_item(fe) -> dict[str, Any]:
             fe.created_at.date() if hasattr(fe.created_at, "date") else fe.created_at
         ),
         "_ts": _to_datetime(fe.created_at),
-        "reason": fe.reason,
-        "actor_user_id": fe.actor_user_id,
-        "event_type": fe.event_type,
+        "payload": {
+            "reason": fe.reason,
+            "actor_user_id": fe.actor_user_id,
+            "event_type": fe.event_type,
+            "from_stage": fe.from_stage,
+            "to_stage": fe.to_stage,
+        },
     }
 
 
@@ -503,9 +507,11 @@ def _build_classroom_transfer_item(tr) -> dict[str, Any]:
             else tr.transferred_at
         ),
         "_ts": _to_datetime(tr.transferred_at),
-        "from_classroom_id": tr.from_classroom_id,
-        "to_classroom_id": tr.to_classroom_id,
-        "actor_user_id": tr.transferred_by,
+        "payload": {
+            "from_classroom_id": tr.from_classroom_id,
+            "to_classroom_id": tr.to_classroom_id,
+            "actor_user_id": tr.transferred_by,
+        },
     }
 
 
@@ -548,5 +554,8 @@ def _build_payment_item(row) -> dict[str, Any]:
         "summary": f"繳交 {item_name} NT${payment.amount}",
         "occurred_at": payment.payment_date,
         "_ts": _to_datetime(payment.payment_date),
-        "amount": payment.amount,
+        "payload": {
+            "amount": payment.amount,
+            "fee_item_name": item_name,
+        },
     }

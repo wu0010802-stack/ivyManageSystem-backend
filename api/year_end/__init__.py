@@ -708,12 +708,14 @@ def export_personal_slip_pdf(
             bonus_by_type=bonuses,
         )
     )
+    from urllib.parse import quote
+
+    # 檔名含中文(emp.name)→ 用 RFC 5987 filename* 避免 latin-1 編碼 500
+    _fn = quote(f"bonus_slip_{emp.name}_{cycle.academic_year}.pdf")
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'inline; filename="bonus_slip_{emp.name}_{cycle.academic_year}.pdf"'
-        },
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{_fn}"},
     )
 
 

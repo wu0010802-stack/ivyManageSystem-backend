@@ -43,6 +43,7 @@ class PortalMyDataExportOut(IvyBaseModel):
     overtimes: list[dict[str, Any]]
     appraisals: list[dict[str, Any]]
 
+
 from models.database import get_session
 from utils.audit import write_explicit_audit
 from utils.auth import get_current_user
@@ -134,10 +135,8 @@ def _collect_profile(emp) -> dict:
         "email": emp.email,
         "address": emp.address,
         "hire_date": emp.hire_date.isoformat() if emp.hire_date else None,
-        "termination_date": (
-            emp.termination_date.isoformat() if emp.termination_date else None
-        ),
-        "status": emp.status,
+        "termination_date": (emp.resign_date.isoformat() if emp.resign_date else None),
+        "status": "在職" if emp.is_active else "離職",
         "bank_account": emp.bank_account,
         "emergency_contact_name": emp.emergency_contact_name,
         "emergency_contact_phone": emp.emergency_contact_phone,
@@ -151,13 +150,13 @@ def _collect_salary(session, employee_id: int) -> list[dict]:
         rows = (
             session.query(SalaryRecord)
             .filter(SalaryRecord.employee_id == employee_id)
-            .order_by(SalaryRecord.year.desc(), SalaryRecord.month.desc())
+            .order_by(SalaryRecord.salary_year.desc(), SalaryRecord.salary_month.desc())
             .all()
         )
         return [
             {
-                "year": r.year,
-                "month": r.month,
+                "year": r.salary_year,
+                "month": r.salary_month,
                 "gross_salary": float(r.gross_salary) if r.gross_salary else 0,
                 "net_salary": float(r.net_salary) if r.net_salary else 0,
                 "base_salary": float(r.base_salary) if r.base_salary else 0,
@@ -177,15 +176,14 @@ def _collect_attendance(session, employee_id: int) -> list[dict]:
         rows = (
             session.query(Attendance)
             .filter(Attendance.employee_id == employee_id)
-            .order_by(Attendance.date.asc())
+            .order_by(Attendance.attendance_date.asc())
             .all()
         )
         return [
             {
-                "date": r.date.isoformat() if r.date else None,
-                "punch_in": r.punch_in.isoformat() if r.punch_in else None,
-                "punch_out": r.punch_out.isoformat() if r.punch_out else None,
-                "work_hours": float(r.work_hours) if r.work_hours else 0,
+                "date": r.attendance_date.isoformat() if r.attendance_date else None,
+                "punch_in": r.punch_in_time.isoformat() if r.punch_in_time else None,
+                "punch_out": r.punch_out_time.isoformat() if r.punch_out_time else None,
             }
             for r in rows
         ]
@@ -208,9 +206,9 @@ def _collect_leaves(session, employee_id: int) -> list[dict]:
             {
                 "id": r.id,
                 "leave_type": r.leave_type,
-                "start_at": r.start_at.isoformat() if r.start_at else None,
-                "end_at": r.end_at.isoformat() if r.end_at else None,
-                "hours": float(r.hours) if r.hours else 0,
+                "start_at": r.start_date.isoformat() if r.start_date else None,
+                "end_at": r.end_date.isoformat() if r.end_date else None,
+                "hours": float(r.leave_hours) if r.leave_hours else 0,
                 "reason": r.reason,
                 "status": r.status,
             }
@@ -234,8 +232,8 @@ def _collect_overtimes(session, employee_id: int) -> list[dict]:
         return [
             {
                 "id": r.id,
-                "start_at": r.start_at.isoformat() if r.start_at else None,
-                "end_at": r.end_at.isoformat() if r.end_at else None,
+                "start_at": r.start_time.isoformat() if r.start_time else None,
+                "end_at": r.end_time.isoformat() if r.end_time else None,
                 "hours": float(r.hours) if r.hours else 0,
                 "reason": r.reason,
                 "status": r.status,
@@ -249,11 +247,15 @@ def _collect_overtimes(session, employee_id: int) -> list[dict]:
 
 def _collect_appraisals(session, employee_id: int) -> list[dict]:
     try:
-        from models.appraisal import AppraisalSummary
+        from models.appraisal import AppraisalSummary, AppraisalParticipant
 
         rows = (
             session.query(AppraisalSummary)
-            .filter(AppraisalSummary.employee_id == employee_id)
+            .join(
+                AppraisalParticipant,
+                AppraisalParticipant.id == AppraisalSummary.participant_id,
+            )
+            .filter(AppraisalParticipant.employee_id == employee_id)
             .order_by(AppraisalSummary.id.desc())
             .all()
         )

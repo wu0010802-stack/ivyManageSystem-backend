@@ -1536,12 +1536,14 @@ def export_excel(
         base_score=cycle.base_score,
         rows=rows,
     )
+    from urllib.parse import quote
+
+    # 檔名含中文(sem_label 上/下)→ 用 RFC 5987 filename* 避免 latin-1 編碼 500
+    _fn = quote(f"appraisal_{cycle.academic_year}_{sem_label}.xlsx")
     return Response(
         content=payload,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": f'attachment; filename="appraisal_{cycle.academic_year}_{sem_label}.xlsx"'
-        },
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_fn}"},
     )
 
 
