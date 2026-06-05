@@ -16,6 +16,7 @@ from sqlalchemy import (
     Index,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -133,7 +134,12 @@ class Student(Base):
     __tablename__ = "students"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    student_id = Column(String(20), nullable=False, index=True, comment="學號（顯示快取；身分認定見 enrollment_school_year+seq）")
+    student_id = Column(
+        String(20),
+        nullable=False,
+        index=True,
+        comment="學號（顯示快取；身分認定見 enrollment_school_year+seq）",
+    )
     name = Column(String(50), nullable=False, comment="姓名")
     gender = Column(String(10), nullable=True)
     birthday = Column(Date, nullable=True)
@@ -227,6 +233,15 @@ class Student(Base):
         Index("ix_student_classroom", "classroom_id", "is_active"),
         Index("ix_student_enrollment_grad", "enrollment_date", "graduation_date"),
         Index("ix_student_lifecycle_status", "lifecycle_status"),
+        # R4-1：一個招生 visit 最多轉換成一個 Student（NULL 允許多筆，未轉換者不受限）。
+        # 兜底並發轉換 TOCTOU——無鎖 .first() 檢查擋不住兩請求同時轉同一 visit。
+        Index(
+            "uq_students_recruitment_visit_id",
+            "recruitment_visit_id",
+            unique=True,
+            sqlite_where=text("recruitment_visit_id IS NOT NULL"),
+            postgresql_where=text("recruitment_visit_id IS NOT NULL"),
+        ),
         UniqueConstraint(
             "enrollment_school_year",
             "enrollment_seq",

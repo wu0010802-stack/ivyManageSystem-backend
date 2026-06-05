@@ -14,6 +14,7 @@ from datetime import date, datetime
 from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models.classroom import LIFECYCLE_ACTIVE, LIFECYCLE_ENROLLED, Student
@@ -113,7 +114,16 @@ def convert_recruitment_to_student(
         is_active=True,
     )
     session.add(student)
-    session.flush()  # 取得 student.id
+    try:
+        session.flush()  # 取得 student.id
+    except IntegrityError as exc:
+        # R4-1：並發轉換同一 visit 時，上方無鎖 .first() 擋不住 race，第二筆 flush
+        # 會撞 partial unique index(uq_students_recruitment_visit_id) → 轉成友善錯誤
+        # （非 500），呼叫端會 rollback。
+        session.rollback()
+        raise RecruitmentConversionError(
+            f"此招生訪視已轉化為學生（並發轉換，visit_id={visit.id}）"
+        ) from exc
 
     # 從 recruitment 資料建立主要監護人（若有電話或來訪者資訊）
     primary_guardian_id: Optional[int] = None
