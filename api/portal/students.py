@@ -46,6 +46,7 @@ from utils.auth import get_current_user
 from utils.masking import mask_phone
 from utils.permissions import Permission, has_permission
 from utils.portfolio_access import (
+    assert_student_access,
     can_view_student_health,
     can_view_student_special_needs,
     is_unrestricted,
@@ -522,12 +523,13 @@ def get_student_detail(
 
         emp = _get_employee(session, current_user)
         is_admin = _is_admin_like(current_user)
-        if is_admin:
-            teacher_classroom_ids = None
-        else:
-            teacher_classroom_ids = _get_teacher_classroom_ids(session, emp.id)
-            if student.classroom_id not in teacher_classroom_ids:
-                raise HTTPException(status_code=403, detail="此學生不在您管轄班級")
+        # R4-2：canonical assert_student_access 作為授權守衛（含終態 lifecycle 過濾：
+        # 學生畢業/退學後 classroom_id 未清，原手寫 classroom 檢查漏此過濾 → 前班導
+        # 可無限期讀其完整 PII + 揭未遮罩電話）。admin/supervisor 仍可查歷史終態學生。
+        assert_student_access(session, current_user, student_id)
+        teacher_classroom_ids = (
+            None if is_admin else _get_teacher_classroom_ids(session, emp.id)
+        )
 
         classroom = (
             session.query(Classroom)
@@ -867,10 +869,9 @@ def reveal_student_phone(
             raise HTTPException(status_code=404, detail="學生不存在")
 
         emp = _get_employee(session, current_user)
-        if not _is_admin_like(current_user):
-            classroom_ids = _get_teacher_classroom_ids(session, emp.id)
-            if student.classroom_id not in classroom_ids:
-                raise HTTPException(status_code=403, detail="此學生不在您管轄班級")
+        # R4-2：canonical 守衛——終態學生對 teacher 403，避免揭已離校兒童的未遮罩
+        # 家長/緊急聯絡人電話（原手寫 classroom 檢查漏 lifecycle 過濾）。
+        assert_student_access(session, current_user, student_id)
 
         if payload.target == "parent":
             phone = student.parent_phone
