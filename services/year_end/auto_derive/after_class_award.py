@@ -221,7 +221,9 @@ def derive_after_class_award(
     report = AcaReport()
     academic_year = cycle.academic_year
 
-    cfg = _latest_active_bonus_config(db)
+    from services.year_end.settlement_builder import bonus_config_for_academic_year
+
+    cfg = bonus_config_for_academic_year(db, academic_year)
     unit_prices: dict = {}
     if cfg is not None and cfg.after_class_award_unit_price:
         unit_prices = dict(cfg.after_class_award_unit_price)

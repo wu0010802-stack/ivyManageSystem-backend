@@ -56,16 +56,53 @@ _FESTIVAL_FIELD: dict[str, str] = {
 
 
 # --------------------------------------------------------------------------- #
+# Helper 0：年終 BonusConfig 依學年解析（民國學年 → 西元 config_year = N+1911）  #
+# --------------------------------------------------------------------------- #
+
+# 民國學年 N（民國曆年）→ 西元 config_year。民國 N 年 = 西元 N+1911；年終 proration/
+# 考勤期間亦以此民國曆年為基準（settlement_builder proration_start、attendance_deductions
+# _period_bounds 皆 academic_year+1911），故 BonusConfig 對齊同一年。
+YEAR_END_CONFIG_YEAR_OFFSET = 1911
+
+
+def bonus_config_for_academic_year(
+    db: Session, academic_year: int
+) -> "BonusConfig | None":
+    """年終以「該學年所屬西元年（民國曆年 = academic_year+1911）」解析 BonusConfig。
+
+    空表 fallback（與薪資引擎一致）：
+    - bonus_configs 整表無列 → 回 None，caller 沿用內建門檻/金額預設（dev/全新部署）。
+    - 表有列但缺該西元年 → fail-loud（resolve_config raise PayrollConfigMissingError），
+      代表行政漏建該年終回合的 BonusConfig。
+    """
+    if db.query(BonusConfig.id).first() is None:
+        return None
+    from services.salary.config_resolver import resolve_config
+
+    return resolve_config(
+        db,
+        BonusConfig,
+        academic_year + YEAR_END_CONFIG_YEAR_OFFSET,
+        year_col="config_year",
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Helper 1：節慶獎金角色基數查表                                               #
 # --------------------------------------------------------------------------- #
 
 
-def festival_base_for_role(db: Session, role_key: "str | None") -> Decimal:
-    """查最新 BonusConfig（is_active + id DESC）取角色對應節慶基數。
+def festival_base_for_role(
+    db: Session, role_key: "str | None", academic_year: "int | None" = None
+) -> Decimal:
+    """取角色對應節慶基數。
 
     Args:
         db: SQLAlchemy session。
         role_key: 角色識別鍵，須存在於 _FESTIVAL_FIELD 對應表中。
+        academic_year: 民國學年；給定時依 config_year=N+1911 解析 BonusConfig
+            （空表→預設、有料缺年度→fail-loud）。None 時維持舊行為（latest is_active），
+            供未遷移 caller / 單元測試使用。
 
     Returns:
         Decimal（小數 2 位）；查無設定或 role_key 不在對應表時回 Decimal("0")。
@@ -74,12 +111,15 @@ def festival_base_for_role(db: Session, role_key: "str | None") -> Decimal:
     if field_name is None:
         return Decimal("0")
 
-    config: BonusConfig | None = (
-        db.query(BonusConfig)
-        .filter(BonusConfig.is_active == True)  # noqa: E712
-        .order_by(BonusConfig.id.desc())
-        .first()
-    )
+    if academic_year is not None:
+        config = bonus_config_for_academic_year(db, academic_year)
+    else:
+        config = (
+            db.query(BonusConfig)
+            .filter(BonusConfig.is_active == True)  # noqa: E712
+            .order_by(BonusConfig.id.desc())
+            .first()
+        )
     if config is None:
         return Decimal("0")
 
@@ -774,7 +814,9 @@ def build_settlements(
         base = year_end_base_salary(db, emp, standards=_standards)
         _role_key = role_key_of(emp)
         if _role_key not in _festival_cache:
-            _festival_cache[_role_key] = festival_base_for_role(db, _role_key)
+            _festival_cache[_role_key] = festival_base_for_role(
+                db, _role_key, cycle.academic_year
+            )
         festival = _festival_cache[_role_key]
         # Fix 1 (CRITICAL): 年終比例計算以民國曆年（Jan 1–Dec 31）為基準，非學年 Aug–Jul
         proration_start = date(cycle.academic_year + 1911, 1, 1)

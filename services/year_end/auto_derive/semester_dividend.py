@@ -245,7 +245,9 @@ def derive_semester_dividend(
     report = SemesterDividendReport()
     academic_year = cycle.academic_year
 
-    cfg = _latest_active_bonus_config(db)
+    from services.year_end.settlement_builder import bonus_config_for_academic_year
+
+    cfg = bonus_config_for_academic_year(db, academic_year)
     if cfg is None:
         report.warnings.append("無 active BonusConfig，使用內建門檻/金額預設")
     ret_threshold = _dec(
