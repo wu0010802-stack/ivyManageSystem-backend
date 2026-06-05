@@ -1262,7 +1262,9 @@ def pos_semester_reconciliation(
                 ActivityRegistration.semester == sem,
                 ActivityRegistration.is_active.is_(False),
                 ActivityRegistration.id.in_(
-                    session.query(ActivityPaymentRecord.registration_id).distinct()
+                    session.query(ActivityPaymentRecord.registration_id)
+                    .filter(ActivityPaymentRecord.voided_at.is_(None))
+                    .distinct()
                 ),
                 ~ActivityRegistration.id.in_(active_ids) if active_ids else True,
             )
@@ -1274,12 +1276,19 @@ def pos_semester_reconciliation(
         total_map = _batch_calc_total_amounts(session, reg_ids)
         course_name_map = _fetch_reg_course_names(session, reg_ids)
 
-        # 一次取回所有相關繳費紀錄，避免 N+1
+        # 一次取回所有相關繳費紀錄，避免 N+1。
+        # 排除 voided 流水：reg.paid_amount 在 void 時已重算為「不含 voided」的權威值
+        # （registrations_payments），bucket 也須排除 voided 才一致——否則 voided refund
+        # 會砍 pending_net → offline_paid 虛增、voided payment 會虛增 approved/pending
+        # （Finding C / backlog ④）。對齊本檔其他流水查詢（皆濾 voided_at IS NULL）。
         payment_records_by_reg: dict = defaultdict(list)
         if reg_ids:
             for rec in (
                 session.query(ActivityPaymentRecord)
-                .filter(ActivityPaymentRecord.registration_id.in_(reg_ids))
+                .filter(
+                    ActivityPaymentRecord.registration_id.in_(reg_ids),
+                    ActivityPaymentRecord.voided_at.is_(None),
+                )
                 .all()
             ):
                 payment_records_by_reg[rec.registration_id].append(rec)
