@@ -188,6 +188,11 @@ class OrgYearSettings(Base):
         default=Decimal("0"),
         comment="全校目標達成率 = actual/target × 100",
     )
+    school_achievement_rate_override: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(6, 3),
+        nullable=True,
+        comment="HR 手動覆寫全校達成率；NULL=用自算 school_achievement_rate",
+    )
     org_achievement_rate: Mapped[Decimal] = mapped_column(
         Numeric(6, 3),
         nullable=False,
@@ -212,6 +217,13 @@ class OrgYearSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    @property
+    def effective_school_achievement_rate(self) -> Decimal:
+        """HR 覆寫優先；未覆寫（NULL）則用自算 school_achievement_rate。"""
+        if self.school_achievement_rate_override is not None:
+            return self.school_achievement_rate_override
+        return self.school_achievement_rate
 
 
 class ClassEnrollmentTarget(Base):
