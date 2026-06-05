@@ -26,6 +26,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from models.base import session_scope
 from models.database import Employee, SalaryRecord, User, get_session
+from services.salary.config_resolver import PayrollConfigMissingError
 from services.salary.engine import SalaryEngine as RuntimeSalaryEngine
 from services.salary_job_registry import (
     ActiveJobExistsError,
@@ -276,6 +277,9 @@ def calculate_salaries_alt(
         bulk_results, errors = engine.process_bulk_salary_calculation(
             employee_ids, year, month
         )
+    except PayrollConfigMissingError as e:
+        # 該年度設定（費率/級距/獎金）未建：fail-loud 整批中止，回 422 + 可讀訊息。
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise_safe_500(e)
 
