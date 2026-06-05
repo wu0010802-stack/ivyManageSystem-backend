@@ -53,7 +53,7 @@ from models.database import (
     OvertimeRecord,
     User,
 )
-from utils.permissions import Permission
+from utils.permissions import Permission, list_active_user_ids_with_permission
 from utils.auth import get_current_user
 from utils.error_messages import LEAVE_RECORD_NOT_FOUND
 from ._shared import (
@@ -94,21 +94,7 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
     SQLite 不支援 ARRAY contains operator，走 app-layer filter；PG 走原生
     operator。對齊 api/permissions_admin.py:136-145 慣例。
     """
-    is_sqlite = session.bind.dialect.name == "sqlite"
-    if is_sqlite:
-        users = session.query(User).filter(User.is_active.is_(True)).all()
-        return [
-            u.id for u in users if u.permission_names and perm in u.permission_names
-        ]
-    rows = (
-        session.query(User.id)
-        .filter(
-            User.is_active.is_(True),
-            User.permission_names.contains([perm]),
-        )
-        .all()
-    )
-    return [r[0] for r in rows]
+    return list_active_user_ids_with_permission(session, perm)
 
 
 logger = logging.getLogger(__name__)

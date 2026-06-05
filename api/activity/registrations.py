@@ -37,7 +37,7 @@ from services.activity_service import activity_service
 from services.activity_refund_query import build_refund_suggestion
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
-from utils.permissions import Permission
+from utils.permissions import Permission, list_active_user_ids_with_permission
 from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
 from utils.finance_guards import (
     FINANCE_APPROVAL_THRESHOLD,
@@ -97,21 +97,7 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
 
     對齊 api/permissions_admin.py:136-145 / api/portal/leaves.py 同名 helper。
     """
-    is_sqlite = session.bind.dialect.name == "sqlite"
-    if is_sqlite:
-        users = session.query(User).filter(User.is_active.is_(True)).all()
-        return [
-            u.id for u in users if u.permission_names and perm in u.permission_names
-        ]
-    rows = (
-        session.query(User.id)
-        .filter(
-            User.is_active.is_(True),
-            User.permission_names.contains([perm]),
-        )
-        .all()
-    )
-    return [r[0] for r in rows]
+    return list_active_user_ids_with_permission(session, perm)
 
 
 # ── 靜態路由（batch-payment / export / payment-report）已拆至 registrations_static.py ──
