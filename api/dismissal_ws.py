@@ -209,8 +209,16 @@ async def admin_dismissal_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="教師帳號不可存取管理端接送通知")
         return
 
-    if not has_permission(payload.get("permission_names"), Permission.STUDENTS_READ):
-        await ws.close(code=WS_CLOSE_FORBIDDEN, reason="權限不足，需要學生讀取權限")
+    # scope 對齊 REST 全園列表 `/api/dismissal-calls`（assert_all_scope(STUDENTS_READ)）：
+    # admin channel 收全校事件，須持 :all scope（wildcard / bare STUDENTS_READ / *:all）。
+    # 不可只用 bare has_permission——STUDENTS_READ 是 scope-aware，bare 檢查對
+    # 'STUDENTS_READ:own_class' 仍回 True，會讓被限自班的管理角色從 WS 收全校 PII
+    # （REST 同情境已 403）。對齊同檔 portal WS 的 is_unrestricted scope 守衛。
+    if not is_unrestricted(payload, code=Permission.STUDENTS_READ.value):
+        await ws.close(
+            code=WS_CLOSE_FORBIDDEN,
+            reason="權限不足，需要全園學生讀取權限（STUDENTS_READ:all）",
+        )
         return
 
     user_id = payload.get("user_id")
