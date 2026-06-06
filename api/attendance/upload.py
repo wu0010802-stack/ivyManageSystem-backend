@@ -125,7 +125,15 @@ async def upload_attendance(
 
     # pandas 接受 BytesIO，不需要實體路徑；用記憶體 buffer 餵入避免本地檔依賴
     try:
-        df = pd.read_excel(io.BytesIO(content))
+        # R7-2：nrows 上限避免超大 xlsx 全載入 OOM（認證後 DoS）；超過即拒絕。
+        from utils.excel_io import MAX_IMPORT_ROWS
+
+        df = pd.read_excel(io.BytesIO(content), nrows=MAX_IMPORT_ROWS + 1)
+        if len(df) > MAX_IMPORT_ROWS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"匯入列數超過上限 {MAX_IMPORT_ROWS}，請分批匯入",
+            )
         columns = df.columns.tolist()
 
         # 新格式：部門, 編號, 姓名, 日期, 星期, 上班時間, 下班時間

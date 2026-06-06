@@ -143,3 +143,16 @@ def test_parse_excel_optional_cells_can_be_empty():
     assert result.errors == [], f"unexpected errors: {result.errors}"
     assert result.rows[0].leave_hours is None
     assert result.rows[0].reason is None
+
+
+def test_parse_excel_row_cap(monkeypatch):
+    """R7-2：超過 MAX_IMPORT_ROWS 即停止解析 + 回報 TOO_MANY_ROWS（防超大檔 OOM）。"""
+    import utils.excel_io as excel_io
+
+    monkeypatch.setattr(excel_io, "MAX_IMPORT_ROWS", 3)
+    header = ["employee_name", "start_date", "end_date", "leave_type"]
+    data = ["王小明", "2026-05-15", "2026-05-15", "事假"]
+    xlsx = _build_xlsx([header] + [data] * 5)  # 5 data rows > cap 3
+    result = parse_excel(xlsx, schema=_LeaveImportRow)
+    assert any(e["error_code"] == "TOO_MANY_ROWS" for e in result.errors)
+    assert len(result.rows) <= 3

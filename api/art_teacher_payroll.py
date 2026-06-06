@@ -325,6 +325,16 @@ async def batch_import(
 
     ws = wb.active
 
+    # R7-2：列數上限——避免超大表下游逐列處理耗盡資源（認證後 DoS）。read_only 串流
+    # 因下方 ws[1] 隨機存取不適用，改以 max_row 拒絕超大檔（配合 10MB 上傳上限）。
+    from utils.excel_io import MAX_IMPORT_ROWS
+
+    if ws.max_row and ws.max_row > MAX_IMPORT_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"匯入列數超過上限 {MAX_IMPORT_ROWS}，請分批匯入",
+        )
+
     # 驗證表頭
     header_row = [_cell_str(c.value) for c in ws[1]]
     required = {"員工姓名", "科目", "時數", "鐘點費"}
