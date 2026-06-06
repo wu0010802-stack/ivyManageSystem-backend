@@ -251,3 +251,44 @@ def test_list_allergies_no_log_when_empty(health_app):
             .all()
         )
         assert len(logs) == 0
+
+
+def test_list_medication_orders_writes_medical_access_log(health_app):
+    """R5-3：staff 查用藥單（健康 PII）須寫 §6 medical_access_log（field=medication），
+    對齊 allergy / 家長端；原本 staff 端不寫 → 醫療稽核「誰看過某童用藥」缺失。"""
+    from datetime import date
+    from models.portfolio import StudentMedicationOrder
+    from models.medical_access_log import MEDICAL_FIELD_MEDICATION
+
+    client, sf = health_app
+    seed = _seed_allergy_and_teacher(sf, with_allergy=False)
+    with sf() as s:
+        s.add(
+            StudentMedicationOrder(
+                student_id=seed["student_id"],
+                order_date=date(2026, 3, 10),
+                medication_name="退燒藥",
+                dose="1 顆",
+                time_slots=["12:00"],
+                source="staff",
+            )
+        )
+        s.commit()
+    tk = _token(seed["teacher_id"], seed["emp_id"])
+
+    r = client.get(
+        f"/api/students/{seed['student_id']}/medication-orders",
+        cookies={"access_token": tk},
+    )
+    assert r.status_code == 200, r.text
+
+    with sf() as s:
+        logs = (
+            s.query(MedicalAccessLog)
+            .filter(
+                MedicalAccessLog.student_id == seed["student_id"],
+                MedicalAccessLog.field_name == MEDICAL_FIELD_MEDICATION,
+            )
+            .all()
+        )
+        assert len(logs) == 1, "用藥單檢視須留醫療存取軌跡"

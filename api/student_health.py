@@ -221,6 +221,25 @@ def _load_logs_for_orders(
     return out
 
 
+def _write_medication_access_log(session, current_user, student_id, request) -> None:
+    """R5-3：用藥（健康 PII）讀取的 §6 醫療存取軌跡，對齊 allergy list / 家長端。"""
+    from models.medical_access_log import (
+        MEDICAL_FIELD_MEDICATION,
+        MedicalAccessLog,
+    )
+    from utils.request_ip import get_client_ip
+
+    session.add(
+        MedicalAccessLog(
+            user_id=current_user.get("user_id"),
+            student_id=student_id,
+            field_name=MEDICAL_FIELD_MEDICATION,
+            reason="用藥單檢視（無顯式理由）",
+            ip_address=get_client_ip(request),
+        )
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 過敏管理
 # ══════════════════════════════════════════════════════════════════════════
@@ -235,7 +254,12 @@ def list_allergies(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_READ.value,
+            )
             query = session.query(StudentAllergy).filter(
                 StudentAllergy.student_id == student_id
             )
@@ -282,7 +306,12 @@ def create_allergy(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_WRITE.value,
+            )
             if payload.severity not in ALLERGY_SEVERITIES:
                 raise HTTPException(status_code=400, detail="severity 不合法")
 
@@ -327,7 +356,12 @@ def update_allergy(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_WRITE.value,
+            )
             a = (
                 session.query(StudentAllergy)
                 .filter(
@@ -369,7 +403,12 @@ def delete_allergy(
     """直接刪除過敏紀錄（不做軟刪；若要保留歷史請用 PATCH active=false）。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_WRITE.value,
+            )
             a = (
                 session.query(StudentAllergy)
                 .filter(
@@ -400,12 +439,18 @@ def delete_allergy(
 )
 def list_medication_orders(
     student_id: int,
+    request: Request,
     order_date: Optional[date] = Query(None, alias="date"),
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_READ.value,
+            )
             query = session.query(StudentMedicationOrder).filter(
                 StudentMedicationOrder.student_id == student_id
             )
@@ -417,6 +462,10 @@ def list_medication_orders(
             ).all()
             logs_map = _load_logs_for_orders(session, [o.id for o in orders])
             items = [_order_to_dict(o, logs_map.get(o.id, [])) for o in orders]
+            # R5-3：用藥含健康 PII，補 §6 medical_access_log（對齊 allergy list / 家長端
+            # get_medication_order；staff 端原本不寫，醫療稽核「誰看過某童用藥」缺失）。
+            if orders:
+                _write_medication_access_log(session, current_user, student_id, request)
             return {"items": items, "total": len(items)}
     except HTTPException:
         raise
@@ -431,11 +480,17 @@ def list_medication_orders(
 def get_medication_order(
     student_id: int,
     order_id: int,
+    request: Request,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_READ.value,
+            )
             o = (
                 session.query(StudentMedicationOrder)
                 .filter(
@@ -447,6 +502,8 @@ def get_medication_order(
             if not o:
                 raise HTTPException(status_code=404, detail="用藥單不存在")
             logs = _load_logs_for_order(session, o.id)
+            # R5-3：用藥含健康 PII，補 §6 medical_access_log（對齊 allergy / 家長端）。
+            _write_medication_access_log(session, current_user, student_id, request)
             return _order_to_dict(o, logs)
     except HTTPException:
         raise
@@ -468,7 +525,12 @@ def create_medication_order(
     """建立當日用藥單。會自動依 time_slots 預建 N 筆 pending logs。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_WRITE.value,
+            )
 
             order = create_order_with_logs(
                 session,
@@ -527,7 +589,12 @@ def _get_log_with_access(
     )
     if not o:
         raise HTTPException(status_code=500, detail="對應的用藥單不存在")
-    assert_student_access(session, current_user, o.student_id, code=Permission.STUDENTS_MEDICATION_ADMINISTER.value)
+    assert_student_access(
+        session,
+        current_user,
+        o.student_id,
+        code=Permission.STUDENTS_MEDICATION_ADMINISTER.value,
+    )
     return lg, o, o.student_id
 
 
@@ -699,7 +766,9 @@ def today_medication_summary(
     try:
         today = today_taipei()
         with session_scope() as session:
-            scope = student_ids_in_scope(session, current_user, code=Permission.STUDENTS_HEALTH_READ.value)
+            scope = student_ids_in_scope(
+                session, current_user, code=Permission.STUDENTS_HEALTH_READ.value
+            )
             query = session.query(StudentMedicationOrder).filter(
                 StudentMedicationOrder.order_date == today
             )
