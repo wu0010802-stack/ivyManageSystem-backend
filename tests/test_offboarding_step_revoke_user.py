@@ -188,3 +188,27 @@ def test_revoke_user_revokes_staff_refresh_family(
 
     db_session.refresh(tok)
     assert tok.revoked_at is not None, "撤帳須撤 staff_refresh family"
+
+
+def test_scheduler_revokes_due_past_resign(db_session, employee_factory, user_factory):
+    """R6-3：offboarding revoke scheduler 補撤 resign_date<=today 但 User 仍 active
+    （user_revoked_at IS NULL）的離職記錄——落實 revoke_user docstring 宣稱的 cron。"""
+    from datetime import timedelta
+    from models.auth import User as _User
+    from services.offboarding.offboarding_revoke_scheduler import (
+        run_offboarding_revoke_due_once,
+    )
+
+    emp = employee_factory()
+    admin = user_factory()
+    user = user_factory(employee_id=emp.id, is_active=True)
+    _make_record(db_session, emp.id, admin.id, date.today() - timedelta(days=1))
+    db_session.commit()
+    uid, eid = user.id, emp.id
+
+    result = run_offboarding_revoke_due_once()
+    assert result["revoked"] == 1
+
+    db_session.expire_all()
+    assert db_session.get(_User, uid).is_active is False
+    assert db_session.get(EmployeeOffboardingRecord, eid).user_revoked_at is not None

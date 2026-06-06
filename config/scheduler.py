@@ -84,10 +84,17 @@ class SchedulerSettings(BaseSettings):
 
     # Announcement publish scheduler（spec 2026-05-29-announcement-improvements-design.md）
     announcement_publish_scheduler_enabled: BoolEnv = True
-    announcement_publish_check_interval: int = 60  # 60 秒輪詢，足以讓「8:00 排程」最遲 8:01 推播
+    announcement_publish_check_interval: int = (
+        60  # 60 秒輪詢，足以讓「8:00 排程」最遲 8:01 推播
+    )
 
     # Academic term turnover（學期自動切換：唯一的學期切換驅動器）
     # 預設 True：關閉等於學期永不換（resolve_current 仍走日期推導，但結轉不觸發）。
     # 上線誤觸發已由 acadterm01 migration 靜默對齊防護。
     academic_term_turnover_enabled: BoolEnv = True
     academic_term_turnover_check_interval: int = 3600  # 1 小時輪詢
+
+    # R6-3：離職到期撤帳——掃 resign_date<=today 但 User 仍 active 的離職記錄補撤帳
+    # （revoke_user 的「當日 cron 自動轉」原本不存在，未來日期離職的帳號無限期 active）。
+    offboarding_revoke_enabled: BoolEnv = True
+    offboarding_revoke_check_interval: int = 3600  # 1 小時輪詢

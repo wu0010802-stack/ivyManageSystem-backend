@@ -407,6 +407,24 @@ async def app_lifespan(app_instance: FastAPI):
         logger.warning("補休到期排程啟動失敗: %s", e)
         capture_exception(e, level="warning")
 
+    # Offboarding revoke scheduler（R6-3：離職到期但 User 仍 active 時補撤帳）
+    offboarding_revoke_task = None
+    offboarding_revoke_stop_event: asyncio.Event | None = None
+    try:
+        from services.offboarding import offboarding_revoke_scheduler as _ofb_sched
+
+        if _ofb_sched.scheduler_enabled():
+            offboarding_revoke_stop_event = asyncio.Event()
+            offboarding_revoke_task = asyncio.create_task(
+                _ofb_sched.run_offboarding_revoke_scheduler(
+                    offboarding_revoke_stop_event
+                )
+            )
+            logger.info("offboarding revoke scheduler 已啟用")
+    except Exception as e:
+        logger.warning("離職到期撤帳排程啟動失敗: %s", e)
+        capture_exception(e, level="warning")
+
     # Announcement publish scheduler（排程發佈到時自動推播家長 LINE）
     announcement_publish_task = None
     announcement_publish_stop_event: asyncio.Event | None = None
@@ -771,6 +789,17 @@ async def app_lifespan(app_instance: FastAPI):
                 leave_quota_expiry_task.cancel()
                 try:
                     await leave_quota_expiry_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if offboarding_revoke_task is not None:
+            if offboarding_revoke_stop_event is not None:
+                offboarding_revoke_stop_event.set()
+            try:
+                await asyncio.wait_for(offboarding_revoke_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                offboarding_revoke_task.cancel()
+                try:
+                    await offboarding_revoke_task
                 except (asyncio.CancelledError, Exception):
                     pass
         if announcement_publish_task is not None:
