@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -282,3 +283,81 @@ def test_build_class_history_net_change_none_when_count_missing(db):
     assert rows[0]["start_count"] is None
     assert rows[0]["end_count"] is None
     assert rows[0]["net_change"] is None
+
+
+@pytest.fixture
+def client():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = sessionmaker(bind=engine)
+    old_engine = base_module._engine
+    old_sf = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = session_factory
+    Base.metadata.create_all(engine)
+    _ip_attempts.clear()
+    _account_failures.clear()
+    app = FastAPI()
+    from utils.exception_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
+    app.include_router(auth_router)
+    app.include_router(employees_router)
+    s = session_factory()
+    with TestClient(app) as c:
+        yield c, s, session_factory
+    s.close()
+    _ip_attempts.clear()
+    _account_failures.clear()
+    base_module._engine = old_engine
+    base_module._SessionFactory = old_sf
+    engine.dispose()
+
+
+def _login_admin(client, sf):
+    with sf() as s:
+        s.add(
+            User(
+                username="admin",
+                password_hash=hash_password("Temp123456"),
+                role="admin",
+                permission_names=["EMPLOYEES_READ"],
+                employee_id=None,
+                is_active=True,
+                must_change_password=False,
+            )
+        )
+        s.commit()
+    r = client.post(
+        "/api/auth/login", json={"username": "admin", "password": "Temp123456"}
+    )
+    assert r.status_code == 200, r.json()
+
+
+def test_class_history_endpoint_returns_rows(client):
+    c, s, sf = client
+    me = Employee(employee_id="T100", name="王老師", employee_type="regular")
+    s.add(me)
+    s.flush()
+    _mk_classroom(s, name="蘋果班", school_year=114, semester=2, head=me.id)
+    s.commit()
+    _login_admin(c, sf)
+
+    r = c.get(f"/api/employees/{me.id}/class-history")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["rows"]) == 1
+    assert body["rows"][0]["role"] == "head"
+    assert body["rows"][0]["classroom_name"] == "蘋果班"
+
+
+def test_class_history_endpoint_requires_permission(client):
+    c, s, sf = client
+    me = Employee(employee_id="T101", name="王老師", employee_type="regular")
+    s.add(me)
+    s.commit()
+    r = c.get(f"/api/employees/{me.id}/class-history")
+    assert r.status_code in (401, 403)

@@ -33,6 +33,7 @@ from utils.finance_guards import (
     require_not_self_edit,
 )
 from schemas.employees import (
+    ClassHistoryResponse,
     EmployeeCreateResultOut,
     EmployeeOut,
     FinalSalaryPreviewOut,
@@ -41,6 +42,7 @@ from schemas.employees import (
     ProbationAlertResponseOut,
     TeacherOut,
 )
+from services.employee_class_history import build_class_history
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
 from utils.audit import write_explicit_audit, mark_soft_delete
@@ -412,6 +414,26 @@ def get_employee(
             resign_fields=True,
             classroom_name=classroom_name,
         )
+    finally:
+        session.close()
+
+
+@router.get(
+    "/employees/{employee_id}/class-history",
+    response_model=ClassHistoryResponse,
+)
+def get_employee_class_history(
+    employee_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
+):
+    """員工班級歷程（學期×班級×角色×搭檔×期初/末人數）。"""
+    session = get_session()
+    try:
+        employee = session.query(Employee).filter(Employee.id == employee_id).first()
+        if not employee:
+            raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
+        rows = build_class_history(session, employee_id)
+        return {"rows": rows}
     finally:
         session.close()
 
