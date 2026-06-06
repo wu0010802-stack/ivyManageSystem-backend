@@ -148,3 +148,106 @@ def test_term_headcounts_current_uses_live_end(db):
     assert start is None
     assert end == 2
     assert is_live is True
+
+
+def test_build_class_history_spine_excludes_art_and_sorts(db):
+    """主幹：含 head/assistant 班、排除純 art 班；依學期由新到舊。"""
+    s, _ = db
+    teacher = Employee(employee_id="T001", name="王老師", employee_type="regular")
+    other = Employee(employee_id="T002", name="李助教", employee_type="regular")
+    s.add_all([teacher, other])
+    s.flush()
+    _mk_classroom(
+        s,
+        name="蘋果班",
+        school_year=114,
+        semester=2,
+        head=teacher.id,
+        assistant=other.id,
+    )
+    _mk_classroom(
+        s,
+        name="葡萄班",
+        school_year=113,
+        semester=2,
+        head=other.id,
+        assistant=teacher.id,
+    )
+    _mk_classroom(
+        s, name="音樂班", school_year=114, semester=1, head=other.id, art=teacher.id
+    )
+    s.commit()
+
+    rows = build_class_history(s, teacher.id)
+    assert [(r["school_year"], r["semester"], r["role"]) for r in rows] == [
+        (114, 2, "head"),
+        (113, 2, "assistant"),
+    ]
+
+
+def test_build_class_history_co_teachers(db):
+    """同班搭檔：含才藝、排除自己、有姓名。"""
+    s, _ = db
+    me = Employee(employee_id="T010", name="我", employee_type="regular")
+    asst = Employee(employee_id="T011", name="助教甲", employee_type="regular")
+    art = Employee(employee_id="T012", name="才藝乙", employee_type="regular")
+    s.add_all([me, asst, art])
+    s.flush()
+    _mk_classroom(
+        s,
+        name="蘋果班",
+        school_year=114,
+        semester=2,
+        head=me.id,
+        assistant=asst.id,
+        art=art.id,
+    )
+    s.commit()
+
+    rows = build_class_history(s, me.id)
+    assert len(rows) == 1
+    cos = {(c["role"], c["name"]) for c in rows[0]["co_teachers"]}
+    assert cos == {("assistant", "助教甲"), ("art", "才藝乙")}
+    assert all(c["employee_id"] != me.id for c in rows[0]["co_teachers"])
+
+
+def test_build_class_history_net_change_only_when_both_present(db):
+    """net_change 僅兩數皆有才算。"""
+    s, _ = db
+    me = Employee(employee_id="T020", name="我", employee_type="regular")
+    s.add(me)
+    s.flush()
+    c = _mk_classroom(s, name="葡萄班", school_year=113, semester=2, head=me.id)
+    start_date, end_date = term_bounds(113, 2)
+    s.add_all(
+        [
+            MonthlyEnrollmentSnapshot(
+                year=start_date.year,
+                month=start_date.month,
+                classroom_id=c.id,
+                age_group="3-4",
+                total_count=22,
+            ),
+            MonthlyEnrollmentSnapshot(
+                year=end_date.year,
+                month=end_date.month,
+                classroom_id=c.id,
+                age_group="3-4",
+                total_count=20,
+            ),
+        ]
+    )
+    s.commit()
+    rows = build_class_history(s, me.id)
+    assert rows[0]["start_count"] == 22
+    assert rows[0]["end_count"] == 20
+    assert rows[0]["net_change"] == -2
+
+
+def test_build_class_history_empty(db):
+    """沒帶過任何班 → 空陣列。"""
+    s, _ = db
+    me = Employee(employee_id="T030", name="閒人", employee_type="regular")
+    s.add(me)
+    s.commit()
+    assert build_class_history(s, me.id) == []

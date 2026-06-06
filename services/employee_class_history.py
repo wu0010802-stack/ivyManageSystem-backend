@@ -50,6 +50,88 @@ def _term_headcounts(
     return start_count, end_count, False
 
 
+def _resolve_role(classroom: Classroom, employee_id: int) -> str | None:
+    """員工在這班的角色：head 優先；art 不成列（回 None）。"""
+    if classroom.head_teacher_id == employee_id:
+        return "head"
+    if classroom.assistant_teacher_id == employee_id:
+        return "assistant"
+    return None
+
+
 def build_class_history(session, employee_id: int) -> list[dict]:
-    """（Task 3 實作）回傳員工所有任班學期歷程。"""
-    raise NotImplementedError("build_class_history is implemented in Task 3")
+    """回該員工的班級歷程列（dict，對齊 ClassHistoryRow shape）。"""
+    classrooms = (
+        session.query(Classroom)
+        .options(joinedload(Classroom.grade))
+        .filter(
+            or_(
+                Classroom.head_teacher_id == employee_id,
+                Classroom.assistant_teacher_id == employee_id,
+            )
+        )
+        .order_by(Classroom.school_year.desc(), Classroom.semester.desc())
+        .all()
+    )
+    if not classrooms:
+        return []
+
+    # 批次解析所有搭檔姓名，避免 N+1
+    teacher_ids: set[int] = set()
+    for c in classrooms:
+        for tid in (c.head_teacher_id, c.assistant_teacher_id, c.art_teacher_id):
+            if tid is not None and tid != employee_id:
+                teacher_ids.add(tid)
+    name_map: dict[int, str] = {}
+    if teacher_ids:
+        for emp_id, emp_name in (
+            session.query(Employee.id, Employee.name)
+            .filter(Employee.id.in_(teacher_ids))
+            .all()
+        ):
+            name_map[emp_id] = emp_name
+
+    cur_year, cur_sem = resolve_current_academic_term()
+
+    rows: list[dict] = []
+    for c in classrooms:
+        role = _resolve_role(c, employee_id)
+        if role is None:
+            continue
+        is_current = c.school_year == cur_year and c.semester == cur_sem
+        start_count, end_count, end_is_live = _term_headcounts(
+            session, c.id, c.school_year, c.semester, is_current
+        )
+        net_change = (
+            end_count - start_count
+            if start_count is not None and end_count is not None
+            else None
+        )
+        co_teachers = []
+        for tid, trole in (
+            (c.head_teacher_id, "head"),
+            (c.assistant_teacher_id, "assistant"),
+            (c.art_teacher_id, "art"),
+        ):
+            if tid is None or tid == employee_id:
+                continue
+            co_teachers.append(
+                {"role": trole, "employee_id": tid, "name": name_map.get(tid, "")}
+            )
+        rows.append(
+            {
+                "school_year": c.school_year,
+                "semester": c.semester,
+                "classroom_id": c.id,
+                "classroom_name": c.name,
+                "grade_name": c.grade.name if c.grade else None,
+                "role": role,
+                "co_teachers": co_teachers,
+                "is_current": is_current,
+                "start_count": start_count,
+                "end_count": end_count,
+                "end_count_is_live": end_is_live,
+                "net_change": net_change,
+            }
+        )
+    return rows
