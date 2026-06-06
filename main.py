@@ -1099,6 +1099,12 @@ from middleware.csrf_origin import CSRFOriginCheckMiddleware
 
 app.add_middleware(CSRFOriginCheckMiddleware)
 
+# R6-9：magic-link download token 從 access log 遮罩（須 outer 於 RequestLogging，
+# 在記錄前 in-place 改寫 scope query_string）。
+from middleware.magic_link_log_scrub import MagicLinkLogScrubMiddleware
+
+app.add_middleware(MagicLinkLogScrubMiddleware)
+
 # CORS 必須在 KillSwitch / CSRF / SecurityHeaders / RequestLogging / Audit 之外層
 # （即在它們之後 add），才能讓這些 middleware 自身短路的 503/403 回應在回流時
 # 經過 CORS 補上 Access-Control-Allow-Origin，並讓 preflight OPTIONS 在維護模式下
