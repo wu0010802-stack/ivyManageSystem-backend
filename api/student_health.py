@@ -92,6 +92,8 @@ class MedicationOrderCreate(BaseModel):
     dose: str = Field(..., min_length=1, max_length=50)
     time_slots: list[str] = Field(..., min_length=1, max_length=10)
     note: Optional[str] = None
+    # R5-4：第二次提交帶 true 以繞過過敏軟警告（對齊家長端）。
+    acknowledge_allergy_warning: bool = False
 
     @field_validator("time_slots")
     @classmethod
@@ -531,6 +533,36 @@ def create_medication_order(
                 student_id,
                 code=Permission.STUDENTS_HEALTH_WRITE.value,
             )
+
+            # R5-4：過敏軟警告（對齊家長端 create_medication_order）。老師端原本不比對
+            # 過敏原 → 安全防呆缺口（過敏=傷害幼兒）。用 HTTPException 409（不能用
+            # BusinessError，會被下方 except Exception 吞成 500）；帶 acknowledge 重送放行。
+            from services.medication_service import find_allergy_conflicts
+
+            conflicts = find_allergy_conflicts(
+                session,
+                student_id=student_id,
+                medication_name=payload.medication_name,
+            )
+            if conflicts and not payload.acknowledge_allergy_warning:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "ALLERGY_WARNING",
+                        "message": (
+                            "用藥名稱可能與孩童過敏原相關，請確認後重送並帶 "
+                            "acknowledge_allergy_warning=true"
+                        ),
+                        "allergens": [
+                            {
+                                "id": a.id,
+                                "allergen": a.allergen,
+                                "severity": a.severity,
+                            }
+                            for a in conflicts
+                        ],
+                    },
+                )
 
             order = create_order_with_logs(
                 session,

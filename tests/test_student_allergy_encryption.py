@@ -292,3 +292,40 @@ def test_list_medication_orders_writes_medical_access_log(health_app):
             .all()
         )
         assert len(logs) == 1, "用藥單檢視須留醫療存取軌跡"
+
+
+def test_staff_create_medication_warns_on_allergy(health_app):
+    """R5-4：老師建用藥單，藥名與孩童過敏原（花生）相關 → 409 ALLERGY_WARNING；
+    帶 acknowledge_allergy_warning=true 重送放行（對齊家長端，安全防呆）。"""
+    client, sf = health_app
+    seed = _seed_allergy_and_teacher(sf, with_allergy=True)  # 過敏原 花生
+    tk = create_access_token(
+        {
+            "user_id": seed["teacher_id"],
+            "employee_id": seed["emp_id"],
+            "role": "teacher",
+            "name": "t_alg",
+            "permission_names": ["STUDENTS_HEALTH_WRITE", "STUDENTS_HEALTH_READ"],
+            "token_version": 0,
+        }
+    )
+    body = {
+        "order_date": "2026-03-10",
+        "medication_name": "花生",
+        "dose": "1 顆",
+        "time_slots": ["12:00"],
+    }
+    r1 = client.post(
+        f"/api/students/{seed['student_id']}/medication-orders",
+        json=body,
+        cookies={"access_token": tk},
+    )
+    assert r1.status_code == 409, r1.text
+    assert r1.json()["detail"]["code"] == "ALLERGY_WARNING"
+
+    r2 = client.post(
+        f"/api/students/{seed['student_id']}/medication-orders",
+        json={**body, "acknowledge_allergy_warning": True},
+        cookies={"access_token": tk},
+    )
+    assert r2.status_code == 201, r2.text
