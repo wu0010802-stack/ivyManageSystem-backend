@@ -61,6 +61,7 @@ def _resolve_role(classroom: Classroom, employee_id: int) -> str | None:
 
 def build_class_history(session, employee_id: int) -> list[dict]:
     """回該員工的班級歷程列（dict，對齊 ClassHistoryRow shape）。"""
+    # 不過濾 is_active：班級歷程要含已封存/過去學期的班（每學期是獨立 Classroom row）
     classrooms = (
         session.query(Classroom)
         .options(joinedload(Classroom.grade))
@@ -115,6 +116,7 @@ def build_class_history(session, employee_id: int) -> list[dict]:
         ):
             if tid is None or tid == employee_id:
                 continue
+            # name_map.get(tid, "")：搭檔員工已刪除/查無時回空字串（ClassHistoryCoTeacher.name 非 Optional）
             co_teachers.append(
                 {"role": trole, "employee_id": tid, "name": name_map.get(tid, "")}
             )

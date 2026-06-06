@@ -251,3 +251,34 @@ def test_build_class_history_empty(db):
     s.add(me)
     s.commit()
     assert build_class_history(s, me.id) == []
+
+
+def test_build_class_history_head_priority_when_same_person_both_roles(db):
+    """同一人同時是某班 head 與 assistant → 只出一列、role=head、不在 co_teachers。"""
+    s, _ = db
+    me = Employee(employee_id="T010", name="我", employee_type="regular")
+    s.add(me)
+    s.flush()
+    _mk_classroom(
+        s, name="蘋果班", school_year=114, semester=2, head=me.id, assistant=me.id
+    )
+    s.commit()
+    rows = build_class_history(s, me.id)
+    assert len(rows) == 1
+    assert rows[0]["role"] == "head"
+    assert all(c["employee_id"] != me.id for c in rows[0]["co_teachers"])
+
+
+def test_build_class_history_net_change_none_when_count_missing(db):
+    """無快照（過去學期）→ start/end 皆 None → net_change None。"""
+    s, _ = db
+    me = Employee(employee_id="T011", name="我", employee_type="regular")
+    s.add(me)
+    s.flush()
+    _mk_classroom(s, name="無料班", school_year=112, semester=1, head=me.id)
+    s.commit()
+    rows = build_class_history(s, me.id)
+    assert len(rows) == 1
+    assert rows[0]["start_count"] is None
+    assert rows[0]["end_count"] is None
+    assert rows[0]["net_change"] is None
