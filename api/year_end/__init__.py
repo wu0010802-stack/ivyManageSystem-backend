@@ -140,6 +140,7 @@ def create_cycle(
                     enrollment_target=src_org.enrollment_target,
                     enrollment_actual=None,  # 重置：實際值待新週期填入
                     school_achievement_rate=Decimal("0"),  # 重置
+                    school_achievement_rate_override=None,  # 重置：HR 覆寫不沿用到新週期
                     org_achievement_rate=src_org.org_achievement_rate,
                     meeting_absence_deduction=src_org.meeting_absence_deduction,
                     festival_bonus_meta=dict(src_org.festival_bonus_meta or {}),
@@ -204,7 +205,12 @@ def upsert_org_settings(
         existing = OrgYearSettings(year_end_cycle_id=cycle_id, **payload.model_dump())
         session.add(existing)
     else:
-        for k, v in payload.model_dump().items():
+        # 只寫 client 真正送出的欄位（exclude_unset），保留所有未送出的伺服器/設定欄位；
+        # 顯式送 null 的 override 仍會清除。
+        # 例：override-only POST 省略 enrollment_target → 既有 176 保留（不被預設 160 覆寫）；
+        #      省略 school_achievement_rate → 伺服器自算值保留（不被預設 0 洗掉）。
+        # 新建列走上面分支沿用 Pydantic 預設值（enrollment_target=160 等），由 refresh 後續回填。
+        for k, v in payload.model_dump(exclude_unset=True).items():
             setattr(existing, k, v)
     session.commit()
     session.refresh(existing)

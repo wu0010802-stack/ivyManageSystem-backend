@@ -49,6 +49,7 @@ class OrgYearSettingsCreate(BaseModel):
     enrollment_target: int = 160
     enrollment_actual: Optional[int] = None
     school_achievement_rate: Decimal = Decimal("0")
+    school_achievement_rate_override: Optional[Decimal] = None
     org_achievement_rate: Decimal
     meeting_absence_deduction: Decimal = Decimal("1000")
 
@@ -61,6 +62,8 @@ class OrgYearSettingsOut(BaseModel):
     enrollment_target: int
     enrollment_actual: Optional[int]
     school_achievement_rate: Decimal
+    school_achievement_rate_override: Optional[Decimal]
+    effective_school_achievement_rate: Decimal
     org_achievement_rate: Decimal
     meeting_absence_deduction: Decimal
 

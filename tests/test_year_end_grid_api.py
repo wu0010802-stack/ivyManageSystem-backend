@@ -903,3 +903,207 @@ def test_create_cycle_clone_missing_source_422(client_with_db):
         },
     )
     assert res.status_code == 422, res.text
+
+
+def test_org_settings_upsert_override_and_effective(client_with_db):
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)  # 已種兩筆 org_settings
+    _login(client)
+    res = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "enrollment_target": 176,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "91.5",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert Decimal(str(body["school_achievement_rate_override"])) == Decimal("91.5")
+    assert Decimal(str(body["effective_school_achievement_rate"])) == Decimal("91.5")
+    got = client.get(f"/api/year_end/cycles/{cycle_id}/org_settings").json()
+    first = [o for o in got if o["semester_first"]][0]
+    assert Decimal(str(first["effective_school_achievement_rate"])) == Decimal("91.5")
+
+
+def test_org_settings_override_only_preserves_auto_rate(client_with_db):
+    """Finding A：override-only upsert 不可洗掉伺服器自算的 school_achievement_rate。
+
+    school_achievement_rate 為伺服器擁有欄位（僅由 refresh_enrollment_rates 寫入）。
+    HR 只送 override 的 upsert（payload 省略 school_achievement_rate，預設 0）若直接
+    setattr 會把既有自算值覆寫為 0。本測試釘住：override-only POST 後，自算值仍為
+    原始 91.5（_seed_cycle_and_employee 上學期種 91.5），且 override=91.0、
+    effective=91.0（override 優先）。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(
+        sf
+    )  # 上學期自算 school_achievement_rate=91.5
+    _login(client)
+
+    res = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "enrollment_target": 176,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "91.0",
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    got = client.get(f"/api/year_end/cycles/{cycle_id}/org_settings").json()
+    first = [o for o in got if o["semester_first"]][0]
+    # 自算值仍為原始 91.5（未被 override-only payload 洗成 0）
+    assert Decimal(str(first["school_achievement_rate"])) == Decimal(
+        "91.5"
+    ), f"自算 school_achievement_rate 應保留 91.5，got {first['school_achievement_rate']}"
+    # override / effective 反映 HR 填的 91.0
+    assert Decimal(str(first["school_achievement_rate_override"])) == Decimal("91.0")
+    assert Decimal(str(first["effective_school_achievement_rate"])) == Decimal("91.0")
+
+
+def test_org_settings_partial_upsert_preserves_enrollment_target(client_with_db):
+    """Finding A 延伸：partial upsert 省略 enrollment_target 時，既有 176 不應被預設 160 覆寫。
+
+    Steps:
+    1. 先用帶 enrollment_target=176 的 POST 將上學期設成 176。
+    2. 再發一個 override-only POST（省略 enrollment_target）。
+    3. 驗證 enrollment_target 仍為 176（而非 Pydantic 預設的 160）。
+
+    此測試在舊 ``exclude={"school_achievement_rate"}`` 實作下 FAIL（176→160），
+    在 ``exclude_unset=True`` 實作下 PASS。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)  # 上學期 enrollment_target=160
+    _login(client)
+
+    # Step 1：先把 enrollment_target 改成 176
+    r1 = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "enrollment_target": 176,
+            "org_achievement_rate": "0",
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["enrollment_target"] == 176
+
+    # Step 2：override-only POST，故意省略 enrollment_target（Pydantic 預設 160）
+    r2 = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "91.0",
+            # enrollment_target 刻意省略
+        },
+    )
+    assert r2.status_code == 200, r2.text
+
+    # Step 3：確認 enrollment_target 仍為 176
+    got = client.get(f"/api/year_end/cycles/{cycle_id}/org_settings").json()
+    first = [o for o in got if o["semester_first"]][0]
+    assert (
+        first["enrollment_target"] == 176
+    ), f"enrollment_target 應保留 176（exclude_unset），got {first['enrollment_target']}"
+
+
+def test_clone_clears_school_rate_override(client_with_db):
+    client, sf = client_with_db
+    _seed_users(sf)
+    _seed_finalize_user(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)  # cycle 114
+    _login(client)
+    client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "enrollment_target": 176,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "91.5",
+        },
+    )
+    _login(client, "admin2")  # FINALIZE 權限才能建/clone cycle
+    res = client.post(
+        "/api/year_end/cycles",
+        json={
+            "academic_year": 115,
+            "start_date": "2026-08-01",
+            "end_date": "2027-07-31",
+            "bonus_calc_date": "2027-01-15",
+            "clone_from_academic_year": ACADEMIC_YEAR,
+        },
+    )
+    assert res.status_code == 200, res.text
+    new_id = res.json()["id"]
+    org = client.get(f"/api/year_end/cycles/{new_id}/org_settings").json()
+    first = [o for o in org if o["semester_first"]][0]
+    assert first["school_achievement_rate_override"] is None  # clone 不沿用覆寫
+
+
+def test_build_settlements_uses_school_rate_override(client_with_db):
+    """Finding B：build_settlements 的 _school_rates 預查須讀 effective（override 優先）。
+
+    覆蓋 bulk path（settlement_builder._school_rates 預查整列 OrgYearSettings 並讀
+    effective_school_achievement_rate），而非僅 standalone gather_performance_rates。
+
+    判別性：build-settlements 內 refresh_enrollment_rates 會以在籍資料重算自算欄；
+    本 SQLite DB 無 Student → 兩學期自算 school_achievement_rate 被洗成 0。若
+    _school_rates 改回只讀自算欄（column-only select），org_achievement_rate 會變 0.0；
+    讀 effective（override 91.5 / 75.6）→ resolve_org_achievement_rate 平均 = _q1(83.55)
+    = 83.6。故斷言 org_achievement_rate == 83.6（且 != 0）能真正抓出 revert。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, emp_id = _seed_cycle_and_employee(sf)
+    _login(client)
+
+    # HR 設兩學期全校達成率 override（上 91.5 / 下 75.6）
+    for semester_first, override in ((True, "91.5"), (False, "75.6")):
+        r = client.post(
+            f"/api/year_end/cycles/{cycle_id}/org_settings",
+            json={
+                "semester_first": semester_first,
+                "enrollment_target": 176,
+                "org_achievement_rate": "0",
+                "school_achievement_rate_override": override,
+            },
+        )
+        assert r.status_code == 200, r.text
+
+    # build-settlements（refresh_rates=True → 自算欄被在籍資料洗成 0；override 不動）
+    res = _build(client, cycle_id)
+    assert res.status_code == 200, res.text
+
+    # 前置健全性：自算欄確實已被 refresh 洗成 0（否則本測試的判別性不成立）
+    with sf() as s:
+        autos = {
+            o.semester_first: o.school_achievement_rate
+            for o in s.query(OrgYearSettings)
+            .filter_by(year_end_cycle_id=cycle_id)
+            .all()
+        }
+    assert autos[True] == Decimal(
+        "0.00"
+    ), f"上學期自算欄應被 refresh 洗成 0，got {autos[True]}"
+    assert autos[False] == Decimal(
+        "0.00"
+    ), f"下學期自算欄應被 refresh 洗成 0，got {autos[False]}"
+
+    # settlement 的 org_achievement_rate 應反映 override 推導值 83.6（非自算 0）
+    res = client.get(f"/api/year_end/cycles/{cycle_id}/settlements")
+    assert res.status_code == 200, res.text
+    settlements = res.json()
+    target = [s for s in settlements if s["employee_id"] == emp_id][0]
+    org_rate = Decimal(str(target["org_achievement_rate"]))
+    assert org_rate == Decimal("83.6"), (
+        f"org_achievement_rate 應為 override 推導的 83.6（_q1((91.5+75.6)/2)），"
+        f"got {org_rate}（若為 0 表 _school_rates 改讀自算欄而非 effective）"
+    )
+    assert org_rate != Decimal("0"), "org_achievement_rate 不應為 0（override 未生效）"
