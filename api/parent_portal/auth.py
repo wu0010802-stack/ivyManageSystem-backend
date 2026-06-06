@@ -966,6 +966,41 @@ def parent_refresh(request: Request, response: Response):
                 status_code=401, detail="refresh token 重用，整批已撤銷"
             )
 
+        # R7-4：family absolute session lifetime（對稱 staff F1）——從 family 最早 token
+        # 起算超過上限即撤整 family + 401，封死失竊/棄置 parent refresh cookie 無限期
+        # rotate（rotation 每次重設 30d expires_at，無此檢查則永久滑動）。
+        from sqlalchemy import func
+
+        from utils.auth import JWT_ABSOLUTE_LIFETIME_HOURS
+
+        family_birth = (
+            session.query(func.min(ParentRefreshToken.created_at))
+            .filter(ParentRefreshToken.family_id == row.family_id)
+            .scalar()
+        )
+        if (
+            family_birth is not None
+            and (_now() - family_birth).total_seconds() / 3600
+            > JWT_ABSOLUTE_LIFETIME_HOURS
+        ):
+            session.query(ParentRefreshToken).filter(
+                ParentRefreshToken.family_id == row.family_id,
+                ParentRefreshToken.revoked_at.is_(None),
+            ).update({"revoked_at": _now()}, synchronize_session=False)
+            session.commit()
+            logger.warning(
+                "[parent-refresh] absolute lifetime exceeded user_id=%s family_id=%s",
+                row.user_id,
+                row.family_id,
+            )
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    f"登入工作階段已超過 {JWT_ABSOLUTE_LIFETIME_HOURS} 小時上限，"
+                    "請重新登入"
+                ),
+            )
+
         # 正常 rotation
         user = (
             session.query(User)
