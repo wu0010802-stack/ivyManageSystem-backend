@@ -361,3 +361,10 @@ def test_class_history_endpoint_requires_permission(client):
     s.commit()
     r = c.get(f"/api/employees/{me.id}/class-history")
     assert r.status_code in (401, 403)
+
+
+def test_class_history_endpoint_404_for_missing_employee(client):
+    c, s, sf = client
+    _login_admin(c, sf)
+    r = c.get("/api/employees/99999/class-history")
+    assert r.status_code == 404

@@ -418,12 +418,14 @@ def get_employee(
         session.close()
 
 
+# EMPLOYEES_READ：與 get_employee 同閘（admin/HR 端員工個資讀取）；班級歷程含同事姓名故比照寫稽核
 @router.get(
     "/employees/{employee_id}/class-history",
     response_model=ClassHistoryResponse,
 )
 def get_employee_class_history(
     employee_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     """員工班級歷程（學期×班級×角色×搭檔×期初/末人數）。"""
@@ -432,6 +434,14 @@ def get_employee_class_history(
         employee = session.query(Employee).filter(Employee.id == employee_id).first()
         if not employee:
             raise HTTPException(status_code=404, detail=EMPLOYEE_NOT_FOUND)
+        write_explicit_audit(
+            request,
+            action="READ",
+            entity_type="employee",
+            entity_id=str(employee_id),
+            summary=f"查看員工班級歷程：{employee.name}",
+            changes={"includes_pii": True},
+        )
         rows = build_class_history(session, employee_id)
         return {"rows": rows}
     finally:
