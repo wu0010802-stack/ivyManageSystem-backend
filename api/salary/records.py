@@ -29,6 +29,7 @@ from services.salary.breakdown_enrollment import compute_enrollment_breakdown
 
 logger = logging.getLogger(__name__)
 from utils.auth import require_permission, require_staff_permission
+from utils.rounding import round_half_up
 from utils.permissions import Permission
 from utils.salary_access import (
     FULL_SALARY_ROLES,
@@ -312,7 +313,7 @@ def get_salary_history(
                     "month": r.salary_month,
                     "base_salary": r.base_salary,
                     "total_bonus": total_bonus,
-                    "in_gross_bonus": round(
+                    "in_gross_bonus": round_half_up(
                         payslip_detail["income_subtotal"]
                         - float(r.base_salary or 0)
                         - float(r.hourly_total or 0),

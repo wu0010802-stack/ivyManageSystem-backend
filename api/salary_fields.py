@@ -1,5 +1,7 @@
 """Shared salary display helpers for API responses."""
 
+from utils.rounding import round_half_up
+
 
 def calculate_display_bonus_total(record) -> float:
     """Display-only bonus total used by portal/history/reporting surfaces.
@@ -84,7 +86,7 @@ def build_history_breakdown(record) -> dict:
                 line["note"] = note
         income.append(line)
         known_income_sum += amount
-    other_income = round(gross - known_income_sum, 2)
+    other_income = round_half_up(gross - known_income_sum, 2)
     if other_income != 0:
         income.append(
             {"key": "other_income", "label": "其他（未分類）", "amount": other_income}
@@ -94,7 +96,9 @@ def build_history_breakdown(record) -> dict:
         {"key": key, "label": label, "amount": _coalesce_float(record, key)}
         for key, label in _HISTORY_SEPARATE_FIELDS
     ]
-    separate_subtotal = round(sum(item["amount"] for item in separate_transfer), 2)
+    separate_subtotal = round_half_up(
+        sum(item["amount"] for item in separate_transfer), 2
+    )
 
     deductions = []
     for key, label in _HISTORY_DEDUCTION_FIELDS:
