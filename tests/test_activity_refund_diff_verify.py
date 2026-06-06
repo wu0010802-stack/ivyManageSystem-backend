@@ -298,6 +298,7 @@ def test_refund_multi_reg_diff_accumulates(client):
         "payment_date": "2026-05-26",
         "type": "refund",
         "notes": REFUND_REASON,
+        "idempotency_key": "test-refund-diff",  # R7-3：多筆須帶 key
     }
     resp = c.post("/api/activity/pos/checkout", json=body)
     assert resp.status_code == 403
