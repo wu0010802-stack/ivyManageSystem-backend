@@ -34,7 +34,11 @@ def _snapshot_count(session, classroom_id: int, year: int, month: int) -> int | 
 def _term_headcounts(
     session, classroom_id: int, school_year: int, semester: int, is_current: bool
 ) -> tuple[int | None, int | None, bool]:
-    """回 (start_count, end_count, end_count_is_live)。"""
+    """回 (start_count, end_count, end_count_is_live)。
+
+    semester 必須是 1 或 2（term_bounds 對其他值會 raise ValueError）；
+    end_count 在 is_current 時為即時在籍數（永不 None），快照路徑才可能 None。
+    """
     start_date, end_date = term_bounds(school_year, semester)
     start_count = _snapshot_count(
         session, classroom_id, start_date.year, start_date.month

@@ -26,6 +26,7 @@ from models.database import (
 from models.classroom import ClassGrade
 from models.gov_moe import MonthlyEnrollmentSnapshot
 from services.employee_class_history import _term_headcounts, build_class_history
+from utils.academic import term_bounds
 from utils.auth import hash_password
 
 
@@ -78,17 +79,29 @@ def test_term_headcounts_past_reads_snapshot(db):
     """過去學期：期初讀開學月快照、期末讀期末月快照、跨 age_group 加總。"""
     s, _ = db
     c = _mk_classroom(s, name="葡萄班", school_year=113, semester=2, head=1)
-    # 下學期 113-2：開學月=西元(113+1911+1)=2025/2、期末月=2025/7
+    start_date, end_date = term_bounds(113, 2)
     s.add_all(
         [
             MonthlyEnrollmentSnapshot(
-                year=2025, month=2, classroom_id=c.id, age_group="3-4", total_count=10
+                year=start_date.year,
+                month=start_date.month,
+                classroom_id=c.id,
+                age_group="3-4",
+                total_count=10,
             ),
             MonthlyEnrollmentSnapshot(
-                year=2025, month=2, classroom_id=c.id, age_group="4-5", total_count=12
+                year=start_date.year,
+                month=start_date.month,
+                classroom_id=c.id,
+                age_group="4-5",
+                total_count=12,
             ),
             MonthlyEnrollmentSnapshot(
-                year=2025, month=7, classroom_id=c.id, age_group="3-4", total_count=20
+                year=end_date.year,
+                month=end_date.month,
+                classroom_id=c.id,
+                age_group="3-4",
+                total_count=20,
             ),
         ]
     )
@@ -132,5 +145,6 @@ def test_term_headcounts_current_uses_live_end(db):
     )
     s.commit()
     start, end, is_live = _term_headcounts(s, c.id, 114, 2, is_current=True)
+    assert start is None
     assert end == 2
     assert is_live is True
