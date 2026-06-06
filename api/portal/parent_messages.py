@@ -636,6 +636,9 @@ def recall_message(
         )
         if not msg:
             raise HTTPException(status_code=404, detail="訊息不存在")
+        # R6-8：先驗教師是此 thread 參與者（對齊家長端 S6 + 其餘 teacher 端點皆先過
+        # _get_thread_for_teacher）。can_recall 已要求 sender==user，此為防禦縱深。
+        _get_thread_for_teacher(session, user_id=user_id, thread_id=msg.thread_id)
         if not can_recall(msg, user_id=user_id):
             raise HTTPException(status_code=403, detail="只有 sender 30 分鐘內可撤回")
         msg.deleted_at = now_taipei_naive()
