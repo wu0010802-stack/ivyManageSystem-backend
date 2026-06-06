@@ -23,7 +23,7 @@ scripts/check_pii_in_schemas.py 接受 exempt。
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from schemas._base import IvyBaseModel
 
@@ -180,3 +180,34 @@ class FinalSalaryPreviewOut(IvyBaseModel):
     unused_annual_leave_hours: float
     unused_annual_leave_compensation: float  # pii-allow: 未休特休折算工資
     net_salary_with_unused_annual: float  # pii-allow: 實發 + 未休特休
+
+
+class ClassHistoryCoTeacher(IvyBaseModel):
+    """同班搭檔老師（含才藝）。"""
+
+    role: Literal["head", "assistant", "art"]
+    employee_id: int
+    name: str
+
+
+class ClassHistoryRow(IvyBaseModel):
+    """員工某學期帶的一個班的歷程列。"""
+
+    school_year: int  # 民國學年，例 114
+    semester: int  # 1=上學期 2=下學期
+    classroom_id: int
+    classroom_name: str
+    grade_name: Optional[str] = None
+    role: Literal["head", "assistant"]  # 此員工在這班的角色（才藝不成列）
+    co_teachers: list[ClassHistoryCoTeacher] = []
+    is_current: bool = False
+    start_count: Optional[int] = None  # 期初人數；None=資料不足
+    end_count: Optional[int] = None  # 期末人數；當前學期=即時在籍數
+    end_count_is_live: bool = False  # True 時前端顯示「目前 N」
+    net_change: Optional[int] = None  # end-start，兩者皆有才算
+
+
+class ClassHistoryResponse(IvyBaseModel):
+    """GET /employees/{id}/class-history 回傳。"""
+
+    rows: list[ClassHistoryRow] = []
