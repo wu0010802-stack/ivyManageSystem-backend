@@ -12,6 +12,7 @@ from typing import Literal, TypedDict
 
 from sqlalchemy.orm import Session
 
+from models.auth import User
 from models.employee import Employee
 from models.offboarding import EmployeeOffboardingRecord
 
@@ -68,6 +69,12 @@ def process_offboarding(
     emp = session.query(Employee).filter_by(id=employee_id).first()
     if emp is None:
         raise OffboardingError("員工不存在", code="EMPLOYEE_NOT_FOUND")
+
+    # R6-5：self-guard——操作者不可離職自己（revoke_user 會立即 is_active=False +
+    # token_version bump 自我登出鎖死）。涵蓋 process 端點與 legacy /offboard（皆委派此）。
+    operator = session.query(User).filter(User.id == operator_user_id).first()
+    if operator is not None and operator.employee_id == employee_id:
+        raise OffboardingError("不可對自己執行離職處理", code="CANNOT_OFFBOARD_SELF")
 
     existing = (
         session.query(EmployeeOffboardingRecord)

@@ -52,6 +52,7 @@ from utils.permissions import Permission
 _ERROR_TO_STATUS: dict[str, int] = {
     "EMPLOYEE_NOT_FOUND": 404,
     "ALREADY_OFFBOARDED": 409,
+    "CANNOT_OFFBOARD_SELF": 403,
     "RESIGN_DATE_BEFORE_HIRE": 400,
     "RESIGN_DATE_TOO_FAR_FUTURE": 400,
     "LEAVE_BALANCE_NOT_FOUND": 422,

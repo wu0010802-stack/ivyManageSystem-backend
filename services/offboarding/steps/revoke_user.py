@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from models.auth import User
 from models.offboarding import EmployeeOffboardingRecord
+from models.staff_refresh_token import StaffRefreshToken
 from services.offboarding.orchestrator import StepResult
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,14 @@ def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
 
     user.is_active = False
     user.token_version = (user.token_version or 0) + 1
+    # R6-4：同 transaction 撤銷該 user 所有 staff_refresh family（比照 change_password /
+    # update_user）。is_active=False 雖已讓 /refresh 401（即時失效），但未撤的 family 是
+    # 死資料；若日後「重新啟用員工」未 bump token_version 會復活舊 cookie。inline 撤避免
+    # revoke_all_for_user 另開 session 脫離本離職 transaction。
+    session.query(StaffRefreshToken).filter(
+        StaffRefreshToken.user_id == user.id,
+        StaffRefreshToken.revoked_at.is_(None),
+    ).update({"revoked_at": now}, synchronize_session=False)
     record.user_revoked_at = now
 
     logger.warning(
