@@ -94,6 +94,8 @@ class MedicationOrderCreate(BaseModel):
     note: Optional[str] = None
     # R5-4：第二次提交帶 true 以繞過過敏軟警告（對齊家長端）。
     acknowledge_allergy_warning: bool = False
+    # R5-5：第二次提交帶 true 以繞過「同學生同日同時段已有其他 order」重複給藥軟警告。
+    acknowledge_duplicate_slot: bool = False
 
     @field_validator("time_slots")
     @classmethod
@@ -561,6 +563,35 @@ def create_medication_order(
                             }
                             for a in conflicts
                         ],
+                    },
+                )
+
+            # R5-5：跨 order 重複給藥軟警告。單 order 內 (order_id, scheduled_time) 已有
+            # unique index，但同學生同日「另一張 order」同時段不受限 → 兩筆 pending log
+            # 都可各自 administer → double-dose。建單時偵測同學生同日既有 order 的時段
+            # 重疊（不硬擋，因不同藥同時段為合法）；帶 acknowledge_duplicate_slot 放行。
+            existing_orders = (
+                session.query(StudentMedicationOrder)
+                .filter(
+                    StudentMedicationOrder.student_id == student_id,
+                    StudentMedicationOrder.order_date == payload.order_date,
+                )
+                .all()
+            )
+            existing_slots: set[str] = set()
+            for eo in existing_orders:
+                existing_slots.update(eo.time_slots or [])
+            slot_overlap = sorted(set(payload.time_slots) & existing_slots)
+            if slot_overlap and not payload.acknowledge_duplicate_slot:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "DUPLICATE_SLOT_WARNING",
+                        "message": (
+                            "此孩童當日同時段已有其他用藥單，請確認非重複給藥後重送並帶 "
+                            "acknowledge_duplicate_slot=true"
+                        ),
+                        "slots": slot_overlap,
                     },
                 )
 

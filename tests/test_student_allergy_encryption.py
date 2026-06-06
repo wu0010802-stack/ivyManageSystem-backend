@@ -375,3 +375,41 @@ def test_administer_rejects_non_today_order(health_app):
     )
     assert r.status_code == 400, r.text
     assert "當日" in r.json()["detail"]
+
+
+def test_staff_create_warns_on_cross_order_slot_collision(health_app):
+    """R5-5：同學生同日同時段已有 order，再建一張 → 409 DUPLICATE_SLOT_WARNING；
+    帶 acknowledge_duplicate_slot=true 放行（防跨 order double-dose）。"""
+    client, sf = health_app
+    seed = _seed_allergy_and_teacher(sf, with_allergy=False)
+    tk = create_access_token(
+        {
+            "user_id": seed["teacher_id"],
+            "employee_id": seed["emp_id"],
+            "role": "teacher",
+            "name": "t_alg",
+            "permission_names": ["STUDENTS_HEALTH_WRITE", "STUDENTS_HEALTH_READ"],
+            "token_version": 0,
+        }
+    )
+    url = f"/api/students/{seed['student_id']}/medication-orders"
+    body1 = {
+        "order_date": "2026-03-10",
+        "medication_name": "藥A",
+        "dose": "1 顆",
+        "time_slots": ["12:00"],
+    }
+    assert client.post(url, json=body1, cookies={"access_token": tk}).status_code == 201
+
+    body2 = {**body1, "medication_name": "藥B"}  # 同日同時段、不同藥
+    r2 = client.post(url, json=body2, cookies={"access_token": tk})
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["detail"]["code"] == "DUPLICATE_SLOT_WARNING"
+    assert "12:00" in r2.json()["detail"]["slots"]
+
+    r3 = client.post(
+        url,
+        json={**body2, "acknowledge_duplicate_slot": True},
+        cookies={"access_token": tk},
+    )
+    assert r3.status_code == 201, r3.text
