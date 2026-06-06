@@ -185,6 +185,7 @@ class FinalSalaryPreviewOut(IvyBaseModel):
 class ClassHistoryCoTeacher(IvyBaseModel):
     """同班搭檔老師（含才藝）。"""
 
+    # 搭檔可為導師/助教/才藝三種；才藝在此顯示，但不會獨立成 ClassHistoryRow（見 row.role 註解）
     role: Literal["head", "assistant", "art"]
     employee_id: int
     name: str
