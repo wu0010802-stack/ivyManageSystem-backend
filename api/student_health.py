@@ -607,9 +607,14 @@ def _get_log_with_access(
     session, log_id: int, current_user: dict
 ) -> tuple[StudentMedicationLog, StudentMedicationOrder, int]:
     """取 log + order，檢查學生班級 scope。回傳 (log, order, student_id)。"""
+    # R5-6：with_for_update 序列化並發 administer/skip/correct——否則兩請求同時通過
+    # _reject_if_finalized，第二筆 UPDATE 撞 immutable trigger 回 500（PG）；加鎖後第二
+    # 筆在 SELECT 阻塞，待第一筆 commit 後讀到 finalized → _reject_if_finalized 乾淨 409。
+    # （SQLite no-op；PG 生效。）
     lg = (
         session.query(StudentMedicationLog)
         .filter(StudentMedicationLog.id == log_id)
+        .with_for_update()
         .first()
     )
     if not lg:
