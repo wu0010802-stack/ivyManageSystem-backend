@@ -1537,8 +1537,12 @@ def reset_password(
 
 
 @router.get("/permissions", response_model=AuthPermissionsDefinitionOut)
-def get_permissions():
-    """取得權限定義（供前端渲染 UI）— 從 DB 拉，admin runtime 改動立即生效。"""
+def get_permissions(current_user: dict = Depends(get_current_user)):
+    """取得權限定義（供前端渲染 UI）— 從 DB 拉，admin runtime 改動立即生效。
+
+    R6-1：須登入才可讀（原本無任何 Depends → 匿名訪客可拉整份 RBAC 模型，含
+    自訂角色 code/label/權限陣列）。要求 get_current_user 即封閉匿名洩漏。
+    """
     session = get_session()
     try:
         return get_permissions_definition(session)

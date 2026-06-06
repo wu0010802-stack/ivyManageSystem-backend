@@ -670,3 +670,12 @@ class TestDeleteUser:
         res = client.delete(f"/api/auth/users/{admin_id}")
         assert res.status_code == 400
         assert "刪除自己" in res.json()["detail"]
+
+
+# ── R6-1：GET /auth/permissions 須登入（原本無認證匿名洩 RBAC）──
+
+
+def test_get_permissions_requires_auth(auth_client):
+    """R6-1：匿名 GET /auth/permissions 須 401（修前無 Depends → 進 body 拉 RBAC）。"""
+    client, sf = auth_client
+    assert client.get("/api/auth/permissions").status_code == 401
