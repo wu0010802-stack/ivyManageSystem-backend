@@ -156,6 +156,17 @@ def get_audit_logs_meta(
     }
 
 
+def _csv_safe(value) -> str:
+    """防 CSV/公式注入：開頭為 =, +, -, @, Tab, CR 則前綴單引號（對齊
+    student_change_logs._csv_safe）。R7-1：username 為未授權登入失敗可控字串。"""
+    if value is None:
+        return ""
+    s = str(value)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 @router.get("/audit-logs/export")
 def export_audit_logs(
     request: Request,
@@ -239,12 +250,12 @@ def export_audit_logs(
                         if log.created_at
                         else ""
                     ),
-                    log.username or "",
+                    _csv_safe(log.username),
                     ACTION_LABELS.get(log.action, log.action),
                     ENTITY_LABELS.get(log.entity_type, log.entity_type),
-                    log.entity_id or "",
-                    log.summary or "",
-                    log.changes or "",
+                    _csv_safe(log.entity_id),
+                    _csv_safe(log.summary),
+                    _csv_safe(log.changes),
                     log.ip_address or "",
                 ]
             )
