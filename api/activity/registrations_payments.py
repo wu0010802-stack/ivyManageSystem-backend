@@ -684,6 +684,15 @@ def delete_registration_payment(
         )
         amount_map = {t: s for t, s in totals}
         new_paid = (amount_map.get("payment") or 0) - (amount_map.get("refund") or 0)
+        if new_paid < 0:
+            # R7-5：void 後退費淨額 > 付款淨額 → 孤兒 refund（記錄淨額負，cached
+            # paid_amount 夾到 0）。無現金漏洞（over-refund 硬閘以 cached 為準），但屬
+            # 對帳不一致；記 warning 讓財務能撈出此 reg 處理。
+            logger.warning(
+                "[activity-void] orphan refund：registration_id=%s 記錄淨額=%s 夾到 0",
+                registration_id,
+                new_paid,
+            )
         reg.paid_amount = max(0, new_paid)
 
         total_amount = _calc_total_amount(session, registration_id)
