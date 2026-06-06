@@ -21,6 +21,7 @@ from schemas.permissions_admin import (
 )
 from utils.auth import require_permission
 from utils.permissions import Permission, has_permission
+from utils.portfolio_access import is_unrestricted
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +37,22 @@ def _assert_can_grant(current_user: dict, requested: list[str]) -> None:
     caller_perms = current_user.get("permission_names") or []
     if "*" in caller_perms:
         return
-    over = [
-        code
-        for code in requested
-        if code == "*" or not has_permission(caller_perms, code.split(":", 1)[0])
-    ]
+    # R6-7：scope-aware（原本 code.split(":")[0] 剝 scope → own_class caller 可在角色
+    # 塞 :all 提權；經下游 _assert_can_manage_user 字串子集擋故不可利用，但對齊收緊）。
+    over = []
+    for code in requested:
+        if code == "*":
+            over.append(code)  # 只有 wildcard caller 可授 *（已在上方 return）
+            continue
+        base, _, scope = code.partition(":")
+        if scope in ("", "all"):
+            # 授 bare / :all 需 caller 在 base 上 unrestricted（bare/:all/wildcard）
+            ok = is_unrestricted(current_user, code=base)
+        else:
+            # 授 :own_class 等窄 scope 需 caller 至少持有 base（任一 scope）
+            ok = has_permission(caller_perms, base)
+        if not ok:
+            over.append(code)
     if over:
         raise HTTPException(
             status_code=403, detail=f"不可授出超過自身持有的權限：{over}"
