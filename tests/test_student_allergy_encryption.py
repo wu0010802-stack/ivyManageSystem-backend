@@ -329,3 +329,49 @@ def test_staff_create_medication_warns_on_allergy(health_app):
         cookies={"access_token": tk},
     )
     assert r2.status_code == 201, r2.text
+
+
+def test_administer_rejects_non_today_order(health_app):
+    """R5-7：administer 只允許當日 order；過去 order 的 pending log 直接以 log_id 呼叫
+    administer 須 400（避免對非當日用藥單給藥；today-list UI 也只顯示當日）。"""
+    from datetime import date
+    from models.portfolio import StudentMedicationOrder, StudentMedicationLog
+
+    client, sf = health_app
+    seed = _seed_allergy_and_teacher(sf, with_allergy=False)
+    with sf() as s:
+        order = StudentMedicationOrder(
+            student_id=seed["student_id"],
+            order_date=date(2020, 1, 1),  # 過去日期
+            medication_name="退燒藥",
+            dose="1 顆",
+            time_slots=["12:00"],
+            source="staff",
+        )
+        s.add(order)
+        s.flush()
+        log = StudentMedicationLog(order_id=order.id, scheduled_time="12:00")
+        s.add(log)
+        s.commit()
+        log_id = log.id
+
+    tk = create_access_token(
+        {
+            "user_id": seed["teacher_id"],
+            "employee_id": seed["emp_id"],
+            "role": "teacher",
+            "name": "t_alg",
+            "permission_names": [
+                "STUDENTS_MEDICATION_ADMINISTER",
+                "STUDENTS_HEALTH_READ",
+            ],
+            "token_version": 0,
+        }
+    )
+    r = client.post(
+        f"/api/medication-logs/{log_id}/administer",
+        json={},
+        cookies={"access_token": tk},
+    )
+    assert r.status_code == 400, r.text
+    assert "當日" in r.json()["detail"]

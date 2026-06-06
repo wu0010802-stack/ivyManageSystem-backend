@@ -643,6 +643,17 @@ def _reject_if_finalized(lg: StudentMedicationLog) -> None:
         )
 
 
+def _reject_if_not_today(o: StudentMedicationOrder) -> None:
+    """R5-7：一張 order 僅限當日（model 定義）；administer/skip 只允許當日用藥單，
+    避免直接用任意 log_id 對過去/未來 order 給藥/跳過（today-list UI 也只顯示當日）。
+    correct（修正過去記錄）不受此限。"""
+    if o.order_date != today_taipei():
+        raise HTTPException(
+            status_code=400,
+            detail="只能對當日（order_date）的用藥單給藥或跳過",
+        )
+
+
 @router.post("/medication-logs/{log_id}/administer", response_model=MedicationLogOut)
 def administer_medication(
     log_id: int,
@@ -657,6 +668,7 @@ def administer_medication(
         with session_scope() as session:
             lg, o, student_id = _get_log_with_access(session, log_id, current_user)
             _reject_if_finalized(lg)
+            _reject_if_not_today(o)  # R5-7
 
             lg.administered_at = now_taipei_naive()
             lg.administered_by = current_user.get("user_id")
@@ -697,6 +709,7 @@ def skip_medication(
         with session_scope() as session:
             lg, o, student_id = _get_log_with_access(session, log_id, current_user)
             _reject_if_finalized(lg)
+            _reject_if_not_today(o)  # R5-7
 
             lg.skipped = True
             lg.skipped_reason = payload.skipped_reason
