@@ -23,7 +23,7 @@ requests>=2.33.0  # CVE-2026-25645（修補版 2.33.0；專案 requires-python>=
 supabase>=2.0.0  # 物件儲存（activity_posters / leave_attachments）
 python-json-logger>=2.0.0
 pytest>=9.0.3  # CVE-2025-71176
-pytest-cov>=4.1.0
+pytest-cov>=7.1.0
 httpx>=0.24.0
 responses>=0.25
 mcp>=1.0.0  # MCP server SDK（mcp_server/activity_crud 暴露才藝 CRUD 給 Claude Code）
