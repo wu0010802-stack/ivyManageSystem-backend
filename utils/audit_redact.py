@@ -16,9 +16,32 @@ Refs: spec docs/superpowers/specs/2026-05-28-audit-pii-redact-retention-design.m
 
 from __future__ import annotations
 
+import re
+
 from utils.sentry_init import _PII_KEY_EXEMPT_SUBSTRINGS, _PII_KEY_SUBSTRINGS
 
 _FILTERED = "[Filtered]"
+
+# Finding H：自由文字（如 audit summary）的強識別子樣式。summary 由各端點自由組
+# 字串，redact_pii（key-based）對它無效。這裡只遮「高辨識度且不會與操作 ID 衝突」
+# 的識別子——刻意不遮純數字 user_id/employee_id 與姓名（admin-only 稽核面需可讀）。
+_TW_ID_RE = re.compile(r"\b[A-Za-z][12A-Da-d]\d{8}\b")  # 身分證 / 居留證
+_MOBILE_RE = re.compile(r"\b09\d{8}\b")  # 手機
+_LANDLINE_RE = re.compile(r"\b0\d{1,2}-\d{6,8}\b")  # 市話（帶 dash）
+
+
+def redact_pii_text(text):
+    """遮罩自由文字中的強識別子（身分證/居留證、手機、帶 dash 市話）。
+
+    非字串（None/其他）原樣回傳。只遮樣式明確的識別子，避免誤遮操作 ID/金額/姓名。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    text = _TW_ID_RE.sub(_FILTERED, text)
+    text = _MOBILE_RE.sub(_FILTERED, text)
+    text = _LANDLINE_RE.sub(_FILTERED, text)
+    return text
+
 
 # Audit 例外：value 保留欄位。兩類：
 # 1. amount 類（金流稽核需保留金額變化軌跡）

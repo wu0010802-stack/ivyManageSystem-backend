@@ -95,6 +95,31 @@ def cleanup_audit_logs(session) -> int:
     now = now_taipei_naive()
     total_deleted = 0
 
+    # Finding F：audit_logs immutable trigger（auditrelax01）只放行 audit_archiver role
+    # 執行 DELETE；GC 走一般 admin 連線會被 trigger 擋 → 個資法 §11 retention 靜默失效
+    # + 表無上限成長。PG 上於每個 batch 交易內 SET LOCAL ROLE audit_archiver（對齊
+    # _write_audit_sync 的 ivy_audit_writer 模式；SET LOCAL 隨交易結束自動還原）。
+    # prod 須先 CREATE ROLE audit_archiver 並 GRANT 給連線登入角色，否則 SET ROLE 失敗
+    # → 此處一次性 probe 後 fail-soft 中止本輪（避免噪音例外；DELETE 本來也會被擋）。
+    is_pg = False
+    try:
+        is_pg = session.get_bind().dialect.name == "postgresql"
+    except Exception:
+        is_pg = False
+    if is_pg:
+        try:
+            session.execute(text("SET LOCAL ROLE audit_archiver"))
+            session.rollback()
+        except Exception as e:
+            session.rollback()
+            logger.error(
+                "audit_log GC 略過本輪：SET ROLE audit_archiver 失敗（prod 須先 "
+                "CREATE ROLE audit_archiver 並 GRANT 給連線登入角色，見 auditrelax01 "
+                "migration 說明）：%s",
+                e,
+            )
+            return 0
+
     # 先取得 DB 中現有的 entity_type 清單（避免硬編一份 list 跟現實不同步）
     rows = session.execute(
         text(
@@ -108,6 +133,10 @@ def cleanup_audit_logs(session) -> int:
         et_deleted = 0
         # 多輪 batch 直到該 entity_type 的過期列清完
         while True:
+            # PG：以 audit_archiver role 執行 DELETE（immutable trigger 僅放行此 role）。
+            # SET LOCAL 與下方 DELETE/commit 同一交易，交易結束自動還原為原連線角色。
+            if is_pg:
+                session.execute(text("SET LOCAL ROLE audit_archiver"))
             # PG / SQLite 都支援 DELETE ... WHERE id IN (SELECT id ... LIMIT)
             result = session.execute(
                 text("""

@@ -259,6 +259,82 @@ def test_generate_invalid_year_400(monthly_ctx):
     assert resp.status_code == 400
 
 
+# ── Finding E：月報 JSON view 身分證遮罩（無 student 權限角色）──
+
+
+def _seed_student_with_id(ctx, id_number="A123456789", year=2026, month=5):
+    with ctx["sf"]() as s:
+        cls = Classroom(name="身分證班", capacity=25, school_year=2025, semester=2)
+        s.add(cls)
+        s.flush()
+        stu = Student(
+            student_id="T777",
+            name="證生",
+            gender="男",
+            birthday=date(2021, 6, 1),
+            classroom_id=cls.id,
+            enrollment_date=date(2025, 1, 1),
+            nationality="本國",
+            lifecycle_status="active",
+            id_number=id_number,
+        )
+        s.add(stu)
+        s.flush()
+        for d in [1, 2, 5, 6, 7]:
+            s.add(
+                StudentAttendance(
+                    student_id=stu.id, date=date(year, month, d), status="出席"
+                )
+            )
+        s.commit()
+
+
+def test_monthly_view_masks_id_number_for_non_student_role(monthly_ctx):
+    """Finding E：持 GOV_REPORTS_VIEW 但無 student 權限的角色（如 accountant），
+    月報 JSON view 的 student_detail 不得回傳完整身分證。"""
+    _seed_student_with_id(monthly_ctx)
+    with monthly_ctx["sf"]() as s:
+        s.add(
+            User(
+                username="acct1",
+                password_hash=hash_password("AcctPass1"),
+                role="accountant",
+                permission_names=["GOV_REPORTS_VIEW"],
+                is_active=True,
+            )
+        )
+        s.commit()
+    _generate(monthly_ctx)  # export_admin 產報
+
+    client = monthly_ctx["client"]
+    res = client.post(
+        "/api/auth/login", json={"username": "acct1", "password": "AcctPass1"}
+    )
+    acct_cookie = {"access_token": res.cookies.get("access_token")}
+    r = client.get(
+        "/api/gov-moe/monthly", params={"year": 2026, "month": 5}, cookies=acct_cookie
+    )
+    assert r.status_code == 200, r.text
+    ids = [d.get("id_number") for d in r.json()["student_detail"]]
+    assert "A123456789" not in ids, f"accountant 不應看到完整身分證: {ids}"
+
+
+def test_monthly_view_keeps_full_id_for_admin(monthly_ctx):
+    """回歸：有 student 權限（admin/wildcard）仍看完整身分證。"""
+    _seed_student_with_id(monthly_ctx)
+    _generate(monthly_ctx)
+    r = _with_cookie(
+        monthly_ctx,
+        "export_cookie",
+        "get",
+        "/api/gov-moe/monthly",
+        params={"year": 2026, "month": 5},
+    )
+    assert r.status_code == 200, r.text
+    ids = [d.get("id_number") for d in r.json()["student_detail"]]
+    assert "A123456789" in ids
+
+
 def test_generate_invalid_month_422(monthly_ctx):
     resp = _with_cookie(
         monthly_ctx,
