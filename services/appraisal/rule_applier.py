@@ -5,8 +5,9 @@
 5 種 rule_type：
   PER_UNIT             count × per_unit_delta（支援 per-role override + caps）
   TIER                 依 input value 找 tier
-  FLAT_THRESHOLD       單一閾值二分
-  DISCIPLINARY_TIERED  REWARD_PUNISH 專用，warning/minor/major 各自單價
+  FLAT_THRESHOLD       單一閾值二分；支援 grade_thresholds 分年級門檻
+  DISCIPLINARY_TIERED  REWARD_PUNISH 專用，warning/minor/major 懲處 +
+                       commend/minor_merit/major_merit 獎勵雙向功過相抵
   MANUAL_DELTA         主任手填分值本身，依 min_delta/max_delta clamp
 """
 
@@ -280,6 +281,12 @@ def _apply_auto_item(
             f" / 嘉獎 {d.commend_count} / 小功 {d.minor_merit_count}"
             f" / 大功 {d.major_merit_count}",
         )
+    if code == "ABSENTEEISM":
+        cnt = Decimal(status.attendance.absent_days)
+        return apply_per_unit(rule, cnt, role_group), cnt, f"曠職 {cnt} 天"
+    if code == "STUDENT_REINSTATE":
+        cnt = Decimal(status.reinstate_count)
+        return apply_per_unit(rule, cnt, role_group), cnt, f"復學 {cnt} 人"
     if code == "CLASS_HEADCOUNT_BONUS":
         cnt = Decimal(status.headcount_over_target)
         return (
@@ -291,13 +298,16 @@ def _apply_auto_item(
 
 
 def compute_all_deltas(session: Session, cycle) -> dict[tuple[int, str], DeltaResult]:
-    """對 cycle 內所有 participant 的 14 個 item_code 算 delta。
+    """對 cycle 內所有 participant 的全部 item_code 算 delta。
 
     流程：
       1. load_rules_for_date(cycle.base_score_calc_date)
-      2. aggregate_cycle_status(session, cycle) 取 5 auto 原始值
-      3. 批撈 AppraisalManualEventCount 取 9 manual 手填次數
-      4. 對每 (participant, item_code) 依 auto/manual 分流計算
+      2. aggregate_cycle_status(session, cycle) 取 auto 原始值
+         （含 ABSENTEEISM、STUDENT_REINSTATE、AFTER_CLASS_RATE 年級分流、
+         REWARD_PUNISH 獎懲雙向）
+      3. 批撈 AppraisalManualEventCount 取 manual 手填值
+      4. 對每 (participant, item_code) 依 auto/manual 分流計算；
+         manual 分流支援 PER_UNIT / TIER / FLAT_THRESHOLD / MANUAL_DELTA
       5. role 不適用者寫入 delta=0、note="本角色不適用"
     """
     from services.appraisal.status_aggregator import aggregate_cycle_status
@@ -355,15 +365,20 @@ def compute_all_deltas(session: Session, cycle) -> dict[tuple[int, str], DeltaRe
                 )
                 if rule.rule_type == "PER_UNIT":
                     delta = apply_per_unit(rule, cnt, role)
+                    note = f"手填 {cnt} 次" if cnt else "未填"
                 elif rule.rule_type == "TIER":
                     delta = apply_tier(rule, cnt, role)
+                    note = f"手填 {cnt} 次" if cnt else "未填"
                 elif rule.rule_type == "FLAT_THRESHOLD":
                     delta = apply_flat_threshold(rule, cnt, role)
+                    note = f"手填 {cnt} 次" if cnt else "未填"
+                elif rule.rule_type == "MANUAL_DELTA":
+                    delta = apply_manual_delta(rule, cnt, role)
+                    note = f"手填分值 {cnt}"
                 else:
                     delta = Decimal("0")
-                result[(status.participant_id, code)] = DeltaResult(
-                    delta, cnt, f"手填 {cnt} 次" if cnt else "未填"
-                )
+                    note = f"手填 {cnt} 次" if cnt else "未填"
+                result[(status.participant_id, code)] = DeltaResult(delta, cnt, note)
             else:
                 logger.warning(
                     "compute_all_deltas: rule item_code=%s 不在 auto/manual 集合內，略過",

@@ -520,3 +520,179 @@ def test_status_out_schema_鏡像新欄位():
     assert out.commend_count == 2
     assert out.minor_merit_count == 1
     assert out.major_merit_count == 0
+
+
+# ===== Task 8: compute_all_deltas 接線 =====
+
+
+def _make_fake_status(
+    *,
+    participant_id: int = 1,
+    employee_id: int = 1,
+    absent_days: int = 0,
+    reinstate_count: int = 0,
+    activity_rate: Decimal = Decimal("0"),
+    grade_name: str | None = None,
+) -> "ParticipantStatus":
+    """最小 fake status builder，供 Task 8 測試使用。"""
+    from services.appraisal.status_aggregator import (
+        ActivityRateAggregate,
+        AttendanceAggregate,
+        ClassRetentionAggregate,
+        DisciplinaryAggregate,
+        ParticipantStatus,
+    )
+
+    return ParticipantStatus(
+        participant_id=participant_id,
+        employee_id=employee_id,
+        employee_name="測試員工",
+        role_group=RoleGroup.HEAD_TEACHER.value,
+        classroom_id=10,
+        attendance=AttendanceAggregate(
+            employee_id=employee_id,
+            late_count=0,
+            early_leave_count=0,
+            missing_punch_count=0,
+            leave_days=0,
+            absent_days=absent_days,
+        ),
+        retention=ClassRetentionAggregate(
+            employee_id=employee_id,
+            retention_rate=Decimal("100"),
+        ),
+        activity=ActivityRateAggregate(
+            employee_id=employee_id,
+            activity_rate=activity_rate,
+            grade_name=grade_name,
+        ),
+        disciplinary=DisciplinaryAggregate(
+            employee_id=employee_id,
+        ),
+        is_participant=True,
+        reinstate_count=reinstate_count,
+    )
+
+
+def test_auto_item_曠職與復學():
+    """ABSENTEEISM / STUDENT_REINSTATE auto item 純函式驗證。"""
+    from services.appraisal.rule_applier import ScoringRule, _apply_auto_item
+
+    absenteeism_rule = ScoringRule(
+        item_code="ABSENTEEISM",
+        effective_from=date(2026, 2, 1),
+        rule_type="PER_UNIT",
+        rule_config={"per_unit_delta": -4},
+        applies_to_role_groups=None,
+    )
+    reinstate_rule = ScoringRule(
+        item_code="STUDENT_REINSTATE",
+        effective_from=date(2026, 2, 1),
+        rule_type="PER_UNIT",
+        rule_config={"per_unit_delta": 1},
+        applies_to_role_groups=None,
+    )
+    status = _make_fake_status(absent_days=2, reinstate_count=1)
+    rg = RoleGroup.HEAD_TEACHER
+
+    delta_abs, raw_abs, _ = _apply_auto_item(absenteeism_rule, status, rg)
+    assert delta_abs == Decimal("-8.00")
+    assert raw_abs == Decimal("2")
+
+    delta_rei, raw_rei, _ = _apply_auto_item(reinstate_rule, status, rg)
+    assert delta_rei == Decimal("1.00")
+    assert raw_rei == Decimal("1")
+
+
+def test_auto_item_才藝率帶年級門檻():
+    """AFTER_CLASS_RATE auto item 帶 grade_name 走年級門檻。"""
+    from services.appraisal.rule_applier import ScoringRule, _apply_auto_item
+
+    rule = ScoringRule(
+        item_code="AFTER_CLASS_RATE",
+        effective_from=date(2026, 2, 1),
+        rule_type="FLAT_THRESHOLD",
+        rule_config={
+            "threshold": 80,
+            "above_delta": 2.0,
+            "below_delta": 0,
+            "grade_thresholds": {"大班": 100},
+        },
+        applies_to_role_groups=None,
+    )
+    # rate=95、大班門檻=100 → 未達門檻 → 0.00
+    status = _make_fake_status(activity_rate=Decimal("95"), grade_name="大班")
+    delta, raw, _ = _apply_auto_item(rule, status, RoleGroup.HEAD_TEACHER)
+    assert delta == Decimal("0.00")
+    assert raw == Decimal("95")
+
+
+def test_compute_all_deltas_manual_delta(test_db_session, monkeypatch):
+    """MANUAL_DELTA rule_type：手填分值 −3 在 clamp [−10, 0] 內，note 含「手填分值」。"""
+    from models.appraisal import (
+        AppraisalManualEventCount,
+        AppraisalScoringRule,
+        CycleStatus,
+    )
+    from services.appraisal import status_aggregator as agg
+    from services.appraisal.rule_applier import compute_all_deltas
+
+    s = test_db_session
+    cycle = AppraisalCycle(
+        academic_year=114,
+        semester=Semester.FIRST,
+        start_date=date(2025, 8, 1),
+        end_date=date(2026, 1, 31),
+        base_score_calc_date=date(2025, 9, 15),
+        base_score=Decimal("75.6"),
+        status=CycleStatus.OPEN,
+    )
+    s.add(cycle)
+    s.flush()
+    p = AppraisalParticipant(
+        cycle_id=cycle.id,
+        employee_id=1,
+        role_group=RoleGroup.HEAD_TEACHER,
+        hire_months_in_cycle=Decimal("6"),
+        is_excluded=False,
+    )
+    s.add(p)
+    s.flush()
+
+    # 只 seed 兩條規則（auto + MANUAL_DELTA），其他 code 不在 rules → 只產出有規則的 item
+    # 為讓測試簡單，只 seed CHILD_ACCIDENT（MANUAL_DELTA）+ LATE_EARLY（PER_UNIT）
+    s.add(
+        AppraisalScoringRule(
+            item_code="CHILD_ACCIDENT",
+            effective_from=date(2025, 8, 1),
+            rule_type="MANUAL_DELTA",
+            rule_config={"min_delta": -10, "max_delta": 0},
+        )
+    )
+    s.add(
+        AppraisalScoringRule(
+            item_code="LATE_EARLY",
+            effective_from=date(2025, 8, 1),
+            rule_type="PER_UNIT",
+            rule_config={"per_unit_delta": -0.25},
+        )
+    )
+    # 手填 CHILD_ACCIDENT count = −3
+    s.add(
+        AppraisalManualEventCount(
+            cycle_id=cycle.id,
+            participant_id=p.id,
+            item_code="CHILD_ACCIDENT",
+            count=Decimal("-3"),
+        )
+    )
+    s.flush()
+
+    fake_status = _make_fake_status(participant_id=p.id, employee_id=1)
+    monkeypatch.setattr(agg, "aggregate_cycle_status", lambda session, c: [fake_status])
+
+    result = compute_all_deltas(s, cycle)
+
+    child_acc = result[(p.id, "CHILD_ACCIDENT")]
+    assert child_acc.delta == Decimal("-3.00")
+    assert "手填分值" in child_acc.note
