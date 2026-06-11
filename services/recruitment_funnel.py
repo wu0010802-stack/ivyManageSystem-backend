@@ -424,7 +424,12 @@ def transition_visit(
             )
 
     else:
-        raise NotImplementedError(f"transition {from_stage} → {to_stage} 尚未實作")
+        # R4-7：非法/未實作的跨段轉換改拋 RecruitmentFunnelError（caller catch → 400），
+        # 原 NotImplementedError 未被 caller catch → 冒泡成 500。
+        raise RecruitmentFunnelError(
+            f"不支援的轉換 {from_stage} → {to_stage}",
+            code="ILLEGAL_TRANSITION",
+        )
 
     return TransitionResult(
         visit_id=visit.id,

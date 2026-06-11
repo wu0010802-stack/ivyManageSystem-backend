@@ -120,3 +120,49 @@ def test_no_classroom_still_assigns_seq(session, visit):
     stu = session.get(Student, result.student_id)
     assert stu.enrollment_seq == 1
     assert stu.classroom_id is None
+
+
+# ── R4-1：students.recruitment_visit_id partial unique index ──
+
+
+def test_recruitment_visit_id_unique_partial_index(session, classroom, visit):
+    """一個 recruitment_visit 最多對應一個 Student（partial unique index 兜底並發
+    轉換 TOCTOU）；NULL 允許多筆（未轉換的學生不受限）。"""
+    from sqlalchemy.exc import IntegrityError
+    from models.classroom import LIFECYCLE_ACTIVE
+
+    s1 = Student(
+        student_id="C1",
+        name="甲",
+        classroom_id=classroom.id,
+        recruitment_visit_id=visit.id,
+        is_active=True,
+        lifecycle_status=LIFECYCLE_ACTIVE,
+    )
+    session.add(s1)
+    session.flush()
+
+    s2 = Student(
+        student_id="C2",
+        name="乙",
+        classroom_id=classroom.id,
+        recruitment_visit_id=visit.id,  # 同一 visit → 違反 unique
+        is_active=True,
+        lifecycle_status=LIFECYCLE_ACTIVE,
+    )
+    session.add(s2)
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+    # NULL recruitment_visit_id 可多筆
+    a = Student(
+        student_id="N1", name="丙", classroom_id=classroom.id,
+        recruitment_visit_id=None, is_active=True, lifecycle_status=LIFECYCLE_ACTIVE,
+    )
+    b = Student(
+        student_id="N2", name="丁", classroom_id=classroom.id,
+        recruitment_visit_id=None, is_active=True, lifecycle_status=LIFECYCLE_ACTIVE,
+    )
+    session.add_all([a, b])
+    session.flush()  # 不應 raise

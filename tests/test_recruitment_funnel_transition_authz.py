@@ -58,3 +58,30 @@ class TestFunnelTransitionUnrestricted:
             )
             == Permission.STUDENTS_WRITE
         )
+
+
+# ── R4-3：post_transition 須有教師/家長結構封鎖（即使持 recruitment 權限）──
+
+
+def test_transition_endpoint_blocks_teacher_role():
+    """admin 若誤授某 teacher bare RECRUITMENT_WRITE/CONVERT，該 teacher 仍不可打
+    transition 端點（會 revert 轉換硬刪 Student+Guardian）。role 檢查須在 visit 查詢前，
+    故 session 傳 None 也能觸發 403。"""
+    import pytest
+    from fastapi import HTTPException
+    from api.recruitment.funnel import post_transition
+    from schemas.recruitment_funnel import TransitionIn
+
+    teacher = {
+        "role": "teacher",
+        "permission_names": ["RECRUITMENT_WRITE", "RECRUITMENT_CONVERT"],
+        "user_id": 1,
+    }
+    with pytest.raises(HTTPException) as exc:
+        post_transition(
+            visit_id=1,
+            payload=TransitionIn(to_stage="deposited"),
+            session=None,
+            current_user=teacher,
+        )
+    assert exc.value.status_code == 403

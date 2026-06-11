@@ -151,6 +151,19 @@ def post_transition(
     current_user: dict = Depends(get_current_user),
 ):
     """State machine driver — dynamic permission check based on from/to stage."""
+    # R4-3：補教師/家長結構封鎖（對齊其他 recruitment write 端點的 require_staff_permission）。
+    # 原本只有下方 _missing_unrestricted_permission（scope 檢查），無 role 短路 → admin
+    # 誤授某 teacher bare RECRUITMENT_WRITE 時，該 teacher 可打此端點 revert 轉換
+    # （_do_revert_convert 硬刪 Student+Guardian）。置於 visit 查詢前先擋。
+    if current_user.get("role") in ("teacher", "parent"):
+        raise HTTPException(
+            403,
+            detail={
+                "code": "PERMISSION_DENIED",
+                "message": "教師/家長帳號不可存取招生管理端",
+            },
+        )
+
     visit = session.query(RecruitmentVisit).filter_by(id=visit_id).first()
     if visit is None:
         raise HTTPException(

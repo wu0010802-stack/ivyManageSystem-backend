@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
 from api.portal import router as portal_router
-from models.classroom import LIFECYCLE_ACTIVE
+from models.classroom import LIFECYCLE_ACTIVE, LIFECYCLE_GRADUATED
 from models.database import (
     Base,
     Classroom,
@@ -230,6 +230,39 @@ class TestStudentDetail:
             cookies={"access_token": tk},
         )
         assert rsp.status_code == 403
+
+    def test_terminal_lifecycle_own_class_student_403(self, detail_client):
+        """R4-2：自班學生轉終態（畢業/退學）後，前班導不可再讀其 detail。"""
+        client, sf = detail_client
+        seed = _seed(sf)
+        with sf() as session:
+            stu = session.get(Student, seed["student_my_id"])
+            stu.lifecycle_status = LIFECYCLE_GRADUATED
+            stu.is_active = False
+            session.commit()
+        tk = _token(seed["teacher_id"], seed["teacher_emp_id"], "t1", seed["perm"])
+        rsp = client.get(
+            f"/api/portal/students/{seed['student_my_id']}/detail",
+            cookies={"access_token": tk},
+        )
+        assert rsp.status_code == 403, f"終態學生前班導不應可讀 detail: {rsp.text}"
+
+    def test_terminal_lifecycle_own_class_reveal_phone_403(self, detail_client):
+        """R4-2：終態學生的 reveal-phone 同樣須擋（避免揭未遮罩家長電話）。"""
+        client, sf = detail_client
+        seed = _seed(sf)
+        with sf() as session:
+            stu = session.get(Student, seed["student_my_id"])
+            stu.lifecycle_status = LIFECYCLE_GRADUATED
+            stu.is_active = False
+            session.commit()
+        tk = _token(seed["teacher_id"], seed["teacher_emp_id"], "t1", seed["perm"])
+        rsp = client.post(
+            f"/api/portal/students/{seed['student_my_id']}/reveal-phone",
+            json={"target": "parent"},
+            cookies={"access_token": tk},
+        )
+        assert rsp.status_code == 403, f"終態學生前班導不應可揭電話: {rsp.text}"
 
     def test_404_when_student_missing(self, detail_client):
         client, sf = detail_client
