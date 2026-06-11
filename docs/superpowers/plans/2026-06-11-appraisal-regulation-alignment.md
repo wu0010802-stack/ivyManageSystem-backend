@@ -56,7 +56,7 @@ git commit -m "docs(appraisal): 規章第六篇對齊設計 spec"
 - [ ] **Step 4: 基線測試（記錄起點）**
 
 ```bash
-python3 -m pytest tests/test_appraisal_rule_applier.py tests/test_appraisal_engine.py tests/test_appraisal_excel_reconcile_114.py -q
+python3 -m pytest tests/test_rule_applier.py tests/test_appraisal_engine.py tests/test_appraisal_excel_reconcile_114.py -q
 ```
 Expected: 全綠。若有紅，停下回報（基線即紅不可開工）。
 
@@ -257,7 +257,7 @@ grep -n "absent_expr\|leave_days\|def _aggregate_attendance\|case((Attendance" s
 
 - [ ] **Step 2: 寫失敗測試**
 
-追加（用既有 appraisal 測試的 in-memory session fixture 慣例；參考 `tests/test_appraisal_rule_applier.py` 開頭的 fixture import 方式，沿用同一套 `db_session`/cycle factory；若該檔用 `conftest.py` 的 fixture，直接沿用）：
+追加（用既有 appraisal 測試的 in-memory session fixture 慣例；參考 `tests/test_rule_applier.py` 開頭的 fixture import 方式，沿用同一套 `db_session`/cycle factory；若該檔用 `conftest.py` 的 fixture，直接沿用）：
 
 ```python
 def test_attendance_aggregate_leave與absent分流(db_session, make_cycle_with_participant):
@@ -727,7 +727,7 @@ git commit -m "feat(appraisal): 分年級才藝門檻＋獎懲加分側（嘉獎
 
 - [ ] **Step 1: 寫失敗測試**
 
-仿照 `tests/test_appraisal_rule_applier.py` 既有 fake-status 測試 pattern（先讀該檔確認 fake ParticipantStatus 的建構方式並沿用）：
+仿照 `tests/test_rule_applier.py` 既有 fake-status 測試 pattern（先讀該檔確認 fake ParticipantStatus 的建構方式並沿用）：
 
 ```python
 def test_auto_item_曠職與復學():
