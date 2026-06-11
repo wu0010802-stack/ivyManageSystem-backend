@@ -108,12 +108,12 @@ class ScoreItemSign(str, enum.Enum):
 
 
 class ScoreItemCode(str, enum.Enum):
-    """考核加減分項對應 Excel `半年考核統計表` 欄位（規章第六篇對齊後共 23 項）。
+    """考核加減分項對應 Excel `半年考核統計表` 欄位（規章第六篇對齊後共 24 項）。
 
     auto = aggregator 即時算；manual = 主任在 UI 上手填次數。
     """
 
-    # auto (7) — engine 從 status_aggregator 拿原始值
+    # auto — engine 從 status_aggregator 拿原始值
     LATE_EARLY = "LATE_EARLY"
     MISSING_PUNCH = "MISSING_PUNCH"
     LEAVE = "LEAVE"
@@ -121,7 +121,7 @@ class ScoreItemCode(str, enum.Enum):
     RETURNING_RATE_0315 = "RETURNING_RATE_0315"
     AFTER_CLASS_RATE = "AFTER_CLASS_RATE"
     REWARD_PUNISH = "REWARD_PUNISH"
-    # manual (7) — 主任在 ManualEventEntrySection 上填次數
+    # manual — 主任在 ManualEventEntrySection 上填次數
     SCHOOL_MEETING_ABSENCE = "SCHOOL_MEETING_ABSENCE"
     INSTITUTION_MEETING_0913 = "INSTITUTION_MEETING_0913"
     INSTITUTION_MEETING_1115 = "INSTITUTION_MEETING_1115"
@@ -131,9 +131,7 @@ class ScoreItemCode(str, enum.Enum):
     SPED = "SPED"  # 特教生加分（手填 count × +2，對齊 Excel P 欄）
     # 規章第六篇對齊新增（2026-06-11 spec；effective 2026-02-01 起有規則）
     ABSENTEEISM = "ABSENTEEISM"  # 曠職 −4/日（auto：考勤 status='absent'）
-    STUDENT_WITHDRAWAL = (
-        "STUDENT_WITHDRAWAL"  # 休學 −2/人（手填；月費未繳條件人工判定）
-    )
+    STUDENT_WITHDRAWAL = "STUDENT_WITHDRAWAL"  # 休學 −2/人（月費未繳人工判定）
     STUDENT_REINSTATE = "STUDENT_REINSTATE"  # 復學 +1/人（auto：StudentChangeLog）
     TRIAL_LEAVE = "TRIAL_LEAVE"  # 試讀離園 −1/人（手填）
     CLASS_TRANSFER = "CLASS_TRANSFER"  # 轉班 −0.5/人（手填）

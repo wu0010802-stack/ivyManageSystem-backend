@@ -2,11 +2,12 @@
 
 純函式設計，不接 DB；caller 負責從 DB 載 ScoringRule。
 
-4 種 rule_type：
+5 種 rule_type：
   PER_UNIT             count × per_unit_delta（支援 per-role override + caps）
   TIER                 依 input value 找 tier
   FLAT_THRESHOLD       單一閾值二分
   DISCIPLINARY_TIERED  REWARD_PUNISH 專用，warning/minor/major 各自單價
+  MANUAL_DELTA         主任手填分值本身，依 min_delta/max_delta clamp
 """
 
 from __future__ import annotations

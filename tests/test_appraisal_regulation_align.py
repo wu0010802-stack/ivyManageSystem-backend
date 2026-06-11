@@ -76,3 +76,13 @@ def test_manual_delta_上限clamp():
     assert apply_manual_delta(rule, Decimal("25"), RoleGroup.HEAD_TEACHER) == Decimal(
         "20.00"
     )
+
+
+def test_manual_delta_邊界值不截斷():
+    rule = _md_rule(-10, 0)
+    assert apply_manual_delta(rule, Decimal("-10"), RoleGroup.HEAD_TEACHER) == Decimal(
+        "-10.00"
+    )
+    assert apply_manual_delta(rule, Decimal("0"), RoleGroup.HEAD_TEACHER) == Decimal(
+        "0.00"
+    )
