@@ -543,3 +543,59 @@ class TestApi:
             json={"deduction_amount": 999},
         )
         assert res.status_code == 422
+
+    def test_update_warning改commendation帶金額_422(self, disc_client):
+        """既有 warning 記錄 PUT action_type=commendation + deduction_amount=500 → 422。
+        驗證 update 端點同時改類型與金額時，以更新後的 action_type 判斷。
+        """
+        client, session_factory = disc_client
+        with session_factory() as session:
+            emp = _add_emp(session)
+            a = DisciplinaryAction(
+                employee_id=emp.id,
+                action_date=date(2026, 5, 10),
+                action_type="warning",
+                deduction_amount=1000,
+            )
+            session.add(a)
+            session.commit()
+            aid = a.id
+        _login(client, session_factory, username="merit_upd_admin1")
+
+        res = client.put(
+            f"/api/disciplinary-actions/{aid}",
+            json={"action_type": "commendation", "deduction_amount": 500},
+        )
+        assert (
+            res.status_code == 422
+        ), f"warning→commendation + amount=500 預期 422，實得 {res.status_code}"
+
+    def test_update_warning改commendation填零金額_200(self, disc_client):
+        """既有 warning 記錄 PUT action_type=commendation + deduction_amount=0 → 200。
+        轉換為 merit 類型且金額為 0 應允許。
+        """
+        client, session_factory = disc_client
+        with session_factory() as session:
+            emp = _add_emp(session)
+            a = DisciplinaryAction(
+                employee_id=emp.id,
+                action_date=date(2026, 5, 10),
+                action_type="warning",
+                deduction_amount=1000,
+            )
+            session.add(a)
+            session.commit()
+            aid = a.id
+        _login(client, session_factory, username="merit_upd_admin2")
+
+        res = client.put(
+            f"/api/disciplinary-actions/{aid}",
+            json={"action_type": "commendation", "deduction_amount": 0},
+        )
+        assert (
+            res.status_code == 200
+        ), f"warning→commendation + amount=0 預期 200，實得 {res.status_code}"
+        body = res.json()
+        assert body["action_type"] == "commendation"
+        assert body["action_type_label"] == "嘉獎"
+        assert body["deduction_amount"] == 0

@@ -17,18 +17,11 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from models.disciplinary import (
-    ACTION_TYPE_COMMEND,
     ACTION_TYPE_MAJOR,
-    ACTION_TYPE_MAJOR_MERIT,
     ACTION_TYPE_MINOR,
-    ACTION_TYPE_MINOR_MERIT,
     ACTION_TYPE_WARNING,
+    MERIT_ACTION_TYPES,
     DisciplinaryAction,
-)
-
-# merit 三值：嘉獎/小功/大功 — 獎勵性質，永不產生薪資扣款
-_MERIT_ACTION_TYPES = frozenset(
-    {ACTION_TYPE_COMMEND, ACTION_TYPE_MINOR_MERIT, ACTION_TYPE_MAJOR_MERIT}
 )
 
 
@@ -55,7 +48,7 @@ def _effective_amount(action: DisciplinaryAction, bonus_config) -> float:
     merit 為獎勵紀錄（嘉獎/小功/大功），永不產生薪資扣款；防 HR 誤填金額。
     """
     # merit 類型一律回 0，無論 deduction_amount 填了什麼
-    if action.action_type in _MERIT_ACTION_TYPES:
+    if action.action_type in MERIT_ACTION_TYPES:
         return 0.0
     amount = float(action.deduction_amount or 0)
     if amount > 0:

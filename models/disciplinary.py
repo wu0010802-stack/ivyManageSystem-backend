@@ -47,6 +47,10 @@ ACTION_TYPE_LABELS = {
     ACTION_TYPE_MAJOR_MERIT: "大功",
 }
 
+MERIT_ACTION_TYPES: frozenset = frozenset(
+    {ACTION_TYPE_COMMEND, ACTION_TYPE_MINOR_MERIT, ACTION_TYPE_MAJOR_MERIT}
+)
+
 
 class DisciplinaryAction(Base):
     """員工懲處記錄。

@@ -374,7 +374,7 @@ def compute_all_deltas(session: Session, cycle) -> dict[tuple[int, str], DeltaRe
                     note = f"手填 {cnt} 次" if cnt else "未填"
                 elif rule.rule_type == "MANUAL_DELTA":
                     delta = apply_manual_delta(rule, cnt, role)
-                    note = f"手填分值 {cnt}"
+                    note = f"手填分值 {cnt}" if cnt else "未填（或 0）"
                 else:
                     delta = Decimal("0")
                     note = f"手填 {cnt} 次" if cnt else "未填"

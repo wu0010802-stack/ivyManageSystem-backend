@@ -15,15 +15,9 @@ from sqlalchemy.orm import joinedload
 from models.base import session_scope
 from models.database import DisciplinaryAction, Employee
 from models.disciplinary import (
-    ACTION_TYPE_COMMEND,
     ACTION_TYPE_LABELS,
-    ACTION_TYPE_MAJOR_MERIT,
-    ACTION_TYPE_MINOR_MERIT,
     ACTION_TYPES,
-)
-
-_MERIT_ACTION_TYPES = frozenset(
-    {ACTION_TYPE_COMMEND, ACTION_TYPE_MINOR_MERIT, ACTION_TYPE_MAJOR_MERIT}
+    MERIT_ACTION_TYPES,
 )
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -134,7 +128,7 @@ def create_action(
             status_code=400,
             detail=f"action_type 須為 {', '.join(ACTION_TYPES)}",
         )
-    if payload.action_type in _MERIT_ACTION_TYPES and payload.deduction_amount > 0:
+    if payload.action_type in MERIT_ACTION_TYPES and payload.deduction_amount > 0:
         raise HTTPException(
             status_code=422,
             detail="獎勵類型（嘉獎/小功/大功）不可填扣款金額",
@@ -210,7 +204,7 @@ def update_action(
                 # 更新後的 action_type（可能已在本次更新中改變）
                 effective_type = action.action_type
                 if (
-                    effective_type in _MERIT_ACTION_TYPES
+                    effective_type in MERIT_ACTION_TYPES
                     and payload.deduction_amount > 0
                 ):
                     raise HTTPException(
