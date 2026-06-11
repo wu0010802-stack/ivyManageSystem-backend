@@ -80,8 +80,9 @@ class LocalStorage:
     def _path(self, module: str, key: str) -> Path:
         base = get_storage_root() / module
         full = (base / key).resolve()
-        # 路徑穿越守衛（雖然 caller 通常已驗，雙保險）
-        if not str(full).startswith(str(base.resolve())):
+        # 路徑穿越守衛（雙保險）：須用 trailing separator，否則 sibling-prefix
+        # （base_evil）會通過 startswith(base) 繞過（Finding 檔Low-2）。
+        if not str(full).startswith(str(base.resolve()) + "/"):
             raise ValueError(f"不合法的 key: {key}")
         return full
 

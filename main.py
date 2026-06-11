@@ -1072,6 +1072,12 @@ from middleware.csrf_origin import CSRFOriginCheckMiddleware
 
 app.add_middleware(CSRFOriginCheckMiddleware)
 
+# Finding J：WS handshake 走 websocket scope，繞過上方 BaseHTTPMiddleware（含 CSRF）。
+# 此純 ASGI middleware 為 WS 補上 Origin 防護（CSWSH），不依賴 cookie SameSite。
+from middleware.ws_origin import WSOriginCheckMiddleware
+
+app.add_middleware(WSOriginCheckMiddleware)
+
 # CORS 必須在 KillSwitch / CSRF / SecurityHeaders / RequestLogging / Audit 之外層
 # （即在它們之後 add），才能讓這些 middleware 自身短路的 503/403 回應在回流時
 # 經過 CORS 補上 Access-Control-Allow-Origin，並讓 preflight OPTIONS 在維護模式下

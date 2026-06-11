@@ -1608,6 +1608,17 @@ def update_user(
         )
         if should_revoke:
             user.token_version = (user.token_version or 0) + 1
+            # F2/F3：同步撤銷該 user 所有 staff_refresh family（比照 change_password）。
+            # rotation 路徑不檢 token_version，僅 family revoke 能讓停用/改權後的既有
+            # refresh token 立即失效——否則停用→re-enable 後失竊 cookie 復活（F2），
+            # 改角色/權限後既有 session 不終止（F3）。
+            session.query(StaffRefreshToken).filter(
+                StaffRefreshToken.user_id == user.id,
+                StaffRefreshToken.revoked_at.is_(None),
+            ).update(
+                {"revoked_at": now_taipei_naive()},
+                synchronize_session=False,
+            )
 
         # 建立變更摘要並傳給 AuditMiddleware
         # 注意：純停用（軟刪）已由 mark_soft_delete 設定 audit_summary，不再重疊。

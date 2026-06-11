@@ -670,3 +670,52 @@ class TestDeleteUser:
         res = client.delete(f"/api/auth/users/{admin_id}")
         assert res.status_code == 400
         assert "刪除自己" in res.json()["detail"]
+
+
+# ── Finding F2/F3：update_user 停用/改權須撤銷 staff_refresh family ──
+
+
+def test_update_user_disable_revokes_staff_refresh_family(auth_client):
+    """停用帳號須撤銷 staff_refresh families（比照 change_password）。
+
+    rotation 路徑不檢 token_version，僅 family revoke 能讓既有 refresh token
+    立即失效；否則停用→re-enable 後失竊 cookie 復活（F2），改權後 session
+    不終止（F3）。"""
+    from datetime import timedelta
+    from models.staff_refresh_token import StaffRefreshToken
+    from utils.taipei_time import now_taipei_naive
+
+    client, sf = auth_client
+    with sf() as s:
+        _create_user(
+            s,
+            username="um_admin_frev",
+            password="AdminPass1234",
+            role="admin",
+            permission_names=["*"],
+        )
+        target = _create_user(
+            s,
+            username="t_staff_frev",
+            password="StaffPass1234",
+            role="teacher",
+            permission_names=["STUDENTS_READ"],
+        )
+        s.flush()
+        tok = StaffRefreshToken(
+            user_id=target.id,
+            token_hash="dummyhash_" + "x" * 40,
+            expires_at=now_taipei_naive() + timedelta(days=30),
+        )
+        s.add(tok)
+        s.commit()
+        target_id = target.id
+        tok_id = tok.id
+
+    assert _login(client, "um_admin_frev", "AdminPass1234").status_code == 200
+    res = client.put(f"/api/auth/users/{target_id}", json={"is_active": False})
+    assert res.status_code == 200, res.text
+
+    with sf() as s:
+        tok = s.query(StaffRefreshToken).filter_by(id=tok_id).first()
+        assert tok.revoked_at is not None, "停用帳號後 staff_refresh family 須被撤銷"

@@ -928,9 +928,26 @@ def public_update_registration(
             .all()
         }
 
-        session.query(RegistrationCourse).filter(
-            RegistrationCourse.registration_id == reg.id
-        ).delete()
+        # Finding K：不全刪重建 RegistrationCourse——保留未變更課程的 id/status。
+        # 候補排序以 RegistrationCourse.id ASC 為準；全刪重建會把候補課程換成更大 id
+        # 洗到隊尾（下次釋位升錯人），且 promoted_pending 會被靜默重建為 enrolled
+        # 跳過 48h 確認窗。改 diff：刪移除的、留未變更的、稍後只 add 新增的。
+        desired_course_ids = {courses_by_name[ci.name].id for ci in body.courses}
+        existing_rc = (
+            session.query(RegistrationCourse)
+            .filter(RegistrationCourse.registration_id == reg.id)
+            .all()
+        )
+        existing_course_ids = {rc.course_id for rc in existing_rc}
+        for rc in existing_rc:
+            if rc.course_id not in desired_course_ids:
+                session.delete(rc)
+        new_course_items = [
+            ci
+            for ci in body.courses
+            if courses_by_name[ci.name].id not in existing_course_ids
+        ]
+        # supplies 無候補排序疑慮，維持全刪重建
         session.query(RegistrationSupply).filter(
             RegistrationSupply.registration_id == reg.id
         ).delete()
@@ -1016,8 +1033,9 @@ def public_update_registration(
             else {}
         )
 
+        # K：只 attach 新增課程（未變更的已保留原列/ id，移除的已刪）。
         _attach_courses(
-            session, reg.id, body.courses, courses_by_name, upd_enrolled_map
+            session, reg.id, new_course_items, courses_by_name, upd_enrolled_map
         )
         _attach_supplies(session, reg.id, body.supplies, supplies_by_name)
 

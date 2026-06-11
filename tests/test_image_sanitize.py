@@ -122,6 +122,14 @@ def test_strip_raises_400_on_empty_bytes_for_image_ext():
     assert exc_info.value.status_code == 400
 
 
+def test_strip_raises_400_on_fake_webp():
+    """Finding 檔Low-1：.webp 無 magic bytes 條目，validate_file_signature 會略過；
+    唯一防線是 strip 的 PIL 重解碼。假 webp（HTML 內容）須被拒，海報端點才安全。"""
+    with pytest.raises(HTTPException) as exc_info:
+        strip_image_metadata(b"<html>not an image</html>", ".webp")
+    assert exc_info.value.status_code == 400
+
+
 # ── PNG / WebP 路徑 ──
 
 
