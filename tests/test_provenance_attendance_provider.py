@@ -55,7 +55,8 @@ def _mk_cycle(db, academic_year=114):
 
 def _mk_config(db):
     cfg = BonusConfig(
-        config_year=114,
+        # R2（2026-06-05）：resolver 以西元 config_year=N+1911 解析（學年 114 → 2025）
+        config_year=2025,
         is_active=True,
         late_deduction_per_time=50,
         missing_punch_deduction_per_time=50,

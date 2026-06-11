@@ -29,8 +29,16 @@ def test_student_health_no_bare_assert_student_access():
     offenders: list[str] = []
     for i, line in enumerate(lines):
         if "assert_student_access(" in line and "def assert_student_access" not in line:
-            # 抓 call site（多行 call 需往下看一兩行）
-            snippet = "\n".join(lines[i : i + 3])
+            # 抓整個 call site：往下掃到括號平衡為止（black 可能把參數展開成
+            # 逐行、code= 落在第 5+ 行，固定行數窗會誤報）
+            depth = 0
+            snippet_lines: list[str] = []
+            for cont in lines[i:]:
+                snippet_lines.append(cont)
+                depth += cont.count("(") - cont.count(")")
+                if depth <= 0:
+                    break
+            snippet = "\n".join(snippet_lines)
             if "code=" not in snippet:
                 offenders.append(f"line {i + 1}: {line.strip()}")
     assert not offenders, "bare assert_student_access calls: " + "; ".join(offenders)

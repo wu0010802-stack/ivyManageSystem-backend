@@ -369,8 +369,12 @@ class TestPosCheckoutNoKeyDedup:
             ), f"paid_amount 應只退一次到 500，實際 {reg.paid_amount}"
 
     def test_multi_item_without_key_not_silently_dropped(self, idk_client):
-        """多 item 無 key 結帳不可因 items[0] 撞舊收據而 replay 整張、靜默吞掉其餘 item。
-        修前 → regB 漏帳（0 筆）；修後 → 多 item 跳過去重，regB 正常出帳（1 筆）。"""
+        """多 item 結帳不可因 items[0] 撞舊收據而 replay 整張、靜默吞掉其餘 item。
+
+        R7-3（2026-06-06）後契約更新：多 item 無 key 直接 400（強制帶
+        idempotency_key，防非官方 caller 重送整車重複出帳）；帶 key 的多 item
+        為全請求去重，items[0] 撞舊收據不會吞掉 regB——本測試保留原保護目標，
+        改以新契約斷言（無 key → 400；帶 key → regB 正常出帳 1 筆）。"""
         client, sf = idk_client
         with sf() as s:
             _create_admin(s)
@@ -397,18 +401,24 @@ class TestPosCheckoutNoKeyDedup:
         )
         assert r1.status_code == 201, r1.text
 
+        multi_items = {
+            "items": [
+                {"registration_id": a_id, "amount": 400},
+                {"registration_id": b_id, "amount": 300},
+            ],
+            "payment_method": "現金",
+            "payment_date": date.today().isoformat(),
+            "type": "refund",
+            "notes": REFUND_REASON,
+        }
+        # R7-3：多 item 無 key → 400（不再走 items[0] fallback 去重）
+        r_nokey = client.post("/api/activity/pos/checkout", json=multi_items)
+        assert r_nokey.status_code == 400, r_nokey.text
+
+        # 帶 key 的多 item：items[0] 撞 r1 舊收據不可吞掉 regB
         r2 = client.post(
             "/api/activity/pos/checkout",
-            json={
-                "items": [
-                    {"registration_id": a_id, "amount": 400},
-                    {"registration_id": b_id, "amount": 300},
-                ],
-                "payment_method": "現金",
-                "payment_date": date.today().isoformat(),
-                "type": "refund",
-                "notes": REFUND_REASON,
-            },
+            json={**multi_items, "idempotency_key": "multi-item-key-001"},
         )
         assert r2.status_code == 201, r2.text
 
@@ -416,7 +426,7 @@ class TestPosCheckoutNoKeyDedup:
             b_refunds = _active_refund_records(s, b_id)
             assert (
                 len(b_refunds) == 1
-            ), f"多 item 無 key 時 regB 被靜默吞掉：紀錄 {len(b_refunds)}（應為 1）"
+            ), f"多 item 時 regB 被靜默吞掉：紀錄 {len(b_refunds)}（應為 1）"
 
     def test_payment_without_key_double_submit_deduped(self, idk_client):
         """POS checkout 繳費無 key 連送兩次 → 1 筆 / paid 只加一次。"""

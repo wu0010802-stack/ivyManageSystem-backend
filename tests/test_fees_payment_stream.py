@@ -8,7 +8,7 @@
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -119,8 +119,15 @@ class TestInstalmentStaysInOriginalMonth:
     def test_two_instalments_across_months_aggregates_per_month(
         self, fee_stream_client
     ):
-        """3/10 繳 500、4/5 補到 1000；月報應 3 月 500、4 月 500，而非 4 月 1000。"""
+        """上月繳 500、本月補到 1000；月報應各月 500，而非繳清月 1000。
+
+        日期用相對值（上月 10 日 + 今日）：寫死日期會在超出 pay 端點
+        90 天回補窗後變 422 時間炸彈（2026-06-08 起紅的根因）。
+        """
         client, sf = fee_stream_client
+        today = date.today()
+        d1 = (today.replace(day=1) - timedelta(days=1)).replace(day=10)  # 上月 10 日
+        d2 = today
         with sf() as s:
             _admin(s)
             rec = _seed_record(s, amount_due=1000)
@@ -129,43 +136,45 @@ class TestInstalmentStaysInOriginalMonth:
 
         assert _login(client).status_code == 200
 
-        # 第一次繳 500（3/10）
+        # 第一次繳 500（上月 10 日）
         r1 = client.put(
             f"/api/fees/records/{rec_id}/pay",
             json={
-                "payment_date": "2026-03-10",
+                "payment_date": d1.isoformat(),
                 "amount_paid": 500,
                 "payment_method": "現金",
             },
         )
         assert r1.status_code == 200, r1.text
 
-        # 第二次補到 1000（4/5）
+        # 第二次補到 1000（今日）
         r2 = client.put(
             f"/api/fees/records/{rec_id}/pay",
             json={
-                "payment_date": "2026-04-05",
+                "payment_date": d2.isoformat(),
                 "amount_paid": 1000,
                 "payment_method": "現金",
             },
         )
         assert r2.status_code == 200, r2.text
 
-        # 財報：3 月 500、4 月 500；不是 4 月 1000
+        # 財報：兩月各 500；不是繳清月 1000（跨年時兩月落在不同年度查詢）
         with sf() as s:
-            monthly = svc.get_tuition_revenue_by_month(s, 2026)
-        assert monthly.get(3) == 500, f"3 月應 500，實得 {monthly}"
-        assert monthly.get(4) == 500, f"4 月應 500，實得 {monthly}"
+            rev_y1 = svc.get_tuition_revenue_by_month(s, d1.year)
+            rev_y2 = (
+                rev_y1
+                if d2.year == d1.year
+                else svc.get_tuition_revenue_by_month(s, d2.year)
+            )
+        assert rev_y1.get(d1.month) == 500, f"{d1:%m} 月應 500，實得 {rev_y1}"
+        assert rev_y2.get(d2.month) == 500, f"{d2:%m} 月應 500，實得 {rev_y2}"
 
         # StudentFeePayment 應有兩筆
         with sf() as s:
             payments = s.query(StudentFeePayment).filter_by(record_id=rec_id).all()
             assert len(payments) == 2
             assert sorted(p.amount for p in payments) == [500, 500]
-            assert sorted(p.payment_date for p in payments) == [
-                date(2026, 3, 10),
-                date(2026, 4, 5),
-            ]
+            assert sorted(p.payment_date for p in payments) == [d1, d2]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -175,8 +184,13 @@ class TestInstalmentStaysInOriginalMonth:
 
 class TestRefundDoesNotEraseRevenue:
     def test_refund_after_paid_keeps_original_month_revenue(self, fee_stream_client):
-        """3/10 繳清 1000；4/2 退 300。3 月收入應仍為 1000、4 月退款 300。"""
+        """上月繳清 1000；本月退 300。繳費月收入應仍為 1000、退款月 300。
+
+        日期用相對值（上月 10 日），避免寫死日期超出 90 天回補窗的時間炸彈。
+        """
         client, sf = fee_stream_client
+        today = date.today()
+        d_pay = (today.replace(day=1) - timedelta(days=1)).replace(day=10)
         with sf() as s:
             _admin(s)
             rec = _seed_record(s, amount_due=1000)
@@ -185,11 +199,11 @@ class TestRefundDoesNotEraseRevenue:
 
         assert _login(client).status_code == 200
 
-        # 3/10 繳清
+        # 上月 10 日繳清
         r_pay = client.put(
             f"/api/fees/records/{rec_id}/pay",
             json={
-                "payment_date": "2026-03-10",
+                "payment_date": d_pay.isoformat(),
                 "amount_paid": 1000,
                 "payment_method": "現金",
             },
@@ -204,11 +218,13 @@ class TestRefundDoesNotEraseRevenue:
         assert r_refund.status_code == 201, r_refund.text
 
         with sf() as s:
-            revenue = svc.get_tuition_revenue_by_month(s, 2026)
-            refund = svc.get_tuition_refund_by_month(s, 2026)
+            revenue = svc.get_tuition_revenue_by_month(s, d_pay.year)
+            refund = svc.get_tuition_refund_by_month(s, today.year)
             rec = s.query(StudentFeeRecord).get(rec_id)
-        # 關鍵：3 月收入 1000 未消失（舊設計退款會讓 status 變 partial → 月報 0）
-        assert revenue.get(3) == 1000, f"3 月收入應保留 1000，實得 {revenue}"
+        # 關鍵：繳費月收入 1000 未消失（舊設計退款會讓 status 變 partial → 月報 0）
+        assert (
+            revenue.get(d_pay.month) == 1000
+        ), f"{d_pay:%m} 月收入應保留 1000，實得 {revenue}"
         # StudentFeePayment 仍在、未受退款影響
         with sf() as s:
             payments = s.query(StudentFeePayment).filter_by(record_id=rec_id).all()
