@@ -44,11 +44,32 @@ from utils.auth import require_parent_role
 from utils.request_ip import get_client_ip
 
 from ._dependencies import get_parent_db
-from ._shared import _get_parent_user
+from ._shared import _get_parent_user, _get_parent_student_ids
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["parent-dsr"])
+
+
+def _assert_subject_owned(
+    session, user, subject_entity_type: str, subject_entity_id: int
+) -> None:
+    """家長只能對「自己監護的 student」或「自己的 guardian 紀錄」提出 DSR 申請。
+
+    Finding D：提交端原本只校驗 subject_entity_type，未驗歸屬，導致可送出指向
+    任意 id 的 pending row（admin queue 噪音 / 儲存任意 new_value）。雖核准側
+    （dsr_admin._execute_delete_dsr）會重驗監護關係，仍應在入口擋掉無效申請，
+    與其餘家長端點（_assert_student_owned）一致。
+    """
+    guardian_ids, student_ids = _get_parent_student_ids(session, user.id)
+    if subject_entity_type == "student":
+        if subject_entity_id not in student_ids:
+            raise HTTPException(status_code=403, detail="此學生不屬於您，無法提出申請")
+    else:  # guardian
+        if subject_entity_id not in guardian_ids:
+            raise HTTPException(
+                status_code=403, detail="此監護人資料不屬於您，無法提出申請"
+            )
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────
@@ -145,6 +166,9 @@ def submit_delete_request(
 
     if payload.subject_entity_type not in ("student", "guardian"):
         raise HTTPException(status_code=400, detail="刪除目標僅支援 student / guardian")
+    _assert_subject_owned(
+        session, user, payload.subject_entity_type, payload.subject_entity_id
+    )
 
     req = DsrRequest(
         user_id=user.id,
@@ -196,6 +220,9 @@ def submit_correct_request(
 
     if payload.subject_entity_type not in ("student", "guardian"):
         raise HTTPException(status_code=400, detail="更正目標僅支援 student / guardian")
+    _assert_subject_owned(
+        session, user, payload.subject_entity_type, payload.subject_entity_id
+    )
 
     req = DsrRequest(
         user_id=user.id,

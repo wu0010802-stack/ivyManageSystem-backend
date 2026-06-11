@@ -112,6 +112,15 @@ def _seed_parent_with_student(session_factory, *, line_id="U_DSR"):
         return user.id, student.id
 
 
+def _seed_other_student(session_factory, *, sid="S_OTHER"):
+    """建立一個與本家長無監護關係的學生，回傳其 id。"""
+    with session_factory() as session:
+        other = Student(student_id=sid, name="他人小孩", lifecycle_status="active")
+        session.add(other)
+        session.commit()
+        return other.id
+
+
 # ── delete-request ──
 
 
@@ -204,6 +213,31 @@ def test_delete_request_rejects_short_reason(dsr_client):
     assert r.status_code == 422
 
 
+def test_delete_request_rejects_unowned_student(dsr_client):
+    """Finding D：家長不得對非自己監護的學生提出刪除申請（提交端歸屬檢查）。
+
+    修前只校驗 subject_entity_type，任意 student_id 都寫成 pending row（admin
+    queue 噪音）；修後非自己小孩 → 403，且不建立 DsrRequest。"""
+    client, sf = dsr_client
+    user_id, _student_id = _seed_parent_with_student(sf)
+    other_id = _seed_other_student(sf)
+    with sf() as session:
+        token = _parent_token(session.query(User).get(user_id))
+
+    r = client.post(
+        "/api/parent/me/delete-request",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "subject_entity_type": "student",
+            "subject_entity_id": other_id,
+            "reason": "嘗試刪除別人家小孩的資料",
+        },
+    )
+    assert r.status_code == 403, r.text
+    with sf() as session:
+        assert session.query(DsrRequest).count() == 0
+
+
 # ── correct-request ──
 
 
@@ -228,6 +262,30 @@ def test_correct_request_creates_pending(dsr_client):
     body = r.json()
     assert body["request_type"] == DSR_REQUEST_TYPE_CORRECT
     assert body["field_name"] == "address"
+
+
+def test_correct_request_rejects_unowned_student(dsr_client):
+    """correct-request 同樣須擋非自己監護的學生（避免存任意 new_value）。"""
+    client, sf = dsr_client
+    user_id, _student_id = _seed_parent_with_student(sf)
+    other_id = _seed_other_student(sf)
+    with sf() as session:
+        token = _parent_token(session.query(User).get(user_id))
+
+    r = client.post(
+        "/api/parent/me/correct-request",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "subject_entity_type": "student",
+            "subject_entity_id": other_id,
+            "field_name": "address",
+            "new_value": "竄改他人地址",
+            "reason": "越權更正測試",
+        },
+    )
+    assert r.status_code == 403, r.text
+    with sf() as session:
+        assert session.query(DsrRequest).count() == 0
 
 
 # ── opt-out ──
