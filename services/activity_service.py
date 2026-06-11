@@ -109,23 +109,9 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
 
     對齊 api/permissions_admin.py:136-145 / api/portal/leaves.py 等同名 helper。
     """
-    from models.database import User
+    from utils.permissions import list_active_user_ids_with_permission
 
-    is_sqlite = session.bind.dialect.name == "sqlite"
-    if is_sqlite:
-        users = session.query(User).filter(User.is_active.is_(True)).all()
-        return [
-            u.id for u in users if u.permission_names and perm in u.permission_names
-        ]
-    rows = (
-        session.query(User.id)
-        .filter(
-            User.is_active.is_(True),
-            User.permission_names.contains([perm]),
-        )
-        .all()
-    )
-    return [r[0] for r in rows]
+    return list_active_user_ids_with_permission(session, perm)
 
 
 class ActivityService:

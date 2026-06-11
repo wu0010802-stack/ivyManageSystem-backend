@@ -13,7 +13,7 @@ from models.approval import ApprovalStatus
 from models.database import get_session, OvertimeRecord, User
 from utils.auth import get_current_user
 from utils.approval_helpers import _get_finalized_salary_record
-from utils.permissions import Permission
+from utils.permissions import Permission, list_active_user_ids_with_permission
 from ._shared import _get_employee, OvertimeCreatePortal, OVERTIME_TYPE_LABELS
 
 logger = logging.getLogger(__name__)
@@ -26,21 +26,7 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
 
     對齊 api/permissions_admin.py:136-145 與 api/portal/leaves.py 同名 helper。
     """
-    is_sqlite = session.bind.dialect.name == "sqlite"
-    if is_sqlite:
-        users = session.query(User).filter(User.is_active.is_(True)).all()
-        return [
-            u.id for u in users if u.permission_names and perm in u.permission_names
-        ]
-    rows = (
-        session.query(User.id)
-        .filter(
-            User.is_active.is_(True),
-            User.permission_names.contains([perm]),
-        )
-        .all()
-    )
-    return [r[0] for r in rows]
+    return list_active_user_ids_with_permission(session, perm)
 
 
 @router.get("/my-overtimes")

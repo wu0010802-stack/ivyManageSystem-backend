@@ -935,3 +935,45 @@ def check_scope_options_sanity(seed: dict) -> None:
             sorted(missing_in_code),
             sorted(missing_in_db),
         )
+
+
+def _permission_names_contains(perm: str):
+    """SQLAlchemy filter expression：User.permission_names 顯式含 perm（PostgreSQL 用）。
+
+    `permission_names` 欄是 ``JSON().with_variant(ARRAY(Text), "postgresql")``。
+    **不可**用 ``User.permission_names.contains([perm])``——`with_variant` 只換
+    DDL/bind 型別、不換 Python comparator，`.contains()` 走基底型別 JSON 的
+    comparator 生成畸形 ``permission_names LIKE '%' || ARRAY[...]::TEXT[] || '%'``，
+    真實 PostgreSQL 報 ``malformed array literal`` 並中止整個交易（2026-06-06
+    教師 portal 送假/加班/補打卡全 500 的根因）。
+    改用 ``cast`` 取得 ARRAY comparator → 生成 ``CAST(... AS TEXT[]) @> ARRAY[...]``。
+    """
+    from sqlalchemy import Text, cast
+    from sqlalchemy.dialects.postgresql import ARRAY
+
+    from models.database import User  # 延遲匯入避免循環
+
+    return cast(User.permission_names, ARRAY(Text)).contains([perm])
+
+
+def list_active_user_ids_with_permission(session, perm: str) -> list[int]:
+    """列出 is_active 且 permission_names **顯式**含 perm 的 user id（SQLite/PG 通用）。
+
+    語意：僅匹配顯式列出 perm 的帳號；``permission_names`` 為 NULL（走角色模板）
+    或萬用 ``'*'`` 的帳號**不**匹配（SQLite 與 PostgreSQL 兩分支一致，沿用既有
+    行為——本函式只修「PG 畸形查詢中止交易」的崩潰，不改既有匹配語意）。
+    """
+    from models.database import User  # 延遲匯入避免循環
+
+    is_sqlite = session.bind.dialect.name == "sqlite"
+    if is_sqlite:
+        users = session.query(User).filter(User.is_active.is_(True)).all()
+        return [
+            u.id for u in users if u.permission_names and perm in u.permission_names
+        ]
+    rows = (
+        session.query(User.id)
+        .filter(User.is_active.is_(True), _permission_names_contains(perm))
+        .all()
+    )
+    return [r[0] for r in rows]

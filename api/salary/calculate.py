@@ -34,7 +34,7 @@ from services.salary_job_registry import (
 )
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
-from utils.permissions import Permission
+from utils.permissions import Permission, list_active_user_ids_with_permission
 from utils.rate_limit import create_limiter
 
 logger = logging.getLogger(__name__)
@@ -54,23 +54,8 @@ def _enqueue_salary_batch_completed(
 
     session = get_session()
     try:
-        is_sqlite = session.bind.dialect.name == "sqlite"
         perm = Permission.SALARY_WRITE.value
-        if is_sqlite:
-            users = session.query(User).filter(User.is_active.is_(True)).all()
-            recipient_ids = [
-                u.id for u in users if u.permission_names and perm in u.permission_names
-            ]
-        else:
-            rows = (
-                session.query(User.id)
-                .filter(
-                    User.is_active.is_(True),
-                    User.permission_names.contains([perm]),
-                )
-                .all()
-            )
-            recipient_ids = [r[0] for r in rows]
+        recipient_ids = list_active_user_ids_with_permission(session, perm)
 
         for rid in recipient_ids:
             dispatch.enqueue(

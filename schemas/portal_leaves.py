@@ -80,7 +80,7 @@ class MyLeaveListItemOut(IvyBaseModel):
     leave_hours: float
     reason: Optional[str] = None  # pii-allow: 本人查看自填假單理由
     status: str
-    approved_by: Optional[int] = None
+    approved_by: Optional[str] = None  # 核准人帳號字串（如 'admin'），非 user id
     rejection_reason: Optional[str] = None
     attachment_paths: list[str]
     substitute_employee_id: Optional[int] = None

@@ -1008,3 +1008,45 @@ def _get_employee_id(session, employee_code: str) -> int:
     """輔助：依員工編號查 DB 主鍵"""
     emp = session.query(Employee).filter(Employee.employee_id == employee_code).first()
     return emp.id
+
+
+class TestPortalMyLeavesSerialization:
+    """P1 回歸：approved_by 存核准人帳號字串（如 'admin'），
+    MyLeaveListItemOut 誤宣告為 int 會導致 GET /portal/my-leaves
+    在當月有已核准假單時 ResponseValidationError → 500。"""
+
+    def test_my_leaves_lists_approved_leave_with_named_approver(
+        self, leave_overtime_client
+    ):
+        client, session_factory, _ = leave_overtime_client
+        with session_factory() as session:
+            employee = _create_employee(session, "T700", "教師序列化")
+            _create_user(
+                session,
+                username="teacher_serialize",
+                password="PortalPass123",
+                role="teacher",
+                permission_names=[],
+                employee=employee,
+            )
+            session.add(
+                LeaveRecord(
+                    employee_id=employee.id,
+                    leave_type="annual",
+                    start_date=date(2026, 3, 12),
+                    end_date=date(2026, 3, 12),
+                    leave_hours=8,
+                    status="approved",
+                    approved_by="admin",  # 核准人帳號字串（非數字）
+                )
+            )
+            session.commit()
+
+        login_res = _login(client, "teacher_serialize", "PortalPass123")
+        assert login_res.status_code == 200
+
+        res = client.get("/api/portal/my-leaves", params={"year": 2026, "month": 3})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert len(body) == 1
+        assert body[0]["approved_by"] == "admin"

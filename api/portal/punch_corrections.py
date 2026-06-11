@@ -16,7 +16,7 @@ import logging
 from models.approval import ApprovalStatus
 from models.database import get_session, PunchCorrectionRequest, User
 from utils.auth import get_current_user
-from utils.permissions import Permission
+from utils.permissions import Permission, list_active_user_ids_with_permission
 from ._shared import _get_employee
 
 logger = logging.getLogger(__name__)
@@ -26,20 +26,7 @@ router = APIRouter()
 
 def _list_active_users_with_permission(session, perm: str) -> list[int]:
     """列出 permission_names 含 perm 的 active user_id（SQLite/PG 通用）。"""
-    if session.bind.dialect.name == "sqlite":
-        users = session.query(User).filter(User.is_active.is_(True)).all()
-        return [
-            u.id for u in users if u.permission_names and perm in u.permission_names
-        ]
-    rows = (
-        session.query(User.id)
-        .filter(
-            User.is_active.is_(True),
-            User.permission_names.contains([perm]),
-        )
-        .all()
-    )
-    return [r[0] for r in rows]
+    return list_active_user_ids_with_permission(session, perm)
 
 
 CORRECTION_TYPE_LABELS = {
