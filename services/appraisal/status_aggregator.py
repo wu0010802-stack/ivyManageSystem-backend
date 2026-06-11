@@ -25,7 +25,7 @@ from utils.taipei_time import today_taipei
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Integer, and_, case, func, or_
+from sqlalchemy import Integer, and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 import logging
@@ -123,6 +123,8 @@ class ParticipantStatus:
     # 帶班人數自動計算：max(0, 期末在籍 − 編制)；編制來自年終 ClassEnrollmentTarget。
     # 無年終 cycle 或無對應班級編制時 fallback 為 0。
     headcount_over_target: int = 0
+    # 復學事件數（StudentChangeLog event_type='復學'，依班級＋時間窗）；未帶班者為 0。
+    reinstate_count: int = 0
 
 
 # ===== Sub-aggregators =====
@@ -347,6 +349,30 @@ def _aggregate_disciplinary(
     return result
 
 
+def _aggregate_reinstates(
+    session: Session,
+    cycle: "AppraisalCycle",
+    classroom_ids: list[int],
+    window_end: date,
+) -> dict[int, int]:
+    """classroom_id → 復學事件數。時間窗與其他聚合一致 [start, min(end, today)]。"""
+    from models.student_log import StudentChangeLog
+
+    if not classroom_ids:
+        return {}
+    rows = session.execute(
+        select(StudentChangeLog.classroom_id, func.count())
+        .where(
+            StudentChangeLog.event_type == "復學",
+            StudentChangeLog.event_date >= cycle.start_date,
+            StudentChangeLog.event_date <= window_end,
+            StudentChangeLog.classroom_id.in_(classroom_ids),
+        )
+        .group_by(StudentChangeLog.classroom_id)
+    ).all()
+    return {cid: int(cnt) for cid, cnt in rows}
+
+
 def _aggregate_manual_event_counts(
     session: Session, cycle_id: int
 ) -> dict[int, dict[str, Decimal]]:
@@ -471,6 +497,7 @@ def aggregate_cycle_status(
     target_by_classroom = _headcount_target_by_classroom(
         session, cycle.academic_year, semester_enum_to_int(cycle.semester) == 1
     )
+    reinstate_map = _aggregate_reinstates(session, cycle, classroom_ids, end)
     out: list[ParticipantStatus] = []
     for p in participants:
         ret = ret_map[p.employee_id]
@@ -500,6 +527,11 @@ def aggregate_cycle_status(
                 hire_months_in_cycle=p.hire_months_in_cycle,
                 manual_event_counts=dict(manual_by_pid.get(p.id, {})),
                 headcount_over_target=headcount_over,
+                reinstate_count=(
+                    reinstate_map.get(p.classroom_id, 0)
+                    if p.classroom_id is not None
+                    else 0
+                ),
             )
         )
     return out
@@ -586,6 +618,7 @@ def aggregate_all_active_employees_status(
     )
     dis_map = _aggregate_disciplinary(session, employee_ids, start, end)
     manual_by_pid = _aggregate_manual_event_counts(session, cycle.id)
+    reinstate_map = _aggregate_reinstates(session, cycle, classroom_ids, end)
 
     out: list[ParticipantStatus] = []
     for eid in employee_ids:
@@ -593,13 +626,14 @@ def aggregate_all_active_employees_status(
         p = participant_by_emp.get(eid)
         role = employee_to_role[eid]
         manual_counts = dict(manual_by_pid.get(p.id, {})) if p is not None else {}
+        cid = employee_to_classroom[eid]
         out.append(
             ParticipantStatus(
                 participant_id=p.id if p else None,
                 employee_id=eid,
                 employee_name=emp.name,
                 role_group=role.value if hasattr(role, "value") else str(role),
-                classroom_id=employee_to_classroom[eid],
+                classroom_id=cid,
                 attendance=att_map[eid],
                 retention=ret_map[eid],
                 activity=act_map[eid],
@@ -607,6 +641,7 @@ def aggregate_all_active_employees_status(
                 is_participant=p is not None,
                 hire_months_in_cycle=p.hire_months_in_cycle if p else None,
                 manual_event_counts=manual_counts,
+                reinstate_count=reinstate_map.get(cid, 0) if cid is not None else 0,
             )
         )
     # 排序：已加入考核者在前，再依員工姓名
