@@ -55,7 +55,8 @@ class AttendanceAggregate:
     late_count: int = 0
     early_leave_count: int = 0
     missing_punch_count: int = 0  # missing_in + missing_out
-    leave_days: int = 0  # status='absent'
+    leave_days: int = 0  # status='leave'（全天請假）
+    absent_days: int = 0  # status='absent'（曠職，規章 −4/日）
     # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
 
@@ -149,6 +150,9 @@ def _aggregate_attendance(
     absent_expr = func.sum(case((Attendance.status == "absent", 1), else_=0)).label(
         "absent"
     )
+    leave_expr = func.sum(case((Attendance.status == "leave", 1), else_=0)).label(
+        "leave"
+    )
     rows = (
         session.query(
             Attendance.employee_id,
@@ -156,6 +160,7 @@ def _aggregate_attendance(
             early_expr,
             missing_expr,
             absent_expr,
+            leave_expr,
         )
         .filter(Attendance.employee_id.in_(employee_ids))
         .filter(Attendance.attendance_date >= start)
@@ -163,12 +168,13 @@ def _aggregate_attendance(
         .group_by(Attendance.employee_id)
         .all()
     )
-    for eid, late, early, missing, absent in rows:
+    for eid, late, early, missing, absent, leave in rows:
         agg = result[eid]
         agg.late_count = int(late or 0)
         agg.early_leave_count = int(early or 0)
         agg.missing_punch_count = int(missing or 0)
-        agg.leave_days = int(absent or 0)
+        agg.leave_days = int(leave or 0)
+        agg.absent_days = int(absent or 0)
     return result
 
 
