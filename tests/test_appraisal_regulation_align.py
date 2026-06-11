@@ -696,3 +696,56 @@ def test_compute_all_deltas_manual_delta(test_db_session, monkeypatch):
     child_acc = result[(p.id, "CHILD_ACCIDENT")]
     assert child_acc.delta == Decimal("-3.00")
     assert "手填分值" in child_acc.note
+
+
+# ===== code-review 修正：merit 類型永不產生薪資扣款 =====
+
+
+def test_merit列不產生薪資扣款_commendation():
+    """嘉獎 HR 誤填金額 → _effective_amount 回 0。"""
+    from services.disciplinary import _effective_amount
+
+    class _A:
+        action_type = "commendation"
+        deduction_amount = 500  # HR 誤填
+
+    assert _effective_amount(_A(), bonus_config=None) == 0.0
+
+
+def test_merit列不產生薪資扣款_minor_merit():
+    """小功 HR 誤填金額 → _effective_amount 回 0。"""
+    from services.disciplinary import _effective_amount
+
+    class _A:
+        action_type = "minor_merit"
+        deduction_amount = 3000
+
+    assert _effective_amount(_A(), bonus_config=None) == 0.0
+
+
+def test_merit列不產生薪資扣款_major_merit():
+    """大功 HR 誤填金額 → _effective_amount 回 0。"""
+    from services.disciplinary import _effective_amount
+
+    class _A:
+        action_type = "major_merit"
+        deduction_amount = 9999
+
+    assert _effective_amount(_A(), bonus_config=None) == 0.0
+
+
+def test_懲處類型仍正常產生扣款():
+    """警告/小過 不受 merit 守衛影響，仍回傳正確金額。"""
+    from services.disciplinary import _effective_amount
+
+    class _Warning:
+        action_type = "warning"
+        deduction_amount = 1000
+
+    class _Minor:
+        action_type = "minor"
+        deduction_amount = 0  # fallback
+
+    assert _effective_amount(_Warning(), bonus_config=None) == 1000.0
+    # deduction_amount=0 → resolve_default_amount fallback=3000
+    assert _effective_amount(_Minor(), bonus_config=None) == 3000.0

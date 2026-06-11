@@ -476,3 +476,70 @@ class TestApi:
             },
         )
         assert res.status_code in (401, 403)
+
+    def test_merit類型誤填金額_create_422(self, disc_client):
+        """嘉獎/小功/大功 帶 deduction_amount > 0 → 422。"""
+        client, session_factory = disc_client
+        with session_factory() as session:
+            emp = _add_emp(session)
+            emp_id = emp.id
+            session.commit()
+        _login(client, session_factory, username="merit_admin1")
+
+        for merit_type in ("commendation", "minor_merit", "major_merit"):
+            res = client.post(
+                "/api/disciplinary-actions",
+                json={
+                    "employee_id": emp_id,
+                    "action_date": "2026-05-01",
+                    "action_type": merit_type,
+                    "deduction_amount": 500,
+                },
+            )
+            assert (
+                res.status_code == 422
+            ), f"merit type={merit_type} 預期 422，實得 {res.status_code}"
+
+    def test_merit類型填零金額_create_成功(self, disc_client):
+        """嘉獎 deduction_amount=0 → 200 正常建立。"""
+        client, session_factory = disc_client
+        with session_factory() as session:
+            emp = _add_emp(session)
+            emp_id = emp.id
+            session.commit()
+        _login(client, session_factory, username="merit_admin2")
+
+        res = client.post(
+            "/api/disciplinary-actions",
+            json={
+                "employee_id": emp_id,
+                "action_date": "2026-05-01",
+                "action_type": "commendation",
+                "deduction_amount": 0,
+                "reason": "表現優良",
+            },
+        )
+        assert res.status_code == 200
+        assert res.json()["action_type_label"] == "嘉獎"
+
+    def test_merit類型誤填金額_update_422(self, disc_client):
+        """現有嘉獎記錄 PUT 帶 deduction_amount > 0 → 422。"""
+        client, session_factory = disc_client
+        with session_factory() as session:
+            emp = _add_emp(session)
+            a = DisciplinaryAction(
+                employee_id=emp.id,
+                action_date=date(2026, 5, 1),
+                action_type="commendation",
+                deduction_amount=0,
+            )
+            session.add(a)
+            session.commit()
+            aid = a.id
+        _login(client, session_factory, username="merit_admin3")
+
+        res = client.put(
+            f"/api/disciplinary-actions/{aid}",
+            json={"deduction_amount": 999},
+        )
+        assert res.status_code == 422

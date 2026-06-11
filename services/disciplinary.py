@@ -4,6 +4,8 @@
 扣完即 mark applied，剩餘額度（獎金不足時）不滾入下次。
 
 注意：本階段先實作節慶+超額抵扣。主管紅利月扣未實作（業主未強要求）。
+
+merit 類型（嘉獎/小功/大功）為獎勵紀錄（考核加分用），不參與薪資扣款。
 """
 
 from __future__ import annotations
@@ -15,10 +17,18 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from models.disciplinary import (
+    ACTION_TYPE_COMMEND,
     ACTION_TYPE_MAJOR,
+    ACTION_TYPE_MAJOR_MERIT,
     ACTION_TYPE_MINOR,
+    ACTION_TYPE_MINOR_MERIT,
     ACTION_TYPE_WARNING,
     DisciplinaryAction,
+)
+
+# merit 三值：嘉獎/小功/大功 — 獎勵性質，永不產生薪資扣款
+_MERIT_ACTION_TYPES = frozenset(
+    {ACTION_TYPE_COMMEND, ACTION_TYPE_MINOR_MERIT, ACTION_TYPE_MAJOR_MERIT}
 )
 
 
@@ -40,7 +50,13 @@ def resolve_default_amount(action_type: str, bonus_config) -> float:
 
 
 def _effective_amount(action: DisciplinaryAction, bonus_config) -> float:
-    """個案金額；若為 0 用 BonusConfig 預設。"""
+    """個案金額；若為 0 用 BonusConfig 預設。
+
+    merit 為獎勵紀錄（嘉獎/小功/大功），永不產生薪資扣款；防 HR 誤填金額。
+    """
+    # merit 類型一律回 0，無論 deduction_amount 填了什麼
+    if action.action_type in _MERIT_ACTION_TYPES:
+        return 0.0
     amount = float(action.deduction_amount or 0)
     if amount > 0:
         return amount
