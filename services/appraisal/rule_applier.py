@@ -87,11 +87,22 @@ def apply_tier(rule: ScoringRule, value: Decimal, role_group: RoleGroup) -> Deci
 
 
 def apply_flat_threshold(
-    rule: ScoringRule, value: Decimal, role_group: RoleGroup
+    rule: ScoringRule,
+    value: Decimal,
+    role_group: RoleGroup,
+    grade_name: Optional[str] = None,
 ) -> Decimal:
-    """value >= threshold → above_delta；否則 below_delta。"""
+    """value >= threshold → above_delta；否則 below_delta。
+
+    grade_name 非 None 時，先查 rule_config["grade_thresholds"][grade_name]；
+    命中則用年級門檻覆蓋 threshold，否則回退既有 threshold（向後相容）。
+    """
     cfg = rule.rule_config
     threshold = Decimal(str(cfg["threshold"]))
+    if grade_name is not None:
+        grade_thresholds = cfg.get("grade_thresholds") or {}
+        if grade_name in grade_thresholds:
+            threshold = Decimal(str(grade_thresholds[grade_name]))
     if value >= threshold:
         return _round(Decimal(str(cfg["above_delta"])))
     return _round(Decimal(str(cfg["below_delta"])))
@@ -102,13 +113,24 @@ def apply_disciplinary_tiered(
     warning_count: int,
     minor_count: int,
     major_count: int,
+    *,
+    commend_count: int = 0,
+    minor_merit_count: int = 0,
+    major_merit_count: int = 0,
 ) -> Decimal:
-    """REWARD_PUNISH 專用：warning/minor/major 各自單價乘以件數後加總。"""
+    """REWARD_PUNISH 專用：懲處（warning/minor/major）與獎勵（嘉獎/小功/大功）功過相抵。
+
+    commend_delta/minor_merit_delta/major_merit_delta 用 cfg.get(..., 0) 向後相容，
+    舊版 config 不含 merit 鍵時三者皆視為 0。
+    """
     cfg = rule.rule_config
     delta = (
         Decimal(str(cfg["warning_delta"])) * Decimal(warning_count)
         + Decimal(str(cfg["minor_delta"])) * Decimal(minor_count)
         + Decimal(str(cfg["major_delta"])) * Decimal(major_count)
+        + Decimal(str(cfg.get("commend_delta", 0))) * Decimal(commend_count)
+        + Decimal(str(cfg.get("minor_merit_delta", 0))) * Decimal(minor_merit_count)
+        + Decimal(str(cfg.get("major_merit_delta", 0))) * Decimal(major_merit_count)
     )
     return _round(delta)
 
@@ -226,20 +248,37 @@ def _apply_auto_item(
             else Decimal("0")
         )
         return (
-            apply_flat_threshold(rule, rate, role_group),
+            apply_flat_threshold(
+                rule, rate, role_group, grade_name=status.activity.grade_name
+            ),
             rate,
             f"才藝率 {rate}%",
         )
     if code == "REWARD_PUNISH":
         d = status.disciplinary
         delta = apply_disciplinary_tiered(
-            rule, d.warning_count, d.minor_count, d.major_count
+            rule,
+            d.warning_count,
+            d.minor_count,
+            d.major_count,
+            commend_count=d.commend_count,
+            minor_merit_count=d.minor_merit_count,
+            major_merit_count=d.major_merit_count,
         )
-        raw = Decimal(d.warning_count + d.minor_count + d.major_count)
+        raw = Decimal(
+            d.warning_count
+            + d.minor_count
+            + d.major_count
+            + d.commend_count
+            + d.minor_merit_count
+            + d.major_merit_count
+        )
         return (
             delta,
             raw,
-            f"警告 {d.warning_count} / 小過 {d.minor_count} / 大過 {d.major_count}",
+            f"警告 {d.warning_count} / 小過 {d.minor_count} / 大過 {d.major_count}"
+            f" / 嘉獎 {d.commend_count} / 小功 {d.minor_merit_count}"
+            f" / 大功 {d.major_merit_count}",
         )
     if code == "CLASS_HEADCOUNT_BONUS":
         cnt = Decimal(status.headcount_over_target)

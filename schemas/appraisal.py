@@ -206,6 +206,9 @@ class DisciplinaryAggregateOut(BaseModel):
     warning_count: int
     minor_count: int
     major_count: int
+    commend_count: int = 0
+    minor_merit_count: int = 0
+    major_merit_count: int = 0
     actions: list[DisciplinaryActionItemOut] = Field(default_factory=list)
     suggested_score_delta: Decimal
 

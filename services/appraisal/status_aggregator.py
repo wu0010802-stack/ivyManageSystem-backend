@@ -76,6 +76,9 @@ class DisciplinaryAggregate:
     warning_count: int = 0
     minor_count: int = 0
     major_count: int = 0
+    commend_count: int = 0
+    minor_merit_count: int = 0
+    major_merit_count: int = 0
     actions: list[DisciplinaryActionItem] = field(default_factory=list)
     # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
@@ -420,6 +423,12 @@ def _aggregate_disciplinary(
             agg.minor_count += 1
         elif atype == "major":
             agg.major_count += 1
+        elif atype == "commendation":
+            agg.commend_count += 1
+        elif atype == "minor_merit":
+            agg.minor_merit_count += 1
+        elif atype == "major_merit":
+            agg.major_merit_count += 1
     return result
 
 

@@ -220,6 +220,9 @@ def _build_participant_status_out(s) -> ParticipantStatusOut:
             warning_count=s.disciplinary.warning_count,
             minor_count=s.disciplinary.minor_count,
             major_count=s.disciplinary.major_count,
+            commend_count=s.disciplinary.commend_count,
+            minor_merit_count=s.disciplinary.minor_merit_count,
+            major_merit_count=s.disciplinary.major_merit_count,
             actions=[
                 DisciplinaryActionItemOut(
                     id=a.id,

@@ -416,3 +416,107 @@ class TestRetentionSchoolAvgDedup:
         assert by_emp[emp_b.id].retention.retention_rate == Decimal("0")
         # 未帶班：全校平均 = 班A 10/10（班B 排除）= 100.00
         assert by_emp[emp_staff.id].retention.retention_rate == Decimal("100.00")
+
+
+# ===== Task 7: 分年級門檻、獎懲加分側、merit action types =====
+
+
+def test_flat_threshold_分年級門檻():
+    from services.appraisal.rule_applier import apply_flat_threshold
+
+    rule = ScoringRule(
+        item_code="AFTER_CLASS_RATE",
+        effective_from=date(2026, 2, 1),
+        rule_type="FLAT_THRESHOLD",
+        rule_config={
+            "threshold": 80,
+            "above_delta": 2.0,
+            "below_delta": 0,
+            "grade_thresholds": {"大班": 100, "中班": 90, "小班": 80, "幼幼班": 70},
+        },
+        applies_to_role_groups=None,
+    )
+    rg = RoleGroup.HEAD_TEACHER
+    assert apply_flat_threshold(rule, Decimal("95"), rg, grade_name="大班") == Decimal(
+        "0.00"
+    )
+    assert apply_flat_threshold(rule, Decimal("100"), rg, grade_name="大班") == Decimal(
+        "2.00"
+    )
+    assert apply_flat_threshold(
+        rule, Decimal("75"), rg, grade_name="幼幼班"
+    ) == Decimal("2.00")
+    assert apply_flat_threshold(rule, Decimal("85"), rg, grade_name=None) == Decimal(
+        "2.00"
+    )
+
+
+def test_disciplinary_tiered_加分側():
+    from services.appraisal.rule_applier import apply_disciplinary_tiered
+
+    rule = ScoringRule(
+        item_code="REWARD_PUNISH",
+        effective_from=date(2026, 2, 1),
+        rule_type="DISCIPLINARY_TIERED",
+        rule_config={
+            "warning_delta": -2.0,
+            "minor_delta": -3.0,
+            "major_delta": -6.0,
+            "commend_delta": 2.0,
+            "minor_merit_delta": 3.0,
+            "major_merit_delta": 6.0,
+        },
+        applies_to_role_groups=None,
+    )
+    assert apply_disciplinary_tiered(
+        rule,
+        warning_count=1,
+        minor_count=0,
+        major_count=0,
+        commend_count=0,
+        minor_merit_count=0,
+        major_merit_count=1,
+    ) == Decimal("4.00")
+
+
+def test_disciplinary_tiered_舊config向後相容():
+    from services.appraisal.rule_applier import apply_disciplinary_tiered
+
+    rule = ScoringRule(
+        item_code="REWARD_PUNISH",
+        effective_from=date(2025, 8, 1),
+        rule_type="DISCIPLINARY_TIERED",
+        rule_config={"warning_delta": -1.0, "minor_delta": -3.0, "major_delta": -10.0},
+        applies_to_role_groups=None,
+    )
+    assert apply_disciplinary_tiered(rule, 1, 1, 0) == Decimal("-4.00")
+
+
+def test_merit_action_types_註冊():
+    from models.disciplinary import ACTION_TYPES, ACTION_TYPE_LABELS
+
+    for t, label in (
+        ("commendation", "嘉獎"),
+        ("minor_merit", "小功"),
+        ("major_merit", "大功"),
+    ):
+        assert t in ACTION_TYPES
+        assert ACTION_TYPE_LABELS[t] == label
+
+
+def test_status_out_schema_鏡像新欄位():
+    """DisciplinaryAggregateOut 須鏡像 DisciplinaryAggregate 的三個 merit 計數。"""
+    from schemas.appraisal import DisciplinaryAggregateOut
+
+    out = DisciplinaryAggregateOut(
+        warning_count=1,
+        minor_count=0,
+        major_count=0,
+        commend_count=2,
+        minor_merit_count=1,
+        major_merit_count=0,
+        suggested_score_delta=Decimal("0"),
+    )
+    assert out.commend_count == 2
+    assert out.minor_merit_count == 1
+    assert out.major_merit_count == 0
