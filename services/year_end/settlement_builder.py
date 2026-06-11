@@ -562,6 +562,14 @@ def gather_performance_rates(
             else:
                 class_perf_second, class_ret_second = perf, ret
 
+    # P1-B：班級率比照全校率按 worked_semesters gate（與 :476-479、step3 一致），
+    # 未在職學期不計入 pair_avg，避免非在職學期的班級率稀釋平均。沿用業主
+    # 2026-06-05 已定案的 GATE 方向（套用於同一函式的全部率分量，求內部一致）。
+    if not worked_first:
+        class_ret_first = class_perf_first = None
+    if not worked_second:
+        class_ret_second = class_perf_second = None
+
     return PerformanceRates(
         school_rate_first=school_first,
         school_rate_second=school_second,

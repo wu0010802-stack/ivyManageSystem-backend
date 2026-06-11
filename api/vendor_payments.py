@@ -383,6 +383,13 @@ def update_vendor_payment(
     session = get_session()
     try:
         row = _load_payment(session, payment_id)
+        # P2-E：已簽收的紀錄不可再編輯，否則金額等簽名佐證會被靜默竄改。
+        # 與 sign 端點對稱（pending 才能簽收）；如需更正請刪除後重建。
+        if row.status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail="已簽收的廠商付款不可編輯（如需更正請刪除後重建）",
+            )
         data = payload.model_dump(exclude_unset=True)
         for k, v in data.items():
             setattr(row, k, v)

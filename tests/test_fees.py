@@ -23,9 +23,10 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api.fees import _apply_fee_record_filters
+from api.fees._helpers import compute_fee_summary
 from models.base import Base
 from models.classroom import Classroom, Student
-from models.fees import StudentFeeRecord
+from models.fees import StudentFeeAdjustment, StudentFeeRecord
 
 
 @pytest.fixture
@@ -374,6 +375,76 @@ class TestFeeSummary:
         )
         assert len(records_2025) == 1
         assert sum(r.amount_due for r in records_2025) == 3000
+
+
+class TestFeeSummaryAdjustmentScope:
+    """P1-A：fee_summary 折抵聚合須 scope 至 filtered records 的 (student_id, period)，
+    否則「帶班級、不帶 period」時會跨該生所有學期/他班的折抵累加，
+    使 total_unpaid 被低估、遮蓋欠費。"""
+
+    def _setup_cross_period(self, session):
+        cls_a = _add_classroom(session, name="A班")
+        s1 = _add_student(session, "甲生", cls_a.id)
+        session.flush()
+        # 同一學生換班跨學期：A班 114-1 一筆、B班 114-2 一筆
+        session.add_all(
+            [
+                StudentFeeRecord(
+                    student_id=s1.id,
+                    student_name=s1.name,
+                    classroom_name="A班",
+                    fee_item_name="學費",
+                    amount_due=10000,
+                    amount_paid=0,
+                    status="unpaid",
+                    period="114-1",
+                ),
+                StudentFeeRecord(
+                    student_id=s1.id,
+                    student_name=s1.name,
+                    classroom_name="B班",
+                    fee_item_name="學費",
+                    amount_due=10000,
+                    amount_paid=0,
+                    status="unpaid",
+                    period="114-2",
+                ),
+            ]
+        )
+        # 折抵：114-1 折 3000、114-2 折 5000
+        session.add_all(
+            [
+                StudentFeeAdjustment(
+                    student_id=s1.id,
+                    period="114-1",
+                    adjustment_type="sibling_discount",
+                    amount=3000,
+                ),
+                StudentFeeAdjustment(
+                    student_id=s1.id,
+                    period="114-2",
+                    adjustment_type="sibling_discount",
+                    amount=5000,
+                ),
+            ]
+        )
+        session.flush()
+        return s1
+
+    def test_adjustment_scoped_to_filtered_record_periods(self, session):
+        self._setup_cross_period(session)
+        result = compute_fee_summary(session, classroom_name="A班")
+        # 只應計入 A班=114-1 的折抵 3000，不可把 114-2(B班) 的 5000 也扣
+        assert result["total_adjustment"] == 3000
+        assert result["total_due"] == 10000
+        assert result["total_unpaid"] == 7000  # 10000 - 0 - 3000
+
+    def test_adjustment_with_explicit_period_unchanged(self, session):
+        # 指定 period 的路徑既有即正確，作為回歸守衛確認 fix 不破壞它
+        self._setup_cross_period(session)
+        result = compute_fee_summary(session, period="114-1")
+        assert result["total_adjustment"] == 3000
+        assert result["total_unpaid"] == 7000
 
 
 # ---------------------------------------------------------------------------

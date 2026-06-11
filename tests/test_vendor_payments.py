@@ -205,6 +205,38 @@ class TestVendorPaymentCRUD:
         assert res.status_code == 200
         assert client.get(f"/api/vendor-payments/{pid}").status_code == 404
 
+    def test_cannot_update_after_signed(self, client_with_db):
+        """P2-E：已簽收的廠商付款不可再被編輯（金額等簽名佐證須不可竄改）。"""
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session,
+                "vp_admin2",
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
+            )
+        _login(client, "vp_admin2")
+
+        res = client.post(
+            "/api/vendor-payments", json=_payment_payload(amount="1200.00")
+        )
+        assert res.status_code == 201, res.text
+        pid = res.json()["id"]
+
+        # 簽收
+        res = client.post(
+            f"/api/vendor-payments/{pid}/sign",
+            json={"signature_kind": "drawn", "signature_data": _png_data_url()},
+        )
+        assert res.status_code == 200, res.text
+
+        # 簽收後嘗試改金額 → 須拒絕（409），金額不可被竄改
+        res = client.put(f"/api/vendor-payments/{pid}", json={"amount": "999999.00"})
+        assert res.status_code == 409, res.text
+
+        res = client.get(f"/api/vendor-payments/{pid}")
+        assert res.json()["amount"] == 1200.0
+        assert res.json()["status"] == "signed"
+
     def test_read_only_user_cannot_write(self, client_with_db):
         client, session_factory = client_with_db
         with session_factory() as session:

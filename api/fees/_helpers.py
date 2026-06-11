@@ -13,9 +13,10 @@ from typing import Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import case, func, select, tuple_
 
 from api.activity._shared import validate_payment_date
-from models.fees import StudentFeeRecord
+from models.fees import StudentFeeAdjustment, StudentFeeRecord
 from services.report_cache_service import report_cache_service
 
 logger = logging.getLogger(__name__)
@@ -203,3 +204,76 @@ def _apply_fee_record_filters(
             StudentFeeRecord.student_name.ilike(f"%{safe_kw}%", escape=LIKE_ESCAPE_CHAR)
         )
     return query
+
+
+def compute_fee_summary(
+    session,
+    *,
+    period: Optional[str] = None,
+    classroom_name: Optional[str] = None,
+    status: Optional[str] = None,
+    student_name: Optional[str] = None,
+) -> dict:
+    """費用統計摘要的純查詢邏輯（route fee_summary 的可測 seam）。
+
+    折抵（StudentFeeAdjustment）為 per-(student_id, period)，且無 classroom 欄位
+    （見 model docstring：該生該學期 total_due = SUM(records) - SUM(adjustments)）。
+    因此折抵聚合 scope 至 filtered records 的 (student_id, period) 組合，與
+    total_due/total_paid 同口徑——避免「帶班級、不帶 period」時跨該生所有學期/
+    他班的折抵累加，使 total_unpaid 被低估、遮蓋欠費。
+    """
+    q = _apply_fee_record_filters(
+        session.query(StudentFeeRecord),
+        period=period,
+        classroom_name=classroom_name,
+        status=status,
+        student_name=student_name,
+    )
+
+    agg_q = q.with_entities(
+        func.count(StudentFeeRecord.id).label("total_count"),
+        func.coalesce(
+            func.sum(case((StudentFeeRecord.status == "paid", 1), else_=0)), 0
+        ).label("paid_count"),
+        func.coalesce(
+            func.sum(case((StudentFeeRecord.status == "partial", 1), else_=0)), 0
+        ).label("partial_count"),
+        func.coalesce(func.sum(StudentFeeRecord.amount_due), 0).label("total_due"),
+        func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0).label("total_paid"),
+    )
+    row = agg_q.one()
+    total_count = row.total_count or 0
+    paid_count = int(row.paid_count or 0)
+    partial_count = int(row.partial_count or 0)
+    total_due = int(row.total_due or 0)
+    total_paid = int(row.total_paid or 0)
+
+    # 折抵聚合：scope 至 filtered records 的 (student_id, period) 組合。
+    # 用顯式 select(subquery) 而非 coerce ORM Query，避免 row-value IN 的方言/
+    # coercion 歧義（PostgreSQL/SQLite 皆原生支援 (a,b) IN (SELECT a,b ...)）。
+    record_keys = (
+        q.with_entities(StudentFeeRecord.student_id, StudentFeeRecord.period)
+        .distinct()
+        .subquery()
+    )
+    total_adjustment = int(
+        session.query(func.coalesce(func.sum(StudentFeeAdjustment.amount), 0))
+        .filter(
+            tuple_(StudentFeeAdjustment.student_id, StudentFeeAdjustment.period).in_(
+                select(record_keys.c.student_id, record_keys.c.period)
+            )
+        )
+        .scalar()
+        or 0
+    )
+
+    return {
+        "total_count": total_count,
+        "paid_count": paid_count,
+        "partial_count": partial_count,
+        "unpaid_count": total_count - paid_count - partial_count,
+        "total_due": total_due,
+        "total_paid": total_paid,
+        "total_unpaid": max(0, total_due - total_paid - total_adjustment),
+        "total_adjustment": total_adjustment,
+    }

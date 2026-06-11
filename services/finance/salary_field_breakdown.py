@@ -30,7 +30,7 @@ from services.salary.utils import (
     get_meeting_deduction_period_start,
 )
 from services.student_enrollment import count_students_active_on
-from utils.rounding import round_half_up
+from utils.rounding import round_down, round_half_up
 
 FIELD_LABELS = {
     "base_salary": "底薪",
@@ -163,14 +163,16 @@ def _calc_leave_deductions(
         )
         if is_genuine_override:
             effective_ratio = lv.deduction_ratio
-            deduction = round_half_up((hours / 8) * daily_salary * effective_ratio)
+            # P2-I：扣款逐筆無條件捨去，對齊引擎 _sum_leave_deduction（floor）。
+            deduction = round_down((hours / 8) * daily_salary * effective_ratio)
             display_ratio = effective_ratio
         else:
             half_paid = max(
                 0.0, min(SICK_LEAVE_ANNUAL_HALF_PAY_CAP_HOURS - sick_used, hours)
             )
             unpaid = hours - half_paid
-            deduction = round_half_up(
+            # P2-I：扣款逐筆無條件捨去，對齊引擎 _sum_leave_deduction（floor）。
+            deduction = round_down(
                 (half_paid / 8) * daily_salary * 0.5 + (unpaid / 8) * daily_salary * 1.0
             )
             # 顯示用綜合 ratio：若全在上限內則 0.5、全超過則 1.0、混合時取加權平均
@@ -197,7 +199,8 @@ def _calc_leave_deductions(
             if lv.deduction_ratio is not None
             else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
         )
-        deduction = round_half_up((lv.leave_hours / 8) * daily_salary * ratio)
+        # P2-I：扣款逐筆無條件捨去，對齊引擎 _sum_leave_deduction（floor）。
+        deduction = round_down((lv.leave_hours / 8) * daily_salary * ratio)
         leave_deduction_total += deduction
         leave_breakdown.append(
             {
@@ -263,9 +266,7 @@ def _calc_insurance_details(emp: Employee, ins_service) -> dict:
         "health_insured_salary": getattr(emp, "health_insured_salary", None),
         "pension_insured_salary": getattr(emp, "pension_insured_salary", None),
         # 階段 2-C 特殊欄位（影響保費計算的旗標）
-        "no_employment_insurance": bool(
-            getattr(emp, "no_employment_insurance", False)
-        ),
+        "no_employment_insurance": bool(getattr(emp, "no_employment_insurance", False)),
         "health_exempt": bool(getattr(emp, "health_exempt", False)),
         "extra_dependents_quarterly": int(
             getattr(emp, "extra_dependents_quarterly", 0) or 0
@@ -454,7 +455,9 @@ def _calc_festival_detail(
             cc["grade_name"],
         )
         raw_festival = round_half_up(base_amount * ratio) if is_eligible else 0
-        raw_overtime = round_half_up(overtime_count * overtime_per_person) if is_eligible else 0
+        raw_overtime = (
+            round_half_up(overtime_count * overtime_per_person) if is_eligible else 0
+        )
         # 共用副班導：取 shared_other_classes（含 ≥ 3 班）；fallback 到舊的 shared_second_class
         other_classes = cc.get("shared_other_classes")
         if not other_classes:
@@ -473,7 +476,9 @@ def _calc_festival_detail(
                 overtime_count_oc = max(
                     0, oc["current_enrollment"] - overtime_target_oc
                 )
-                overtime_scores.append(round_half_up(overtime_count_oc * overtime_per_person))
+                overtime_scores.append(
+                    round_half_up(overtime_count_oc * overtime_per_person)
+                )
             raw_festival = round_half_up(sum(festival_scores) / len(festival_scores))
             raw_overtime = round_half_up(sum(overtime_scores) / len(overtime_scores))
             # 維持舊欄位（前端可能讀取）：以首個 other class 為代表
@@ -960,9 +965,7 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
                 "item": "本月實領底薪",
                 "value": int(record.base_salary or 0),
                 "remark": (
-                    "依在職比例折算"
-                    if proration_applied
-                    else "全月在職，無折算"
+                    "依在職比例折算" if proration_applied else "全月在職，無折算"
                 ),
             }
         )
