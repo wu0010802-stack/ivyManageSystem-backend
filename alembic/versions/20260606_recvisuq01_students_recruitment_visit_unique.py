@@ -24,7 +24,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "recvisuq01"
-down_revision = "yebnd01"
+down_revision = "auditack01"  # reparent: 原 yebnd01，linearize 多 head（2026-06-11）
 branch_labels = None
 depends_on = None
 
