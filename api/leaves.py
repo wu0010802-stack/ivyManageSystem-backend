@@ -1029,6 +1029,15 @@ def update_leave(
             ):
                 # 退審路徑（Hook 3）
                 sync.revert(session, leave_id)
+                # R5-2：退審時釋放核准當下 consume 的補休 grant ledger，用「舊」leave_type/
+                # hours（編輯可能已改這兩欄）。原本 update_leave 漏此釋放（delete:1211 /
+                # approve-reject:1602 都有）→ consumed_hours 永久洩漏 → 到期折現少付員工。
+                if old_sync_snapshot["leave_type"] == "compensatory":
+                    _release_compensatory_grants_fifo(
+                        session,
+                        leave.employee_id,
+                        old_sync_snapshot["leave_hours"],
+                    )
             elif (
                 old_sync_snapshot["status"] == ApprovalStatus.APPROVED.value
                 and leave.status == ApprovalStatus.APPROVED.value

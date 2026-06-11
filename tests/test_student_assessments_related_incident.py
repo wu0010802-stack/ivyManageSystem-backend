@@ -246,3 +246,61 @@ class TestAssessmentRelatedIncident:
             asm_after = session.query(StudentAssessment).filter_by(id=asm_id).one()
             assert asm_after.related_incident_id is None
             assert asm_after.content == "y"  # 評量內容保留
+
+
+# ── R5-1：評量 list 須排除終態學生（手寫 classroom 檢查漏 lifecycle）──
+
+
+def test_list_assessments_excludes_terminal_student(client_with_db):
+    """持 STUDENTS_READ 的非管理角色，自班學生轉終態（畢業）後不可再讀其評量
+    （_require_classroom_access 漏 lifecycle 過濾，且終態學生保留 classroom_id）。"""
+    from models.employee import Employee
+    from models.classroom import LIFECYCLE_GRADUATED
+
+    client, sf = client_with_db
+    with sf() as s:
+        emp = Employee(
+            employee_id="T1", name="老師甲", is_active=True, base_salary=30000
+        )
+        s.add(emp)
+        s.flush()
+        cls = Classroom(name="星星班", is_active=True, head_teacher_id=emp.id)
+        s.add(cls)
+        s.flush()
+        stu = Student(
+            student_id="G001",
+            name="畢業生",
+            classroom_id=cls.id,
+            is_active=False,
+            lifecycle_status=LIFECYCLE_GRADUATED,
+        )
+        s.add(stu)
+        s.flush()
+        s.add(
+            StudentAssessment(
+                student_id=stu.id,
+                semester="2025下",
+                assessment_type="期中",
+                content="機密評語",
+                assessment_date=date(2026, 3, 15),
+            )
+        )
+        s.add(
+            User(
+                username="t1",
+                password_hash=hash_password("TempPass123"),
+                role="teacher",
+                employee_id=emp.id,
+                permission_names=["STUDENTS_READ"],
+                is_active=True,
+                token_version=0,
+            )
+        )
+        s.commit()
+        stu_id = stu.id
+
+    assert _login(client, "t1").status_code == 200
+    res = client.get(f"/api/student-assessments?student_id={stu_id}")
+    assert res.status_code in (200, 403), res.text
+    if res.status_code == 200:
+        assert res.json()["total"] == 0, "終態學生評量不應外洩給前班導"

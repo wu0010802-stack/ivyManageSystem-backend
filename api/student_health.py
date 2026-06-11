@@ -92,6 +92,10 @@ class MedicationOrderCreate(BaseModel):
     dose: str = Field(..., min_length=1, max_length=50)
     time_slots: list[str] = Field(..., min_length=1, max_length=10)
     note: Optional[str] = None
+    # R5-4：第二次提交帶 true 以繞過過敏軟警告（對齊家長端）。
+    acknowledge_allergy_warning: bool = False
+    # R5-5：第二次提交帶 true 以繞過「同學生同日同時段已有其他 order」重複給藥軟警告。
+    acknowledge_duplicate_slot: bool = False
 
     @field_validator("time_slots")
     @classmethod
@@ -221,6 +225,25 @@ def _load_logs_for_orders(
     return out
 
 
+def _write_medication_access_log(session, current_user, student_id, request) -> None:
+    """R5-3：用藥（健康 PII）讀取的 §6 醫療存取軌跡，對齊 allergy list / 家長端。"""
+    from models.medical_access_log import (
+        MEDICAL_FIELD_MEDICATION,
+        MedicalAccessLog,
+    )
+    from utils.request_ip import get_client_ip
+
+    session.add(
+        MedicalAccessLog(
+            user_id=current_user.get("user_id"),
+            student_id=student_id,
+            field_name=MEDICAL_FIELD_MEDICATION,
+            reason="用藥單檢視（無顯式理由）",
+            ip_address=get_client_ip(request),
+        )
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 過敏管理
 # ══════════════════════════════════════════════════════════════════════════
@@ -235,7 +258,12 @@ def list_allergies(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_READ.value,
+            )
             query = session.query(StudentAllergy).filter(
                 StudentAllergy.student_id == student_id
             )
@@ -282,7 +310,12 @@ def create_allergy(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_WRITE.value,
+            )
             if payload.severity not in ALLERGY_SEVERITIES:
                 raise HTTPException(status_code=400, detail="severity 不合法")
 
@@ -327,7 +360,12 @@ def update_allergy(
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_WRITE.value,
+            )
             a = (
                 session.query(StudentAllergy)
                 .filter(
@@ -369,7 +407,12 @@ def delete_allergy(
     """直接刪除過敏紀錄（不做軟刪；若要保留歷史請用 PATCH active=false）。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_WRITE.value,
+            )
             a = (
                 session.query(StudentAllergy)
                 .filter(
@@ -400,12 +443,18 @@ def delete_allergy(
 )
 def list_medication_orders(
     student_id: int,
+    request: Request,
     order_date: Optional[date] = Query(None, alias="date"),
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_READ.value,
+            )
             query = session.query(StudentMedicationOrder).filter(
                 StudentMedicationOrder.student_id == student_id
             )
@@ -417,6 +466,10 @@ def list_medication_orders(
             ).all()
             logs_map = _load_logs_for_orders(session, [o.id for o in orders])
             items = [_order_to_dict(o, logs_map.get(o.id, [])) for o in orders]
+            # R5-3：用藥含健康 PII，補 §6 medical_access_log（對齊 allergy list / 家長端
+            # get_medication_order；staff 端原本不寫，醫療稽核「誰看過某童用藥」缺失）。
+            if orders:
+                _write_medication_access_log(session, current_user, student_id, request)
             return {"items": items, "total": len(items)}
     except HTTPException:
         raise
@@ -431,11 +484,17 @@ def list_medication_orders(
 def get_medication_order(
     student_id: int,
     order_id: int,
+    request: Request,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
 ) -> dict:
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_READ.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_READ.value,
+            )
             o = (
                 session.query(StudentMedicationOrder)
                 .filter(
@@ -447,6 +506,8 @@ def get_medication_order(
             if not o:
                 raise HTTPException(status_code=404, detail="用藥單不存在")
             logs = _load_logs_for_order(session, o.id)
+            # R5-3：用藥含健康 PII，補 §6 medical_access_log（對齊 allergy / 家長端）。
+            _write_medication_access_log(session, current_user, student_id, request)
             return _order_to_dict(o, logs)
     except HTTPException:
         raise
@@ -468,7 +529,71 @@ def create_medication_order(
     """建立當日用藥單。會自動依 time_slots 預建 N 筆 pending logs。"""
     try:
         with session_scope() as session:
-            assert_student_access(session, current_user, student_id, code=Permission.STUDENTS_HEALTH_WRITE.value)
+            assert_student_access(
+                session,
+                current_user,
+                student_id,
+                code=Permission.STUDENTS_HEALTH_WRITE.value,
+            )
+
+            # R5-4：過敏軟警告（對齊家長端 create_medication_order）。老師端原本不比對
+            # 過敏原 → 安全防呆缺口（過敏=傷害幼兒）。用 HTTPException 409（不能用
+            # BusinessError，會被下方 except Exception 吞成 500）；帶 acknowledge 重送放行。
+            from services.medication_service import find_allergy_conflicts
+
+            conflicts = find_allergy_conflicts(
+                session,
+                student_id=student_id,
+                medication_name=payload.medication_name,
+            )
+            if conflicts and not payload.acknowledge_allergy_warning:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "ALLERGY_WARNING",
+                        "message": (
+                            "用藥名稱可能與孩童過敏原相關，請確認後重送並帶 "
+                            "acknowledge_allergy_warning=true"
+                        ),
+                        "allergens": [
+                            {
+                                "id": a.id,
+                                "allergen": a.allergen,
+                                "severity": a.severity,
+                            }
+                            for a in conflicts
+                        ],
+                    },
+                )
+
+            # R5-5：跨 order 重複給藥軟警告。單 order 內 (order_id, scheduled_time) 已有
+            # unique index，但同學生同日「另一張 order」同時段不受限 → 兩筆 pending log
+            # 都可各自 administer → double-dose。建單時偵測同學生同日既有 order 的時段
+            # 重疊（不硬擋，因不同藥同時段為合法）；帶 acknowledge_duplicate_slot 放行。
+            existing_orders = (
+                session.query(StudentMedicationOrder)
+                .filter(
+                    StudentMedicationOrder.student_id == student_id,
+                    StudentMedicationOrder.order_date == payload.order_date,
+                )
+                .all()
+            )
+            existing_slots: set[str] = set()
+            for eo in existing_orders:
+                existing_slots.update(eo.time_slots or [])
+            slot_overlap = sorted(set(payload.time_slots) & existing_slots)
+            if slot_overlap and not payload.acknowledge_duplicate_slot:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "DUPLICATE_SLOT_WARNING",
+                        "message": (
+                            "此孩童當日同時段已有其他用藥單，請確認非重複給藥後重送並帶 "
+                            "acknowledge_duplicate_slot=true"
+                        ),
+                        "slots": slot_overlap,
+                    },
+                )
 
             order = create_order_with_logs(
                 session,
@@ -513,9 +638,14 @@ def _get_log_with_access(
     session, log_id: int, current_user: dict
 ) -> tuple[StudentMedicationLog, StudentMedicationOrder, int]:
     """取 log + order，檢查學生班級 scope。回傳 (log, order, student_id)。"""
+    # R5-6：with_for_update 序列化並發 administer/skip/correct——否則兩請求同時通過
+    # _reject_if_finalized，第二筆 UPDATE 撞 immutable trigger 回 500（PG）；加鎖後第二
+    # 筆在 SELECT 阻塞，待第一筆 commit 後讀到 finalized → _reject_if_finalized 乾淨 409。
+    # （SQLite no-op；PG 生效。）
     lg = (
         session.query(StudentMedicationLog)
         .filter(StudentMedicationLog.id == log_id)
+        .with_for_update()
         .first()
     )
     if not lg:
@@ -527,7 +657,12 @@ def _get_log_with_access(
     )
     if not o:
         raise HTTPException(status_code=500, detail="對應的用藥單不存在")
-    assert_student_access(session, current_user, o.student_id, code=Permission.STUDENTS_MEDICATION_ADMINISTER.value)
+    assert_student_access(
+        session,
+        current_user,
+        o.student_id,
+        code=Permission.STUDENTS_MEDICATION_ADMINISTER.value,
+    )
     return lg, o, o.student_id
 
 
@@ -536,6 +671,17 @@ def _reject_if_finalized(lg: StudentMedicationLog) -> None:
         raise HTTPException(
             status_code=409,
             detail="此紀錄已執行或已跳過，不可修改；請改用 /correct 新增修正紀錄",
+        )
+
+
+def _reject_if_not_today(o: StudentMedicationOrder) -> None:
+    """R5-7：一張 order 僅限當日（model 定義）；administer/skip 只允許當日用藥單，
+    避免直接用任意 log_id 對過去/未來 order 給藥/跳過（today-list UI 也只顯示當日）。
+    correct（修正過去記錄）不受此限。"""
+    if o.order_date != today_taipei():
+        raise HTTPException(
+            status_code=400,
+            detail="只能對當日（order_date）的用藥單給藥或跳過",
         )
 
 
@@ -553,6 +699,7 @@ def administer_medication(
         with session_scope() as session:
             lg, o, student_id = _get_log_with_access(session, log_id, current_user)
             _reject_if_finalized(lg)
+            _reject_if_not_today(o)  # R5-7
 
             lg.administered_at = now_taipei_naive()
             lg.administered_by = current_user.get("user_id")
@@ -593,6 +740,7 @@ def skip_medication(
         with session_scope() as session:
             lg, o, student_id = _get_log_with_access(session, log_id, current_user)
             _reject_if_finalized(lg)
+            _reject_if_not_today(o)  # R5-7
 
             lg.skipped = True
             lg.skipped_reason = payload.skipped_reason
@@ -699,7 +847,9 @@ def today_medication_summary(
     try:
         today = today_taipei()
         with session_scope() as session:
-            scope = student_ids_in_scope(session, current_user, code=Permission.STUDENTS_HEALTH_READ.value)
+            scope = student_ids_in_scope(
+                session, current_user, code=Permission.STUDENTS_HEALTH_READ.value
+            )
             query = session.query(StudentMedicationOrder).filter(
                 StudentMedicationOrder.order_date == today
             )

@@ -251,3 +251,165 @@ def test_list_allergies_no_log_when_empty(health_app):
             .all()
         )
         assert len(logs) == 0
+
+
+def test_list_medication_orders_writes_medical_access_log(health_app):
+    """R5-3：staff 查用藥單（健康 PII）須寫 §6 medical_access_log（field=medication），
+    對齊 allergy / 家長端；原本 staff 端不寫 → 醫療稽核「誰看過某童用藥」缺失。"""
+    from datetime import date
+    from models.portfolio import StudentMedicationOrder
+    from models.medical_access_log import MEDICAL_FIELD_MEDICATION
+
+    client, sf = health_app
+    seed = _seed_allergy_and_teacher(sf, with_allergy=False)
+    with sf() as s:
+        s.add(
+            StudentMedicationOrder(
+                student_id=seed["student_id"],
+                order_date=date(2026, 3, 10),
+                medication_name="退燒藥",
+                dose="1 顆",
+                time_slots=["12:00"],
+                source="staff",
+            )
+        )
+        s.commit()
+    tk = _token(seed["teacher_id"], seed["emp_id"])
+
+    r = client.get(
+        f"/api/students/{seed['student_id']}/medication-orders",
+        cookies={"access_token": tk},
+    )
+    assert r.status_code == 200, r.text
+
+    with sf() as s:
+        logs = (
+            s.query(MedicalAccessLog)
+            .filter(
+                MedicalAccessLog.student_id == seed["student_id"],
+                MedicalAccessLog.field_name == MEDICAL_FIELD_MEDICATION,
+            )
+            .all()
+        )
+        assert len(logs) == 1, "用藥單檢視須留醫療存取軌跡"
+
+
+def test_staff_create_medication_warns_on_allergy(health_app):
+    """R5-4：老師建用藥單，藥名與孩童過敏原（花生）相關 → 409 ALLERGY_WARNING；
+    帶 acknowledge_allergy_warning=true 重送放行（對齊家長端，安全防呆）。"""
+    client, sf = health_app
+    seed = _seed_allergy_and_teacher(sf, with_allergy=True)  # 過敏原 花生
+    tk = create_access_token(
+        {
+            "user_id": seed["teacher_id"],
+            "employee_id": seed["emp_id"],
+            "role": "teacher",
+            "name": "t_alg",
+            "permission_names": ["STUDENTS_HEALTH_WRITE", "STUDENTS_HEALTH_READ"],
+            "token_version": 0,
+        }
+    )
+    body = {
+        "order_date": "2026-03-10",
+        "medication_name": "花生",
+        "dose": "1 顆",
+        "time_slots": ["12:00"],
+    }
+    r1 = client.post(
+        f"/api/students/{seed['student_id']}/medication-orders",
+        json=body,
+        cookies={"access_token": tk},
+    )
+    assert r1.status_code == 409, r1.text
+    assert r1.json()["detail"]["code"] == "ALLERGY_WARNING"
+
+    r2 = client.post(
+        f"/api/students/{seed['student_id']}/medication-orders",
+        json={**body, "acknowledge_allergy_warning": True},
+        cookies={"access_token": tk},
+    )
+    assert r2.status_code == 201, r2.text
+
+
+def test_administer_rejects_non_today_order(health_app):
+    """R5-7：administer 只允許當日 order；過去 order 的 pending log 直接以 log_id 呼叫
+    administer 須 400（避免對非當日用藥單給藥；today-list UI 也只顯示當日）。"""
+    from datetime import date
+    from models.portfolio import StudentMedicationOrder, StudentMedicationLog
+
+    client, sf = health_app
+    seed = _seed_allergy_and_teacher(sf, with_allergy=False)
+    with sf() as s:
+        order = StudentMedicationOrder(
+            student_id=seed["student_id"],
+            order_date=date(2020, 1, 1),  # 過去日期
+            medication_name="退燒藥",
+            dose="1 顆",
+            time_slots=["12:00"],
+            source="staff",
+        )
+        s.add(order)
+        s.flush()
+        log = StudentMedicationLog(order_id=order.id, scheduled_time="12:00")
+        s.add(log)
+        s.commit()
+        log_id = log.id
+
+    tk = create_access_token(
+        {
+            "user_id": seed["teacher_id"],
+            "employee_id": seed["emp_id"],
+            "role": "teacher",
+            "name": "t_alg",
+            "permission_names": [
+                "STUDENTS_MEDICATION_ADMINISTER",
+                "STUDENTS_HEALTH_READ",
+            ],
+            "token_version": 0,
+        }
+    )
+    r = client.post(
+        f"/api/medication-logs/{log_id}/administer",
+        json={},
+        cookies={"access_token": tk},
+    )
+    assert r.status_code == 400, r.text
+    assert "當日" in r.json()["detail"]
+
+
+def test_staff_create_warns_on_cross_order_slot_collision(health_app):
+    """R5-5：同學生同日同時段已有 order，再建一張 → 409 DUPLICATE_SLOT_WARNING；
+    帶 acknowledge_duplicate_slot=true 放行（防跨 order double-dose）。"""
+    client, sf = health_app
+    seed = _seed_allergy_and_teacher(sf, with_allergy=False)
+    tk = create_access_token(
+        {
+            "user_id": seed["teacher_id"],
+            "employee_id": seed["emp_id"],
+            "role": "teacher",
+            "name": "t_alg",
+            "permission_names": ["STUDENTS_HEALTH_WRITE", "STUDENTS_HEALTH_READ"],
+            "token_version": 0,
+        }
+    )
+    url = f"/api/students/{seed['student_id']}/medication-orders"
+    body1 = {
+        "order_date": "2026-03-10",
+        "medication_name": "藥A",
+        "dose": "1 顆",
+        "time_slots": ["12:00"],
+    }
+    assert client.post(url, json=body1, cookies={"access_token": tk}).status_code == 201
+
+    body2 = {**body1, "medication_name": "藥B"}  # 同日同時段、不同藥
+    r2 = client.post(url, json=body2, cookies={"access_token": tk})
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["detail"]["code"] == "DUPLICATE_SLOT_WARNING"
+    assert "12:00" in r2.json()["detail"]["slots"]
+
+    r3 = client.post(
+        url,
+        json={**body2, "acknowledge_duplicate_slot": True},
+        cookies={"access_token": tk},
+    )
+    assert r3.status_code == 201, r3.text

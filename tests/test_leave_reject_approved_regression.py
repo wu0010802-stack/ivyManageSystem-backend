@@ -282,3 +282,76 @@ class TestBatchRejectOfApprovedLeaveBlockedByFinalizedMonth:
             assert leave.status == "approved", "封存守衛失敗時應保留原核准狀態"
 
         fake_salary_engine.process_salary_calculation.assert_not_called()
+
+
+# ── R5-2：編輯已核准補休單 → 退審 → 釋放 comp grant ledger ──
+
+
+def test_update_approved_comp_leave_releases_grant(leave_reject_client):
+    """編輯已核准補休單會退回 pending；須釋放核准時 consume 的 grant consumed_hours，
+    否則永久洩漏 → 到期折現少付（與 delete / approve-reject 釋放對稱）。"""
+    from models.overtime import OvertimeRecord
+    from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+
+    from models.leave import LeaveQuota
+
+    client, sf, _ = leave_reject_client
+    with sf() as s:
+        emp = _create_employee(s, "C9", "補休員")
+        _create_admin(s, "comp_admin", "CompPass123")
+        s.flush()
+        # 補休年度配額（讓 update 過 _check_compensatory_quota；year=今年對齊守衛 fallback）
+        s.add(
+            LeaveQuota(
+                employee_id=emp.id,
+                year=2026,
+                leave_type="compensatory",
+                total_hours=100,
+            )
+        )
+        ot = OvertimeRecord(
+            employee_id=emp.id,
+            overtime_date=date(2025, 5, 1),
+            overtime_type="weekday",
+            hours=8.0,
+            use_comp_leave=True,
+            comp_leave_granted=True,
+            status="approved",
+        )
+        s.add(ot)
+        s.flush()
+        grant = OvertimeCompLeaveGrant(
+            overtime_record_id=ot.id,
+            employee_id=emp.id,
+            granted_hours=8.0,
+            granted_at=date(2025, 5, 1),
+            expires_at=date(2026, 12, 31),
+            consumed_hours=8.0,  # 核准補休時已 consume
+            status="active",
+        )
+        s.add(grant)
+        leave = LeaveRecord(
+            employee_id=emp.id,
+            leave_type="compensatory",
+            start_date=date(2026, 3, 10),
+            end_date=date(2026, 3, 10),
+            leave_hours=8,
+            status="approved",
+            approved_by="admin",
+            deduction_ratio=0.0,
+            is_deductible=False,
+        )
+        s.add(leave)
+        s.commit()
+        leave_id = leave.id
+        grant_id = grant.id
+
+    assert _login(client, "comp_admin", "CompPass123").status_code == 200
+    res = client.put(f"/api/leaves/{leave_id}", json={"reason": "更新原因"})
+    assert res.status_code == 200, res.text
+
+    with sf() as s:
+        grant = s.get(OvertimeCompLeaveGrant, grant_id)
+        assert (
+            grant.consumed_hours == 0
+        ), f"退審須釋放 grant，consumed_hours 應回 0，實際 {grant.consumed_hours}"
