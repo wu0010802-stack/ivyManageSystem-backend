@@ -28,7 +28,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastapi import WebSocketDisconnect
 
 import api.dismissal_ws as dws
-from api.dismissal_ws import portal_dismissal_ws, _ADMIN_CHANNEL, _classroom_channel
+from api.dismissal_ws import (
+    portal_dismissal_ws,
+    admin_dismissal_ws,
+    _ADMIN_CHANNEL,
+    _classroom_channel,
+)
 from utils.ws_hub import WS_CLOSE_FORBIDDEN
 from utils import ws_connection_limiter
 
@@ -130,3 +135,76 @@ def test_role_without_permission_is_rejected():
     ws.accept.assert_not_called()
     assert WS_CLOSE_FORBIDDEN in _close_codes(ws)
     backend.subscribe.assert_not_called()
+
+
+# ── 管理端 WS（admin_dismissal_ws）scope 對齊 REST 回歸 ───────────────────────────
+#
+# 背景（Finding A，2026-06-05）：管理端 WS `/api/ws/admin/dismissal-calls` 原本只檢查
+#   role in (admin,hr,supervisor) + bare has_permission(STUDENTS_READ)，
+# 但同資源的 REST 全園列表 `/api/dismissal-calls` 走 assert_all_scope(STUDENTS_READ)，
+# 要求 :all scope。因 STUDENTS_READ 是 scope-aware，bare has_permission 對
+# 'STUDENTS_READ:own_class' 仍回 True → 一個被刻意限為 own_class 的管理角色
+# 在 REST 被 403、卻能從 WS 訂閱 dismissal.admin 收全校學生姓名/班級/備註（跨班 PII 洩漏）。
+# 修法：admin WS 改用 is_unrestricted(payload, code=STUDENTS_READ) 對齊 REST 的 :all 要求。
+
+
+def _run_admin_endpoint(payload):
+    """以指定 verify_ws_token payload 跑 admin_dismissal_ws，回傳 (ws, backend)。"""
+    ws = _make_ws()
+    backend = MagicMock()
+    backend.subscribe = MagicMock()
+    backend.unsubscribe = MagicMock()
+    with (
+        patch.object(dws, "verify_ws_token", return_value=payload),
+        patch.object(dws, "get_broadcast", return_value=backend),
+    ):
+        asyncio.run(admin_dismissal_ws(ws))
+    return ws, backend
+
+
+def test_admin_ws_rejects_supervisor_scoped_to_own_class():
+    """Finding A 核心：role=supervisor 但 STUDENTS_READ:own_class 的帳號，
+    REST assert_all_scope 會 403；admin WS 不得只憑 role 白名單 + bare 權限放行，
+    否則訂閱 dismissal.admin 收全校 PII。必須 4007 拒絕、不得 accept/subscribe。"""
+    payload = {
+        "user_id": 7,
+        "role": "supervisor",
+        "employee_id": 99,
+        "permission_names": ["STUDENTS_READ:own_class"],
+    }
+    ws, backend = _run_admin_endpoint(payload)
+
+    ws.accept.assert_not_called()
+    assert WS_CLOSE_FORBIDDEN in _close_codes(ws), "own_class 管理角色須被 4007 拒絕"
+    backend.subscribe.assert_not_called()
+
+
+def test_admin_ws_accepts_wildcard_admin():
+    """零行為變更驗證：admin（wildcard → :all）仍 accept 並訂閱 admin channel。"""
+    payload = {
+        "user_id": 8,
+        "role": "admin",
+        "employee_id": None,
+        "permission_names": ["*"],
+    }
+    ws, backend = _run_admin_endpoint(payload)
+
+    ws.accept.assert_called_once()
+    assert WS_CLOSE_FORBIDDEN not in _close_codes(ws)
+    backend.subscribe.assert_any_call(_ADMIN_CHANNEL, ws)
+
+
+def test_admin_ws_accepts_supervisor_with_bare_all_scope():
+    """零行為變更驗證：預設 supervisor（bare STUDENTS_READ，等價 :all）仍 accept。
+    確保修法只擋 :own_class，不誤傷標準管理角色。"""
+    payload = {
+        "user_id": 9,
+        "role": "supervisor",
+        "employee_id": 88,
+        "permission_names": ["STUDENTS_READ"],
+    }
+    ws, backend = _run_admin_endpoint(payload)
+
+    ws.accept.assert_called_once()
+    assert WS_CLOSE_FORBIDDEN not in _close_codes(ws)
+    backend.subscribe.assert_any_call(_ADMIN_CHANNEL, ws)
