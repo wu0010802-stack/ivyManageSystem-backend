@@ -1,0 +1,71 @@
+"""offboarding_revoke_scheduler：離職到期撤帳 enforcement（R6-3）。
+
+未來日期離職（resign_date > today）時 revoke_user 回 skipped，User.is_active 維持
+True；revoke_user docstring 宣稱「當日 cron 自動轉」但**原本無此 scheduler** → 已離職
+員工在離職日後仍保有完整登入 + staff_refresh，直到有人手動撤。
+
+此 scheduler 每 interval 掃 resign_date<=today 但仍未撤（user_revoked_at IS NULL）的
+離職記錄，補執行 revoke_user。冪等：只處理 user_revoked_at IS NULL，多 worker 重跑
+或處理已撤記錄皆無害。
+"""
+
+import asyncio
+import logging
+
+from utils.scheduler_observability import record_rows, scheduler_iteration
+from utils.taipei_time import today_taipei
+
+logger = logging.getLogger(__name__)
+
+
+def scheduler_enabled() -> bool:
+    from config import get_settings
+
+    return get_settings().scheduler.offboarding_revoke_enabled
+
+
+def run_offboarding_revoke_due_once() -> dict:
+    """掃 resign_date<=today 但 User 仍 active（user_revoked_at IS NULL）的離職記錄，
+    補執行 revoke_user（is_active=False + token_version bump + 撤 staff_refresh family）。
+    回 {"revoked": n}。冪等。"""
+    from models.base import session_scope
+    from models.offboarding import EmployeeOffboardingRecord
+    from services.offboarding.steps.revoke_user import run as revoke_run
+
+    today = today_taipei()
+    revoked = 0
+    with session_scope() as session:
+        records = (
+            session.query(EmployeeOffboardingRecord)
+            .filter(
+                EmployeeOffboardingRecord.resign_date <= today,
+                EmployeeOffboardingRecord.user_revoked_at.is_(None),
+            )
+            .all()
+        )
+        for record in records:
+            result = revoke_run(session, record)
+            if result.get("status") == "completed":
+                revoked += 1
+    return {"revoked": revoked}
+
+
+async def run_offboarding_revoke_scheduler(stop_event: asyncio.Event) -> None:
+    """每 check_interval 秒掃一次到期離職並補撤帳。"""
+    from config import get_settings
+
+    check_interval = get_settings().scheduler.offboarding_revoke_check_interval
+    logger.info("offboarding revoke scheduler 啟動 (interval=%ss)", check_interval)
+    while not stop_event.is_set():
+        with scheduler_iteration(
+            "offboarding_revoke", expected_interval_seconds=check_interval
+        ):
+            try:
+                result = run_offboarding_revoke_due_once()
+                record_rows("offboarding_revoke", int(result.get("revoked", 0)))
+            except Exception:
+                logger.exception("offboarding revoke scheduler tick 失敗")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
+        except asyncio.TimeoutError:
+            pass

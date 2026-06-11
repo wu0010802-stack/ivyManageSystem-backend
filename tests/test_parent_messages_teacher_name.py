@@ -121,3 +121,42 @@ class TestTeacherNameResolution:
             unread_count=0,
         )
         assert result["teacher_name"] == "王老師"
+
+
+def test_portal_resolve_teacher_display_name_uses_employee_name():
+    """R6-2（教師端對稱修補）：api/portal/parent_messages._resolve_teacher_display_name
+    用 Employee.name，絕不回 User.username（=員工工號/登入帳號，會經 renderer 送家長）。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from models.base import Base
+    from models.database import Employee, User
+    from api.portal.parent_messages import _resolve_teacher_display_name
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    try:
+        emp = Employee(employee_id="E001", name="陳老師", is_active=True, base_salary=0)
+        s.add(emp)
+        s.flush()
+        u = User(
+            username="t_secret_001",
+            password_hash="!",
+            role="teacher",
+            employee_id=emp.id,
+            is_active=True,
+        )
+        s.add(u)
+        s.flush()
+        name = _resolve_teacher_display_name(s, u.id)
+        assert name == "陳老師"
+        assert "t_secret_001" not in name
+    finally:
+        s.close()
+        engine.dispose()

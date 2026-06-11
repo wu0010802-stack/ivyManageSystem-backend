@@ -218,12 +218,18 @@ def _thread_summary(session, *, t: ParentMessageThread) -> dict:
         unread_q = unread_q.filter(ParentMessage.created_at > cutoff)
     unread_count = unread_q.count()
 
+    # R6-2：家長顯示名絕不回 user.username（=parent_line_<LINE id> 內部識別碼）；
+    # 用 resolve_parent_display_name（display_name → Guardian.name → 「家長」）。
+    from api.parent_portal._shared import resolve_parent_display_name
+
     return {
         "id": t.id,
         "student_id": t.student_id,
         "student_name": student.name if student else None,
         "parent_user_id": t.parent_user_id,
-        "parent_name": parent.username if parent else None,
+        "parent_name": (
+            resolve_parent_display_name(session, parent) if parent else None
+        ),
         "last_message_at": t.last_message_at.isoformat() if t.last_message_at else None,
         "last_message_preview": last_preview,
         "unread_count": unread_count,
@@ -235,6 +241,20 @@ def _resolve_employee_id(current_user: dict) -> int:
     if not eid:
         raise HTTPException(status_code=403, detail="此 token 無關聯員工")
     return eid
+
+
+def _resolve_teacher_display_name(session, user_id: int) -> str:
+    """R6-2：教師顯示名用 Employee.name，絕不回 User.username（=員工工號/登入帳號）。
+    teacher_name 會經 renderer 逐字送家長端 LINE/inbox，回 username 等同把 staff
+    登入識別碼外洩給外部家長。"""
+    from models.database import Employee
+
+    u = session.query(User).filter(User.id == user_id).first()
+    if u and u.employee_id:
+        emp = session.query(Employee).filter(Employee.id == u.employee_id).first()
+        if emp and emp.name:
+            return emp.name
+    return "老師"
 
 
 def _get_thread_for_teacher(
@@ -425,11 +445,10 @@ def create_thread(
             student_obj = (
                 session.query(Student).filter(Student.id == thread.student_id).first()
             )
-            teacher_obj = session.query(User).filter(User.id == user_id).first()
             _enqueue_parent_message_received(
                 session,
                 parent_user_id=thread.parent_user_id,
-                teacher_name=(teacher_obj.username if teacher_obj else "老師"),
+                teacher_name=_resolve_teacher_display_name(session, user_id),
                 student_name=(student_obj.name if student_obj else None),
                 body_preview=payload.body,
                 thread_id=thread.id,
@@ -485,11 +504,10 @@ def post_reply(
             student_obj = (
                 session.query(Student).filter(Student.id == t.student_id).first()
             )
-            teacher_obj = session.query(User).filter(User.id == user_id).first()
             _enqueue_parent_message_received(
                 session,
                 parent_user_id=t.parent_user_id,
-                teacher_name=(teacher_obj.username if teacher_obj else "老師"),
+                teacher_name=_resolve_teacher_display_name(session, user_id),
                 student_name=(student_obj.name if student_obj else None),
                 body_preview=payload.body,
                 thread_id=t.id,
@@ -618,6 +636,9 @@ def recall_message(
         )
         if not msg:
             raise HTTPException(status_code=404, detail="訊息不存在")
+        # R6-8：先驗教師是此 thread 參與者（對齊家長端 S6 + 其餘 teacher 端點皆先過
+        # _get_thread_for_teacher）。can_recall 已要求 sender==user，此為防禦縱深。
+        _get_thread_for_teacher(session, user_id=user_id, thread_id=msg.thread_id)
         if not can_recall(msg, user_id=user_id):
             raise HTTPException(status_code=403, detail="只有 sender 30 分鐘內可撤回")
         msg.deleted_at = now_taipei_naive()

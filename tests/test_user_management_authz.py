@@ -719,3 +719,12 @@ def test_update_user_disable_revokes_staff_refresh_family(auth_client):
     with sf() as s:
         tok = s.query(StaffRefreshToken).filter_by(id=tok_id).first()
         assert tok.revoked_at is not None, "停用帳號後 staff_refresh family 須被撤銷"
+
+
+# ── R6-1：GET /auth/permissions 須登入（原本無認證匿名洩 RBAC）──
+
+
+def test_get_permissions_requires_auth(auth_client):
+    """R6-1：匿名 GET /auth/permissions 須 401（修前無 Depends → 進 body 拉 RBAC）。"""
+    client, sf = auth_client
+    assert client.get("/api/auth/permissions").status_code == 401

@@ -353,3 +353,21 @@ def test_duplicate_offboarding_raises_already_offboarded(
             operator_user_id=admin.id,
         )
     assert exc.value.code == "ALREADY_OFFBOARDED"
+
+
+def test_process_offboarding_blocks_self(db_session, employee_factory, user_factory):
+    """R6-5：操作者不可離職自己（會 is_active=False+token bump 自我登出鎖死）→
+    CANNOT_OFFBOARD_SELF。"""
+    from datetime import date
+
+    emp = employee_factory()
+    operator = user_factory(role="admin", employee_id=emp.id)
+    with pytest.raises(OffboardingError) as exc:
+        process_offboarding(
+            session=db_session,
+            employee_id=emp.id,
+            resign_date=date(2026, 6, 30),
+            resign_reason=None,
+            operator_user_id=operator.id,
+        )
+    assert exc.value.code == "CANNOT_OFFBOARD_SELF"

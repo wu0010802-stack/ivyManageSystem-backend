@@ -283,3 +283,22 @@ class TestRoleCRUD:
         c.post("/api/roles", json={"code": "tmp_unused", "label": "x"})
         resp = c.delete("/api/roles/tmp_unused")
         assert resp.status_code == 200
+
+
+def test_assert_can_grant_scope_aware_blocks_escalation():
+    """R6-7：_assert_can_grant 須 scope-aware——own_class caller 不可在角色授 :all
+    （原本 split(":")[0] 剝 scope 放行）。"""
+    from fastapi import HTTPException
+    from api.permissions_admin import _assert_can_grant
+
+    caller = {"permission_names": ["STUDENTS_READ:own_class"], "role": "supervisor"}
+    with pytest.raises(HTTPException) as exc:
+        _assert_can_grant(caller, ["STUDENTS_READ:all"])
+    assert exc.value.status_code == 403
+    # 同 scope（own_class）放行
+    _assert_can_grant(caller, ["STUDENTS_READ:own_class"])
+    # :all caller 授 :all 放行
+    _assert_can_grant(
+        {"permission_names": ["STUDENTS_READ:all"], "role": "admin"},
+        ["STUDENTS_READ:all"],
+    )

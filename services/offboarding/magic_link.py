@@ -71,9 +71,14 @@ def verify_token(session: Session, token: str) -> Optional[EmployeeOffboardingRe
     if not token:
         return None
     token_hash = hash_token(token)
+    # R6-6：with_for_update 序列化下載——否則兩並發請求在 count=2 時同時通過下方
+    # >= MAX_DOWNLOADS 檢查 → 都放行 → 實際超過 3 次。download flow 在同 transaction
+    # verify→record_download(++count)，鎖持有到 commit 使第二筆讀到更新後的 count。
+    # （SQLite no-op；PG 生效。）
     record = (
         session.query(EmployeeOffboardingRecord)
         .filter_by(magic_link_token_hash=token_hash)
+        .with_for_update()
         .first()
     )
     if record is None:
@@ -83,7 +88,7 @@ def verify_token(session: Session, token: str) -> Optional[EmployeeOffboardingRe
     if (
         record.magic_link_expires_at is not None
         and record.magic_link_expires_at < now_taipei_naive()
-        ):
+    ):
         return None
     if (record.magic_link_download_count or 0) >= MAX_DOWNLOADS:
         return None
@@ -111,7 +116,7 @@ def is_active(record: EmployeeOffboardingRecord) -> bool:
     if (
         record.magic_link_expires_at is not None
         and record.magic_link_expires_at < now_taipei_naive()
-        ):
+    ):
         return False
     if (record.magic_link_download_count or 0) >= MAX_DOWNLOADS:
         return False

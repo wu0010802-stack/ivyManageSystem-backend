@@ -52,6 +52,7 @@ from utils.permissions import Permission
 _ERROR_TO_STATUS: dict[str, int] = {
     "EMPLOYEE_NOT_FOUND": 404,
     "ALREADY_OFFBOARDED": 409,
+    "CANNOT_OFFBOARD_SELF": 403,
     "RESIGN_DATE_BEFORE_HIRE": 400,
     "RESIGN_DATE_TOO_FAR_FUTURE": 400,
     "LEAVE_BALANCE_NOT_FOUND": 422,
@@ -206,7 +207,7 @@ def process_offboarding_endpoint(
 
 
 @router.get("/download")
-def download_offboarding_bundle(token: str, request: Request):
+def download_offboarding_bundle(request: Request, token: str = ""):
     """**公開無 auth** download endpoint。
 
     以 magic-link token 串流 ZIP 離職包（離職證明 PDF + 12 月薪資 PDF + 出勤 CSV）。
@@ -222,9 +223,12 @@ def download_offboarding_bundle(token: str, request: Request):
     預設 access log 會記完整 URL（含 ?token=...），建議後續 PR 加 ASGI middleware
     做 query string sanitize 或改用 --access-log False。
     """
+    # R6-9：MagicLinkLogScrubMiddleware 已把 query 的 token 遮罩進 access log，原始
+    # token 改從 scope 取（middleware 未套用時 fallback query param）。
+    real_token = request.scope.get("magic_link_token") or token
     session: Session = get_session()
     try:
-        record = ml_verify_token(session, token)
+        record = ml_verify_token(session, real_token)
         if record is None:
             raise HTTPException(status_code=410, detail="LINK_NO_LONGER_VALID")
 
