@@ -46,12 +46,18 @@ class YearEndCycleOut(BaseModel):
 
 class OrgYearSettingsCreate(BaseModel):
     semester_first: bool
-    enrollment_target: int = 160
-    enrollment_actual: Optional[int] = None
-    school_achievement_rate: Decimal = Decimal("0")
-    school_achievement_rate_override: Optional[Decimal] = None
-    org_achievement_rate: Decimal
-    meeting_absence_deduction: Decimal = Decimal("1000")
+    enrollment_target: int = Field(default=160, ge=0)
+    enrollment_actual: Optional[int] = Field(default=None, ge=0)
+    # 率欄位上限取 Numeric(6,3) 精度 999.999（達成率可合法 >100，勿封 100）；
+    # 無 ge/le 時負數/超大值直灌年終 step1/step3（滲透測試 E1 同款，2026-06-11 補）。
+    school_achievement_rate: Decimal = Field(
+        default=Decimal("0"), ge=0, le=Decimal("999.999")
+    )
+    school_achievement_rate_override: Optional[Decimal] = Field(
+        default=None, ge=0, le=Decimal("999.999")
+    )
+    org_achievement_rate: Decimal = Field(ge=0, le=Decimal("999.999"))
+    meeting_absence_deduction: Decimal = Field(default=Decimal("1000"), ge=0)
 
 
 class OrgYearSettingsOut(BaseModel):

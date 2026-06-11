@@ -1014,6 +1014,85 @@ def test_org_settings_partial_upsert_preserves_enrollment_target(client_with_db)
     ), f"enrollment_target 應保留 176（exclude_unset），got {first['enrollment_target']}"
 
 
+def test_org_settings_override_rejects_out_of_range(client_with_db):
+    """P1（2026-06-11 體檢）：override 等率欄位須有 ge/le 邊界。
+
+    滲透測試 E1 同款 pattern——年終人工調整層無輸入驗證：負數或超出
+    Numeric(6,3) 的值會直灌 step1/step3（>999.999 觸 DB numeric overflow
+    回 500 而非 422）。達成率可合法 >100（actual>target），故上限取
+    999.999（欄位精度），不封 100。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)
+    _login(client)
+
+    def _post(payload):
+        return client.post(
+            f"/api/year_end/cycles/{cycle_id}/org_settings",
+            json={"semester_first": True, "org_achievement_rate": "0", **payload},
+        )
+
+    # 負數 → 422
+    assert _post({"school_achievement_rate_override": "-5"}).status_code == 422
+    # 超過 Numeric(6,3) 精度 → 422（而非 DB overflow 500）
+    assert _post({"school_achievement_rate_override": "1000"}).status_code == 422
+    # 其餘率欄位同樣把關
+    assert _post({"school_achievement_rate": "-1"}).status_code == 422
+    assert (
+        client.post(
+            f"/api/year_end/cycles/{cycle_id}/org_settings",
+            json={"semester_first": True, "org_achievement_rate": "-1"},
+        ).status_code
+        == 422
+    )
+    assert _post({"meeting_absence_deduction": "-100"}).status_code == 422
+    # 達成率 >100 合法（actual > target）
+    assert _post({"school_achievement_rate_override": "150"}).status_code == 200
+
+
+def test_org_settings_explicit_null_clears_override(client_with_db):
+    """override 生命週期：顯式送 null 須清除 override，effective 回自算值。
+
+    Pydantic v2 顯式 null 在 exclude_unset dump 中保留（與「省略欄位」不同），
+    upsert 應寫回 NULL。_seed_cycle_and_employee 上學期自算 91.5。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, _ = _seed_cycle_and_employee(sf)
+    _login(client)
+
+    r1 = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": "90.0",
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    assert Decimal(str(r1.json()["effective_school_achievement_rate"])) == Decimal(
+        "90.0"
+    )
+
+    # 顯式 null 清除
+    r2 = client.post(
+        f"/api/year_end/cycles/{cycle_id}/org_settings",
+        json={
+            "semester_first": True,
+            "org_achievement_rate": "0",
+            "school_achievement_rate_override": None,
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    assert (
+        body["school_achievement_rate_override"] is None
+    ), f"顯式 null 應清除 override，got {body['school_achievement_rate_override']}"
+    # effective 回自算值 91.5
+    assert Decimal(str(body["effective_school_achievement_rate"])) == Decimal("91.5")
+
+
 def test_clone_clears_school_rate_override(client_with_db):
     client, sf = client_with_db
     _seed_users(sf)
