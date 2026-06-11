@@ -609,6 +609,15 @@ def pos_checkout(
         # 依賴層原本就該保證有 username；到這裡代表權限設定異常，拒絕寫入避免匿名交易
         raise HTTPException(status_code=401, detail="無法識別操作人員")
 
+    # R7-3：多筆收費且無 idempotency_key → 400 強制帶 key。多 item 無法以 items[0]
+    # 安全去重（見下方 fallback 註解），無 key 重送會為每筆 reg 各建第二組付款記錄 →
+    # 全車重複出帳（UniqueConstraint 允許 NULL key 重複）。官方 UI 一律帶穩定 key。
+    if not body.idempotency_key and len(body.items) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="多筆收費請帶 idempotency_key（避免重複出帳）",
+        )
+
     session = get_session()
     try:
         # ── 冪等性檢查 ──────────────────────────────────────────

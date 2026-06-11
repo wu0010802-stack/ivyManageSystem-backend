@@ -547,3 +547,26 @@ def test_gc_purges_revoked_tokens_after_retention(parent_client):
         ids = {r.id for r in s.query(ParentRefreshToken).all()}
         assert revoked_old_id not in ids
         assert revoked_recent_id in ids
+
+
+def test_refresh_family_absolute_lifetime_revokes(parent_client):
+    """R7-4（對稱 staff F1）：family 從首次登入起算超過 absolute lifetime → /refresh
+    401 + 撤整 family，封死失竊/棄置 parent refresh cookie 無限期 rotate。"""
+    from datetime import timedelta
+
+    client, session_factory = parent_client
+    _, old_refresh = _login(client, session_factory, "token-AAAAAA", "U_A")
+    with session_factory() as s:
+        for row in s.query(ParentRefreshToken).all():
+            row.created_at = row.created_at - timedelta(hours=100000)
+        s.commit()
+
+    resp = client.post(
+        "/api/parent/auth/refresh",
+        cookies={"parent_refresh_token": old_refresh},
+    )
+    assert resp.status_code == 401, resp.text
+
+    with session_factory() as s:
+        rows = s.query(ParentRefreshToken).all()
+        assert rows and all(r.revoked_at is not None for r in rows)

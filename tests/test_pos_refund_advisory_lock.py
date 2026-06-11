@@ -187,6 +187,7 @@ def test_multi_item_refund_acquires_lock_in_ascending_order(lock_client, monkeyp
             "payment_date": date.today().isoformat(),
             "type": "refund",
             "notes": "多筆退費驗證升冪取鎖以避免 deadlock",
+            "idempotency_key": "test-multi-refund-lock",  # R7-3：多筆須帶 key
         },
     )
     assert res.status_code == 201, res.text

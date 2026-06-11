@@ -314,3 +314,22 @@ class TestMiddlewareChangesSerialize:
         restored = _json.loads(s)
         assert restored["salary"]["after"] == "32000"
         assert restored["hire_date"]["before"].startswith("2026-01-01")
+
+
+def test_export_csv_neutralizes_formula_in_username(client_with_db):
+    """R7-1：audit CSV 匯出須消毒 username 公式（未授權登入失敗可種惡意 username
+    進 AuditLog，admin 匯出 CSV 開 Excel 會執行公式）。"""
+    client, session_factory = client_with_db
+    with session_factory() as s:
+        _create_audit_admin(s)
+        _insert_log(
+            s,
+            username='=HYPERLINK("http://evil","x")',
+            action="LOGIN_FAILED",
+        )
+        s.commit()
+    assert _login(client).status_code == 200
+    res = client.get("/api/audit-logs/export")
+    assert res.status_code == 200, res.text
+    # 公式被前綴單引號中和（修前為原樣 =HYPERLINK）
+    assert "'=HYPERLINK" in res.text

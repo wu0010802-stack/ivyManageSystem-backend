@@ -74,6 +74,11 @@ def _required_header_names(schema: type[ExcelImportSchema]) -> set[str]:
     return names
 
 
+# R7-2：匯入列數硬上限——10MB xlsx 是 zip，可解壓成數百萬列 → 無上限的 list append
+# 會 OOM/CPU 耗盡（認證後 DoS）。export 端有 EXPORT_MAX_ROWS，import 端補對應防線。
+MAX_IMPORT_ROWS = 10000
+
+
 def parse_excel(
     file_or_buffer: IO[bytes],
     *,
@@ -144,10 +149,24 @@ def parse_excel(
         )
         return result
 
+    _processed = 0
     for row_idx, raw in enumerate(rows_iter, start=2):
         # 整列空白跳過（避免 trailing empty rows 觸發 validation 噪音）
         if raw is None or all(v is None for v in raw):
             continue
+        _processed += 1
+        if _processed > MAX_IMPORT_ROWS:
+            # R7-2：超過上限即停止解析（避免惡意/超大檔耗盡記憶體），回報錯誤讓 caller 拒絕。
+            result.errors.append(
+                {
+                    "row": row_idx,
+                    "col": None,
+                    "value": None,
+                    "error_code": "TOO_MANY_ROWS",
+                    "message": f"匯入列數超過上限 {MAX_IMPORT_ROWS}，請分批匯入",
+                }
+            )
+            break
         record: dict[str, Any] = {}
         for i, col_name in enumerate(header):
             if col_name not in expected_cols:

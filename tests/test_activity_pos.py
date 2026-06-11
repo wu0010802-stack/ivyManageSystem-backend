@@ -220,6 +220,7 @@ class TestPOSCheckoutAtomicity:
                 "payment_date": date.today().isoformat(),
                 "tendered": 4000,
                 "notes": "現場收訖",
+                "idempotency_key": "test-multi-success",  # R7-3：多筆須帶 key
             },
         )
         assert res.status_code == 201, res.text
@@ -930,6 +931,7 @@ class TestReceiptNumber:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "tendered": 3000,
+                "idempotency_key": "test-multi-recent",  # R7-3：多筆須帶 key
             },
         )
         assert resp.status_code == 201
@@ -1661,3 +1663,37 @@ class TestPosDailyClose:
             params={"start_date": "2025-01-01", "end_date": "2026-01-01"},
         )
         assert res.status_code == 400
+
+
+def test_pos_checkout_multi_item_without_key_rejected(pos_client):
+    """R7-3：多筆收費無 idempotency_key → 400（防非官方 caller 重送全車重複出帳；
+    官方 UI 一律帶穩定 key 不受影響）。"""
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        r1 = _setup_reg(s, student_name="甲", course_name="美術", supply_name="畫具包")
+        r2 = _setup_reg(
+            s,
+            student_name="乙",
+            course_name="勞作",
+            supply_name="剪刀組",
+            course_price=1000,
+            supply_price=300,
+        )
+        s.commit()
+        r1_id, r2_id = r1.id, r2.id
+    assert _login(client).status_code == 200
+    res = client.post(
+        "/api/activity/pos/checkout",
+        json={
+            "items": [
+                {"registration_id": r1_id, "amount": 500},
+                {"registration_id": r2_id, "amount": 500},
+            ],
+            "payment_method": "現金",
+            "payment_date": date.today().isoformat(),
+            "tendered": 1000,
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "idempotency_key" in res.json()["detail"]
