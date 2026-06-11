@@ -38,7 +38,7 @@ from models.appraisal import (
     RoleGroup,
 )
 from models.attendance import Attendance
-from models.classroom import LIFECYCLE_ACTIVE, Classroom, Student
+from models.classroom import LIFECYCLE_ACTIVE, ClassGrade, Classroom, Student
 from models.disciplinary import DisciplinaryAction
 from models.employee import Employee
 from models.year_end import ClassEnrollmentTarget, YearEndCycle
@@ -100,6 +100,7 @@ class ActivityRateAggregate:
     enrolled_students: int = 0  # 該班 active 學生數
     registered_for_activity: int = 0  # 該班報名才藝課人數（去重 student_id）
     activity_rate: Decimal = Decimal("0")  # 0-100，2 位小數
+    grade_name: Optional[str] = None  # 班級年級名稱（ClassGrade.name）
     # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
 
@@ -207,9 +208,14 @@ def _aggregate_class_retention(
     生命週期上有獨立旗標，光看日期會把休學中的學生算為「留住」。
     """
     result: dict[int, ClassRetentionAggregate] = {}
+    # 先計算有班級的人員，同時累積全校加權所需的分子/分母。
+    school_total_initial = 0
+    school_total_final = 0
+    no_classroom_emp_ids: list[int] = []
+
     for emp_id, cid in employee_to_classroom.items():
         if cid is None:
-            result[emp_id] = ClassRetentionAggregate(employee_id=emp_id)
+            no_classroom_emp_ids.append(emp_id)
             continue
         initial_q = (
             session.query(func.count(Student.id))
@@ -238,6 +244,8 @@ def _aggregate_class_retention(
             )
         )
         final = int(final_q.scalar() or 0)
+        school_total_initial += initial
+        school_total_final += final
         rate = (
             (Decimal(final) / Decimal(initial) * 100).quantize(Decimal("0.01"))
             if initial > 0
@@ -250,6 +258,21 @@ def _aggregate_class_retention(
             initial_count=initial,
             final_count=final,
             retention_rate=rate,
+        )
+
+    # 規章第五條(七)2：未帶班人員依全校平均留校率核算。
+    # 全校平均 = Σfinal / Σinitial（加權），與班級率同樣 2 位 HALF_UP。
+    school_avg_rate = (
+        (Decimal(school_total_final) / Decimal(school_total_initial) * 100).quantize(
+            Decimal("0.01")
+        )
+        if school_total_initial > 0
+        else Decimal("0")
+    )
+    for emp_id in no_classroom_emp_ids:
+        result[emp_id] = ClassRetentionAggregate(
+            employee_id=emp_id,
+            retention_rate=school_avg_rate,
         )
     return result
 
@@ -293,6 +316,16 @@ def _aggregate_activity_rate(
         .all()
     )
     reg_by_class = {cid: int(cnt) for cid, cnt in reg_rows}
+    # 一次 join 取得各班年級名稱，避免 N+1。
+    grade_name_rows = (
+        session.query(Classroom.id, ClassGrade.name)
+        .outerjoin(ClassGrade, Classroom.grade_id == ClassGrade.id)
+        .filter(Classroom.id.in_(classroom_ids))
+        .all()
+    )
+    grade_name_by_classroom: dict[int, Optional[str]] = {
+        cid: gname for cid, gname in grade_name_rows
+    }
     for emp_id, cid in employee_to_classroom.items():
         if cid is None:
             result[emp_id] = ActivityRateAggregate(employee_id=emp_id)
@@ -310,6 +343,7 @@ def _aggregate_activity_rate(
             enrolled_students=enrolled,
             registered_for_activity=registered,
             activity_rate=rate,
+            grade_name=grade_name_by_classroom.get(cid),
         )
     return result
 
