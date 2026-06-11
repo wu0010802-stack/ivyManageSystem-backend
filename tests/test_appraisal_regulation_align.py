@@ -317,6 +317,18 @@ class TestRetentionNoBand:
         assert staff_st.retention.retention_rate == Decimal("75.00")
 
 
+def test_status_out_schema_鏡像新欄位():
+    from schemas.appraisal import (
+        ActivityRateAggregateOut,
+        AttendanceAggregateOut,
+        ParticipantStatusOut,
+    )
+
+    assert "absent_days" in AttendanceAggregateOut.model_fields
+    assert "reinstate_count" in ParticipantStatusOut.model_fields
+    assert "grade_name" in ActivityRateAggregateOut.model_fields
+
+
 class TestActivityGradeName:
     def test_才藝聚合帶年級名(self, test_db_session):
         """ActivityRateAggregate.grade_name 對應 Classroom.grade.name。"""

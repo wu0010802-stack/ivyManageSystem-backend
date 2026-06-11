@@ -191,11 +191,13 @@ def _build_participant_status_out(s) -> ParticipantStatusOut:
         classroom_id=s.classroom_id,
         is_participant=s.is_participant,
         hire_months_in_cycle=s.hire_months_in_cycle,
+        reinstate_count=s.reinstate_count,
         attendance=AttendanceAggregateOut(
             late_count=s.attendance.late_count,
             early_leave_count=s.attendance.early_leave_count,
             missing_punch_count=s.attendance.missing_punch_count,
             leave_days=s.attendance.leave_days,
+            absent_days=s.attendance.absent_days,
             suggested_score_delta=s.attendance.suggested_score_delta,
         ),
         retention=ClassRetentionAggregateOut(
@@ -208,6 +210,7 @@ def _build_participant_status_out(s) -> ParticipantStatusOut:
         ),
         activity=ActivityRateAggregateOut(
             classroom_id=s.activity.classroom_id,
+            grade_name=s.activity.grade_name,
             enrolled_students=s.activity.enrolled_students,
             registered_for_activity=s.activity.registered_for_activity,
             activity_rate=s.activity.activity_rate,

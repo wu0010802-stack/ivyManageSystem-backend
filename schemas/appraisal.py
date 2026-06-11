@@ -172,6 +172,7 @@ class AttendanceAggregateOut(BaseModel):
     early_leave_count: int
     missing_punch_count: int
     leave_days: int
+    absent_days: int = Field(default=0, description="曠職天數（status='absent'）")
     suggested_score_delta: Decimal
 
 
@@ -186,6 +187,7 @@ class ClassRetentionAggregateOut(BaseModel):
 
 class ActivityRateAggregateOut(BaseModel):
     classroom_id: Optional[int] = None
+    grade_name: Optional[str] = Field(default=None, description="班級年級名")
     enrolled_students: int
     registered_for_activity: int
     activity_rate: Decimal
@@ -216,6 +218,7 @@ class ParticipantStatusOut(BaseModel):
     classroom_id: Optional[int] = None
     is_participant: bool = True
     hire_months_in_cycle: Optional[Decimal] = None
+    reinstate_count: int = Field(default=0, description="復學事件數")
     attendance: AttendanceAggregateOut
     retention: ClassRetentionAggregateOut
     activity: ActivityRateAggregateOut
