@@ -112,6 +112,25 @@ def apply_disciplinary_tiered(
     return _round(delta)
 
 
+def apply_manual_delta(
+    rule: ScoringRule, value: Decimal, role_group: RoleGroup
+) -> Decimal:
+    """MANUAL_DELTA：count 欄存主任手填「分值」本身（可正可負）。
+
+    依 rule_config 的 min_delta/max_delta clamp（API 層另有 422 驗證，
+    此處 clamp 是第二道防線，保證舊資料/旁路寫入不會炸出範圍外分數）。
+    """
+    cfg = rule.rule_config
+    lo = Decimal(str(cfg["min_delta"]))
+    hi = Decimal(str(cfg["max_delta"]))
+    v = Decimal(value)
+    if v < lo:
+        v = lo
+    elif v > hi:
+        v = hi
+    return _round(v)
+
+
 # ===== DB-aware integration layer (Task 10) =====
 
 
@@ -318,6 +337,7 @@ __all__ = [
     "ScoringRule",
     "apply_disciplinary_tiered",
     "apply_flat_threshold",
+    "apply_manual_delta",
     "apply_per_unit",
     "apply_tier",
     "compute_all_deltas",
