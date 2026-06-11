@@ -22,7 +22,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from utils.taipei_time import today_taipei
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from sqlalchemy import Integer, and_, case, func, or_, select
@@ -136,8 +136,9 @@ def _aggregate_attendance(
 ) -> dict[int, AttendanceAggregate]:
     """bulk query Attendance；每 employee 一筆 AttendanceAggregate。
 
-    用 CASE WHEN ... THEN 1 ELSE 0 END 加總四個 bool 欄位 + status='absent'，
-    避免依賴 dialect 對 bool→int 的 implicit cast。
+    用 CASE WHEN ... THEN 1 ELSE 0 END 加總四個 bool 欄位，並分流
+    status='leave'（請假）與 status='absent'（曠職），避免依賴 dialect
+    對 bool→int 的 implicit cast。
     """
     result = {eid: AttendanceAggregate(employee_id=eid) for eid in employee_ids}
     if not employee_ids:
@@ -209,45 +210,71 @@ def _aggregate_class_retention(
     """
     result: dict[int, ClassRetentionAggregate] = {}
     # 先計算有班級的人員，同時累積全校加權所需的分子/分母。
-    school_total_initial = 0
-    school_total_final = 0
+    #
+    # 正確性補丁（code review 2026-06-11）：
+    #   1. 按 unique classroom_id 累計，而非按員工數——共帶同班的兩人若各自加總
+    #      一次，分子/分母會雙計，全校平均偏高。
+    #   2. 跳過 initial == 0 的班（期中新開班）：一班 initial=0 final=15
+    #      若納入分母=0+0=0 會被整個 school_total_initial=0 路徑吞掉；
+    #      但若與其他班合計後 initial>0，則 0/final 使分母虛增而分子不動，
+    #      導致全校平均虛低（例：10/10 + 0→15 算成 10/10 = 100%，
+    #      但若錯誤納入期末: 25/10 = 250%）。
+    #      政策：initial=0 的班（期中新開）不納入全校平均分母與分子。
     no_classroom_emp_ids: list[int] = []
+    # classroom_id → (initial, final)，保證每班只查一次
+    classroom_counts: dict[int, tuple[int, int]] = {}
 
     for emp_id, cid in employee_to_classroom.items():
         if cid is None:
             no_classroom_emp_ids.append(emp_id)
             continue
-        initial_q = (
-            session.query(func.count(Student.id))
-            .filter(Student.classroom_id == cid)
-            .filter(Student.enrollment_date.isnot(None))
-            .filter(Student.enrollment_date <= start)
-            .filter(
-                or_(Student.withdrawal_date.is_(None), Student.withdrawal_date > start)
+        if cid not in classroom_counts:
+            initial_q = (
+                session.query(func.count(Student.id))
+                .filter(Student.classroom_id == cid)
+                .filter(Student.enrollment_date.isnot(None))
+                .filter(Student.enrollment_date <= start)
+                .filter(
+                    or_(
+                        Student.withdrawal_date.is_(None),
+                        Student.withdrawal_date > start,
+                    )
+                )
+                .filter(
+                    or_(
+                        Student.graduation_date.is_(None),
+                        Student.graduation_date > start,
+                    )
+                )
             )
-            .filter(
-                or_(Student.graduation_date.is_(None), Student.graduation_date > start)
+            initial = int(initial_q.scalar() or 0)
+            final_q = (
+                session.query(func.count(Student.id))
+                .filter(Student.classroom_id == cid)
+                .filter(Student.lifecycle_status == LIFECYCLE_ACTIVE)
+                .filter(Student.enrollment_date.isnot(None))
+                .filter(Student.enrollment_date <= end)
+                .filter(
+                    or_(
+                        Student.withdrawal_date.is_(None),
+                        Student.withdrawal_date > end,
+                    )
+                )
+                .filter(
+                    or_(
+                        Student.graduation_date.is_(None),
+                        Student.graduation_date > end,
+                    )
+                )
             )
-        )
-        initial = int(initial_q.scalar() or 0)
-        final_q = (
-            session.query(func.count(Student.id))
-            .filter(Student.classroom_id == cid)
-            .filter(Student.lifecycle_status == LIFECYCLE_ACTIVE)
-            .filter(Student.enrollment_date.isnot(None))
-            .filter(Student.enrollment_date <= end)
-            .filter(
-                or_(Student.withdrawal_date.is_(None), Student.withdrawal_date > end)
-            )
-            .filter(
-                or_(Student.graduation_date.is_(None), Student.graduation_date > end)
-            )
-        )
-        final = int(final_q.scalar() or 0)
-        school_total_initial += initial
-        school_total_final += final
+            final = int(final_q.scalar() or 0)
+            classroom_counts[cid] = (initial, final)
+        else:
+            initial, final = classroom_counts[cid]
         rate = (
-            (Decimal(final) / Decimal(initial) * 100).quantize(Decimal("0.01"))
+            (Decimal(final) / Decimal(initial) * 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             if initial > 0
             else Decimal("0")
         )
@@ -262,9 +289,20 @@ def _aggregate_class_retention(
 
     # 規章第五條(七)2：未帶班人員依全校平均留校率核算。
     # 全校平均 = Σfinal / Σinitial（加權），與班級率同樣 2 位 HALF_UP。
+    # 「全校」= 本次聚合傳入員工所映射到的班級集合；單人查詢時可能退化，
+    # 目前無此 caller。
+    # initial=0 的班（期中新開）不納入全校平均分母與分子。
+    school_total_initial = 0
+    school_total_final = 0
+    for initial, final in classroom_counts.values():
+        if initial == 0:
+            continue  # 期中新開班排除（分母為零無意義且污染全校平均）
+        school_total_initial += initial
+        school_total_final += final
+
     school_avg_rate = (
         (Decimal(school_total_final) / Decimal(school_total_initial) * 100).quantize(
-            Decimal("0.01")
+            Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         if school_total_initial > 0
         else Decimal("0")
@@ -333,7 +371,9 @@ def _aggregate_activity_rate(
         enrolled = enrolled_by_class.get(cid, 0)
         registered = reg_by_class.get(cid, 0)
         rate = (
-            (Decimal(registered) / Decimal(enrolled) * 100).quantize(Decimal("0.01"))
+            (Decimal(registered) / Decimal(enrolled) * 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             if enrolled > 0
             else Decimal("0")
         )

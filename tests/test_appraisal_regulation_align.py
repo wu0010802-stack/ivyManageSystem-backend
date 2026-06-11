@@ -341,3 +341,78 @@ class TestActivityGradeName:
         statuses = aggregate_cycle_status(s, cycle)
         assert len(statuses) == 1
         assert statuses[0].activity.grade_name == "大班"
+
+
+# ===== Task 6-補：全校平均留校率去重共班 + 排除 initial=0 班 =====
+
+
+class TestRetentionSchoolAvgDedup:
+    def test_全校平均_排除initial為零的班且共班不雙計(self, test_db_session):
+        """
+        seed 情境：
+          班A  — 10 個期初學生，全部留存（initial=10, final=10），
+                兩位員工共帶（emp_a1, emp_a2，相同 classroom_id）。
+          班B  — initial=0（期中新開），final=15（全數新生期末 active）。
+          未帶班員工 emp_staff（classroom_id=None）。
+
+        全校平均計算規則：
+          - 班A 只計一次（去重），貢獻 initial=10, final=10。
+          - 班B 排除（initial=0 的班不納入分母/分子）。
+          - school_avg = 10/10 * 100 = 100.00%。
+          - emp_staff.retention_rate == 100.00。
+          - 帶班員工 emp_a1, emp_a2 的 retention_rate == 100.00（各自班級率）。
+        """
+        s = test_db_session
+        cycle = _make_cycle_t46(s)
+
+        # 班 A：10/10，兩位員工共帶
+        cls_a = _make_classroom_t46(s, "大班DeupA")
+        emp_a1 = _make_emp(s, "共班老師1", "TDUP1")
+        emp_a2 = _make_emp(s, "共班老師2", "TDUP2")
+        _make_participant_t46(s, cycle, emp_a1, classroom_id=cls_a.id)
+        _make_participant_t46(s, cycle, emp_a2, classroom_id=cls_a.id)
+        for i in range(10):
+            s.add(
+                Student(
+                    student_id=f"TDUP_A{i:03d}",
+                    name=f"A共{i}",
+                    classroom_id=cls_a.id,
+                    enrollment_date=date(2025, 6, 1),
+                    lifecycle_status=LIFECYCLE_ACTIVE,
+                )
+            )
+
+        # 班 B：initial=0（期中新開，期初時無學生），final=15（期末有 15 個 active）
+        cls_b = _make_classroom_t46(s, "小班新開B")
+        emp_b = _make_emp(s, "新開班老師", "TDUP3")
+        _make_participant_t46(s, cycle, emp_b, classroom_id=cls_b.id)
+        # 期末 15 個 active（全在 cycle 開始後才 enrollment_date，初期不算 initial）
+        for i in range(15):
+            s.add(
+                Student(
+                    student_id=f"TDUP_B{i:03d}",
+                    name=f"B新{i}",
+                    classroom_id=cls_b.id,
+                    # enrollment_date > cycle.start_date(2025-08-01)，不算期初
+                    enrollment_date=date(2025, 9, 1),
+                    lifecycle_status=LIFECYCLE_ACTIVE,
+                )
+            )
+
+        # 未帶班員工
+        emp_staff = _make_emp(s, "未帶班主任", "TDUP4")
+        _make_participant_t46(
+            s, cycle, emp_staff, classroom_id=None, role_group=RoleGroup.STAFF
+        )
+
+        s.commit()
+        statuses = aggregate_cycle_status(s, cycle)
+        by_emp = {st.employee_id: st for st in statuses}
+
+        # 班A 員工個人留校率 = 10/10 = 100.00
+        assert by_emp[emp_a1.id].retention.retention_rate == Decimal("100.00")
+        assert by_emp[emp_a2.id].retention.retention_rate == Decimal("100.00")
+        # 班B 員工 initial=0 → 個人率 = 0（Decimal("0")）
+        assert by_emp[emp_b.id].retention.retention_rate == Decimal("0")
+        # 未帶班：全校平均 = 班A 10/10（班B 排除）= 100.00
+        assert by_emp[emp_staff.id].retention.retention_rate == Decimal("100.00")
