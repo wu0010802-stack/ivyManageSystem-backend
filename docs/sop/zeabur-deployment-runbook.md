@@ -130,6 +130,15 @@
 - 手動驗證：本機 `cd ivy-backend && alembic heads` 應只有 1 個 head
 - Rollback：alembic downgrade **非自動**；prod 出事先 Promote 上一版部署，DB 改動再考慮 downgrade
 
+#### 一次性前置（2026-06-11 考核規章對齊批次，含 aprreg01）
+- **部署前確認 prod 的 114上 appraisal cycle 已 finalized**（`SELECT status FROM appraisal_cycles WHERE academic_year=114 AND semester='FIRST'`）。
+  考勤聚合 leave/absent 分流（54259658）對仍 OPEN 的歷史 cycle 重 sync 是回溯生效的：
+  有曠職者會少扣（114上無 ABSENTEEISM 規則）、全天請假者會多扣，偏離 06-11 對帳基線。
+  若仍 OPEN：先 finalize，或明確接受重 sync 偏移再部署。
+- aprreg01 為純 DML data migration，**無法 `--sql` 離線產出**，只能 online 跑；
+  upgrade 後抽驗 `appraisal_bonus_rates` 5 組值（10000/8000/8000/6000/3500）與
+  `appraisal_scoring_rules` count(effective_from='2026-02-01')=24，console 不得出現 `WARNING aprreg01`。
+
 ### 4.2 Backup
 - Supabase Pro 內建 PITR（最近 7 天）— 首選恢復路徑（RTO ~1h）
 - 異地備份：GH Actions `dr-backup.yml` 每日 02:17 +08 推送 pg_dump 至 Cloudflare R2 `ivy-dr/db/daily/`，每月 1 號額外複製至 `db/monthly/`
