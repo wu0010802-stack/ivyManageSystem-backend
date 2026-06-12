@@ -34,21 +34,22 @@ class InsuranceTable(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     year = Column(Integer, nullable=False, comment="年度")
 
-    salary_min = Column(Float, nullable=False, comment="薪資下限")
-    salary_max = Column(Float, nullable=False, comment="薪資上限")
-    insured_amount = Column(Float, nullable=False, comment="投保金額")
+    salary_min = Column(Money, nullable=False, comment="薪資下限")
+    salary_max = Column(Money, nullable=False, comment="薪資上限")
+    insured_amount = Column(Money, nullable=False, comment="投保金額")
 
+    # 率欄位（非金額）維持 Float：精度需求為比率小數，非對帳尾數
     labor_rate_employee = Column(Float, default=0.115)
     labor_rate_employer = Column(Float, default=0.805)
     health_rate_employee = Column(Float, default=0.0517)
     health_rate_employer = Column(Float, default=0.0517)
     pension_rate_employer = Column(Float, default=0.06)
 
-    labor_employee = Column(Float, default=0)
-    labor_employer = Column(Float, default=0)
-    health_employee = Column(Float, default=0)
-    health_employer = Column(Float, default=0)
-    pension_employer_amount = Column(Float, default=0)
+    labor_employee = Column(Money, default=0)
+    labor_employer = Column(Money, default=0)
+    health_employee = Column(Money, default=0)
+    health_employer = Column(Money, default=0)
+    pension_employer_amount = Column(Money, default=0)
 
     created_at = Column(DateTime, default=now_taipei_naive)
 
@@ -90,8 +91,8 @@ class BonusSetting(Base):
     overtime_bonus_per_student = Column(Float, default=0)
 
     festival_bonus_ratio = Column(Float, default=0)
-    calculated_festival_bonus = Column(Float, default=0)
-    calculated_overtime_bonus = Column(Float, default=0)
+    calculated_festival_bonus = Column(Money, default=0)
+    calculated_overtime_bonus = Column(Money, default=0)
 
     created_at = Column(DateTime, default=now_taipei_naive)
     updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)

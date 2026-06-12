@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from models.base import Base
+from models.types import Money
 
 
 class OvertimeRecord(Base):
@@ -39,7 +40,7 @@ class OvertimeRecord(Base):
     end_time = Column(DateTime, comment="加班結束時間")
     hours = Column(Float, default=0, comment="加班時數")
 
-    overtime_pay = Column(Float, default=0, comment="加班費（自動計算）")
+    overtime_pay = Column(Money, default=0, comment="加班費（自動計算）")
 
     use_comp_leave = Column(
         Boolean, default=False, nullable=False, comment="是否以補休代替加班費"
