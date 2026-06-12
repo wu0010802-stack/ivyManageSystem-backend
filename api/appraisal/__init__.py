@@ -1784,7 +1784,30 @@ def batch_upsert_manual_event_counts(
     if cycle.status != CycleStatus.OPEN:
         raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法編輯")
 
+    # 依 cycle.base_score_calc_date 載入當期有效規則，用於 MANUAL_DELTA 分值範圍驗證
+    from services.appraisal.rule_applier import load_rules_for_date
+
+    rules = load_rules_for_date(session, cycle.base_score_calc_date)
+
     for entry in payload.entries:
+        rule = rules.get(entry.item_code)
+        if rule is not None and rule.rule_type == "MANUAL_DELTA":
+            lo = Decimal(str(rule.rule_config["min_delta"]))
+            hi = Decimal(str(rule.rule_config["max_delta"]))
+            if not (lo <= Decimal(entry.count) <= hi):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{entry.item_code} 分值 {entry.count} 超出範圍 [{lo}, {hi}]"
+                    ),
+                )
+        else:
+            # 非 MANUAL_DELTA（或未設規則）的事件次數不可為負
+            if entry.count < 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{entry.item_code} 事件次數不可為負（count={entry.count}）",
+                )
         existing = (
             session.query(AppraisalManualEventCount)
             .filter_by(

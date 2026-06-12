@@ -342,7 +342,9 @@ class ScoringRuleOut(ScoringRuleIn):
 class ManualEventCountIn(BaseModel):
     participant_id: int
     item_code: str
-    count: Decimal = Field(ge=0)
+    # count 允許負值：MANUAL_DELTA 規則（如 CHILD_ACCIDENT）存分值本身（可負），
+    # 其餘 rule_type 的事件次數仍須 ≥ 0，由 API handler 根據 rule_type 驗證。
+    count: Decimal
     note: Optional[str] = None
 
 

@@ -762,3 +762,179 @@ def test_scoring_rule_in_接受manual_delta():
         applies_to_role_groups=None,
     )
     assert r.rule_type == "MANUAL_DELTA"
+
+
+# ===== Task 10: manual_event_counts API 的 MANUAL_DELTA 分值範圍驗證 =====
+
+import os
+import sys
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import models.base as base_module
+from api.appraisal import appraisal_router
+from api.auth import _account_failures, _ip_attempts
+from api.auth import router as auth_router
+from models.appraisal import (
+    AppraisalScoringRule,
+)
+from models.auth import User
+from models.database import Base
+from models.employee import Employee
+from utils.auth import hash_password
+from utils.permissions import Permission
+
+
+@pytest.fixture
+def client_with_db_t10(tmp_path):
+    """Task 10 專用：SQLite + TestClient，含 appraisal_router。"""
+    db_path = tmp_path / "appraisal-t10.sqlite"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    session_factory = sessionmaker(bind=engine)
+
+    old_engine = base_module._engine
+    old_session_factory = base_module._SessionFactory
+    base_module._engine = engine
+    base_module._SessionFactory = session_factory
+
+    Base.metadata.create_all(engine)
+    _ip_attempts.clear()
+    _account_failures.clear()
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    app.include_router(appraisal_router)
+
+    with TestClient(app) as client:
+        yield client, session_factory
+
+    _ip_attempts.clear()
+    _account_failures.clear()
+    base_module._engine = old_engine
+    base_module._SessionFactory = old_session_factory
+    engine.dispose()
+
+
+def _login_t10(client, username, password="TempPass123"):
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+
+
+def _setup_t10_cycle_rule_participant(session):
+    """建立 cycle（base_score_calc_date >= 2026-02-01）+ CHILD_ACCIDENT MANUAL_DELTA 規則 + participant。"""
+    emp = Employee(
+        employee_id="E010",
+        name="測試員工",
+        is_active=True,
+    )
+    session.add(emp)
+    session.flush()
+
+    cycle = AppraisalCycle(
+        academic_year=114,
+        semester=Semester.SECOND,
+        start_date=date(2026, 2, 1),
+        end_date=date(2026, 7, 31),
+        base_score_calc_date=date(2026, 3, 15),
+        base_score=Decimal("75.6"),
+        status=CycleStatus.OPEN,
+    )
+    session.add(cycle)
+    session.flush()
+
+    session.add(
+        AppraisalScoringRule(
+            item_code="CHILD_ACCIDENT",
+            effective_from=date(2026, 2, 1),
+            rule_type="MANUAL_DELTA",
+            rule_config={"min_delta": -10, "max_delta": 0},
+        )
+    )
+    session.flush()
+
+    p = AppraisalParticipant(
+        cycle_id=cycle.id,
+        employee_id=emp.id,
+        role_group=RoleGroup.HEAD_TEACHER,
+        hire_months_in_cycle=Decimal("6"),
+        is_excluded=False,
+    )
+    session.add(p)
+    session.flush()
+    return cycle.id, p.id
+
+
+class TestManualEventCountsManualDeltaValidation:
+    def test_manual_delta_超出範圍_422_含detail範圍(self, client_with_db_t10):
+        """count=-15 超出 [-10, 0] → 422，detail 含「範圍」。"""
+        client, sf = client_with_db_t10
+        with sf() as s:
+            user = User(
+                username="admin_t10",
+                password_hash=hash_password("TempPass123"),
+                role="admin",
+                permission_names=["APPRAISAL_EVENT_WRITE", "APPRAISAL_READ"],
+                is_active=True,
+            )
+            s.add(user)
+            s.flush()
+            cycle_id, p_id = _setup_t10_cycle_rule_participant(s)
+            s.commit()
+        assert _login_t10(client, "admin_t10").status_code == 200
+
+        r = client.put(
+            f"/api/appraisal/cycles/{cycle_id}/manual_event_counts:batch",
+            json={
+                "entries": [
+                    {
+                        "participant_id": p_id,
+                        "item_code": "CHILD_ACCIDENT",
+                        "count": "-15",
+                    }
+                ]
+            },
+        )
+        assert r.status_code == 422, r.text
+        assert "範圍" in r.json().get("detail", ""), r.text
+
+    def test_manual_delta_範圍內_成功(self, client_with_db_t10):
+        """count=-3 在 [-10, 0] 內 → 200。"""
+        client, sf = client_with_db_t10
+        with sf() as s:
+            user = User(
+                username="admin_t10b",
+                password_hash=hash_password("TempPass123"),
+                role="admin",
+                permission_names=["APPRAISAL_EVENT_WRITE", "APPRAISAL_READ"],
+                is_active=True,
+            )
+            s.add(user)
+            s.flush()
+            cycle_id, p_id = _setup_t10_cycle_rule_participant(s)
+            s.commit()
+        assert _login_t10(client, "admin_t10b").status_code == 200
+
+        r = client.put(
+            f"/api/appraisal/cycles/{cycle_id}/manual_event_counts:batch",
+            json={
+                "entries": [
+                    {
+                        "participant_id": p_id,
+                        "item_code": "CHILD_ACCIDENT",
+                        "count": "-3",
+                    }
+                ]
+            },
+        )
+        assert r.status_code == 200, r.text
+
+
