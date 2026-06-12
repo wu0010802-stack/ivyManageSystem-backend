@@ -302,3 +302,82 @@ class TestCreateScoringRule:
             },
         )
         assert r.status_code == 403, r.text
+
+
+# === MANUAL_DELTA rule_config 驗證 ===
+
+
+class TestCreateManualDeltaRule:
+    def test_create_manual_delta_rule_成功(self, client_with_db):
+        """config {"min_delta":-10,"max_delta":0} 建立 MANUAL_DELTA 規則應回 201。"""
+        client, sf = client_with_db
+        with sf() as s:
+            _create_user(
+                s,
+                "admin1",
+                ["APPRAISAL_RULE_WRITE", "APPRAISAL_READ"],
+            )
+            s.commit()
+        assert _login(client, "admin1").status_code == 200
+        future = (date.today() + timedelta(days=30)).isoformat()
+        r = client.post(
+            "/api/appraisal/scoring_rules",
+            json={
+                "item_code": "CHILD_ACCIDENT",
+                "effective_from": future,
+                "rule_type": "MANUAL_DELTA",
+                "rule_config": {"min_delta": -10, "max_delta": 0},
+            },
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["rule_type"] == "MANUAL_DELTA"
+        assert Decimal(str(body["rule_config"]["min_delta"])) == Decimal("-10")
+        assert Decimal(str(body["rule_config"]["max_delta"])) == Decimal("0")
+
+    def test_create_manual_delta_rule_缺max_delta_422(self, client_with_db):
+        """config 缺 max_delta → 422 ValidationError。"""
+        client, sf = client_with_db
+        with sf() as s:
+            _create_user(
+                s,
+                "admin2",
+                ["APPRAISAL_RULE_WRITE", "APPRAISAL_READ"],
+            )
+            s.commit()
+        assert _login(client, "admin2").status_code == 200
+        future = (date.today() + timedelta(days=30)).isoformat()
+        r = client.post(
+            "/api/appraisal/scoring_rules",
+            json={
+                "item_code": "CHILD_ACCIDENT",
+                "effective_from": future,
+                "rule_type": "MANUAL_DELTA",
+                "rule_config": {"min_delta": -10},  # 缺 max_delta
+            },
+        )
+        assert r.status_code == 422, r.text
+
+    def test_create_manual_delta_rule_min_大於_max_422(self, client_with_db):
+        """min_delta > max_delta → 422，detail 含「min_delta 不可大於 max_delta」。"""
+        client, sf = client_with_db
+        with sf() as s:
+            _create_user(
+                s,
+                "admin3",
+                ["APPRAISAL_RULE_WRITE", "APPRAISAL_READ"],
+            )
+            s.commit()
+        assert _login(client, "admin3").status_code == 200
+        future = (date.today() + timedelta(days=30)).isoformat()
+        r = client.post(
+            "/api/appraisal/scoring_rules",
+            json={
+                "item_code": "CHILD_ACCIDENT",
+                "effective_from": future,
+                "rule_type": "MANUAL_DELTA",
+                "rule_config": {"min_delta": 5, "max_delta": -5},  # min > max
+            },
+        )
+        assert r.status_code == 422, r.text
+        assert "min_delta 不可大於 max_delta" in r.text

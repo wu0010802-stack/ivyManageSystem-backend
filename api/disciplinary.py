@@ -14,7 +14,11 @@ from sqlalchemy.orm import joinedload
 
 from models.base import session_scope
 from models.database import DisciplinaryAction, Employee
-from models.disciplinary import ACTION_TYPE_LABELS, ACTION_TYPES
+from models.disciplinary import (
+    ACTION_TYPE_LABELS,
+    ACTION_TYPES,
+    MERIT_ACTION_TYPES,
+)
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -27,8 +31,13 @@ router = APIRouter(prefix="/api", tags=["disciplinary"])
 class DisciplinaryActionCreate(BaseModel):
     employee_id: int
     action_date: _date
-    action_type: str = Field(..., description="warning|minor|major")
-    deduction_amount: float = Field(0, ge=0, description="0 表示用 BonusConfig 預設")
+    action_type: str = Field(
+        ...,
+        description="warning|minor|major（懲處） | commendation|minor_merit|major_merit（merit 獎勵，不扣款）",
+    )
+    deduction_amount: float = Field(
+        0, ge=0, description="0 表示用 BonusConfig 預設；merit 類型請填 0"
+    )
     reason: Optional[str] = None
 
 
@@ -119,6 +128,11 @@ def create_action(
             status_code=400,
             detail=f"action_type 須為 {', '.join(ACTION_TYPES)}",
         )
+    if payload.action_type in MERIT_ACTION_TYPES and payload.deduction_amount > 0:
+        raise HTTPException(
+            status_code=422,
+            detail="獎勵類型（嘉獎/小功/大功）不可填扣款金額",
+        )
 
     with session_scope() as session:
         emp = session.query(Employee).get(payload.employee_id)
@@ -187,6 +201,16 @@ def update_action(
             if payload.action_date is not None:
                 action.action_date = payload.action_date
             if payload.deduction_amount is not None:
+                # 更新後的 action_type（可能已在本次更新中改變）
+                effective_type = action.action_type
+                if (
+                    effective_type in MERIT_ACTION_TYPES
+                    and payload.deduction_amount > 0
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="獎勵類型（嘉獎/小功/大功）不可填扣款金額",
+                    )
                 action.deduction_amount = payload.deduction_amount
 
         action.updated_by = current_user.get("username")

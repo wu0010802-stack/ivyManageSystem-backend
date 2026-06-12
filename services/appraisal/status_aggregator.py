@@ -22,10 +22,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from utils.taipei_time import today_taipei
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
-from sqlalchemy import Integer, and_, case, func, or_
+from sqlalchemy import Integer, and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 import logging
@@ -38,7 +38,7 @@ from models.appraisal import (
     RoleGroup,
 )
 from models.attendance import Attendance
-from models.classroom import LIFECYCLE_ACTIVE, Classroom, Student
+from models.classroom import LIFECYCLE_ACTIVE, ClassGrade, Classroom, Student
 from models.disciplinary import DisciplinaryAction
 from models.employee import Employee
 from models.year_end import ClassEnrollmentTarget, YearEndCycle
@@ -55,7 +55,8 @@ class AttendanceAggregate:
     late_count: int = 0
     early_leave_count: int = 0
     missing_punch_count: int = 0  # missing_in + missing_out
-    leave_days: int = 0  # status='absent'
+    leave_days: int = 0  # status='leave'（全天請假）
+    absent_days: int = 0  # status='absent'（曠職，規章 −4/日）
     # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
 
@@ -75,6 +76,9 @@ class DisciplinaryAggregate:
     warning_count: int = 0
     minor_count: int = 0
     major_count: int = 0
+    commend_count: int = 0
+    minor_merit_count: int = 0
+    major_merit_count: int = 0
     actions: list[DisciplinaryActionItem] = field(default_factory=list)
     # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
@@ -99,6 +103,7 @@ class ActivityRateAggregate:
     enrolled_students: int = 0  # 該班 active 學生數
     registered_for_activity: int = 0  # 該班報名才藝課人數（去重 student_id）
     activity_rate: Decimal = Decimal("0")  # 0-100，2 位小數
+    grade_name: Optional[str] = None  # 班級年級名稱（ClassGrade.name）
     # 在 aggregator 路徑恆為 0；實際扣分走 rule_applier + scoring_rules。
     suggested_score_delta: Decimal = Decimal("0")
 
@@ -122,6 +127,8 @@ class ParticipantStatus:
     # 帶班人數自動計算：max(0, 期末在籍 − 編制)；編制來自年終 ClassEnrollmentTarget。
     # 無年終 cycle 或無對應班級編制時 fallback 為 0。
     headcount_over_target: int = 0
+    # 復學事件數（StudentChangeLog event_type='復學'，依班級＋時間窗）；未帶班者為 0。
+    reinstate_count: int = 0
 
 
 # ===== Sub-aggregators =====
@@ -132,8 +139,9 @@ def _aggregate_attendance(
 ) -> dict[int, AttendanceAggregate]:
     """bulk query Attendance；每 employee 一筆 AttendanceAggregate。
 
-    用 CASE WHEN ... THEN 1 ELSE 0 END 加總四個 bool 欄位 + status='absent'，
-    避免依賴 dialect 對 bool→int 的 implicit cast。
+    用 CASE WHEN ... THEN 1 ELSE 0 END 加總四個 bool 欄位，並分流
+    status='leave'（請假）與 status='absent'（曠職），避免依賴 dialect
+    對 bool→int 的 implicit cast。
     """
     result = {eid: AttendanceAggregate(employee_id=eid) for eid in employee_ids}
     if not employee_ids:
@@ -149,6 +157,9 @@ def _aggregate_attendance(
     absent_expr = func.sum(case((Attendance.status == "absent", 1), else_=0)).label(
         "absent"
     )
+    leave_expr = func.sum(case((Attendance.status == "leave", 1), else_=0)).label(
+        "leave"
+    )
     rows = (
         session.query(
             Attendance.employee_id,
@@ -156,6 +167,7 @@ def _aggregate_attendance(
             early_expr,
             missing_expr,
             absent_expr,
+            leave_expr,
         )
         .filter(Attendance.employee_id.in_(employee_ids))
         .filter(Attendance.attendance_date >= start)
@@ -163,12 +175,13 @@ def _aggregate_attendance(
         .group_by(Attendance.employee_id)
         .all()
     )
-    for eid, late, early, missing, absent in rows:
+    for eid, late, early, missing, absent, leave in rows:
         agg = result[eid]
         agg.late_count = int(late or 0)
         agg.early_leave_count = int(early or 0)
         agg.missing_punch_count = int(missing or 0)
-        agg.leave_days = int(absent or 0)
+        agg.leave_days = int(leave or 0)
+        agg.absent_days = int(absent or 0)
     return result
 
 
@@ -199,39 +212,72 @@ def _aggregate_class_retention(
     生命週期上有獨立旗標，光看日期會把休學中的學生算為「留住」。
     """
     result: dict[int, ClassRetentionAggregate] = {}
+    # 先計算有班級的人員，同時累積全校加權所需的分子/分母。
+    #
+    # 正確性補丁（code review 2026-06-11）：
+    #   1. 按 unique classroom_id 累計，而非按員工數——共帶同班的兩人若各自加總
+    #      一次，分子/分母會雙計，全校平均偏高。
+    #   2. 跳過 initial == 0 的班（期中新開班）：一班 initial=0 final=15
+    #      若納入分母=0+0=0 會被整個 school_total_initial=0 路徑吞掉；
+    #      但若與其他班合計後 initial>0，則 0/final 使分母虛增而分子不動，
+    #      導致全校平均虛低（例：10/10 + 0→15 算成 10/10 = 100%，
+    #      但若錯誤納入期末: 25/10 = 250%）。
+    #      政策：initial=0 的班（期中新開）不納入全校平均分母與分子。
+    no_classroom_emp_ids: list[int] = []
+    # classroom_id → (initial, final)，保證每班只查一次
+    classroom_counts: dict[int, tuple[int, int]] = {}
+
     for emp_id, cid in employee_to_classroom.items():
         if cid is None:
-            result[emp_id] = ClassRetentionAggregate(employee_id=emp_id)
+            no_classroom_emp_ids.append(emp_id)
             continue
-        initial_q = (
-            session.query(func.count(Student.id))
-            .filter(Student.classroom_id == cid)
-            .filter(Student.enrollment_date.isnot(None))
-            .filter(Student.enrollment_date <= start)
-            .filter(
-                or_(Student.withdrawal_date.is_(None), Student.withdrawal_date > start)
+        if cid not in classroom_counts:
+            initial_q = (
+                session.query(func.count(Student.id))
+                .filter(Student.classroom_id == cid)
+                .filter(Student.enrollment_date.isnot(None))
+                .filter(Student.enrollment_date <= start)
+                .filter(
+                    or_(
+                        Student.withdrawal_date.is_(None),
+                        Student.withdrawal_date > start,
+                    )
+                )
+                .filter(
+                    or_(
+                        Student.graduation_date.is_(None),
+                        Student.graduation_date > start,
+                    )
+                )
             )
-            .filter(
-                or_(Student.graduation_date.is_(None), Student.graduation_date > start)
+            initial = int(initial_q.scalar() or 0)
+            final_q = (
+                session.query(func.count(Student.id))
+                .filter(Student.classroom_id == cid)
+                .filter(Student.lifecycle_status == LIFECYCLE_ACTIVE)
+                .filter(Student.enrollment_date.isnot(None))
+                .filter(Student.enrollment_date <= end)
+                .filter(
+                    or_(
+                        Student.withdrawal_date.is_(None),
+                        Student.withdrawal_date > end,
+                    )
+                )
+                .filter(
+                    or_(
+                        Student.graduation_date.is_(None),
+                        Student.graduation_date > end,
+                    )
+                )
             )
-        )
-        initial = int(initial_q.scalar() or 0)
-        final_q = (
-            session.query(func.count(Student.id))
-            .filter(Student.classroom_id == cid)
-            .filter(Student.lifecycle_status == LIFECYCLE_ACTIVE)
-            .filter(Student.enrollment_date.isnot(None))
-            .filter(Student.enrollment_date <= end)
-            .filter(
-                or_(Student.withdrawal_date.is_(None), Student.withdrawal_date > end)
-            )
-            .filter(
-                or_(Student.graduation_date.is_(None), Student.graduation_date > end)
-            )
-        )
-        final = int(final_q.scalar() or 0)
+            final = int(final_q.scalar() or 0)
+            classroom_counts[cid] = (initial, final)
+        else:
+            initial, final = classroom_counts[cid]
         rate = (
-            (Decimal(final) / Decimal(initial) * 100).quantize(Decimal("0.01"))
+            (Decimal(final) / Decimal(initial) * 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             if initial > 0
             else Decimal("0")
         )
@@ -242,6 +288,32 @@ def _aggregate_class_retention(
             initial_count=initial,
             final_count=final,
             retention_rate=rate,
+        )
+
+    # 規章第五條(七)2：未帶班人員依全校平均留校率核算。
+    # 全校平均 = Σfinal / Σinitial（加權），與班級率同樣 2 位 HALF_UP。
+    # 「全校」= 本次聚合傳入員工所映射到的班級集合；單人查詢時可能退化，
+    # 目前無此 caller。
+    # initial=0 的班（期中新開）不納入全校平均分母與分子。
+    school_total_initial = 0
+    school_total_final = 0
+    for initial, final in classroom_counts.values():
+        if initial == 0:
+            continue  # 期中新開班排除（分母為零無意義且污染全校平均）
+        school_total_initial += initial
+        school_total_final += final
+
+    school_avg_rate = (
+        (Decimal(school_total_final) / Decimal(school_total_initial) * 100).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if school_total_initial > 0
+        else Decimal("0")
+    )
+    for emp_id in no_classroom_emp_ids:
+        result[emp_id] = ClassRetentionAggregate(
+            employee_id=emp_id,
+            retention_rate=school_avg_rate,
         )
     return result
 
@@ -285,6 +357,16 @@ def _aggregate_activity_rate(
         .all()
     )
     reg_by_class = {cid: int(cnt) for cid, cnt in reg_rows}
+    # 一次 join 取得各班年級名稱，避免 N+1。
+    grade_name_rows = (
+        session.query(Classroom.id, ClassGrade.name)
+        .outerjoin(ClassGrade, Classroom.grade_id == ClassGrade.id)
+        .filter(Classroom.id.in_(classroom_ids))
+        .all()
+    )
+    grade_name_by_classroom: dict[int, Optional[str]] = {
+        cid: gname for cid, gname in grade_name_rows
+    }
     for emp_id, cid in employee_to_classroom.items():
         if cid is None:
             result[emp_id] = ActivityRateAggregate(employee_id=emp_id)
@@ -292,7 +374,9 @@ def _aggregate_activity_rate(
         enrolled = enrolled_by_class.get(cid, 0)
         registered = reg_by_class.get(cid, 0)
         rate = (
-            (Decimal(registered) / Decimal(enrolled) * 100).quantize(Decimal("0.01"))
+            (Decimal(registered) / Decimal(enrolled) * 100).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             if enrolled > 0
             else Decimal("0")
         )
@@ -302,6 +386,7 @@ def _aggregate_activity_rate(
             enrolled_students=enrolled,
             registered_for_activity=registered,
             activity_rate=rate,
+            grade_name=grade_name_by_classroom.get(cid),
         )
     return result
 
@@ -338,7 +423,37 @@ def _aggregate_disciplinary(
             agg.minor_count += 1
         elif atype == "major":
             agg.major_count += 1
+        elif atype == "commendation":
+            agg.commend_count += 1
+        elif atype == "minor_merit":
+            agg.minor_merit_count += 1
+        elif atype == "major_merit":
+            agg.major_merit_count += 1
     return result
+
+
+def _aggregate_reinstates(
+    session: Session,
+    cycle: "AppraisalCycle",
+    classroom_ids: list[int],
+    window_end: date,
+) -> dict[int, int]:
+    """classroom_id → 復學事件數。時間窗與其他聚合一致 [start, min(end, today)]。"""
+    from models.student_log import StudentChangeLog
+
+    if not classroom_ids:
+        return {}
+    rows = session.execute(
+        select(StudentChangeLog.classroom_id, func.count())
+        .where(
+            StudentChangeLog.event_type == "復學",
+            StudentChangeLog.event_date >= cycle.start_date,
+            StudentChangeLog.event_date <= window_end,
+            StudentChangeLog.classroom_id.in_(classroom_ids),
+        )
+        .group_by(StudentChangeLog.classroom_id)
+    ).all()
+    return {cid: int(cnt) for cid, cnt in rows}
 
 
 def _aggregate_manual_event_counts(
@@ -465,6 +580,7 @@ def aggregate_cycle_status(
     target_by_classroom = _headcount_target_by_classroom(
         session, cycle.academic_year, semester_enum_to_int(cycle.semester) == 1
     )
+    reinstate_map = _aggregate_reinstates(session, cycle, classroom_ids, end)
     out: list[ParticipantStatus] = []
     for p in participants:
         ret = ret_map[p.employee_id]
@@ -494,6 +610,11 @@ def aggregate_cycle_status(
                 hire_months_in_cycle=p.hire_months_in_cycle,
                 manual_event_counts=dict(manual_by_pid.get(p.id, {})),
                 headcount_over_target=headcount_over,
+                reinstate_count=(
+                    reinstate_map.get(p.classroom_id, 0)
+                    if p.classroom_id is not None
+                    else 0
+                ),
             )
         )
     return out
@@ -580,6 +701,7 @@ def aggregate_all_active_employees_status(
     )
     dis_map = _aggregate_disciplinary(session, employee_ids, start, end)
     manual_by_pid = _aggregate_manual_event_counts(session, cycle.id)
+    reinstate_map = _aggregate_reinstates(session, cycle, classroom_ids, end)
 
     out: list[ParticipantStatus] = []
     for eid in employee_ids:
@@ -587,13 +709,14 @@ def aggregate_all_active_employees_status(
         p = participant_by_emp.get(eid)
         role = employee_to_role[eid]
         manual_counts = dict(manual_by_pid.get(p.id, {})) if p is not None else {}
+        cid = employee_to_classroom[eid]
         out.append(
             ParticipantStatus(
                 participant_id=p.id if p else None,
                 employee_id=eid,
                 employee_name=emp.name,
                 role_group=role.value if hasattr(role, "value") else str(role),
-                classroom_id=employee_to_classroom[eid],
+                classroom_id=cid,
                 attendance=att_map[eid],
                 retention=ret_map[eid],
                 activity=act_map[eid],
@@ -601,6 +724,7 @@ def aggregate_all_active_employees_status(
                 is_participant=p is not None,
                 hire_months_in_cycle=p.hire_months_in_cycle if p else None,
                 manual_event_counts=manual_counts,
+                reinstate_count=reinstate_map.get(cid, 0) if cid is not None else 0,
             )
         )
     # 排序：已加入考核者在前，再依員工姓名

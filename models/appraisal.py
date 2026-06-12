@@ -108,12 +108,12 @@ class ScoreItemSign(str, enum.Enum):
 
 
 class ScoreItemCode(str, enum.Enum):
-    """14 條考核扣分項對應 Excel `半年考核統計表` 欄位。
+    """考核加減分項對應 Excel `半年考核統計表` 欄位（規章第六篇對齊後共 24 項）。
 
     auto = aggregator 即時算；manual = 主任在 UI 上手填次數。
     """
 
-    # auto (7) — engine 從 status_aggregator 拿原始值
+    # auto — engine 從 status_aggregator 拿原始值
     LATE_EARLY = "LATE_EARLY"
     MISSING_PUNCH = "MISSING_PUNCH"
     LEAVE = "LEAVE"
@@ -121,7 +121,7 @@ class ScoreItemCode(str, enum.Enum):
     RETURNING_RATE_0315 = "RETURNING_RATE_0315"
     AFTER_CLASS_RATE = "AFTER_CLASS_RATE"
     REWARD_PUNISH = "REWARD_PUNISH"
-    # manual (7) — 主任在 ManualEventEntrySection 上填次數
+    # manual — 主任在 ManualEventEntrySection 上填次數
     SCHOOL_MEETING_ABSENCE = "SCHOOL_MEETING_ABSENCE"
     INSTITUTION_MEETING_0913 = "INSTITUTION_MEETING_0913"
     INSTITUTION_MEETING_1115 = "INSTITUTION_MEETING_1115"
@@ -129,6 +129,16 @@ class ScoreItemCode(str, enum.Enum):
     CHILD_ACCIDENT = "CHILD_ACCIDENT"
     CLASS_HEADCOUNT_BONUS = "CLASS_HEADCOUNT_BONUS"
     SPED = "SPED"  # 特教生加分（手填 count × +2，對齊 Excel P 欄）
+    # 規章第六篇對齊新增（2026-06-11 spec；effective 2026-02-01 起有規則）
+    ABSENTEEISM = "ABSENTEEISM"  # 曠職 −4/日（auto：考勤 status='absent'）
+    STUDENT_WITHDRAWAL = "STUDENT_WITHDRAWAL"  # 休學 −2/人（月費未繳人工判定）
+    STUDENT_REINSTATE = "STUDENT_REINSTATE"  # 復學 +1/人（auto：StudentChangeLog）
+    TRIAL_LEAVE = "TRIAL_LEAVE"  # 試讀離園 −1/人（手填）
+    CLASS_TRANSFER = "CLASS_TRANSFER"  # 轉班 −0.5/人（手填）
+    EXAM_RESULT = "EXAM_RESULT"  # 檢測成績（手填分值 ±10）
+    RECRUIT_SCORE = "RECRUIT_SCORE"  # 招生人數（手填分值 0~20）
+    SUPERVISOR_SCORE = "SUPERVISOR_SCORE"  # 主管加分（手填分值 0~10）
+    EXCELLENCE_NOMINATION = "EXCELLENCE_NOMINATION"  # 呈報優異 +2（每學期全園 1 位）
     OTHER = "OTHER"
 
 
@@ -142,6 +152,8 @@ AUTO_ITEM_CODES = frozenset(
         ScoreItemCode.AFTER_CLASS_RATE,
         ScoreItemCode.REWARD_PUNISH,
         ScoreItemCode.CLASS_HEADCOUNT_BONUS,
+        ScoreItemCode.ABSENTEEISM,
+        ScoreItemCode.STUDENT_REINSTATE,
     }
 )
 MANUAL_ITEM_CODES = frozenset(set(ScoreItemCode) - AUTO_ITEM_CODES)

@@ -38,6 +38,28 @@ from models.employee import Employee
 from utils.auth import hash_password
 from utils.permissions import Permission
 
+# aprcal001（2026-01-01）migration 已 seed 的 14 條規則代碼。
+# SPED 由 apxlal01 seed；規章第六篇新增 9 條由 aprreg01（Task 9）seed。
+# 此集合用於防止 aprcal001 DEFAULT_RULES 條目漂移（enum ⊇ migration seed 集合）。
+_APRCAL001_CODES = frozenset(
+    {
+        "LATE_EARLY",
+        "MISSING_PUNCH",
+        "LEAVE",
+        "RETURNING_RATE_0915",
+        "RETURNING_RATE_0315",
+        "AFTER_CLASS_RATE",
+        "REWARD_PUNISH",
+        "SCHOOL_MEETING_ABSENCE",
+        "INSTITUTION_MEETING_0913",
+        "INSTITUTION_MEETING_1115",
+        "SELF_IMPROVEMENT_ACTIVITY",
+        "CHILD_ACCIDENT",
+        "CLASS_HEADCOUNT_BONUS",
+        "OTHER",
+    }
+)
+
 
 @pytest.fixture
 def client_with_db(tmp_path):
@@ -186,8 +208,11 @@ def test_sync_writes_14_item_codes_per_participant(client_with_db):
     with sf() as s:
         items = s.query(AppraisalScoreItem).filter_by(participant_id=pid).all()
         codes = {i.item_code for i in items}
-    # SPED 由 apxlal01(2025-08-01) seed，非此 fixture 的 calibrate 規則；故排除
-    assert codes == {c.value for c in ScoreItemCode if c.value != "SPED"}  # 14 條
+    # aprcal001（2026-01-01）seed 14 條規則；SPED 由 apxlal01(2025-08-01) seed，
+    # 規章第六篇新增 9 條（aprreg01，Task 9 才補 migration）——兩者均不在此 fixture
+    # 的 calibrate 規則內，故只斷言 migration 已知的 14 條。
+    # 防漂移意圖：若 aprcal001 DEFAULT_RULES 減少條目，此測試將失敗。
+    assert codes == _APRCAL001_CODES
 
 
 def test_sync_preserves_manual_rows(client_with_db):
@@ -299,9 +324,8 @@ def test_sync_new_source_ref_format(client_with_db):
             )
             .all()
         )
-    # SPED 由 apxlal01(2025-08-01) seed，非此 fixture 的 calibrate 規則；故排除
-    expected_refs = {
-        f"auto:{c.value.lower()}:{cycle_id}" for c in ScoreItemCode if c.value != "SPED"
-    }
+    # aprcal001 seed 14 條規則（SPED 與規章新增 9 條不在此 fixture）；
+    # source_ref 格式：auto:<item_code_lower>:<cycle_id>。
+    expected_refs = {f"auto:{code.lower()}:{cycle_id}" for code in _APRCAL001_CODES}
     actual_refs = {r.source_ref for r in auto_rows}
     assert actual_refs == expected_refs

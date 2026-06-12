@@ -396,15 +396,9 @@ def generate_payouts(
         affected_emp_ids.add(row.employee_id)
         total += row.earlier_amount + row.later_amount
 
-    # B3（RA-L14）：考核年終獎金進 payout_year 2 月薪資，又計入二代健保補充
-    # 保費年累計基底（CLAUDE.md §11）。改 payout 後若不重算，2 月（及之後）薪資的
-    # 補充保費基底會 stale。對每位 affected 員工標 payout_year 2 月起未封存薪資
-    # needs_recalc=True，強制 finalize 前重算。已封存月份由 helper 自然跳過。
-    # 同 db（flush-not-commit），router commit 時與 SpecialBonusItem upsert 原子落地。
-    from services.salary.utils import mark_salary_stale_from_month
-
-    for emp_id in affected_emp_ids:
-        mark_salary_stale_from_month(db, emp_id, payout_year, from_month=2)
+    # 決策⑥B（2026-06-02）後考核獎金走 year_end settlement 表外發放，
+    # 不進月薪資、不進二代健保補充保費累計（CLAUDE.md §10/§11），
+    # 故不再標記薪資 needs_recalc。
 
     db.flush()
     return GenerateResult(

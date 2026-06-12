@@ -62,6 +62,7 @@ from schemas.appraisal import (
     DisciplinaryTieredConfig,
     FlatThresholdConfig,
     ImportResultOut,
+    ManualDeltaConfig,
     ManualEventCountBatchIn,
     ManualEventCountListOut,
     ManualEventCountOut,
@@ -191,11 +192,13 @@ def _build_participant_status_out(s) -> ParticipantStatusOut:
         classroom_id=s.classroom_id,
         is_participant=s.is_participant,
         hire_months_in_cycle=s.hire_months_in_cycle,
+        reinstate_count=s.reinstate_count,
         attendance=AttendanceAggregateOut(
             late_count=s.attendance.late_count,
             early_leave_count=s.attendance.early_leave_count,
             missing_punch_count=s.attendance.missing_punch_count,
             leave_days=s.attendance.leave_days,
+            absent_days=s.attendance.absent_days,
             suggested_score_delta=s.attendance.suggested_score_delta,
         ),
         retention=ClassRetentionAggregateOut(
@@ -208,6 +211,7 @@ def _build_participant_status_out(s) -> ParticipantStatusOut:
         ),
         activity=ActivityRateAggregateOut(
             classroom_id=s.activity.classroom_id,
+            grade_name=s.activity.grade_name,
             enrolled_students=s.activity.enrolled_students,
             registered_for_activity=s.activity.registered_for_activity,
             activity_rate=s.activity.activity_rate,
@@ -217,6 +221,9 @@ def _build_participant_status_out(s) -> ParticipantStatusOut:
             warning_count=s.disciplinary.warning_count,
             minor_count=s.disciplinary.minor_count,
             major_count=s.disciplinary.major_count,
+            commend_count=s.disciplinary.commend_count,
+            minor_merit_count=s.disciplinary.minor_merit_count,
+            major_merit_count=s.disciplinary.major_merit_count,
             actions=[
                 DisciplinaryActionItemOut(
                     id=a.id,
@@ -1598,6 +1605,7 @@ _CONFIG_VALIDATORS = {
     "TIER": TierConfig,
     "FLAT_THRESHOLD": FlatThresholdConfig,
     "DISCIPLINARY_TIERED": DisciplinaryTieredConfig,
+    "MANUAL_DELTA": ManualDeltaConfig,
 }
 
 
@@ -1780,7 +1788,30 @@ def batch_upsert_manual_event_counts(
     if cycle.status != CycleStatus.OPEN:
         raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法編輯")
 
+    # 依 cycle.base_score_calc_date 載入當期有效規則，用於 MANUAL_DELTA 分值範圍驗證
+    from services.appraisal.rule_applier import load_rules_for_date
+
+    rules = load_rules_for_date(session, cycle.base_score_calc_date)
+
     for entry in payload.entries:
+        rule = rules.get(entry.item_code)
+        if rule is not None and rule.rule_type == "MANUAL_DELTA":
+            lo = Decimal(str(rule.rule_config["min_delta"]))
+            hi = Decimal(str(rule.rule_config["max_delta"]))
+            if not (lo <= Decimal(entry.count) <= hi):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{entry.item_code} 分值 {entry.count} 超出範圍 [{lo}, {hi}]"
+                    ),
+                )
+        else:
+            # 非 MANUAL_DELTA（或未設規則）的事件次數不可為負
+            if entry.count < 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{entry.item_code} 事件次數不可為負（count={entry.count}）",
+                )
         existing = (
             session.query(AppraisalManualEventCount)
             .filter_by(

@@ -172,6 +172,7 @@ class AttendanceAggregateOut(BaseModel):
     early_leave_count: int
     missing_punch_count: int
     leave_days: int
+    absent_days: int = Field(default=0, description="曠職天數（status='absent'）")
     suggested_score_delta: Decimal
 
 
@@ -186,6 +187,7 @@ class ClassRetentionAggregateOut(BaseModel):
 
 class ActivityRateAggregateOut(BaseModel):
     classroom_id: Optional[int] = None
+    grade_name: Optional[str] = Field(default=None, description="班級年級名")
     enrolled_students: int
     registered_for_activity: int
     activity_rate: Decimal
@@ -204,6 +206,9 @@ class DisciplinaryAggregateOut(BaseModel):
     warning_count: int
     minor_count: int
     major_count: int
+    commend_count: int = 0
+    minor_merit_count: int = 0
+    major_merit_count: int = 0
     actions: list[DisciplinaryActionItemOut] = Field(default_factory=list)
     suggested_score_delta: Decimal
 
@@ -216,6 +221,7 @@ class ParticipantStatusOut(BaseModel):
     classroom_id: Optional[int] = None
     is_participant: bool = True
     hire_months_in_cycle: Optional[Decimal] = None
+    reinstate_count: int = Field(default=0, description="復學事件數")
     attendance: AttendanceAggregateOut
     retention: ClassRetentionAggregateOut
     activity: ActivityRateAggregateOut
@@ -311,10 +317,26 @@ class DisciplinaryTieredConfig(BaseModel):
     major_delta: Decimal
 
 
+class ManualDeltaConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min_delta: Decimal
+    max_delta: Decimal
+
+    @field_validator("max_delta")
+    @classmethod
+    def max_must_be_gte_min(cls, v, info):
+        min_val = info.data.get("min_delta")
+        if min_val is not None and v < min_val:
+            raise ValueError("min_delta 不可大於 max_delta")
+        return v
+
+
 class ScoringRuleIn(BaseModel):
     item_code: str
     effective_from: date
-    rule_type: Literal["PER_UNIT", "TIER", "FLAT_THRESHOLD", "DISCIPLINARY_TIERED"]
+    rule_type: Literal[
+        "PER_UNIT", "TIER", "FLAT_THRESHOLD", "DISCIPLINARY_TIERED", "MANUAL_DELTA"
+    ]
     rule_config: (
         dict  # 由 endpoint 內依 rule_type 二次 validate（用上方 4 config class）
     )
@@ -334,7 +356,9 @@ class ScoringRuleOut(ScoringRuleIn):
 class ManualEventCountIn(BaseModel):
     participant_id: int
     item_code: str
-    count: Decimal = Field(ge=0)
+    # count 允許負值：MANUAL_DELTA 規則（如 CHILD_ACCIDENT）存分值本身（可負），
+    # 其餘 rule_type 的事件次數仍須 ≥ 0，由 API handler 根據 rule_type 驗證。
+    count: Decimal
     note: Optional[str] = None
 
 

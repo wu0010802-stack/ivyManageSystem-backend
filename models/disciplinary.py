@@ -1,6 +1,7 @@
 """懲處記錄 model
 
 警告 / 小過 / 大過：扣減節慶+超額獎金（下一個發放期一次抵扣後標記已用）。
+嘉獎 / 小功 / 大功（merit 類型）：獎勵紀錄（考核加分用），不參與薪資扣款。
 """
 
 from datetime import datetime
@@ -24,14 +25,31 @@ from models.types import Money
 ACTION_TYPE_WARNING = "warning"  # 警告
 ACTION_TYPE_MINOR = "minor"  # 小過
 ACTION_TYPE_MAJOR = "major"  # 大過
+ACTION_TYPE_COMMEND = "commendation"  # 嘉獎
+ACTION_TYPE_MINOR_MERIT = "minor_merit"  # 小功
+ACTION_TYPE_MAJOR_MERIT = "major_merit"  # 大功
 
-ACTION_TYPES = (ACTION_TYPE_WARNING, ACTION_TYPE_MINOR, ACTION_TYPE_MAJOR)
+ACTION_TYPES = (
+    ACTION_TYPE_WARNING,
+    ACTION_TYPE_MINOR,
+    ACTION_TYPE_MAJOR,
+    ACTION_TYPE_COMMEND,
+    ACTION_TYPE_MINOR_MERIT,
+    ACTION_TYPE_MAJOR_MERIT,
+)
 
 ACTION_TYPE_LABELS = {
     ACTION_TYPE_WARNING: "警告",
     ACTION_TYPE_MINOR: "小過",
     ACTION_TYPE_MAJOR: "大過",
+    ACTION_TYPE_COMMEND: "嘉獎",
+    ACTION_TYPE_MINOR_MERIT: "小功",
+    ACTION_TYPE_MAJOR_MERIT: "大功",
 }
+
+MERIT_ACTION_TYPES: frozenset = frozenset(
+    {ACTION_TYPE_COMMEND, ACTION_TYPE_MINOR_MERIT, ACTION_TYPE_MAJOR_MERIT}
+)
 
 
 class DisciplinaryAction(Base):
@@ -53,7 +71,10 @@ class DisciplinaryAction(Base):
     action_type = Column(
         String(20),
         nullable=False,
-        comment="warning=警告 / minor=小過 / major=大過",
+        comment=(
+            "warning=警告 / minor=小過 / major=大過（懲處，扣薪資） / "
+            "commendation=嘉獎 / minor_merit=小功 / major_merit=大功（merit，僅考核加分不扣薪）"
+        ),
     )
     deduction_amount = Column(
         Money, nullable=False, default=0, comment="扣款金額（0=用 BonusConfig 預設）"

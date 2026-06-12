@@ -7,6 +7,28 @@ import pytest
 
 from models.appraisal import AppraisalScoringRule, ScoreItemCode
 
+# aprcal001 在 upgrade() 時 INSERT 的 14 條 default rule 代碼。
+# SPED 由 apxlal01(2025-08-01) seed；規章第六篇新增 9 條由 aprreg01（Task 9）seed。
+# 此集合用於驗證 migration seed 集合不漂移（enum ⊇ 此集合）。
+_APRCAL001_SEED_CODES = frozenset(
+    {
+        "LATE_EARLY",
+        "MISSING_PUNCH",
+        "LEAVE",
+        "RETURNING_RATE_0915",
+        "RETURNING_RATE_0315",
+        "AFTER_CLASS_RATE",
+        "REWARD_PUNISH",
+        "SCHOOL_MEETING_ABSENCE",
+        "INSTITUTION_MEETING_0913",
+        "INSTITUTION_MEETING_1115",
+        "SELF_IMPROVEMENT_ACTIVITY",
+        "CHILD_ACCIDENT",
+        "CLASS_HEADCOUNT_BONUS",
+        "OTHER",
+    }
+)
+
 
 def test_two_tables_exist(test_db_session):
     inspector = inspect(test_db_session.bind)
@@ -51,9 +73,12 @@ def migrated_db(test_db_session):
 def test_14_default_rules_inserted(migrated_db):
     rules = migrated_db.query(AppraisalScoringRule).all()
     codes = {r.item_code for r in rules}
-    # SPED 由 apxlal01(2025-08-01) seed，非此 calibrate 規則(2026-01-01)；故排除
-    expected = {c.value for c in ScoreItemCode if c.value != "SPED"}
-    assert codes == expected, f"missing={expected - codes}"
+    # aprcal001 只 seed 14 條規則（SPED 由 apxlal01 seed；
+    # 規章第六篇新增 9 條由 aprreg01（Task 9）seed）。
+    # 防漂移：enum ⊇ _APRCAL001_SEED_CODES（若 migration 刪條目此測試失敗）。
+    assert (
+        codes == _APRCAL001_SEED_CODES
+    ), f"missing={_APRCAL001_SEED_CODES - codes} extra={codes - _APRCAL001_SEED_CODES}"
     # 全部 effective_from = 2026-01-01
     assert all(str(r.effective_from) == "2026-01-01" for r in rules)
 

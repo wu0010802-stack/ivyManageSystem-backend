@@ -2,11 +2,13 @@
 
 純函式設計，不接 DB；caller 負責從 DB 載 ScoringRule。
 
-4 種 rule_type：
+5 種 rule_type：
   PER_UNIT             count × per_unit_delta（支援 per-role override + caps）
   TIER                 依 input value 找 tier
-  FLAT_THRESHOLD       單一閾值二分
-  DISCIPLINARY_TIERED  REWARD_PUNISH 專用，warning/minor/major 各自單價
+  FLAT_THRESHOLD       單一閾值二分；支援 grade_thresholds 分年級門檻
+  DISCIPLINARY_TIERED  REWARD_PUNISH 專用，warning/minor/major 懲處 +
+                       commend/minor_merit/major_merit 獎勵雙向功過相抵
+  MANUAL_DELTA         主任手填分值本身，依 min_delta/max_delta clamp
 """
 
 from __future__ import annotations
@@ -86,11 +88,22 @@ def apply_tier(rule: ScoringRule, value: Decimal, role_group: RoleGroup) -> Deci
 
 
 def apply_flat_threshold(
-    rule: ScoringRule, value: Decimal, role_group: RoleGroup
+    rule: ScoringRule,
+    value: Decimal,
+    role_group: RoleGroup,
+    grade_name: Optional[str] = None,
 ) -> Decimal:
-    """value >= threshold → above_delta；否則 below_delta。"""
+    """value >= threshold → above_delta；否則 below_delta。
+
+    grade_name 非 None 時，先查 rule_config["grade_thresholds"][grade_name]；
+    命中則用年級門檻覆蓋 threshold，否則回退既有 threshold（向後相容）。
+    """
     cfg = rule.rule_config
     threshold = Decimal(str(cfg["threshold"]))
+    if grade_name is not None:
+        grade_thresholds = cfg.get("grade_thresholds") or {}
+        if grade_name in grade_thresholds:
+            threshold = Decimal(str(grade_thresholds[grade_name]))
     if value >= threshold:
         return _round(Decimal(str(cfg["above_delta"])))
     return _round(Decimal(str(cfg["below_delta"])))
@@ -101,15 +114,45 @@ def apply_disciplinary_tiered(
     warning_count: int,
     minor_count: int,
     major_count: int,
+    *,
+    commend_count: int = 0,
+    minor_merit_count: int = 0,
+    major_merit_count: int = 0,
 ) -> Decimal:
-    """REWARD_PUNISH 專用：warning/minor/major 各自單價乘以件數後加總。"""
+    """REWARD_PUNISH 專用：懲處（warning/minor/major）與獎勵（嘉獎/小功/大功）功過相抵。
+
+    commend_delta/minor_merit_delta/major_merit_delta 用 cfg.get(..., 0) 向後相容，
+    舊版 config 不含 merit 鍵時三者皆視為 0。
+    """
     cfg = rule.rule_config
     delta = (
         Decimal(str(cfg["warning_delta"])) * Decimal(warning_count)
         + Decimal(str(cfg["minor_delta"])) * Decimal(minor_count)
         + Decimal(str(cfg["major_delta"])) * Decimal(major_count)
+        + Decimal(str(cfg.get("commend_delta", 0))) * Decimal(commend_count)
+        + Decimal(str(cfg.get("minor_merit_delta", 0))) * Decimal(minor_merit_count)
+        + Decimal(str(cfg.get("major_merit_delta", 0))) * Decimal(major_merit_count)
     )
     return _round(delta)
+
+
+def apply_manual_delta(
+    rule: ScoringRule, value: Decimal, role_group: RoleGroup
+) -> Decimal:
+    """MANUAL_DELTA：count 欄存主任手填「分值」本身（可正可負）。
+
+    依 rule_config 的 min_delta/max_delta clamp（API 層另有 422 驗證，
+    此處 clamp 是第二道防線，保證舊資料/旁路寫入不會炸出範圍外分數）。
+    """
+    cfg = rule.rule_config
+    lo = Decimal(str(cfg["min_delta"]))
+    hi = Decimal(str(cfg["max_delta"]))
+    v = Decimal(value)
+    if v < lo:
+        v = lo
+    elif v > hi:
+        v = hi
+    return _round(v)
 
 
 # ===== DB-aware integration layer (Task 10) =====
@@ -206,21 +249,44 @@ def _apply_auto_item(
             else Decimal("0")
         )
         return (
-            apply_flat_threshold(rule, rate, role_group),
+            apply_flat_threshold(
+                rule, rate, role_group, grade_name=status.activity.grade_name
+            ),
             rate,
             f"才藝率 {rate}%",
         )
     if code == "REWARD_PUNISH":
         d = status.disciplinary
         delta = apply_disciplinary_tiered(
-            rule, d.warning_count, d.minor_count, d.major_count
+            rule,
+            d.warning_count,
+            d.minor_count,
+            d.major_count,
+            commend_count=d.commend_count,
+            minor_merit_count=d.minor_merit_count,
+            major_merit_count=d.major_merit_count,
         )
-        raw = Decimal(d.warning_count + d.minor_count + d.major_count)
+        raw = Decimal(
+            d.warning_count
+            + d.minor_count
+            + d.major_count
+            + d.commend_count
+            + d.minor_merit_count
+            + d.major_merit_count
+        )
         return (
             delta,
             raw,
-            f"警告 {d.warning_count} / 小過 {d.minor_count} / 大過 {d.major_count}",
+            f"警告 {d.warning_count} / 小過 {d.minor_count} / 大過 {d.major_count}"
+            f" / 嘉獎 {d.commend_count} / 小功 {d.minor_merit_count}"
+            f" / 大功 {d.major_merit_count}",
         )
+    if code == "ABSENTEEISM":
+        cnt = Decimal(status.attendance.absent_days)
+        return apply_per_unit(rule, cnt, role_group), cnt, f"曠職 {cnt} 天"
+    if code == "STUDENT_REINSTATE":
+        cnt = Decimal(status.reinstate_count)
+        return apply_per_unit(rule, cnt, role_group), cnt, f"復學 {cnt} 人"
     if code == "CLASS_HEADCOUNT_BONUS":
         cnt = Decimal(status.headcount_over_target)
         return (
@@ -232,13 +298,16 @@ def _apply_auto_item(
 
 
 def compute_all_deltas(session: Session, cycle) -> dict[tuple[int, str], DeltaResult]:
-    """對 cycle 內所有 participant 的 14 個 item_code 算 delta。
+    """對 cycle 內所有 participant 的全部 item_code 算 delta。
 
     流程：
       1. load_rules_for_date(cycle.base_score_calc_date)
-      2. aggregate_cycle_status(session, cycle) 取 5 auto 原始值
-      3. 批撈 AppraisalManualEventCount 取 9 manual 手填次數
-      4. 對每 (participant, item_code) 依 auto/manual 分流計算
+      2. aggregate_cycle_status(session, cycle) 取 auto 原始值
+         （含 ABSENTEEISM、STUDENT_REINSTATE、AFTER_CLASS_RATE 年級分流、
+         REWARD_PUNISH 獎懲雙向）
+      3. 批撈 AppraisalManualEventCount 取 manual 手填值
+      4. 對每 (participant, item_code) 依 auto/manual 分流計算；
+         manual 分流支援 PER_UNIT / TIER / FLAT_THRESHOLD / MANUAL_DELTA
       5. role 不適用者寫入 delta=0、note="本角色不適用"
     """
     from services.appraisal.status_aggregator import aggregate_cycle_status
@@ -296,15 +365,20 @@ def compute_all_deltas(session: Session, cycle) -> dict[tuple[int, str], DeltaRe
                 )
                 if rule.rule_type == "PER_UNIT":
                     delta = apply_per_unit(rule, cnt, role)
+                    note = f"手填 {cnt} 次" if cnt else "未填"
                 elif rule.rule_type == "TIER":
                     delta = apply_tier(rule, cnt, role)
+                    note = f"手填 {cnt} 次" if cnt else "未填"
                 elif rule.rule_type == "FLAT_THRESHOLD":
                     delta = apply_flat_threshold(rule, cnt, role)
+                    note = f"手填 {cnt} 次" if cnt else "未填"
+                elif rule.rule_type == "MANUAL_DELTA":
+                    delta = apply_manual_delta(rule, cnt, role)
+                    note = f"手填分值 {cnt}" if cnt else "未填（或 0）"
                 else:
                     delta = Decimal("0")
-                result[(status.participant_id, code)] = DeltaResult(
-                    delta, cnt, f"手填 {cnt} 次" if cnt else "未填"
-                )
+                    note = f"手填 {cnt} 次" if cnt else "未填"
+                result[(status.participant_id, code)] = DeltaResult(delta, cnt, note)
             else:
                 logger.warning(
                     "compute_all_deltas: rule item_code=%s 不在 auto/manual 集合內，略過",
@@ -318,6 +392,7 @@ __all__ = [
     "ScoringRule",
     "apply_disciplinary_tiered",
     "apply_flat_threshold",
+    "apply_manual_delta",
     "apply_per_unit",
     "apply_tier",
     "compute_all_deltas",
