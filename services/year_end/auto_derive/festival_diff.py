@@ -94,6 +94,10 @@ from models.year_end import (
     YearEndCycle,
 )
 from services.salary.engine import SalaryEngine
+from services.student_enrollment import (
+    classroom_student_count_map,
+    count_students_active_on,
+)
 from services.year_end.enrollment_rates import count_enrolled_on
 from services.year_end.settlement_builder import (
     _semester_month_ends,
@@ -143,20 +147,27 @@ def _upsert_auto_item(
     amount: Decimal,
     classroom_id: Optional[int],
     calc_meta: dict,
+    existing_map: "dict[int, SpecialBonusItem] | None" = None,
 ) -> bool:
     """override-aware upsert（與 B2 _upsert_auto_item 等價，bonus_type=FESTIVAL_DIFF）。
+
+    existing_map 不為 None 時改查預載 map（employee_id → 既有 item，由 caller 以
+    同 cycle/bonus_type/label 一次撈出），免逐員工 select（N+1 收斂）；未傳維持逐筆查。
 
     回傳 True 表示有寫入/更新（新建或更新自動筆）；
     回傳 False 表示既有筆為手動筆而 SKIP（絕不覆寫）。
     """
-    existing = db.scalar(
-        select(SpecialBonusItem).where(
-            SpecialBonusItem.year_end_cycle_id == cycle_id,
-            SpecialBonusItem.employee_id == employee_id,
-            SpecialBonusItem.bonus_type == SpecialBonusType.FESTIVAL_DIFF,
-            SpecialBonusItem.period_label == label,
+    if existing_map is not None:
+        existing = existing_map.get(employee_id)
+    else:
+        existing = db.scalar(
+            select(SpecialBonusItem).where(
+                SpecialBonusItem.year_end_cycle_id == cycle_id,
+                SpecialBonusItem.employee_id == employee_id,
+                SpecialBonusItem.bonus_type == SpecialBonusType.FESTIVAL_DIFF,
+                SpecialBonusItem.period_label == label,
+            )
         )
-    )
     if existing is None:
         db.add(
             SpecialBonusItem(
@@ -196,7 +207,11 @@ def _pick_primary(rows: list, emp_id: int) -> Optional[Classroom]:
 
 
 def _resolve_classroom_for_emp(
-    db: Session, emp_id: int, school_year: int, semester: int
+    db: Session,
+    emp_id: int,
+    school_year: int,
+    semester: int,
+    classrooms: "list[Classroom] | None" = None,
 ) -> Optional[Classroom]:
     """員工當學期所屬主要班級（head > assistant > art），無→None。
 
@@ -206,35 +221,58 @@ def _resolve_classroom_for_emp(
     沿用」的相容情境——payroll 的「已發」此時也走 fallback 解析到班，若本「應領」端
     不跟進就會 per-class（已發）vs 全校（應領）對不上（同舊版 P0 的 legacy-data 變體）。
     以 Classroom 的 head/assistant/art_teacher_id 為準（非冗餘 Employee.classroom_id）。
+
+    classrooms 不為 None 時（NP1-1 收斂）：以 caller 預載的 active 班級清單在記憶體內
+    解析（同 filter / 同排序 / 同 _pick_primary），不發查詢；未傳維持逐筆 DB 查詢。
     """
-    base_filter = or_(
-        Classroom.head_teacher_id == emp_id,
-        Classroom.assistant_teacher_id == emp_id,
-        Classroom.art_teacher_id == emp_id,
-    )
-    term_rows = list(
-        db.scalars(
-            select(Classroom)
-            .where(
-                Classroom.is_active.is_(True),
-                Classroom.school_year == school_year,
-                Classroom.semester == semester,
-                base_filter,
-            )
-            .order_by(Classroom.id.asc())
-        ).all()
-    )
+    if classrooms is not None:
+        mine = [
+            c
+            for c in classrooms
+            if c.is_active
+            and emp_id
+            in (c.head_teacher_id, c.assistant_teacher_id, c.art_teacher_id)
+        ]
+        term_rows: list = sorted(
+            (
+                c
+                for c in mine
+                if c.school_year == school_year and c.semester == semester
+            ),
+            key=lambda c: c.id,
+        )
+    else:
+        base_filter = or_(
+            Classroom.head_teacher_id == emp_id,
+            Classroom.assistant_teacher_id == emp_id,
+            Classroom.art_teacher_id == emp_id,
+        )
+        term_rows = list(
+            db.scalars(
+                select(Classroom)
+                .where(
+                    Classroom.is_active.is_(True),
+                    Classroom.school_year == school_year,
+                    Classroom.semester == semester,
+                    base_filter,
+                )
+                .order_by(Classroom.id.asc())
+            ).all()
+        )
     if term_rows:
         return _pick_primary(term_rows, emp_id)
 
     # cross-term fallback（鏡像 payroll）：無當期班 → 取跨學期任一 active（id DESC）。
-    any_rows = list(
-        db.scalars(
-            select(Classroom)
-            .where(Classroom.is_active.is_(True), base_filter)
-            .order_by(Classroom.id.desc())
-        ).all()
-    )
+    if classrooms is not None:
+        any_rows: list = sorted(mine, key=lambda c: c.id, reverse=True)
+    else:
+        any_rows = list(
+            db.scalars(
+                select(Classroom)
+                .where(Classroom.is_active.is_(True), base_filter)
+                .order_by(Classroom.id.desc())
+            ).all()
+        )
     picked = _pick_primary(any_rows, emp_id)
     if picked is not None:
         logger.warning(
@@ -266,14 +304,16 @@ def _build_meeting_absent_cache(
     """逐月會議缺席數預載（employee_id → count），避免 calculate_period_accrual_row
     在迴圈內每員工一次 MeetingRecord.count()（對齊 api/salary/festival.py:183-198）。
 
-    **刻意只預載 meeting_absent_count_map**：此查詢與 payroll 自身用的 MeetingRecord
-    查詢逐字一致，注入後「已發」仍忠實。
-    **不**預載 school_active / classroom_count_map——payroll 的「已發」必須走 engine
-    自己的 `count_students_active_on`（services/student_enrollment.py：僅 enrollment/
-    graduation filter，**不含 withdrawal**），而本模組的「應領」走 `count_enrolled_on`
-    （含 withdrawal_date > d）。兩者人數定義刻意不同：差額正是這個「人數校正 true-up」
-    （task 語意：已領用 payroll 自己的人數，可能與年終人數不同）。若把 count_enrolled_on
-    注入 ctx，會把已發強行套到年終人數函式上，消掉 true-up 的人數校正成分。
+    此查詢與 payroll 自身用的 MeetingRecord 查詢逐字一致，注入後「已發」仍忠實。
+
+    人數 ctx（school_active / classroom_count_map）自 NP1-1（2026-06-12）起也在
+    derive_festival_diff 內 per-month 預載——但**一律用 engine 自己的**
+    `count_students_active_on` / `classroom_student_count_map`
+    （services/student_enrollment.py：僅 enrollment/graduation filter，**不含
+    withdrawal**），屬同函式同參數的等值 memoize。本模組的「應領」走
+    `count_enrolled_on`（含 withdrawal_date > d），兩者人數定義刻意不同：差額正是
+    這個「人數校正 true-up」。**絕不可**把 count_enrolled_on 注入 ctx——會把已發
+    強行套到年終人數函式上，消掉 true-up 的人數校正成分。
     """
     from sqlalchemy import func
 
@@ -370,6 +410,65 @@ def derive_festival_diff(
     # count_students_active_on 算（見 _build_meeting_absent_cache docstring）。
     meeting_absent_cache = _build_meeting_absent_cache(db, month_ends)
 
+    # ── NP1-1 N+1 收斂（2026-06-12）──
+    # 以下全部是「同函式、同參數」的等值 memoize / 迴圈外批次預載，cache 生命週期
+    # 僅限本次 derive，不替換任何人數定義：已發仍走 engine 的 count_students_active_on
+    # 體系（不含 withdrawal）、應領仍走 count_enrolled_on（含 withdrawal），true-up
+    # 的人數校正成分不變（見 _build_meeting_absent_cache docstring 的兩套定義說明）。
+    # ① 已發側 per-month 人數：engine 自己的函式先算好注入 ctx——school_active_students
+    #    對齊 engine.py:2040-2043 的 ctx 短路；classroom_count_map 與 bulk payroll
+    #    _build_period_monthly_context 的 cls_count_map 同一手法（同 filter 的 GROUP BY）。
+    _school_active_by_month: dict[tuple[int, int], int] = {}
+    _cls_count_by_month: dict[tuple[int, int], dict[int, int]] = {}
+    for _me in month_ends:
+        _school_active_by_month[(_me.year, _me.month)] = count_students_active_on(
+            db, _me
+        )
+        _cls_count_by_month[(_me.year, _me.month)] = classroom_student_count_map(
+            db, _me
+        )
+    # ② 已發側班級反查 memo：per (emp, term)，由上方 all_active_classrooms 在記憶體內
+    #    解析（_resolve_classroom_for_emp 逐字鏡像 engine._resolve_classroom_for_employee
+    #    _in_term，含 cross-term fallback）；注入 ctx["classroom"] 取代 engine 逐員工
+    #    逐月的 _resolve_classroom_for_employee_in_month 查詢。
+    _classroom_by_emp_term: dict[tuple[int, tuple[int, int]], Optional[Classroom]] = {}
+    # ③ 應領側 count_enrolled_on memo：值只依 (month_end, classroom_id)，同參數重複
+    #    呼叫收斂（原本每員工每月各查一次同 6 個值）。
+    _enrolled_cache: dict[tuple[date, Optional[int]], int] = {}
+
+    def _enrolled_on(month_end: date, classroom_id: Optional[int]) -> int:
+        key = (month_end, classroom_id)
+        if key not in _enrolled_cache:
+            _enrolled_cache[key] = count_enrolled_on(
+                db, month_end, classroom_id=classroom_id
+            )
+        return _enrolled_cache[key]
+
+    # ④ festival_base_for_role memo（同 settlement_builder build loop 的 _festival_cache）。
+    _festival_base_cache: dict["str | None", Decimal] = {}
+    # ⑤ 班級年終目標：迴圈外一次撈 cycle 上學期全部 ClassEnrollmentTarget。
+    _class_target_map: dict[int, int] = {
+        int(row.classroom_id): int(row.head_count_target)
+        for row in db.scalars(
+            select(ClassEnrollmentTarget).where(
+                ClassEnrollmentTarget.year_end_cycle_id == cycle.id,
+                ClassEnrollmentTarget.semester_first.is_(True),
+            )
+        )
+        if row.classroom_id is not None
+    }
+    # ⑥ 既有 FESTIVAL_DIFF items 一次撈成 map，_upsert_auto_item 改查 dict。
+    _existing_items: dict[int, SpecialBonusItem] = {
+        int(it.employee_id): it
+        for it in db.scalars(
+            select(SpecialBonusItem).where(
+                SpecialBonusItem.year_end_cycle_id == cycle.id,
+                SpecialBonusItem.bonus_type == SpecialBonusType.FESTIVAL_DIFF,
+                SpecialBonusItem.period_label == label,
+            )
+        )
+    }
+
     # P1-1：參與者對齊 build = ACTIVE ∪ included_resigned_ids。
     # 空 included → in_([]) 不匹配任何列 → 退回僅 ACTIVE（與舊版一致）。
     employees = list(
@@ -392,9 +491,12 @@ def derive_festival_diff(
         if emp.id in skip_ids:
             continue
 
-        festival_base = festival_base_for_role(
-            db, role_key_of(emp), cycle.academic_year
-        )
+        _rk = role_key_of(emp)
+        if _rk not in _festival_base_cache:
+            _festival_base_cache[_rk] = festival_base_for_role(
+                db, _rk, cycle.academic_year
+            )
+        festival_base = _festival_base_cache[_rk]
         # festival 基數 = 0 的角色（廚房/護理/美語/無法分類）刻意排除，避免「全負回收」。
         if festival_base <= 0:
             continue
@@ -402,9 +504,11 @@ def derive_festival_diff(
         # 候選班級（per-class 用）：鏡像 payroll 解析（含 cross-term fallback）。
         # 實際 per-class vs 全校由「payroll 當月 category」決定（見下），避免「主任/組長
         # 同時掛班導」時 payroll 走主管全校、應領誤走 per-class 的不一致。
-        cand_classroom = _resolve_classroom_for_emp(db, emp.id, sy, sem)
+        cand_classroom = _resolve_classroom_for_emp(
+            db, emp.id, sy, sem, classrooms=all_active_classrooms
+        )
         cand_target = (
-            _class_target(db, cycle.id, cand_classroom.id)
+            _class_target_map.get(cand_classroom.id)
             if cand_classroom is not None
             else None
         )
@@ -429,13 +533,29 @@ def derive_festival_diff(
             y, m = month_end.year, month_end.month
 
             # ── 已發_m：payroll 逐月 accrual（per-class + 封頂 + 學期反查）──
-            # 刻意不塞 school_active_students / classroom_count_map：讓 engine 走自己的
-            # count_students_active_on（payroll 真實人數，不含 withdrawal），與「應領」的
-            # count_enrolled_on 人數定義刻意不同 → 差額含「人數校正 true-up」。
-            # 不帶 "classroom" key → engine 走 _resolve_classroom_for_employee_in_month。
+            # school_active_students / classroom_count_map：用 engine 自己的
+            # count_students_active_on 體系（payroll 真實人數，不含 withdrawal）per-month
+            # 預載注入（NP1-1，等值 memoize），與「應領」的 count_enrolled_on 人數定義
+            # 仍刻意不同 → 差額含「人數校正 true-up」不變。**絕不可**改注入
+            # count_enrolled_on（會消掉 true-up 的人數校正成分）。
+            # "classroom"：per (emp, term) memo（與 engine
+            # _resolve_classroom_for_employee_in_month 同 term 解析 + 同班級反查邏輯）。
+            _term_key = resolve_current_academic_term(date(y, m, 1))
+            _ck = (emp.id, _term_key)
+            if _ck not in _classroom_by_emp_term:
+                _classroom_by_emp_term[_ck] = _resolve_classroom_for_emp(
+                    db,
+                    emp.id,
+                    _term_key[0],
+                    _term_key[1],
+                    classrooms=all_active_classrooms,
+                )
             per_month_ctx = {
                 "session": db,
                 "employee": emp,
+                "classroom": _classroom_by_emp_term[_ck],
+                "school_active_students": _school_active_by_month[(y, m)],
+                "classroom_count_map": _cls_count_by_month[(y, m)],
                 "meeting_absent_count_map": meeting_absent_cache[(y, m)],
                 "assistant_to_classes_map": assistant_to_classes_map,
                 "art_to_classes_map": art_to_classes_map,
@@ -513,7 +633,7 @@ def derive_festival_diff(
                 break
 
             target_d = Decimal(str(target))
-            enrolled = count_enrolled_on(db, month_end, classroom_id=classroom_id)
+            enrolled = _enrolled_on(month_end, classroom_id)
             due = _q2(festival_base * Decimal(enrolled) / target_d)
 
             diff = due - paid
@@ -561,6 +681,7 @@ def derive_festival_diff(
                 "is_head_teacher": item_classroom_id is not None,
                 "months": months_meta,
             },
+            existing_map=_existing_items,
         )
         if wrote:
             report.written += 1

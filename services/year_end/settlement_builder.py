@@ -446,10 +446,20 @@ def refresh_enrollment_rates(db: Session, cycle: YearEndCycle) -> None:
             ClassEnrollmentTarget.year_end_cycle_id == cycle.id
         )
     ).all()
+    # NP1-2：全校月底快照（candidate_ids + 班級歸屬 map）只依月底日期、與班級無關；
+    # 兩學期 12 個 distinct 月底各算一次、所有班共用，取代每班重算全校快照的 N+1。
+    _month_snapshots = enrollment_rates.build_month_snapshots(
+        db,
+        _semester_month_ends(cycle, True) + _semester_month_ends(cycle, False),
+    )
     for cls in cls_rows:
         month_ends = _semester_month_ends(cycle, cls.semester_first)
         rate = enrollment_rates.class_performance_rate(
-            db, cls.classroom_id, month_ends, cls.head_count_target
+            db,
+            cls.classroom_id,
+            month_ends,
+            cls.head_count_target,
+            month_snapshots=_month_snapshots,
         )
         cls.class_performance_rate = rate
         # avg_monthly_enrollment = rate% × target / 100（由 rate 反推平均在籍）
@@ -473,8 +483,17 @@ def gather_performance_rates(
     school_rates=None,
     worked_first: bool = True,
     worked_second: bool = True,
+    class_targets: "dict[tuple[int, bool], ClassEnrollmentTarget] | None" = None,
+    cycle_cache: "dict | None" = None,
 ) -> PerformanceRates:
     """讀取 STORED rates 組 PerformanceRates（百分比）。
+
+    class_targets（NP1-4，可選）：caller 以 cycle 一次撈好的
+    {(head_teacher_employee_id, semester_first): ClassEnrollmentTarget} 預載 map，
+    取代帶班角色逐學期 per-employee 查詢；未傳維持逐筆查（standalone/測試零波及）。
+    cycle_cache（NP1-4，可選）：跨員工共用的 cycle 級 memo dict（目前僅
+    "school_wide_ret" 一鍵——畢業班 fallback 的全校舊生率只依 cycle，逐員工重算
+    是 N+1）；未傳維持每次呼叫內 lazy 取一次。
 
     - school_rate_first/second   ← OrgYearSettings.school_achievement_rate（兩學期）
     - class_performance_rate_*    ← ClassEnrollmentTarget.class_performance_rate
@@ -532,22 +551,30 @@ def gather_performance_rates(
         # 全校率只在「至少一學期無 target」時才需要 → 迴圈內 lazy 取一次（None 表已快取）。
         _school_wide_ret = _SENTINEL = object()
         for semester_first in (True, False):
-            ct = db.scalar(
-                select(ClassEnrollmentTarget).where(
-                    ClassEnrollmentTarget.year_end_cycle_id == cycle.id,
-                    ClassEnrollmentTarget.semester_first == semester_first,
-                    ClassEnrollmentTarget.head_teacher_employee_id == emp.id,
+            if class_targets is not None:
+                ct = class_targets.get((emp.id, semester_first))
+            else:
+                ct = db.scalar(
+                    select(ClassEnrollmentTarget).where(
+                        ClassEnrollmentTarget.year_end_cycle_id == cycle.id,
+                        ClassEnrollmentTarget.semester_first == semester_first,
+                        ClassEnrollmentTarget.head_teacher_employee_id == emp.id,
+                    )
                 )
-            )
             if ct is None:
                 # 畢業班 fallback：class_returning_rate 用全校舊生率 ×100；
                 # class_performance_rate 維持 None（無班無經營績效）。helper 回 None → 維持 None。
                 if _school_wide_ret is _SENTINEL:
-                    from services.year_end.auto_derive.returning_rate import (
-                        school_wide_returning_rate,
-                    )
+                    if cycle_cache is not None and "school_wide_ret" in cycle_cache:
+                        _school_wide_ret = cycle_cache["school_wide_ret"]
+                    else:
+                        from services.year_end.auto_derive.returning_rate import (
+                            school_wide_returning_rate,
+                        )
 
-                    _school_wide_ret = school_wide_returning_rate(db, cycle)
+                        _school_wide_ret = school_wide_returning_rate(db, cycle)
+                        if cycle_cache is not None:
+                            cycle_cache["school_wide_ret"] = _school_wide_ret
                 if _school_wide_ret is not None:
                     ret_fb = _school_wide_ret * Decimal("100")
                     if semester_first:
@@ -820,13 +847,54 @@ def build_settlements(
 
     _auto_deductions = derive_all_attendance_deductions(db, cycle, employees)
 
-    for emp in employees:
-        existing = db.scalar(
+    # NP1-4：主迴圈 per-employee 查詢（settlement / snapshot / special SUM / 班導
+    # target / 畢業班 fallback 全校舊生率）迴圈外以 cycle_id 一次撈成 dict，
+    # 迴圈內查 dict。預載時點在 derive_all（會寫 special_bonus_items / 班級率）
+    # 之後，值與原逐筆查詢一致；主迴圈自身只寫 snapshot/settlement，不回頭改
+    # 這些預載來源。
+    _settlement_by_emp: dict[int, YearEndSettlement] = {
+        int(row.employee_id): row
+        for row in db.scalars(
             select(YearEndSettlement).where(
-                YearEndSettlement.year_end_cycle_id == cycle.id,
-                YearEndSettlement.employee_id == emp.id,
+                YearEndSettlement.year_end_cycle_id == cycle.id
             )
         )
+    }
+    _snapshot_by_emp: dict[int, EmployeeYearEndSnapshot] = {
+        int(row.employee_id): row
+        for row in db.scalars(
+            select(EmployeeYearEndSnapshot).where(
+                EmployeeYearEndSnapshot.year_end_cycle_id == cycle.id
+            )
+        )
+    }
+    _special_total_by_emp: dict[int, Decimal] = {
+        int(eid): Decimal(str(total)) if total is not None else Decimal("0")
+        for eid, total in db.execute(
+            select(
+                SpecialBonusItem.employee_id,
+                func.coalesce(func.sum(SpecialBonusItem.amount), 0),
+            )
+            .where(SpecialBonusItem.year_end_cycle_id == cycle.id)
+            .group_by(SpecialBonusItem.employee_id)
+        ).all()
+    }
+    # 班導 target 預載：key=(head_teacher_employee_id, semester_first)。原逐筆
+    # db.scalar 對重複列取第一筆，以 id 排序 + setdefault 維持確定性等價。
+    _class_targets: dict[tuple[int, bool], ClassEnrollmentTarget] = {}
+    for _ct in db.scalars(
+        select(ClassEnrollmentTarget)
+        .where(ClassEnrollmentTarget.year_end_cycle_id == cycle.id)
+        .order_by(ClassEnrollmentTarget.id.asc())
+    ):
+        if _ct.head_teacher_employee_id is not None:
+            _class_targets.setdefault(
+                (int(_ct.head_teacher_employee_id), bool(_ct.semester_first)), _ct
+            )
+    _cycle_cache: dict = {}
+
+    for emp in employees:
+        existing = _settlement_by_emp.get(emp.id)
         if existing is not None and existing.status != YearEndSettlementStatus.DRAFT:
             result.skipped_finalized += 1
             continue
@@ -855,6 +923,8 @@ def build_settlements(
             school_rates=_school_rates,
             worked_first=worked_first,
             worked_second=worked_second,
+            class_targets=_class_targets,
+            cycle_cache=_cycle_cache,
         )
         org_rate = resolve_org_achievement_rate(
             rates.school_rate_first,
@@ -869,15 +939,7 @@ def build_settlements(
             db, cycle, emp, existing, auto=_auto_deductions.get(emp.id)
         )
 
-        special_raw = db.scalar(
-            select(func.coalesce(func.sum(SpecialBonusItem.amount), 0)).where(
-                SpecialBonusItem.year_end_cycle_id == cycle.id,
-                SpecialBonusItem.employee_id == emp.id,
-            )
-        )
-        special_total = (
-            Decimal(str(special_raw)) if special_raw is not None else Decimal("0")
-        )
+        special_total = _special_total_by_emp.get(emp.id, Decimal("0"))
 
         computed = compute_settlement(
             base_salary=base,
@@ -892,13 +954,8 @@ def build_settlements(
         is_resigned = getattr(emp, "resign_date", None) is not None or not getattr(
             emp, "is_active", True
         )
-        # upsert snapshot
-        snapshot = db.scalar(
-            select(EmployeeYearEndSnapshot).where(
-                EmployeeYearEndSnapshot.year_end_cycle_id == cycle.id,
-                EmployeeYearEndSnapshot.employee_id == emp.id,
-            )
-        )
+        # upsert snapshot（NP1-4：查預載 dict）
+        snapshot = _snapshot_by_emp.get(emp.id)
         if snapshot is None:
             snapshot = EmployeeYearEndSnapshot(
                 year_end_cycle_id=cycle.id,
