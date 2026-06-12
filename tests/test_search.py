@@ -416,3 +416,47 @@ def test_per_category_limit(client_with_db):
         "employees"
     ]
     assert len(rows) == 8
+
+
+def test_wildcard_query_is_escaped_not_match_all(client_with_db):
+    """搜 `%%` / `__` 不得 match-all；萬用字元應視為字面字元（LIKE escape）。"""
+    client, sf = client_with_db
+    from models.database import Student
+
+    s = sf()
+    s.add(
+        Student(
+            name="王小明",
+            student_id="S101",
+            is_active=True,
+            lifecycle_status="active",
+        )
+    )
+    s.add(
+        Student(
+            name="出席100%生",
+            student_id="S102",
+            is_active=True,
+            lifecycle_status="active",
+        )
+    )
+    s.commit()
+    s.close()
+    uid, eid = _make_user(
+        sf, username="wild", role="admin", permission_names=["STUDENTS_READ"]
+    )
+    h = _login(uid, eid, role="admin", permission_names=["STUDENTS_READ"])
+
+    # `%%`：資料中無「連續兩個字面 %」→ 必須零命中（match-all 即漏洞）
+    r = client.get("/api/search", params={"q": "%%"}, headers=h)
+    assert r.status_code == 200
+    assert r.json()["students"] == [], "`%%` 被當 LIKE 萬用字元 match-all"
+
+    # `__`：同理不得 match 任意兩字元
+    r = client.get("/api/search", params={"q": "__"}, headers=h)
+    assert r.json()["students"] == [], "`__` 被當 LIKE 萬用字元 match-all"
+
+    # positive witness：字面含 % 的資料仍搜得到（escape 沒把功能弄壞）
+    r = client.get("/api/search", params={"q": "100%"}, headers=h)
+    names = [x["name"] for x in r.json()["students"]]
+    assert names == ["出席100%生"]
