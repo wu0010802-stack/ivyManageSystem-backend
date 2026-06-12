@@ -22,7 +22,7 @@ from services.year_end.appraisal_sync import (
     preview_payout,
     void_payouts,
 )
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,9 @@ router = APIRouter(prefix="/appraisal-payout", tags=["year_end:appraisal_payout"
 def get_preview(
     year: int = Query(..., ge=2024, le=2099),
     session: Session = Depends(get_session_dep),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_FINALIZE)
+    ),
 ):
     try:
         rows = preview_payout(session, payout_year=year)
@@ -50,7 +52,9 @@ def get_preview(
 def post_generate(
     body: PayoutGenerateRequest,
     session: Session = Depends(get_session_dep),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_FINALIZE)
+    ),
 ):
     result = generate_payouts(
         session,
@@ -66,7 +70,9 @@ def post_generate(
 def list_payouts(
     year: int = Query(..., ge=2024, le=2099),
     session: Session = Depends(get_session_dep),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_FINALIZE)
+    ),
 ):
     target = civil_year_to_target_academic_year(year)
     cycle = session.scalar(
@@ -104,7 +110,9 @@ def delete_payouts(
     year: int,
     confirm: bool = Query(False),
     session: Session = Depends(get_session_dep),
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_FINALIZE)
+    ),
 ):
     if not confirm:
         raise HTTPException(
