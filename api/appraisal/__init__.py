@@ -512,6 +512,30 @@ def list_score_items(
     )
 
 
+def _validate_manual_delta_range(session, base_date, item_code: str, value) -> None:
+    """屬 MANUAL_DELTA 規則的 code 驗證分值範圍，超界回 422。
+
+    與 batch_upsert_manual_event_counts 共用；非 MANUAL_DELTA（或未設規則）
+    的 code 不在此驗證（free-form 行為由各呼叫端自行決定）。
+    """
+    from services.appraisal.rule_applier import load_rules_for_date
+
+    rule = load_rules_for_date(session, base_date).get(item_code)
+    if rule is None or rule.rule_type != "MANUAL_DELTA":
+        return
+    _check_manual_delta_bounds(rule, item_code, value)
+
+
+def _check_manual_delta_bounds(rule, item_code: str, value) -> None:
+    lo = Decimal(str(rule.rule_config["min_delta"]))
+    hi = Decimal(str(rule.rule_config["max_delta"]))
+    if not (lo <= Decimal(value) <= hi):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{item_code} 分值 {value} 超出範圍 [{lo}, {hi}]",
+        )
+
+
 @appraisal_router.post(
     "/participants/{participant_id}/score_items", response_model=ScoreItemOut
 )
@@ -526,6 +550,17 @@ def add_score_item(
     participant = session.get(AppraisalParticipant, participant_id)
     if participant is None:
         raise HTTPException(404, "participant 不存在")
+    # MANUAL_DELTA code 套與 manual_event_counts 相同的範圍驗證——
+    # 此 free-form 路徑原樣寫入 score_delta 且 recompute 直接加總，
+    # 不擋會繞過 batch_upsert 的 422 與引擎 clamp 雙防線。
+    cycle = session.get(AppraisalCycle, participant.cycle_id)
+    if cycle is not None:
+        _validate_manual_delta_range(
+            session,
+            cycle.base_score_calc_date,
+            payload.item_code,
+            payload.score_delta,
+        )
     catalog = (
         session.query(AppraisalScoreItemCatalog)
         .filter_by(code=payload.item_code)
@@ -1796,15 +1831,7 @@ def batch_upsert_manual_event_counts(
     for entry in payload.entries:
         rule = rules.get(entry.item_code)
         if rule is not None and rule.rule_type == "MANUAL_DELTA":
-            lo = Decimal(str(rule.rule_config["min_delta"]))
-            hi = Decimal(str(rule.rule_config["max_delta"]))
-            if not (lo <= Decimal(entry.count) <= hi):
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"{entry.item_code} 分值 {entry.count} 超出範圍 [{lo}, {hi}]"
-                    ),
-                )
+            _check_manual_delta_bounds(rule, entry.item_code, entry.count)
         else:
             # 非 MANUAL_DELTA（或未設規則）的事件次數不可為負
             if entry.count < 0:
