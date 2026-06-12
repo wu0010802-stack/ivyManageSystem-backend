@@ -33,7 +33,7 @@ from schemas.auth import (
     LogoutAllSessionsOut,
     RevokeSessionOut,
 )
-from utils.audit import write_login_audit, mark_soft_delete
+from utils.audit import write_login_audit, mark_soft_delete, write_audit_in_session
 from utils.request_ip import get_client_ip
 from utils.error_messages import USER_NOT_FOUND, EMPLOYEE_DOES_NOT_EXIST
 from utils.auth import (
@@ -1624,11 +1624,16 @@ def update_user(
                 synchronize_session=False,
             )
 
-        # 建立變更摘要並傳給 AuditMiddleware
-        # 注意：純停用（軟刪）已由 mark_soft_delete 設定 audit_summary，不再重疊。
+        # 建立變更摘要。
+        # 注意：純停用（軟刪）已由 mark_soft_delete 設定 audit_summary，
+        # 維持既有 middleware 稽核路徑；role/permission 變更（提權敏感）則改為
+        # in-session 寫入，與主交易共生死（對齊金流 write_audit_in_session pattern）。
         changes = []
+        changes_payload: dict = {}
         if data.role is not None and user.role != old_role:
             changes.append(f"角色 {old_role} → {user.role}")
+            changes_payload["old_role"] = old_role
+            changes_payload["new_role"] = user.role
         if user.permission_names != old_permission_names:
             old_set = set(old_permission_names or [])
             new_set = set(user.permission_names or [])
@@ -1636,15 +1641,39 @@ def update_user(
             removed = sorted(old_set - new_set)
             if added or removed:
                 changes.append(f"權限變更: +{added} / -{removed}")
+                changes_payload["permissions_added"] = added
+                changes_payload["permissions_removed"] = removed
             else:
                 changes.append("權限未變更")
         if data.is_active is not None and user.is_active != old_is_active:
             if user.is_active:
                 # 啟用帳號：一般變更摘要
                 changes.append("帳號啟用")
-            # 停用帳號已由 mark_soft_delete 處理，不加到 changes
-        if changes and not hasattr(request.state, "audit_summary"):
-            request.state.audit_summary = "修改使用者帳號：" + "、".join(changes)
+                changes_payload["is_active"] = True
+            else:
+                # 純停用走 mark_soft_delete → middleware 路徑（changes 維持空）；
+                # 與 role/permission 變更同時發生時，併入 in-session 摘要避免遺漏
+                changes_payload["is_active"] = False
+        if changes:
+            if not hasattr(request.state, "audit_summary"):
+                request.state.audit_summary = "修改使用者帳號：" + "、".join(changes)
+            request.state.audit_entity_id = str(user.id)
+            summary_parts = list(changes)
+            if not user.is_active and old_is_active:
+                summary_parts.append("帳號停用（軟刪）")
+            changes_payload["token_revoked"] = bool(should_revoke)
+            # 同交易內寫 AuditLog（提權路徑：主資料 + 稽核共生死，避免 middleware
+            # fire-and-forget 在 threadpool 故障時丟稽核）。write_audit_in_session
+            # 內部會設 request.state.audit_skip=True 防 middleware 二次寫入。
+            write_audit_in_session(
+                session,
+                request,
+                action="UPDATE",
+                entity_type="user",
+                entity_id=str(user.id),
+                summary="修改使用者帳號：" + "、".join(summary_parts),
+                changes=changes_payload,
+            )
 
         session.commit()
         return {"message": "使用者已更新"}
