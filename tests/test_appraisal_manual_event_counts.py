@@ -384,3 +384,58 @@ class TestManualEventCountsBackwardCompatPaths:
             },
         )
         assert r.status_code == 422, r.text
+
+
+# === participant 歸屬校驗 ===
+
+
+class TestBatchUpsertParticipantCycleGuard:
+    def test_participant_from_other_cycle_422(self, client_with_db):
+        """entry.participant_id 不屬於 path 的 cycle → 422，不得寫入孤兒列。"""
+        client, sf = client_with_db
+        with sf() as s:
+            _create_user(s, "admin_pc1", ["APPRAISAL_EVENT_WRITE"])
+            cycle_id, _, _ = _setup_cycle_with_participant(s)
+            # 第二個 cycle + 其 participant（用既有 employee 即可）
+            emp2 = Employee(employee_id="E002", name="李小明", is_active=True)
+            s.add(emp2)
+            s.flush()
+            other_cycle = AppraisalCycle(
+                academic_year=114,
+                semester=Semester.SECOND,
+                start_date=date(2026, 2, 1),
+                end_date=date(2026, 7, 31),
+                base_score_calc_date=date(2026, 3, 15),
+                base_score=Decimal("75.6"),
+                status=CycleStatus.OPEN,
+            )
+            s.add(other_cycle)
+            s.flush()
+            other_p = AppraisalParticipant(
+                cycle_id=other_cycle.id,
+                employee_id=emp2.id,
+                role_group=RoleGroup.HEAD_TEACHER,
+                hire_months_in_cycle=Decimal("6"),
+                is_excluded=False,
+            )
+            s.add(other_p)
+            s.flush()
+            other_p_id = other_p.id
+            s.commit()
+        assert _login(client, "admin_pc1").status_code == 200
+
+        r = client.put(
+            f"/api/appraisal/cycles/{cycle_id}/manual_event_counts:batch",
+            json={
+                "entries": [
+                    {
+                        "participant_id": other_p_id,
+                        "item_code": "SCHOOL_MEETING_ABSENCE",
+                        "count": "2",
+                    }
+                ]
+            },
+        )
+        assert r.status_code == 422, r.text
+        with sf() as s:
+            assert s.query(AppraisalManualEventCount).count() == 0

@@ -1828,6 +1828,23 @@ def batch_upsert_manual_event_counts(
 
     rules = load_rules_for_date(session, cycle.base_score_calc_date)
 
+    # 校驗每筆 participant 歸屬本 cycle——外來 participant 的列不會被
+    # compute_all_deltas 計入任何人，只會留下孤兒雜訊，直接拒絕。
+    entry_pids = {entry.participant_id for entry in payload.entries}
+    valid_pids = {
+        pid
+        for (pid,) in session.query(AppraisalParticipant.id).filter(
+            AppraisalParticipant.cycle_id == cycle_id,
+            AppraisalParticipant.id.in_(entry_pids),
+        )
+    }
+    orphan_pids = entry_pids - valid_pids
+    if orphan_pids:
+        raise HTTPException(
+            status_code=422,
+            detail=f"participant {sorted(orphan_pids)} 不屬於 cycle {cycle_id}",
+        )
+
     for entry in payload.entries:
         rule = rules.get(entry.item_code)
         if rule is not None and rule.rule_type == "MANUAL_DELTA":
