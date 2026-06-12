@@ -297,3 +297,54 @@ def test_np1_2_refresh_enrollment_rates_query_count_bounded(seed):
         f" + org 4 + 常數，修補前 ~100 且隨班數線性成長）；"
         f"疑似 per-target 重算全校快照回歸。\n{_breakdown(counter)}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# NP1-3：derive_all_attendance_deductions 批次聚合（非逐員工 5 條）           #
+# --------------------------------------------------------------------------- #
+def test_np1_3_attendance_deductions_batch_query_count_bounded(seed):
+    """修補前：「batch」只批次了 cfg，仍逐員工 5 條查詢（10 員工 ≈ 52 條 SELECT），
+    且 _count_missing_punch 撈整年 row 回 Python 數。
+
+    修補後：late/missing 合併一條 SUM(CASE) GROUP BY、leave 一條 GROUP BY
+    (employee_id, leave_type)、meeting 一條 GROUP BY → 全體共 3 條 + cfg ~2。
+    上限 12：任何 per-employee 查詢回歸（+10）即超標。
+    """
+    from services.year_end.auto_derive.attendance_deductions import (
+        derive_all_attendance_deductions,
+    )
+
+    db = seed["db"]
+    cycle = seed["cycle"]
+    employees = seed["employees"]
+    # seed fixture commit 後 ORM 物件 expired，先 touch 屬性讓 refresh 發生在計數窗外
+    # （真實 build 路徑員工為同 transaction 現載、無 per-emp refresh，非本測試標的）。
+    _ = [(e.id, cycle.id) for e in employees]
+
+    with SelectCounter(db.get_bind()) as counter:
+        result = derive_all_attendance_deductions(db, cycle, employees)
+
+    # 行為 sanity：前 6 員工有扣款料（遲到1+未打卡2合併 -150 / 事假1天 -500 /
+    # 病假0.5天 -250 / 會議缺席1次 -100），其餘 4 人全 0。
+    from decimal import Decimal
+
+    assert set(result.keys()) == {e.id for e in employees}
+    for emp in employees[:6]:
+        d = result[emp.id]
+        assert d.late == Decimal("-150.00")
+        assert d.personal_leave == Decimal("-500.00")
+        assert d.sick_leave == Decimal("-250.00")
+        assert d.meeting == Decimal("-100.00")
+        assert d.calc_meta["late_count"] == 1
+        assert d.calc_meta["missing_punch_count"] == 2
+    for emp in employees[6:]:
+        d = result[emp.id]
+        assert d.late == d.personal_leave == d.sick_leave == d.meeting == Decimal(
+            "0.00"
+        )
+
+    assert counter.count <= 12, (
+        f"derive_all_attendance_deductions 發出 {counter.count} 條 SELECT"
+        f"（上限 12；修補後本 seed 實測 ~5 = 考勤/請假/會議 3 條 GROUP BY + cfg ~2，"
+        f"修補前 ~52）；疑似 per-employee 查詢回歸。\n{_breakdown(counter)}"
+    )

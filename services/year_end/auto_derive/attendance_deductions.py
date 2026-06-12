@@ -44,7 +44,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from models.attendance import Attendance
@@ -133,16 +133,25 @@ def _count_missing_punch(db: Session, emp_id: int, start: date, end: date) -> in
 
     DB 模型用 boolean 欄 is_missing_punch_in / is_missing_punch_out（非 count 欄；
     task 文字引用的 missing_punch_in_count 是 AttendanceResult parser 物件屬性，
-    不是 Attendance 表）。每列貢獻 0/1/2 次。
+    不是 Attendance 表）。每列貢獻 0/1/2 次。聚合以 SUM(CASE) 下推 SQL
+    （NP1-3；IS TRUE 與原 Python truthiness 等價：True→1、False/NULL→0）。
     """
-    rows = db.execute(
-        select(Attendance.is_missing_punch_in, Attendance.is_missing_punch_out).where(
+    total = db.scalar(
+        select(
+            func.coalesce(
+                func.sum(
+                    case((Attendance.is_missing_punch_in.is_(True), 1), else_=0)
+                    + case((Attendance.is_missing_punch_out.is_(True), 1), else_=0)
+                ),
+                0,
+            )
+        ).where(
             Attendance.employee_id == emp_id,
             Attendance.attendance_date >= start,
             Attendance.attendance_date <= end,
         )
-    ).all()
-    return sum((1 if r[0] else 0) + (1 if r[1] else 0) for r in rows)
+    )
+    return int(total or 0)
 
 
 def _leave_hours(
@@ -180,14 +189,19 @@ def _count_meeting_absence(db: Session, emp_id: int, start: date, end: date) -> 
     )
 
 
-def _compute(
-    db: Session,
-    emp_id: int,
+def _from_counts(
+    cfg: Optional[BonusConfig],
     start: date,
     end: date,
-    cfg: Optional[BonusConfig],
+    *,
+    late_count: int,
+    missing_count: int,
+    personal_hours: Decimal,
+    sick_hours: Decimal,
+    meeting_absence: int,
 ) -> AttendanceDeductions:
-    """共用計算核心（per-employee / batch 皆走此函式）。"""
+    """純計算尾段：由已取得的次數/時數組 AttendanceDeductions（per-employee 與
+    batch 共用，公式單一來源；NP1-3 抽出）。"""
     late_rate = _rate(cfg, "late_deduction_per_time", 50)
     miss_rate = _rate(cfg, "missing_punch_deduction_per_time", 50)
     personal_rate = _rate(cfg, "personal_leave_deduction_per_day", 500)
@@ -196,22 +210,17 @@ def _compute(
         cfg, "meeting_absence_penalty", DEFAULT_MEETING_ABSENCE_PENALTY
     )
 
-    late_count = _count_late(db, emp_id, start, end)
-    missing_count = _count_missing_punch(db, emp_id, start, end)
     # 遲到 + 未打卡合併進 late 欄（settlement 只有 deduction_late）
     late_amount = -_q2(
         Decimal(late_count) * late_rate + Decimal(missing_count) * miss_rate
     )
 
-    personal_hours = _leave_hours(db, emp_id, _PERSONAL, start, end)
     personal_days = personal_hours / _HOURS_PER_DAY
     personal_amount = -_q2(personal_days * personal_rate)
 
-    sick_hours = _leave_hours(db, emp_id, _SICK, start, end)
     sick_days = sick_hours / _HOURS_PER_DAY
     sick_amount = -_q2(sick_days * sick_rate)
 
-    meeting_absence = _count_meeting_absence(db, emp_id, start, end)
     meeting_amount = -_q2(Decimal(meeting_absence) * meeting_penalty)
 
     return AttendanceDeductions(
@@ -238,6 +247,26 @@ def _compute(
             "meeting_absence_count": meeting_absence,
             "meeting_penalty": float(meeting_penalty),
         },
+    )
+
+
+def _compute(
+    db: Session,
+    emp_id: int,
+    start: date,
+    end: date,
+    cfg: Optional[BonusConfig],
+) -> AttendanceDeductions:
+    """per-employee 計算核心（單員工 fallback 路徑用；batch 走批次聚合）。"""
+    return _from_counts(
+        cfg,
+        start,
+        end,
+        late_count=_count_late(db, emp_id, start, end),
+        missing_count=_count_missing_punch(db, emp_id, start, end),
+        personal_hours=_leave_hours(db, emp_id, _PERSONAL, start, end),
+        sick_hours=_leave_hours(db, emp_id, _SICK, start, end),
+        meeting_absence=_count_meeting_absence(db, emp_id, start, end),
     )
 
 
@@ -278,4 +307,75 @@ def derive_all_attendance_deductions(
             ).all()
         )
 
-    return {emp.id: _compute(db, emp.id, start, end, cfg) for emp in employees}
+    # NP1-3：4 個 per-employee helper 收斂成 3 條 GROUP BY employee_id 批次查詢
+    # （遲到+未打卡合併一條 conditional aggregate；事/病假一條 GROUP BY
+    # (employee_id, leave_type)；會議缺席一條 COUNT GROUP BY），缺 group 的員工
+    # 取 0（與 per-employee helper 對空集合回 0 等價）。公式仍走 _from_counts
+    # 單一來源，金額與逐員工版完全一致。
+    emp_ids = [emp.id for emp in employees]
+    late_by_emp: dict[int, int] = {}
+    miss_by_emp: dict[int, int] = {}
+    hours_by_emp_type: dict[tuple[int, str], Decimal] = {}
+    meeting_by_emp: dict[int, int] = {}
+    if emp_ids:
+        for eid, late_cnt, miss_cnt in db.execute(
+            select(
+                Attendance.employee_id,
+                func.sum(case((Attendance.is_late.is_(True), 1), else_=0)),
+                func.sum(
+                    case((Attendance.is_missing_punch_in.is_(True), 1), else_=0)
+                    + case((Attendance.is_missing_punch_out.is_(True), 1), else_=0)
+                ),
+            )
+            .where(
+                Attendance.employee_id.in_(emp_ids),
+                Attendance.attendance_date >= start,
+                Attendance.attendance_date <= end,
+            )
+            .group_by(Attendance.employee_id)
+        ).all():
+            late_by_emp[int(eid)] = int(late_cnt or 0)
+            miss_by_emp[int(eid)] = int(miss_cnt or 0)
+
+        for eid, leave_type, total in db.execute(
+            select(
+                LeaveRecord.employee_id,
+                LeaveRecord.leave_type,
+                func.coalesce(func.sum(LeaveRecord.leave_hours), 0),
+            )
+            .where(
+                LeaveRecord.employee_id.in_(emp_ids),
+                LeaveRecord.leave_type.in_([_PERSONAL, _SICK]),
+                LeaveRecord.status == "approved",
+                LeaveRecord.start_date >= start,
+                LeaveRecord.start_date <= end,
+            )
+            .group_by(LeaveRecord.employee_id, LeaveRecord.leave_type)
+        ).all():
+            hours_by_emp_type[(int(eid), leave_type)] = Decimal(str(total or 0))
+
+        for eid, cnt in db.execute(
+            select(MeetingRecord.employee_id, func.count(MeetingRecord.id))
+            .where(
+                MeetingRecord.employee_id.in_(emp_ids),
+                MeetingRecord.attended.is_(False),
+                MeetingRecord.meeting_date >= start,
+                MeetingRecord.meeting_date <= end,
+            )
+            .group_by(MeetingRecord.employee_id)
+        ).all():
+            meeting_by_emp[int(eid)] = int(cnt or 0)
+
+    return {
+        emp.id: _from_counts(
+            cfg,
+            start,
+            end,
+            late_count=late_by_emp.get(emp.id, 0),
+            missing_count=miss_by_emp.get(emp.id, 0),
+            personal_hours=hours_by_emp_type.get((emp.id, _PERSONAL), Decimal("0")),
+            sick_hours=hours_by_emp_type.get((emp.id, _SICK), Decimal("0")),
+            meeting_absence=meeting_by_emp.get(emp.id, 0),
+        )
+        for emp in employees
+    }
