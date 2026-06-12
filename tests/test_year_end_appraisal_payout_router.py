@@ -101,6 +101,17 @@ def _seed_users(sf):
                 is_active=True,
             )
         )
+        # 教師帳號即使被誤發 APPRAISAL_FINALIZE，也不得撞管理端 payout API
+        # （對齊 2026-06-04 滲透測試 #1：管理端一律 require_staff_permission）
+        s.add(
+            User(
+                username="teacher",
+                password_hash=hash_password("TempPass123"),
+                role="teacher",
+                permission_names=FINALIZE_PERM,
+                is_active=True,
+            )
+        )
         s.flush()
         s.commit()
 
@@ -259,6 +270,33 @@ def test_list_returns_generated_items(client_with_db):
     assert res.status_code == 200, res.text
     items = res.json()
     assert len(items) >= 2
+
+
+def test_teacher_blocked_from_all_payout_endpoints(client_with_db):
+    """role=teacher 持 APPRAISAL_FINALIZE 仍應被擋出管理端 payout 4 端點（403）。
+
+    bare require_permission 不擋角色，教師誤持權限即可讀寫全員考核年終
+    （金額級資料）；管理端必須走 require_staff_permission。
+    """
+    client, sf = client_with_db
+    _seed_users(sf)
+    _seed_cycles_and_summaries(sf)
+    _login(client, "teacher")
+
+    res = client.get(f"{PREFIX}/preview", params={"year": 2026})
+    assert res.status_code == 403, f"GET /preview 教師應 403，實得 {res.status_code}"
+
+    res = client.post(
+        f"{PREFIX}/generate",
+        json={"year": 2026, "included_inactive_employee_ids": []},
+    )
+    assert res.status_code == 403, f"POST /generate 教師應 403，實得 {res.status_code}"
+
+    res = client.get(PREFIX, params={"year": 2026})
+    assert res.status_code == 403, f"GET list 教師應 403，實得 {res.status_code}"
+
+    res = client.delete(f"{PREFIX}/2026", params={"confirm": True})
+    assert res.status_code == 403, f"DELETE 教師應 403，實得 {res.status_code}"
 
 
 def test_void_requires_confirm(client_with_db):

@@ -176,7 +176,10 @@ def gc_staff_refresh_tokens() -> int:
 
 def _run_staff_refresh_gc() -> None:
     # 多 worker 部署時以 advisory lock（24 小時窗口 bucket）互斥。
-    with scheduler_iteration("security_staff_refresh_gc"):
+    with scheduler_iteration(
+        "security_staff_refresh_gc",
+        expected_interval_seconds=_STAFF_REFRESH_GC_INTERVAL_SEC,
+    ):
         with session_scope() as lock_session:
             with try_scheduler_lock(
                 lock_session,
@@ -225,7 +228,10 @@ def _gc_recruitment_geocode_cache(session) -> int:
 
 def _run_recruitment_geocode_cache_gc() -> None:
     """Scheduler 包裝：advisory lock + observability。"""
-    with scheduler_iteration("security_recruitment_geocode_cache_gc"):
+    with scheduler_iteration(
+        "security_recruitment_geocode_cache_gc",
+        expected_interval_seconds=_RECRUITMENT_GEOCODE_CACHE_GC_INTERVAL_SEC,
+    ):
         with session_scope() as lock_session:
             with try_scheduler_lock(
                 lock_session,

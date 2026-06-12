@@ -6,7 +6,9 @@
 
 - 排程：asyncio-based，沿用其他 scheduler 的寫法（如 graduation_scheduler）
 - 單 worker 啟用：`MEDICATION_REMINDER_ENABLED=1`
-- idempotent：以 last_run_date 追蹤，同一日不會觸發第二次
+- idempotent：以 last_run_date 追蹤，同一日不會觸發第二次；游標持久化於
+  scheduler_watermarks（utils/scheduler_watermark），同日重啟不重發、
+  重啟時過點且游標落後則補跑一次
 
 注意：Notification Center 本身已有個人化快取（見 services/dashboard_query_service.py），
 本排程的職責只是「強制刷新今日用藥區塊」，真正的彙總查詢由 dashboard_query_service 即時算。
@@ -33,10 +35,14 @@ from models.database import session_scope
 from models.portfolio import StudentMedicationOrder
 from models.student_leave import StudentLeaveRequest
 from utils.scheduler_observability import record_rows, scheduler_iteration
+from utils.scheduler_watermark import get_watermark, set_watermark
 
 logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+# 持久化時間游標 name（scheduler_watermarks 表；比照 announcement_publish）
+_WATERMARK_NAME = "medication_reminder"
 
 # 觸發時刻（可由環境變數覆寫）
 REMINDER_HOUR = settings.scheduler.medication_reminder_hour
@@ -57,6 +63,17 @@ def _today_target_dt(today: date) -> datetime:
         time(hour=REMINDER_HOUR, minute=REMINDER_MINUTE),
         tzinfo=TAIPEI_TZ,
     )
+
+
+def _watermark_dt(today: date) -> datetime:
+    """游標持久化值：以當日觸發時刻（naive Taipei）記錄，date 部分 = 成功跑的日期。"""
+    return datetime.combine(today, time(hour=REMINDER_HOUR, minute=REMINDER_MINUTE))
+
+
+def _load_last_run_date(session) -> Optional[date]:
+    """讀持久化游標的 date 部分；未設定回 None（首次啟動 → 過點保險跑一次）。"""
+    ts = get_watermark(session, _WATERMARK_NAME)
+    return ts.date() if ts else None
 
 
 def _active_orders_query(session, today: date):
@@ -136,6 +153,9 @@ def run_medication_reminder(effective_date: Optional[date] = None) -> dict:
                 # Downgraded：scheduler 端 wrapper 會做 throttled Sentry 上報
                 logger.warning("用藥提醒查詢失敗", exc_info=True)
                 raise
+            # 游標與本次執行在同一事務原子落地（session_scope 退出時 commit）：
+            # 同日重啟讀到游標 = 今日 → 不重發；失敗 rollback → 下輪巡檢重跑。
+            set_watermark(session, _WATERMARK_NAME, _watermark_dt(today))
 
     # 嘗試 invalidate notification cache（若服務尚未初始化則略過）
     try:
@@ -160,9 +180,21 @@ def run_medication_reminder(effective_date: Optional[date] = None) -> dict:
 async def medication_reminder_loop(stop_event: asyncio.Event) -> None:
     """常駐 loop：每 CHECK_INTERVAL 秒檢查是否到觸發時刻，到了則執行一次。
 
-    以 last_run_date 避免同日重複觸發（系統重啟時會保險再跑一次）。
+    以 last_run_date 避免同日重複觸發；游標持久化於 scheduler_watermarks
+    （比照 announcement_publish_scheduler）：
+    - 同日重啟：seed 讀回今日游標 → 不重發
+    - 重啟時目標時刻已過且游標落後（昨日或更早）：補跑一次
+    - 游標讀取失敗：fallback None（與舊行為同 → 過點保險再跑一次，
+      advisory lock + 多 worker 下另一 worker 的游標仍會擋重複）
     """
     last_run_date: Optional[date] = None
+    try:
+        with session_scope() as session:
+            last_run_date = _load_last_run_date(session)
+    except Exception:  # noqa: BLE001 — seed 失敗不可擋 loop 啟動
+        logger.warning("用藥提醒 watermark 讀取失敗，視為今日未跑", exc_info=True)
+    if last_run_date is not None:
+        logger.info("用藥提醒 watermark seed：上次成功日 %s", last_run_date.isoformat())
     logger.info(
         "用藥提醒排程啟動：每日 %02d:%02d (Asia/Taipei) 觸發",
         REMINDER_HOUR,

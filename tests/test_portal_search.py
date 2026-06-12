@@ -441,3 +441,31 @@ def test_message_snippet_strips_html(client_and_session):
     assert "戶外" in snippet
     assert "<p>" not in snippet
     assert "<b>" not in snippet
+
+
+def test_wildcard_q_is_escaped_not_match_all(client_and_session):
+    """搜 `%%` 不得 match-all（LIKE 萬用字元須 escape 成字面字元）。"""
+    client, sess = client_and_session
+    cr = Classroom(name="A班", is_active=True)
+    sess.add(cr)
+    sess.flush()
+    sess.add(
+        Student(
+            student_id="A1",
+            name="小明",
+            classroom_id=cr.id,
+            is_active=True,
+            lifecycle_status=LIFECYCLE_ACTIVE,
+        )
+    )
+    sess.flush()
+    _, _, token = _seed_teacher(sess, cr)
+    sess.commit()
+
+    resp = client.get(
+        "/api/portal/search",
+        params={"q": "%%"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["students"] == [], "`%%` 被當 LIKE 萬用字元 match-all"

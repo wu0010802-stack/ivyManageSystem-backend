@@ -31,6 +31,7 @@ from utils.auth import get_current_user
 from utils.masking import mask_phone
 from utils.permissions import Permission, has_permission
 from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,10 @@ def _search_students(session, pattern: str, current_user: dict) -> list[dict]:
     qy = session.query(Student).filter(
         Student.is_active.is_(True),
         Student.lifecycle_status.notin_(_TERMINAL),
-        or_(Student.name.ilike(pattern), Student.student_id.ilike(pattern)),
+        or_(
+            Student.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+            Student.student_id.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+        ),
     )
     if not unrestricted:
         scope = accessible_classroom_ids(session, current_user, code=code)
@@ -155,7 +159,10 @@ def _search_employees(session, pattern: str) -> list[dict]:
         session.query(Employee)
         .filter(
             Employee.is_active.is_(True),
-            or_(Employee.name.ilike(pattern), Employee.employee_id.ilike(pattern)),
+            or_(
+                Employee.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                Employee.employee_id.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+            ),
         )
         .order_by(Employee.name.asc())
         .limit(SECTION_LIMIT)
@@ -182,8 +189,8 @@ def _search_guardians(session, pattern: str, current_user: dict) -> list[dict]:
             Student.is_active.is_(True),
             Student.lifecycle_status.notin_(_TERMINAL),
             or_(
-                Guardian.name.ilike(pattern),
-                Guardian.phone.ilike(pattern),
+                Guardian.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                Guardian.phone.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
             ),
         )
     )
@@ -208,7 +215,10 @@ def _search_guardians(session, pattern: str, current_user: dict) -> list[dict]:
 def _search_classrooms(session, pattern: str) -> list[dict]:
     rows = (
         session.query(Classroom)
-        .filter(Classroom.is_active.is_(True), Classroom.name.ilike(pattern))
+        .filter(
+            Classroom.is_active.is_(True),
+            Classroom.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+        )
         .order_by(Classroom.school_year.desc(), Classroom.name.asc())
         .limit(SECTION_LIMIT)
         .all()
@@ -229,8 +239,8 @@ def _search_fees(session, pattern: str) -> list[dict]:
         session.query(StudentFeeRecord)
         .filter(
             or_(
-                StudentFeeRecord.student_name.ilike(pattern),
-                StudentFeeRecord.fee_item_name.ilike(pattern),
+                StudentFeeRecord.student_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                StudentFeeRecord.fee_item_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
             )
         )
         .order_by(StudentFeeRecord.id.desc())
@@ -255,9 +265,13 @@ def _search_activity(session, pattern: str) -> list[dict]:
         .filter(
             ActivityRegistration.is_active.is_(True),
             or_(
-                ActivityRegistration.student_name.ilike(pattern),
-                ActivityRegistration.class_name.ilike(pattern),
-                ActivityRegistration.parent_phone.ilike(pattern),
+                ActivityRegistration.student_name.ilike(
+                    pattern, escape=LIKE_ESCAPE_CHAR
+                ),
+                ActivityRegistration.class_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                ActivityRegistration.parent_phone.ilike(
+                    pattern, escape=LIKE_ESCAPE_CHAR
+                ),
             ),
         )
         .order_by(ActivityRegistration.id.desc())
@@ -280,10 +294,12 @@ def _search_recruitment(session, pattern: str) -> list[dict]:
         session.query(RecruitmentVisit)
         .filter(
             or_(
-                RecruitmentVisit.child_name.ilike(pattern),
-                RecruitmentVisit.address.ilike(pattern),
-                RecruitmentVisit.notes.ilike(pattern),
-                RecruitmentVisit.parent_response.ilike(pattern),
+                RecruitmentVisit.child_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                RecruitmentVisit.address.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                RecruitmentVisit.notes.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                RecruitmentVisit.parent_response.ilike(
+                    pattern, escape=LIKE_ESCAPE_CHAR
+                ),
             )
         )
         .order_by(RecruitmentVisit.id.desc())
@@ -305,7 +321,10 @@ def _search_announcements(session, pattern: str) -> list[dict]:
     rows = (
         session.query(Announcement)
         .filter(
-            or_(Announcement.title.ilike(pattern), Announcement.content.ilike(pattern))
+            or_(
+                Announcement.title.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+                Announcement.content.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+            )
         )
         .order_by(Announcement.created_at.desc())
         .limit(SECTION_LIMIT)
@@ -344,7 +363,7 @@ def global_search(
     if len(q_stripped) < MIN_QUERY_LEN:
         return GlobalSearchResult(q=q)
 
-    pattern = f"%{q_stripped}%"
+    pattern = f"%{escape_like_pattern(q_stripped)}%"
     perms = current_user.get("permission_names")
 
     session = get_session()

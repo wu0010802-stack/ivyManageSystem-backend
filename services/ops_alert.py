@@ -77,6 +77,55 @@ def notify_slow_request_burst(
         )
 
 
+def notify_scheduler_failure(
+    *,
+    scheduler_name: str,
+    error: BaseException,
+    consecutive_failures: int,
+) -> None:
+    """通知排程器連續失敗；caller（scheduler_observability）已過節流判斷。
+
+    group_id 未設或 LineService 未注入時 no-op（log warn）；
+    push 例外吞掉並 log，不可影響 scheduler loop。
+    """
+    cfg = settings.ops_alert
+    if not cfg.line_group_id:
+        logger.warning(
+            "排程器連續失敗但 OPS_ALERT_LINE_GROUP_ID 未設；"
+            "scheduler=%s consecutive=%d error=%s",
+            scheduler_name,
+            consecutive_failures,
+            error,
+        )
+        return
+
+    if _line_service is None:
+        logger.warning(
+            "LineService 未注入（init_ops_alert_service 未呼叫）；"
+            "scheduler failure alert scheduler=%s 跳過 LINE push",
+            scheduler_name,
+        )
+        return
+
+    text = (
+        f"🚨 排程器連續失敗\n"
+        f"scheduler：{scheduler_name}\n"
+        f"連續失敗：{consecutive_failures} 次\n"
+        f"錯誤：{type(error).__name__}: {error}\n"
+        f"env：{settings.core.env}"
+    )
+
+    try:
+        _line_service.push_text_to_group(cfg.line_group_id, text)
+    except Exception as e:
+        logger.error(
+            "Scheduler failure alert push 失敗 (scheduler=%s): %s",
+            scheduler_name,
+            e,
+            exc_info=True,
+        )
+
+
 def reset_for_tests() -> None:
     """測試 helper：清空注入的 LineService。"""
     global _line_service
