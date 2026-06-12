@@ -1,4 +1,4 @@
-"""零風險約束補強：6 條 enum 值域 CHECK + 7 欄 NOT NULL
+"""零風險約束補強：5 條 enum 值域 CHECK + 7 欄 NOT NULL
 
 Revision ID: dbck01
 Revises: dbidx01
@@ -8,7 +8,6 @@ Why（DB 優化健檢 2026-06-12 SCH-6 / SCH-8 零風險子集，
 diagnosis：.scratch/db-optimize-2026-06-12/schema-findings.md）:
 
 CHECK（值域全部抄自程式碼 enum / 常數 / API 白名單，dev DB 0 違規）：
-    - ck_attendances_status：AttendanceStatus enum 六值
     - ck_student_attendances_status：API 白名單 VALID_STATUSES 五值（中文）
     - ck_fee_records_status：unpaid/partial/paid（寫入站點僅此三值）
     - ck_students_lifecycle_status：LIFECYCLE_* 七值
@@ -27,7 +26,13 @@ models/ 已同步：__table_args__ 加同名 CheckConstraint、7 欄 nullable=Fa
 
 SQLite：無法 ALTER 加 CHECK / SET NOT NULL，且測試 DB 由 metadata 直接
 建表已含約束，本 migration 僅在 PostgreSQL 執行。
-downgrade：drop 6 CHECK、7 欄恢復 nullable。
+downgrade：drop 5 CHECK、7 欄恢復 nullable。
+
+註（2026-06-13 修正）：原版含 ck_attendances_status（AttendanceStatus 六值），
+但 attendances.status 實為開放複合值域——utils/attendance_calc.py 與
+api/attendance/upload.py 會以 '+' 串接（如 'late+missing_out'、
+'late+early_leave'），列舉式 CHECK 會讓補打卡核准等寫入路徑 500，
+全套 pytest 抓到後撤除。該欄 NOT NULL 保留。
 """
 
 import logging
@@ -45,11 +50,6 @@ depends_on = None
 
 # (constraint 名, 表名, CHECK 條件 SQL)
 _CHECKS = [
-    (
-        "ck_attendances_status",
-        "attendances",
-        "status IN ('normal','late','early_leave','missing','absent','leave')",
-    ),
     (
         "ck_student_attendances_status",
         "student_attendances",

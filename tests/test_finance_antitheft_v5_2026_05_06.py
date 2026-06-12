@@ -152,7 +152,7 @@ def client(tmp_path):
             employee_id=emp2.id,
             attendance_date=date(2026, 4, 5),
             is_missing_punch_in=True,
-            status="missing",  # ck_attendances_status 白名單值（dbck01）
+            status="missing_punch",
         )
     )
     s.commit()
