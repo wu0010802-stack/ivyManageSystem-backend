@@ -604,15 +604,36 @@ def sync_score_items(
 
     限制：
       - cycle.status != OPEN → 400（已鎖/已關閉）
+      - 基準日早於規章生效日（2026-02-01）且已 sync 過 → 400
+        （考勤 leave/absent 分流對歷史 cycle 重 sync 是回溯生效，
+        會偏離已對帳基線；dry_run 預覽與首次 sync 不受影響）
       - dry_run=true → 不寫 DB，回 preview
     """
+    from services.appraisal.rule_applier import (
+        REGULATION_RULES_EFFECTIVE_FROM,
+        compute_all_deltas,
+    )
+
     cycle = session.get(AppraisalCycle, cycle_id)
     if cycle is None:
         raise HTTPException(404, "週期不存在")
     if cycle.status != CycleStatus.OPEN:
         raise HTTPException(400, f"cycle 已 {cycle.status.value}，無法同步")
-
-    from services.appraisal.rule_applier import compute_all_deltas
+    if not dry_run and cycle.base_score_calc_date < REGULATION_RULES_EFFECTIVE_FROM:
+        already_synced = session.query(
+            session.query(AppraisalScoreItem)
+            .filter(AppraisalScoreItem.cycle_id == cycle_id)
+            .filter(AppraisalScoreItem.source_ref.like(f"auto:%:{cycle_id}"))
+            .exists()
+        ).scalar()
+        if already_synced:
+            raise HTTPException(
+                400,
+                f"cycle 基準日 {cycle.base_score_calc_date} 早於規章生效日 "
+                f"{REGULATION_RULES_EFFECTIVE_FROM} 且已同步過分數：重 sync 會以"
+                "新口徑（請假/曠職分流）回溯改寫歷史考核、偏離已對帳基線，已禁止。"
+                "如需檢視差異請用 dry_run=true。",
+            )
 
     deltas = compute_all_deltas(session, cycle)
 

@@ -200,7 +200,13 @@ def _seed_default_rules(session):
 
 
 # 完整考核權限位元（READ + WRITE + REVIEW + ACCOUNTING + FINALIZE）
-APPRAISAL_FULL = ["APPRAISAL_READ", "APPRAISAL_EVENT_WRITE", "APPRAISAL_REVIEW", "APPRAISAL_ACCOUNTING", "APPRAISAL_FINALIZE"]
+APPRAISAL_FULL = [
+    "APPRAISAL_READ",
+    "APPRAISAL_EVENT_WRITE",
+    "APPRAISAL_REVIEW",
+    "APPRAISAL_ACCOUNTING",
+    "APPRAISAL_FINALIZE",
+]
 
 
 class TestGetCurrent:
@@ -337,6 +343,11 @@ class TestSyncScoreItems:
         with sf() as s:
             _create_user(s, "admin1", APPRAISAL_FULL)
             cycle = _make_cycle(s)
+            # 移到規章生效日（2026-02-01）後：歷史 cycle 二次 sync 會被回溯
+            # 保護擋下（TestSyncHistoricalCycleGuard），本測試只驗證替換機制。
+            cycle.start_date = date(2026, 2, 1)
+            cycle.end_date = date(2026, 7, 31)
+            cycle.base_score_calc_date = date(2026, 3, 15)
             emp = _make_employee(s, "A")
             p = _make_participant(s, cycle, emp)
             _seed_default_rules(s)  # calibrate Phase 1：14 條 rule
@@ -397,3 +408,76 @@ class TestSyncScoreItems:
         res = client.post(f"/api/appraisal/cycles/{cycle_id}/sync_score_items")
         assert res.status_code == 400
         assert "LOCKED" in res.text
+
+
+class TestSyncHistoricalCycleGuard:
+    """規章生效日（2026-02-01，aprreg01）前的歷史 cycle 回溯保護：
+
+    已 sync 過（存在 auto 分數列）的歷史 cycle 禁止重 sync——考勤
+    leave/absent 分流（54259658）對舊 cycle 重 sync 是回溯生效的，
+    會偏離已對帳基線。dry_run 預覽與首次 sync 不受影響。
+    """
+
+    def _seed(self, s, *, with_auto_row: bool, historical: bool = True) -> int:
+        _create_user(s, "admin1", APPRAISAL_FULL)
+        cycle = _make_cycle(s)
+        if not historical:
+            # 114下：基準日在規章生效日之後
+            cycle.start_date = date(2026, 2, 1)
+            cycle.end_date = date(2026, 7, 31)
+            cycle.base_score_calc_date = date(2026, 3, 15)
+        emp = _make_employee(s, "A")
+        p = _make_participant(s, cycle, emp)
+        _seed_default_rules(s)
+        if with_auto_row:
+            s.add(
+                AppraisalScoreItem(
+                    participant_id=p.id,
+                    cycle_id=cycle.id,
+                    item_code="LATE_EARLY",
+                    score_delta=Decimal("-0.25"),
+                    source_ref=f"auto:late_early:{cycle.id}",
+                )
+            )
+        return cycle.id
+
+    def test_歷史cycle已同步過重sync被擋(self, client_with_db):
+        client, sf = client_with_db
+        with sf() as s:
+            cycle_id = self._seed(s, with_auto_row=True)
+            s.commit()
+        assert _login(client, "admin1").status_code == 200
+        res = client.post(f"/api/appraisal/cycles/{cycle_id}/sync_score_items")
+        assert res.status_code == 400
+        assert "回溯" in res.text
+
+    def test_歷史cycle重sync_dry_run仍可預覽(self, client_with_db):
+        client, sf = client_with_db
+        with sf() as s:
+            cycle_id = self._seed(s, with_auto_row=True)
+            s.commit()
+        assert _login(client, "admin1").status_code == 200
+        res = client.post(
+            f"/api/appraisal/cycles/{cycle_id}/sync_score_items",
+            params={"dry_run": "true"},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["dry_run"] is True
+
+    def test_歷史cycle首次sync不受影響(self, client_with_db):
+        client, sf = client_with_db
+        with sf() as s:
+            cycle_id = self._seed(s, with_auto_row=False)
+            s.commit()
+        assert _login(client, "admin1").status_code == 200
+        res = client.post(f"/api/appraisal/cycles/{cycle_id}/sync_score_items")
+        assert res.status_code == 200, res.text
+
+    def test_生效日後cycle重sync不受影響(self, client_with_db):
+        client, sf = client_with_db
+        with sf() as s:
+            cycle_id = self._seed(s, with_auto_row=True, historical=False)
+            s.commit()
+        assert _login(client, "admin1").status_code == 200
+        res = client.post(f"/api/appraisal/cycles/{cycle_id}/sync_score_items")
+        assert res.status_code == 200, res.text
