@@ -44,7 +44,7 @@ class MonthlyFixedCost(Base):
     __tablename__ = "monthly_fixed_costs"
 
     id = Column(Integer, primary_key=True)
-    year = Column(Integer, nullable=False, index=True)
+    year = Column(Integer, nullable=False)
     month = Column(Integer, nullable=False)  # 1-12
     category = Column(String(40), nullable=False)
     amount = Column(Money, nullable=False, default=0)
@@ -72,5 +72,4 @@ class MonthlyFixedCost(Base):
             "'water','electricity','phone','old_pension_reserve')",
             name="ck_monthly_fixed_costs_category",
         ),
-        Index("ix_monthly_fixed_costs_year_month", "year", "month"),
     )

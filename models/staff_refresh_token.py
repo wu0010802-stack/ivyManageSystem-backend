@@ -33,7 +33,6 @@ class StaffRefreshToken(Base):
         BigInteger,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     # SQLite 不支援 PG UUID；用 String(36) 跨方言相容
     family_id = Column(String(36), nullable=False, default=lambda: str(uuid.uuid4()))
@@ -59,4 +58,6 @@ class StaffRefreshToken(Base):
     __table_args__ = (
         Index("ix_staff_refresh_user_family", "user_id", "family_id"),
         Index("ix_staff_refresh_expires_at", "expires_at"),
+        # GC bulk DELETE 觸發自參照 FK SET NULL 反向查找；無索引時 O(刪除數×全表) seq scan
+        Index("ix_staff_refresh_parent_token", "parent_token_id"),
     )

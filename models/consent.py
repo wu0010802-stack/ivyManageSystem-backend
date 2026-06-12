@@ -84,7 +84,6 @@ class ParentConsentLog(Base):
         # SET NULL：硬刪 user 時保留同意證明稽核（RA-MED-9），非 CASCADE 連坐刪除
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     policy_version_id = Column(
         Integer, ForeignKey("policy_versions.id"), nullable=False

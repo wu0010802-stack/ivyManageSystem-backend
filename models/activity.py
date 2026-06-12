@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from utils.taipei_time import now_taipei_naive
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     Integer,
     String,
@@ -407,6 +408,9 @@ class ActivityPaymentRecord(Base):
         Index("ix_activity_payment_records_receipt_no", "receipt_no"),
         # 唯一約束：避免並發重送造成雙扣。NULL 可重複（標準 SQL），故未帶 key 的紀錄不受影響。
         UniqueConstraint("idempotency_key", name="uq_activity_payment_records_idk"),
+        CheckConstraint("type IN ('payment','refund')", name="ck_apr_type"),
+        # 金額永遠為正整數（欄位 comment）；退費同樣以正數記、靠 type 區分方向
+        CheckConstraint("amount > 0", name="ck_apr_amount_positive"),
     )
 
 
@@ -534,7 +538,7 @@ class ActivityPosDailyCloseHistory(Base):
     __tablename__ = "activity_pos_daily_close_history"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    close_date = Column(Date, nullable=False, index=True, comment="原日結日期")
+    close_date = Column(Date, nullable=False, comment="原日結日期")
     # 原簽核資訊（複製自 ActivityPosDailyClose）
     approver_username = Column(String(50), nullable=False, comment="原簽核者帳號")
     approver_role = Column(String(20), nullable=True, comment="原簽核者角色")

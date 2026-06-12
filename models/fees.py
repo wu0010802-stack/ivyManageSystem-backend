@@ -179,6 +179,11 @@ class StudentFeeRecord(Base):
                 "source_template_id IS NOT NULL AND target_month IS NULL"
             ),
         ),
+        # 值域同寫入站點（api/fees/records.py、api/fees/refunds.py）三值白名單
+        CheckConstraint(
+            "status IN ('unpaid','partial','paid')",
+            name="ck_fee_records_status",
+        ),
     )
 
 

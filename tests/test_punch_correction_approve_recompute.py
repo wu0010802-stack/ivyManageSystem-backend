@@ -344,7 +344,7 @@ class TestApproveRecomputesAttendanceFields:
                 attendance_date=on_date,
                 punch_in_time=None,
                 punch_out_time=None,
-                status="missing+late",
+                status="late",  # 殘留錯誤值（實況為 missing）；dbck01 CHECK 後須為合法 enum 值
                 is_late=True,  # 殘留錯誤值
                 is_early_leave=True,  # 殘留錯誤值
                 is_missing_punch_in=True,

@@ -242,9 +242,9 @@ class SalaryRecord(Base):
     missing_punch_count = Column(Integer, default=0, comment="未打卡次數")
     absent_count = Column(Integer, default=0, comment="曠職天數")
 
-    gross_salary = Column(Money, default=0, comment="應發總額")
-    total_deduction = Column(Money, default=0, comment="扣款總額")
-    net_salary = Column(Money, default=0, comment="實發金額")
+    gross_salary = Column(Money, nullable=False, default=0, comment="應發總額")
+    total_deduction = Column(Money, nullable=False, default=0, comment="扣款總額")
+    net_salary = Column(Money, nullable=False, default=0, comment="實發金額")
 
     bonus_separate = Column(Boolean, default=False, comment="獎金是否獨立轉帳")
     bonus_amount = Column(
@@ -270,7 +270,7 @@ class SalaryRecord(Base):
 
     remark = Column(Text, comment="備註")
 
-    is_finalized = Column(Boolean, default=False, comment="是否已結算")
+    is_finalized = Column(Boolean, nullable=False, default=False, comment="是否已結算")
     finalized_at = Column(DateTime, comment="結算時間")
     finalized_by = Column(String(50), comment="結算人")
 

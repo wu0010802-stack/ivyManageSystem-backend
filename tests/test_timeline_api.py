@@ -304,7 +304,7 @@ def test_timeline_includes_attendance_only_when_abnormal(app_client):
                 StudentAttendance(
                     student_id=1,
                     date=today - timedelta(days=1),
-                    status="請假",
+                    status="事假",  # ck_student_attendances_status 白名單值（dbck01）
                 ),  # 異常 → 出現
             ]
         )
@@ -313,7 +313,7 @@ def test_timeline_includes_attendance_only_when_abnormal(app_client):
     items = resp.json()["items"]
     attendance_items = [it for it in items if it["type"] == "attendance"]
     assert len(attendance_items) == 1
-    assert attendance_items[0]["extra"]["status"] == "請假"
+    assert attendance_items[0]["extra"]["status"] == "事假"
 
 
 def test_timeline_includes_activity(app_client):
