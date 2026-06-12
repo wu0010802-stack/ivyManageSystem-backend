@@ -971,3 +971,64 @@ def test_effective_邊界_0131用舊版_0201用新版(test_db_session):
     assert old.effective_from == d(2025, 8, 1)
     assert new.effective_from == d(2026, 2, 1)
     assert new.applies_to_role_groups is None
+
+
+# ===== Task 12: 規章值金標準測試 =====
+
+
+def test_規章金標準_主管優等():
+    """base 160/160=100、deltas [-8] → total 92 優等；rate 10000 → bonus 9200.00"""
+    from datetime import date as d
+
+    from services.appraisal.engine import (
+        BonusRateLookup,
+        Grade,
+        compute_summary,
+    )
+
+    rates = BonusRateLookup(
+        rates={
+            ("2026-02-01", RoleGroup.SUPERVISOR, Grade.OUTSTANDING): Decimal("10000"),
+        }
+    )
+    result = compute_summary(
+        actual_enrollment=160,
+        enrollment_target=160,
+        score_deltas=[Decimal("-8")],
+        role_group=RoleGroup.SUPERVISOR,
+        bonus_rates=rates,
+        on_date=d(2026, 3, 15),
+    )
+    assert result.base_score == Decimal("100.0")
+    assert result.total_score == Decimal("92.00")
+    assert result.grade == Grade.OUTSTANDING
+    assert result.bonus_amount == Decimal("9200.00")
+
+
+def test_規章金標準_廚師甲等3500():
+    """base 121/160=75.6、deltas [+6,+2] → total 83.6 甲等；COOK rate 3500 → 2926.00"""
+    from datetime import date as d
+
+    from services.appraisal.engine import (
+        BonusRateLookup,
+        Grade,
+        compute_summary,
+    )
+
+    rates = BonusRateLookup(
+        rates={
+            ("2026-02-01", RoleGroup.COOK, Grade.GOOD): Decimal("3500"),
+        }
+    )
+    result = compute_summary(
+        actual_enrollment=121,
+        enrollment_target=160,
+        score_deltas=[Decimal("6"), Decimal("2")],
+        role_group=RoleGroup.COOK,
+        bonus_rates=rates,
+        on_date=d(2026, 3, 15),
+    )
+    assert result.base_score == Decimal("75.6")
+    assert result.total_score == Decimal("83.60")
+    assert result.grade == Grade.GOOD
+    assert result.bonus_amount == Decimal("2926.00")
