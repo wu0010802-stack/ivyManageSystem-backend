@@ -22,13 +22,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
 
-from api.salary_fields import calculate_display_bonus_total
+from api.salary_fields import calculate_display_bonus_total, build_history_breakdown
 from models.base import session_scope
 from models.database import Employee, SalaryRecord
 from services.salary.breakdown_enrollment import compute_enrollment_breakdown
 
 logger = logging.getLogger(__name__)
 from utils.auth import require_permission, require_staff_permission
+from utils.rounding import round_half_up
 from utils.permissions import Permission
 from utils.salary_access import (
     FULL_SALARY_ROLES,
@@ -304,6 +305,7 @@ def get_salary_history(
         results = []
         for r in records:
             total_bonus = calculate_display_bonus_total(r)
+            payslip_detail = build_history_breakdown(r)
             results.append(
                 {
                     "id": r.id,
@@ -311,6 +313,14 @@ def get_salary_history(
                     "month": r.salary_month,
                     "base_salary": r.base_salary,
                     "total_bonus": total_bonus,
+                    "in_gross_bonus": round_half_up(
+                        payslip_detail["income_subtotal"]
+                        - float(r.base_salary or 0)
+                        - float(r.hourly_total or 0),
+                        2,
+                    ),
+                    "separate_transfer_total": payslip_detail["separate_subtotal"],
+                    "payslip_detail": payslip_detail,
                     "labor_insurance": r.labor_insurance_employee,
                     "health_insurance": r.health_insurance_employee,
                     "supplementary_health_employee": (

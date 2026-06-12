@@ -95,6 +95,32 @@ class SalaryRecordItemOut(IvyBaseModel):
     breakdown_stale: bool
 
 
+class SalaryHistoryLineOut(IvyBaseModel):
+    """薪資歷史明細單列（收入/另行轉帳/扣款共用）。"""
+
+    key: str
+    label: str
+    amount: float  # pii-allow: 明細金額
+    note: Optional[str] = None  # pii-allow: 明細名目（如額外加給說明）
+    informational: bool = False  # True=僅資訊列（如補充保費），不進小計
+    children: Optional[list["SalaryHistoryLineOut"]] = None
+
+
+SalaryHistoryLineOut.model_rebuild()  # 解析自我參照 children 之 forward ref
+
+
+class SalaryHistoryBreakdownOut(IvyBaseModel):
+    """單月薪條三區明細 + 權威小計（小計取 persisted gross/total_deduction/net）。"""
+
+    income: list[SalaryHistoryLineOut]
+    income_subtotal: float  # pii-allow: 應發合計（= persisted gross_salary）
+    separate_transfer: list[SalaryHistoryLineOut]
+    separate_subtotal: float  # pii-allow: 另行轉帳小計
+    deductions: list[SalaryHistoryLineOut]
+    deduction_subtotal: float  # pii-allow: 扣款合計（= persisted total_deduction）
+    net_salary: float  # pii-allow: 實發（= persisted net_salary）
+
+
 class SalaryHistoryItemOut(IvyBaseModel):
     """GET /salaries/history 單筆（單員工 N 月歷史）。
 
@@ -105,7 +131,10 @@ class SalaryHistoryItemOut(IvyBaseModel):
     year: int
     month: int
     base_salary: float  # pii-allow: 底薪
-    total_bonus: float  # pii-allow: 獎金合計
+    total_bonus: float  # pii-allow: 獎金合計（DEPRECATED：語意不對帳，前端歷史改用 in_gross_bonus）
+    in_gross_bonus: float  # pii-allow: 進帳獎金合計（摘要用）
+    separate_transfer_total: float  # pii-allow: 另行轉帳合計（摘要列用）
+    payslip_detail: SalaryHistoryBreakdownOut  # 三區明細（展開列用）
     labor_insurance: float  # pii-allow: 勞保自付
     health_insurance: float  # pii-allow: 健保自付
     supplementary_health_employee: float  # pii-allow: 二代健保補充保費自付
