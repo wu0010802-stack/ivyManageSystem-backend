@@ -15,8 +15,11 @@ Why（設計體檢 2026-06-12 Finding 3）:
     - insurance_tables 金額欄（salary_min/max、insured_amount、各負擔額）
 
     ORM 同批改用 models/types.Money（讀出轉 float，Python 計算層不變）。
-    率欄位（insurance_tables.labor_rate_employee 等 5 欄、bonus_configs 其餘
-    獎金基數以外的 threshold 率欄）非金額，維持 Float 不動。
+    維持 Float 不動的欄位：
+    - 率欄位（insurance_tables.labor_rate_employee 等 5 欄、threshold 率欄）
+    - bonus_configs 的整數基數設定欄（10 個節慶基數、4 個加班時薪單價、
+      3 個懲處扣款、art_teacher_unit_price）——人工輸入的整數設定值，
+      double 可精確表示且不參與浮點累加，刻意不在本波範圍（非遺漏）。
 
 PG：ALTER COLUMN TYPE NUMERIC(12, 2) USING ROUND(col::numeric, 2)
 SQLite：Float 與 Numeric 底層都是 REAL，no-op（照 j8e9f0a1b2c3 慣例）。
