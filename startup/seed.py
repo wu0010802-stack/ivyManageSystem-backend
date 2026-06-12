@@ -9,6 +9,7 @@ import logging
 from sqlalchemy.exc import IntegrityError
 
 from config import settings
+from utils.taipei_time import today_taipei
 
 from models.database import (
     get_session,
@@ -109,7 +110,11 @@ def seed_default_configs():
     session = get_session()
     try:
         if session.query(AttendancePolicy).count() == 0:
+            # config_year 必須蓋章當前年度：薪資引擎（config_resolver）以
+            # config_year == 結算年度解析，落 model default 0 會讓全新部署
+            # 第一次結薪直接 422（PayrollConfigMissingError）且無 API 自救。
             policy = AttendancePolicy(
+                config_year=today_taipei().year,
                 default_work_start="08:00",
                 default_work_end="17:00",
                 late_deduction=50,
