@@ -526,15 +526,13 @@ def test_void_payouts_deletes_only_appraisal_half_bonus_items(
 from models.database import SalaryRecord  # noqa: E402
 
 
-def test_generate_payouts_marks_february_salary_stale(
+def test_generate_payouts_does_not_mark_february_salary_stale(
     test_db_session,
     setup_summaries_for_both_employees,
     sample_active_employee,
 ):
-    """改 payout 後，affected 員工當年（payout_year）2 月（及之後）未封存薪資被標 stale。
-
-    考核年終獎金進 2 月薪資、又計入二代健保補充保費年累計基底；改 payout 後若
-    不重算，2 月薪資的補充保費基底會 stale。generate_payouts 應自動標 needs_recalc。
+    """決策⑥B 後考核獎金走 year_end settlement 表外發放，不進月薪資，
+    故 generate_payouts 不再標記 2 月薪資 needs_recalc（B3 已移除）。
     """
     # 2026/2 未封存薪資，needs_recalc 起始 False
     sr = SalaryRecord(
@@ -555,7 +553,7 @@ def test_generate_payouts_marks_february_salary_stale(
     )
 
     test_db_session.refresh(sr)
-    assert sr.needs_recalc is True, "改 payout 後 2 月薪資應被標 needs_recalc"
+    assert sr.needs_recalc is False, "決策⑥B 後不標 stale：考核年終表外發放不進月薪"
 
 
 def test_generate_payouts_does_not_touch_finalized_february(
@@ -563,7 +561,7 @@ def test_generate_payouts_does_not_touch_finalized_february(
     setup_summaries_for_both_employees,
     sample_active_employee,
 ):
-    """已封存 2 月薪資不被標 stale（封存代表結帳鎖定，不可被重算覆寫）。"""
+    """已封存 2 月薪資不被標 stale（決策⑥B 後 B3 已移除，任何月份皆不標）。"""
     sr = SalaryRecord(
         employee_id=sample_active_employee.id,
         salary_year=2026,
@@ -582,7 +580,7 @@ def test_generate_payouts_does_not_touch_finalized_february(
     )
 
     test_db_session.refresh(sr)
-    assert sr.needs_recalc is False, "已封存薪資不該被標 stale"
+    assert sr.needs_recalc is False, "封存薪資不被標 stale（B3 已移除亦同）"
 
 
 def test_generate_payouts_does_not_touch_january(
@@ -590,7 +588,7 @@ def test_generate_payouts_does_not_touch_january(
     setup_summaries_for_both_employees,
     sample_active_employee,
 ):
-    """1 月薪資（from_month=2 之前）不被標 stale。"""
+    """1 月薪資不被標 stale（決策⑥B 後 B3 已移除，任何月份皆不標）。"""
     sr = SalaryRecord(
         employee_id=sample_active_employee.id,
         salary_year=2026,
@@ -609,4 +607,4 @@ def test_generate_payouts_does_not_touch_january(
     )
 
     test_db_session.refresh(sr)
-    assert sr.needs_recalc is False, "1 月薪資不在 from_month=2 範圍內"
+    assert sr.needs_recalc is False, "1 月薪資不被標 stale（B3 已移除）"
