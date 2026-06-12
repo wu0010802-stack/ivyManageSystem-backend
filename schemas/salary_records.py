@@ -80,7 +80,9 @@ class SalaryRecordItemOut(IvyBaseModel):
     # 封存 / 稽核
     is_finalized: bool
     finalized_at: Optional[str] = None
-    finalized_by: Optional[int] = None
+    finalized_by: Optional[str] = (
+        None  # 操作者 username（DB 為 String(50)，非 user id）
+    )
     remark: Optional[str] = None
     calculated_at: Optional[str] = None
     manual_overrides: list[str] = []
