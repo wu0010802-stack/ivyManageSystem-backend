@@ -1032,3 +1032,39 @@ def test_規章金標準_廚師甲等3500():
     assert result.total_score == Decimal("83.60")
     assert result.grade == Grade.GOOD
     assert result.bonus_amount == Decimal("2926.00")
+
+
+# ===== 釘樁：initial=0 新開班班導的 RETURNING_RATE 後果（待業主裁示） =====
+
+
+class TestRetentionInitialZeroPinning:
+    def test_新開班班導留校率零分落最底層tier(self):
+        """釘住現行為：期中新開班（initial=0）班導 retention_rate=0 →
+        RETURNING_RATE TIER 落最底層 −4.00。
+
+        規章第五條(七)未定義新開班情境（Excel 時代由人工判斷）；現行引擎
+        字面結果是「接新班被當留校率最差」。此測試防無聲漂移——若業主
+        裁示豁免（如 initial=0 不套此項），應連同本測試一起改。
+        """
+        from services.appraisal.rule_applier import apply_tier
+
+        rule = ScoringRule(
+            item_code="RETURNING_RATE",
+            effective_from=date(2026, 2, 1),
+            rule_type="TIER",
+            rule_config={
+                "input_field": "retention_rate",
+                # 對齊 aprreg01 seed 的 RETURNING_RATE tiers
+                "tiers": [
+                    {"min": 100, "delta": 6.0},
+                    {"min": 95, "delta": 0.0},
+                    {"min": 90, "delta": -2.0},
+                    {"min": 80, "delta": -3.0},
+                    {"min": 0, "delta": -4.0},
+                ],
+            },
+            applies_to_role_groups=None,
+        )
+        assert apply_tier(rule, Decimal("0"), RoleGroup.HEAD_TEACHER) == Decimal(
+            "-4.00"
+        )

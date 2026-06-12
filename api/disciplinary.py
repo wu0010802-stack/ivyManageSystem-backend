@@ -198,6 +198,14 @@ def update_action(
                         detail=f"action_type 須為 {', '.join(ACTION_TYPES)}",
                     )
                 action.action_type = payload.action_type
+                # 轉成 merit 類型且本次未帶金額時，歸零殘留扣款——
+                # 否則留下「獎勵 + 扣款金額」的不一致列（_effective_amount
+                # 對 merit 恆回 0 守住金流，此處修資料層殘留）。
+                if (
+                    payload.action_type in MERIT_ACTION_TYPES
+                    and payload.deduction_amount is None
+                ):
+                    action.deduction_amount = 0
             if payload.action_date is not None:
                 action.action_date = payload.action_date
             if payload.deduction_amount is not None:

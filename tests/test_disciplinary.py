@@ -599,3 +599,32 @@ class TestApi:
         assert body["action_type"] == "commendation"
         assert body["action_type_label"] == "嘉獎"
         assert body["deduction_amount"] == 0
+
+    def test_update_warning改commendation不帶金額_殘留歸零(self, disc_client):
+        """既有 warning(1000) PUT 只改 action_type=commendation（不帶金額）→
+        殘留 deduction_amount 應歸 0，不得留下「獎勵 + 扣款金額」的不一致列。
+        （_effective_amount 對 merit 恆回 0 守住金流，此處修資料層殘留。）
+        """
+        client, session_factory = disc_client
+        with session_factory() as session:
+            emp = _add_emp(session)
+            a = DisciplinaryAction(
+                employee_id=emp.id,
+                action_date=date(2026, 5, 10),
+                action_type="warning",
+                deduction_amount=1000,
+            )
+            session.add(a)
+            session.commit()
+            aid = a.id
+        _login(client, session_factory, username="merit_upd_admin3")
+
+        res = client.put(
+            f"/api/disciplinary-actions/{aid}",
+            json={"action_type": "commendation"},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["deduction_amount"] == 0
+        with session_factory() as session:
+            row = session.get(DisciplinaryAction, aid)
+            assert float(row.deduction_amount or 0) == 0
