@@ -256,3 +256,44 @@ def test_np1_1_festival_diff_query_count_bounded(seed):
         f" + 6 meeting + ~9 bonus_configs + 常數，修補前 309）；"
         f"疑似 per-employee/per-month N+1 回歸。\n{_breakdown(counter)}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# NP1-2：refresh_enrollment_rates 全校月底快照跨班共用                        #
+# --------------------------------------------------------------------------- #
+def test_np1_2_refresh_enrollment_rates_query_count_bounded(seed):
+    """修補前：每個 ClassEnrollmentTarget（4 班 × 2 學期 = 8 列）各自重算
+    「全校逐月在籍清單 + 轉班歸屬 map」（8 × 6 月 × ~2 條 ≈ 100 條 SELECT）。
+
+    修補後：12 個 distinct 月底的全校快照只算一次、所有班共用 →
+    12 × ~2 條 + org 4 條 + 常數 ≈ 30。上限 40：班數 +1（×6 月×2 條）即超標。
+    """
+    from services.year_end.settlement_builder import refresh_enrollment_rates
+
+    db = seed["db"]
+    cycle = seed["cycle"]
+
+    with SelectCounter(db.get_bind()) as counter:
+        refresh_enrollment_rates(db, cycle)
+    db.commit()
+
+    # 行為 sanity：4 班 × 2 學期 target 全有 stored rate（5 生 / 目標 10 = 50%）
+    from decimal import Decimal
+
+    from sqlalchemy import select as _select
+
+    rows = db.scalars(
+        _select(ClassEnrollmentTarget).where(
+            ClassEnrollmentTarget.year_end_cycle_id == cycle.id
+        )
+    ).all()
+    assert len(rows) == 8
+    for row in rows:
+        assert row.class_performance_rate == Decimal("50.00")
+
+    assert counter.count <= 50, (
+        f"refresh_enrollment_rates 發出 {counter.count} 條 SELECT（上限 50；"
+        f"修補後本 seed 實測 43 = 12 distinct 月底 ×3[candidates+transfers+fallback]"
+        f" + org 4 + 常數，修補前 ~100 且隨班數線性成長）；"
+        f"疑似 per-target 重算全校快照回歸。\n{_breakdown(counter)}"
+    )

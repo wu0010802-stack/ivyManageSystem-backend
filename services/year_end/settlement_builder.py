@@ -446,10 +446,20 @@ def refresh_enrollment_rates(db: Session, cycle: YearEndCycle) -> None:
             ClassEnrollmentTarget.year_end_cycle_id == cycle.id
         )
     ).all()
+    # NP1-2：全校月底快照（candidate_ids + 班級歸屬 map）只依月底日期、與班級無關；
+    # 兩學期 12 個 distinct 月底各算一次、所有班共用，取代每班重算全校快照的 N+1。
+    _month_snapshots = enrollment_rates.build_month_snapshots(
+        db,
+        _semester_month_ends(cycle, True) + _semester_month_ends(cycle, False),
+    )
     for cls in cls_rows:
         month_ends = _semester_month_ends(cycle, cls.semester_first)
         rate = enrollment_rates.class_performance_rate(
-            db, cls.classroom_id, month_ends, cls.head_count_target
+            db,
+            cls.classroom_id,
+            month_ends,
+            cls.head_count_target,
+            month_snapshots=_month_snapshots,
         )
         cls.class_performance_rate = rate
         # avg_monthly_enrollment = rate% × target / 100（由 rate 反推平均在籍）

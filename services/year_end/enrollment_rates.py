@@ -124,11 +124,44 @@ def _classroom_map_at_month_end(
     return result
 
 
+def build_month_snapshots(
+    db: Session, month_ends: list[date]
+) -> dict[date, tuple[list[int], dict[int, int | None]]]:
+    """預算各月底的「全校在籍學生清單 + 月底班級歸屬 map」快照（NP1-2）。
+
+    class_performance_rate 的兩條查詢（全校 candidate_ids + _classroom_map_at_month_end）
+    與班級無關、只依月底日期；refresh_enrollment_rates 對每班各呼叫一次時，同學期
+    6 個月底的全校快照被每個班重算一遍。此 helper 讓 caller 把 distinct 月底算一次、
+    所有班共用（重複月底自動去重）。
+
+    回 dict[month_end → (candidate_ids, month_map)]。
+    """
+    snapshots: dict[date, tuple[list[int], dict[int, int | None]]] = {}
+    for month_end in month_ends:
+        if month_end in snapshots:
+            continue
+        candidate_ids = [
+            sid
+            for (sid,) in db.query(Student.id)
+            .filter(_enrolled_on_filter(month_end))
+            .all()
+        ]
+        month_map = (
+            _classroom_map_at_month_end(db, candidate_ids, month_end)
+            if candidate_ids
+            else {}
+        )
+        snapshots[month_end] = (candidate_ids, month_map)
+    return snapshots
+
+
 def class_performance_rate(
     db: Session,
     classroom_id: int,
     month_ends: list[date],
     head_count_target: int | float | Decimal,
+    *,
+    month_snapshots: "dict[date, tuple[list[int], dict[int, int | None]]] | None" = None,
 ) -> Decimal:
     """班級經營績效達成率（%）。
 
@@ -138,6 +171,10 @@ def class_performance_rate(
     且 classroom_at_month_end(student, month_end) == classroom_id。
 
     head_count_target <= 0 或 month_ends 為空時回 Decimal("0.00")。
+
+    month_snapshots（NP1-2，可選）：build_month_snapshots 預算的全校月底快照；
+    提供且涵蓋該月底時直接使用（同兩條查詢的等值結果），未提供維持逐月自查
+    （standalone/既有測試零波及）。
     """
     target_d = Decimal(str(head_count_target))
     if target_d <= 0 or not month_ends:
@@ -145,17 +182,22 @@ def class_performance_rate(
 
     total_count = 0
     for month_end in month_ends:
-        # 取當月底嚴格在籍學生集合（全校）
-        candidate_ids = [
-            sid
-            for (sid,) in db.query(Student.id)
-            .filter(_enrolled_on_filter(month_end))
-            .all()
-        ]
-        if not candidate_ids:
-            continue
-        # 批次解析各生月底班級歸屬（取代逐生 classroom_at_month_end 的 N+1）
-        month_map = _classroom_map_at_month_end(db, candidate_ids, month_end)
+        if month_snapshots is not None and month_end in month_snapshots:
+            candidate_ids, month_map = month_snapshots[month_end]
+            if not candidate_ids:
+                continue
+        else:
+            # 取當月底嚴格在籍學生集合（全校）
+            candidate_ids = [
+                sid
+                for (sid,) in db.query(Student.id)
+                .filter(_enrolled_on_filter(month_end))
+                .all()
+            ]
+            if not candidate_ids:
+                continue
+            # 批次解析各生月底班級歸屬（取代逐生 classroom_at_month_end 的 N+1）
+            month_map = _classroom_map_at_month_end(db, candidate_ids, month_end)
         total_count += sum(
             1 for sid in candidate_ids if month_map.get(sid) == classroom_id
         )
