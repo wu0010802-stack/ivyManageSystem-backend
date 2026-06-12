@@ -271,8 +271,9 @@ def test_salary_record_orphan_employee_detects(test_db_session):
     test_db_session.execute(
         text(
             "INSERT INTO salary_records "
-            "(employee_id, salary_year, salary_month, gross_salary) "
-            "VALUES (:eid, :y, :m, :g)"
+            "(employee_id, salary_year, salary_month, gross_salary,"
+            " total_deduction, net_salary, is_finalized) "
+            "VALUES (:eid, :y, :m, :g, 0, 0, 0)"
         ),
         {"eid": 9999999, "y": 2026, "m": 5, "g": 0},
     )
