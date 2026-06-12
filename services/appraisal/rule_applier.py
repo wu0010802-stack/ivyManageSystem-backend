@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 _TWO_PLACES = Decimal("0.01")
 
+# 規章對齊批次（aprreg01）的規則生效日：2026-02-01（114下起）。
+# 早於此日的 cycle 屬舊口徑歷史資料（考勤 leave/absent 未分流，54259658），
+# 重 sync 會以新口徑回溯改寫已對帳的歷史考核——sync 端點據此擋重 sync。
+REGULATION_RULES_EFFECTIVE_FROM = date(2026, 2, 1)
+
 
 @dataclass(frozen=True)
 class ScoringRule:
@@ -236,11 +241,14 @@ def _apply_auto_item(
         cnt = Decimal(status.attendance.leave_days)
         return apply_per_unit(rule, cnt, role_group), cnt, f"請假 {cnt} 天"
     if code in ("RETURNING_RATE_0915", "RETURNING_RATE_0315"):
-        rate = (
-            status.retention.retention_rate
-            if status.retention.retention_rate is not None
-            else Decimal("0")
-        )
+        ret = status.retention
+        # 業主裁示（2026-06-12）：期中新開班（期初 0 人）班導豁免本項，
+        # 不加不扣——規章第五條(七)未定義新開班，字面 0% 會誤落 −4。
+        # 未帶班者 classroom_id=None（initial_count 為預設 0），不在此列，
+        # 仍依第五條(七)2 全校平均核算。
+        if ret.classroom_id is not None and ret.initial_count == 0:
+            return Decimal("0"), Decimal("0"), "期中新開班（期初 0 人）：留校率項豁免"
+        rate = ret.retention_rate if ret.retention_rate is not None else Decimal("0")
         return apply_tier(rule, rate, role_group), rate, f"留校率 {rate}%"
     if code == "AFTER_CLASS_RATE":
         rate = (

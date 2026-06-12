@@ -131,10 +131,12 @@
 - Rollback：alembic downgrade **非自動**；prod 出事先 Promote 上一版部署，DB 改動再考慮 downgrade
 
 #### 一次性前置（2026-06-11 考核規章對齊批次，含 aprreg01）
-- **部署前確認 prod 的 114上 appraisal cycle 已 finalized**（`SELECT status FROM appraisal_cycles WHERE academic_year=114 AND semester='FIRST'`）。
-  考勤聚合 leave/absent 分流（54259658）對仍 OPEN 的歷史 cycle 重 sync 是回溯生效的：
-  有曠職者會少扣（114上無 ABSENTEEISM 規則）、全天請假者會多扣，偏離 06-11 對帳基線。
-  若仍 OPEN：先 finalize，或明確接受重 sync 偏移再部署。
+- ~~部署前確認 prod 的 114上 appraisal cycle 已 finalized~~ **已由程式護欄取代（2026-06-12）**：
+  `sync_score_items` 對「基準日早於規章生效日 2026-02-01 且已 sync 過」的 cycle 一律 400
+  （考勤 leave/absent 分流 54259658 對歷史 cycle 重 sync 是回溯生效：有曠職者會少扣
+  〔114上無 ABSENTEEISM 規則〕、全天請假者會多扣，偏離 06-11 對帳基線）。dry_run 預覽
+  與首次 sync 不受影響。部署順序不再受 prod cycle 狀態牽制；114上 cycle 仍建議照常
+  finalize 收尾，但非部署 blocker。
 - aprreg01 為純 DML data migration，**無法 `--sql` 離線產出**，只能 online 跑；
   upgrade 後抽驗 `appraisal_bonus_rates` 5 組值（10000/8000/8000/6000/3500）與
   `appraisal_scoring_rules` count(effective_from='2026-02-01')=24，console 不得出現 `WARNING aprreg01`。

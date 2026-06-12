@@ -533,6 +533,7 @@ def _make_fake_status(
     reinstate_count: int = 0,
     activity_rate: Decimal = Decimal("0"),
     grade_name: str | None = None,
+    retention=None,
 ) -> "ParticipantStatus":
     """最小 fake status builder，供 Task 8 測試使用。"""
     from services.appraisal.status_aggregator import (
@@ -557,7 +558,8 @@ def _make_fake_status(
             leave_days=0,
             absent_days=absent_days,
         ),
-        retention=ClassRetentionAggregate(
+        retention=retention
+        or ClassRetentionAggregate(
             employee_id=employee_id,
             retention_rate=Decimal("100"),
         ),
@@ -1034,37 +1036,91 @@ def test_規章金標準_廚師甲等3500():
     assert result.bonus_amount == Decimal("2926.00")
 
 
-# ===== 釘樁：initial=0 新開班班導的 RETURNING_RATE 後果（待業主裁示） =====
+# ===== initial=0 新開班班導豁免留校率項（業主裁示 2026-06-12） =====
 
 
-class TestRetentionInitialZeroPinning:
-    def test_新開班班導留校率零分落最底層tier(self):
-        """釘住現行為：期中新開班（initial=0）班導 retention_rate=0 →
-        RETURNING_RATE TIER 落最底層 −4.00。
+def _returning_rate_rule() -> ScoringRule:
+    """對齊 aprreg01 seed 的 RETURNING_RATE tiers。"""
+    return ScoringRule(
+        item_code="RETURNING_RATE_0915",
+        effective_from=date(2026, 2, 1),
+        rule_type="TIER",
+        rule_config={
+            "input_field": "retention_rate",
+            "tiers": [
+                {"min": 100, "delta": 6.0},
+                {"min": 95, "delta": 0.0},
+                {"min": 90, "delta": -2.0},
+                {"min": 80, "delta": -3.0},
+                {"min": 0, "delta": -4.0},
+            ],
+        },
+        applies_to_role_groups=None,
+    )
 
-        規章第五條(七)未定義新開班情境（Excel 時代由人工判斷）；現行引擎
-        字面結果是「接新班被當留校率最差」。此測試防無聲漂移——若業主
-        裁示豁免（如 initial=0 不套此項），應連同本測試一起改。
-        """
-        from services.appraisal.rule_applier import apply_tier
 
-        rule = ScoringRule(
-            item_code="RETURNING_RATE",
-            effective_from=date(2026, 2, 1),
-            rule_type="TIER",
-            rule_config={
-                "input_field": "retention_rate",
-                # 對齊 aprreg01 seed 的 RETURNING_RATE tiers
-                "tiers": [
-                    {"min": 100, "delta": 6.0},
-                    {"min": 95, "delta": 0.0},
-                    {"min": 90, "delta": -2.0},
-                    {"min": 80, "delta": -3.0},
-                    {"min": 0, "delta": -4.0},
-                ],
-            },
-            applies_to_role_groups=None,
+class TestRetentionInitialZeroExemption:
+    """規章第五條(七)未定義新開班情境；業主裁示（2026-06-12）：
+    期中新開班（期初 0 人）班導豁免留校率項，不加不扣。
+
+    取代原 TestRetentionInitialZeroPinning（釘住 −4 待裁示）。
+    """
+
+    def test_新開班班導initial為零豁免不加不扣(self):
+        from services.appraisal.rule_applier import _apply_auto_item
+        from services.appraisal.status_aggregator import ClassRetentionAggregate
+
+        status = _make_fake_status(
+            retention=ClassRetentionAggregate(
+                employee_id=1,
+                classroom_id=10,
+                classroom_name="新班",
+                initial_count=0,
+                final_count=15,
+                retention_rate=Decimal("0"),
+            )
         )
-        assert apply_tier(rule, Decimal("0"), RoleGroup.HEAD_TEACHER) == Decimal(
-            "-4.00"
+        delta, raw, note = _apply_auto_item(
+            _returning_rate_rule(), status, RoleGroup.HEAD_TEACHER
         )
+        assert delta == Decimal("0")
+        assert raw == Decimal("0")
+        assert "豁免" in note
+
+    def test_真實零留校率仍落最底層tier(self):
+        """initial>0、final=0（真的全沒留住）不是新開班，照規章字面 −4。"""
+        from services.appraisal.rule_applier import _apply_auto_item
+        from services.appraisal.status_aggregator import ClassRetentionAggregate
+
+        status = _make_fake_status(
+            retention=ClassRetentionAggregate(
+                employee_id=1,
+                classroom_id=10,
+                initial_count=10,
+                final_count=0,
+                retention_rate=Decimal("0"),
+            )
+        )
+        delta, raw, note = _apply_auto_item(
+            _returning_rate_rule(), status, RoleGroup.HEAD_TEACHER
+        )
+        assert delta == Decimal("-4.00")
+        assert "豁免" not in note
+
+    def test_未帶班人員不豁免仍依全校平均(self):
+        """未帶班（classroom_id=None）走第五條(七)2 全校平均，不套新開班豁免；
+        其 aggregate 的 initial_count 為 dataclass 預設 0，不可誤判為新開班。"""
+        from services.appraisal.rule_applier import _apply_auto_item
+        from services.appraisal.status_aggregator import ClassRetentionAggregate
+
+        status = _make_fake_status(
+            retention=ClassRetentionAggregate(
+                employee_id=1,
+                retention_rate=Decimal("92.50"),
+            )
+        )
+        delta, raw, note = _apply_auto_item(
+            _returning_rate_rule(), status, RoleGroup.HEAD_TEACHER
+        )
+        assert delta == Decimal("-2.00")
+        assert raw == Decimal("92.50")

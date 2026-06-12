@@ -254,6 +254,11 @@ def test_sync_overwrites_auto_rows(client_with_db):
     with sf() as s:
         _create_user(s, "admin1", Permission.APPRAISAL_EVENT_WRITE)
         cycle, p = _seed_calibrate_fixtures(s)
+        # 移到規章生效日（2026-02-01）後：歷史 cycle 已 sync 過會被回溯保護
+        # 擋下（TestSyncHistoricalCycleGuard），本測試只驗證覆寫機制本身。
+        cycle.start_date = date(2026, 2, 1)
+        cycle.end_date = date(2026, 7, 31)
+        cycle.base_score_calc_date = date(2026, 3, 15)
         s.add(
             AppraisalScoreItem(
                 cycle_id=cycle.id,
