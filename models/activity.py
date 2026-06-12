@@ -534,7 +534,7 @@ class ActivityPosDailyCloseHistory(Base):
     __tablename__ = "activity_pos_daily_close_history"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    close_date = Column(Date, nullable=False, index=True, comment="原日結日期")
+    close_date = Column(Date, nullable=False, comment="原日結日期")
     # 原簽核資訊（複製自 ActivityPosDailyClose）
     approver_username = Column(String(50), nullable=False, comment="原簽核者帳號")
     approver_role = Column(String(20), nullable=True, comment="原簽核者角色")

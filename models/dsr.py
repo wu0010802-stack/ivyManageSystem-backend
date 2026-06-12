@@ -53,7 +53,6 @@ class DsrRequest(Base):
         # SET NULL：硬刪 user 時保留 DSR 申請史稽核（RA-MED-9）
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
         comment="申請人 user_id（家長或員工；硬刪後 NULL 保留稽核）",
     )
     request_type = Column(

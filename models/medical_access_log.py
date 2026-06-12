@@ -46,7 +46,6 @@ class MedicalAccessLog(Base):
         # SET NULL：硬刪 student 時保留 §6 醫療取用稽核（RA-MED-9），與上方 user_id 一致
         ForeignKey("students.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     field_name = Column(
         String(50),

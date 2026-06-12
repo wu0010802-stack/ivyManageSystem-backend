@@ -111,7 +111,6 @@ class LeaveRecord(Base):
         Index("ix_leave_emp_status", "employee_id", "status"),
         Index("ix_leave_status_start_date", "status", "start_date"),
         Index("ix_leave_emp_type_status", "employee_id", "leave_type", "status"),
-        Index("ix_leave_status_date", "status", "start_date"),
     )
 
     employee = relationship(

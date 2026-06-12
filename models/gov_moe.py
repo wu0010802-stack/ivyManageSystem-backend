@@ -220,7 +220,6 @@ class EnrollmentCertificate(Base):
     __table_args__ = (
         UniqueConstraint("year", "seq", name="uq_enrollment_cert_year_seq"),
         Index("ix_enrollment_cert_student", "student_id"),
-        Index("ix_enrollment_cert_year", "year"),
     )
 
     @property

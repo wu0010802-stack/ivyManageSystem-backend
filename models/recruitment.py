@@ -322,6 +322,8 @@ class RecruitmentEventLog(Base):
         ),
         Index("ix_recruitment_event_log_event_type", "event_type"),
         Index("ix_recruitment_event_log_actor", "actor_user_id"),
+        # services/student_records_timeline.py 以 student_id 過濾 timeline；另 students 硬刪 SET NULL 反向查找
+        Index("ix_recruitment_event_log_student_id", "student_id"),
     )
 
 
