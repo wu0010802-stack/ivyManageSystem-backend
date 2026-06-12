@@ -317,6 +317,20 @@ class DisciplinaryTieredConfig(BaseModel):
     major_delta: Decimal
 
 
+class ManualDeltaConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min_delta: Decimal
+    max_delta: Decimal
+
+    @field_validator("max_delta")
+    @classmethod
+    def max_must_be_gte_min(cls, v, info):
+        min_val = info.data.get("min_delta")
+        if min_val is not None and v < min_val:
+            raise ValueError("min_delta 不可大於 max_delta")
+        return v
+
+
 class ScoringRuleIn(BaseModel):
     item_code: str
     effective_from: date

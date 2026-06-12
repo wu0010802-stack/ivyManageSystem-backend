@@ -311,3 +311,76 @@ class TestBatchUpsertManualEventCounts:
             },
         )
         assert r.status_code == 403, r.text
+
+
+# === MANUAL_DELTA 向後相容路徑驗證 ===
+
+
+class TestManualEventCountsBackwardCompatPaths:
+    """補強 Task 10 review 提到的兩個向後相容路徑邊界測試。"""
+
+    def test_item_code_無任何規則_count正值_成功(self, client_with_db):
+        """item_code 在 DB 無任何規則 → 視為一般事件次數，count≥0 時寫入不被擋（200）。"""
+        client, sf = client_with_db
+        with sf() as s:
+            _create_user(
+                s,
+                "admin_bc1",
+                ["APPRAISAL_EVENT_WRITE", "APPRAISAL_READ"],
+            )
+            cycle_id, p_id, _ = _setup_cycle_with_participant(s)
+            # 故意不建任何 AppraisalScoringRule，確認 DB 無規則路徑可通
+            s.commit()
+        assert _login(client, "admin_bc1").status_code == 200
+
+        r = client.put(
+            f"/api/appraisal/cycles/{cycle_id}/manual_event_counts:batch",
+            json={
+                "entries": [
+                    {
+                        "participant_id": p_id,
+                        "item_code": "NO_RULE_ITEM",
+                        "count": "3",
+                    }
+                ]
+            },
+        )
+        assert r.status_code == 200, r.text
+
+    def test_非MANUAL_DELTA_的code_填負數count_422(self, client_with_db):
+        """非 MANUAL_DELTA 規則的 item_code 送負數 count → 422（handler else 分支守衛）。"""
+        client, sf = client_with_db
+        with sf() as s:
+            from models.appraisal import AppraisalScoringRule
+
+            _create_user(
+                s,
+                "admin_bc2",
+                ["APPRAISAL_EVENT_WRITE", "APPRAISAL_READ"],
+            )
+            cycle_id, p_id, _ = _setup_cycle_with_participant(s)
+            # 建立 PER_UNIT 規則（非 MANUAL_DELTA）
+            s.add(
+                AppraisalScoringRule(
+                    item_code="SCHOOL_MEETING_ABSENCE",
+                    effective_from=date(2025, 8, 1),
+                    rule_type="PER_UNIT",
+                    rule_config={"per_unit_delta": "-0.5"},
+                )
+            )
+            s.commit()
+        assert _login(client, "admin_bc2").status_code == 200
+
+        r = client.put(
+            f"/api/appraisal/cycles/{cycle_id}/manual_event_counts:batch",
+            json={
+                "entries": [
+                    {
+                        "participant_id": p_id,
+                        "item_code": "SCHOOL_MEETING_ABSENCE",
+                        "count": "-1",  # 非 MANUAL_DELTA，負數應被擋
+                    }
+                ]
+            },
+        )
+        assert r.status_code == 422, r.text

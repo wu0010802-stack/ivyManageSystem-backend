@@ -62,6 +62,7 @@ from schemas.appraisal import (
     DisciplinaryTieredConfig,
     FlatThresholdConfig,
     ImportResultOut,
+    ManualDeltaConfig,
     ManualEventCountBatchIn,
     ManualEventCountListOut,
     ManualEventCountOut,
@@ -1602,6 +1603,7 @@ _CONFIG_VALIDATORS = {
     "TIER": TierConfig,
     "FLAT_THRESHOLD": FlatThresholdConfig,
     "DISCIPLINARY_TIERED": DisciplinaryTieredConfig,
+    "MANUAL_DELTA": ManualDeltaConfig,
 }
 
 
