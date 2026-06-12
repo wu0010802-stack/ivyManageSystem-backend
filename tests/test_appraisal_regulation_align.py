@@ -938,3 +938,36 @@ class TestManualEventCountsManualDeltaValidation:
         assert r.status_code == 200, r.text
 
 
+# ===== Task 11: 歷史保護 + effective 邊界測試 =====
+
+
+def test_effective_邊界_0131用舊版_0201用新版(test_db_session):
+    from datetime import date as d
+
+    from models.appraisal import AppraisalScoringRule
+    from services.appraisal.rule_applier import load_rules_for_date
+
+    test_db_session.add_all(
+        [
+            AppraisalScoringRule(
+                item_code="RETURNING_RATE_0315",
+                effective_from=d(2025, 8, 1),
+                rule_type="TIER",
+                rule_config={"tiers": [{"min": 0, "delta": -6.0}]},
+                applies_to_role_groups=["HEAD_TEACHER", "ASSISTANT"],
+            ),
+            AppraisalScoringRule(
+                item_code="RETURNING_RATE_0315",
+                effective_from=d(2026, 2, 1),
+                rule_type="TIER",
+                rule_config={"tiers": [{"min": 0, "delta": -4.0}]},
+                applies_to_role_groups=None,
+            ),
+        ]
+    )
+    test_db_session.flush()
+    old = load_rules_for_date(test_db_session, d(2026, 1, 31))["RETURNING_RATE_0315"]
+    new = load_rules_for_date(test_db_session, d(2026, 2, 1))["RETURNING_RATE_0315"]
+    assert old.effective_from == d(2025, 8, 1)
+    assert new.effective_from == d(2026, 2, 1)
+    assert new.applies_to_role_groups is None
