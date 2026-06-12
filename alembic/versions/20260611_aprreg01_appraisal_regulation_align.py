@@ -10,6 +10,9 @@
 Revision ID: aprreg01
 Revises: yebnd01
 Create Date: 2026-06-11
+
+⚠ merge 進 main 前須 re-parent down_revision 至當時 main head（撰寫時 main 為 recvisuq01；
+   前例見 auditack01/recvisuq01 的 reparent 註記），merge 後跑 alembic heads 驗單一 head。
 """
 
 from __future__ import annotations
@@ -138,13 +141,18 @@ def upgrade() -> None:
     if _has_table(bind, "appraisal_bonus_rates"):
         for eff in RATE_EFFECTIVES:
             for rg, gr, new_amt, _old in RATE_CHANGES:
-                bind.execute(
+                result = bind.execute(
                     sa.text(
                         "UPDATE appraisal_bonus_rates SET base_amount = :a"
                         " WHERE effective_from = :e AND role_group = :rg AND grade = :gr"
                     ),
                     {"a": new_amt, "e": eff, "rg": rg, "gr": gr},
                 )
+                if eff == "2025-08-01" and result.rowcount == 0:
+                    print(
+                        f"WARNING aprreg01: bonus_rate ({rg},{gr}) eff={eff} 不存在，"
+                        "對齊未生效——檢查該環境 seed 是否漂移"
+                    )
 
     if _has_table(bind, "appraisal_scoring_rules"):
         existing = {
@@ -187,7 +195,11 @@ def downgrade() -> None:
                     {"a": old_amt, "e": eff, "rg": rg, "gr": gr},
                 )
     if _has_table(bind, "appraisal_scoring_rules"):
+        codes = [c for c, _t, _cfg, _r in RULES]
         bind.execute(
-            sa.text("DELETE FROM appraisal_scoring_rules WHERE effective_from = :e"),
-            {"e": RULES_EFFECTIVE},
+            sa.text(
+                "DELETE FROM appraisal_scoring_rules"
+                " WHERE effective_from = :e AND item_code = ANY(:codes)"
+            ),
+            {"e": RULES_EFFECTIVE, "codes": codes},
         )

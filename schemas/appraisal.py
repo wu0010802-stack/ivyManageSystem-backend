@@ -320,7 +320,9 @@ class DisciplinaryTieredConfig(BaseModel):
 class ScoringRuleIn(BaseModel):
     item_code: str
     effective_from: date
-    rule_type: Literal["PER_UNIT", "TIER", "FLAT_THRESHOLD", "DISCIPLINARY_TIERED"]
+    rule_type: Literal[
+        "PER_UNIT", "TIER", "FLAT_THRESHOLD", "DISCIPLINARY_TIERED", "MANUAL_DELTA"
+    ]
     rule_config: (
         dict  # 由 endpoint 內依 rule_type 二次 validate（用上方 4 config class）
     )

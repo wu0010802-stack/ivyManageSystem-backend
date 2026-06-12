@@ -749,3 +749,16 @@ def test_懲處類型仍正常產生扣款():
     assert _effective_amount(_Warning(), bonus_config=None) == 1000.0
     # deduction_amount=0 → resolve_default_amount fallback=3000
     assert _effective_amount(_Minor(), bonus_config=None) == 3000.0
+
+
+def test_scoring_rule_in_接受manual_delta():
+    from schemas.appraisal import ScoringRuleIn
+
+    r = ScoringRuleIn(
+        item_code="CHILD_ACCIDENT",
+        effective_from="2026-02-01",
+        rule_type="MANUAL_DELTA",
+        rule_config={"min_delta": -10, "max_delta": 0},
+        applies_to_role_groups=None,
+    )
+    assert r.rule_type == "MANUAL_DELTA"
