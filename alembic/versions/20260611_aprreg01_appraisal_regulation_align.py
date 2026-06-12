@@ -8,11 +8,10 @@
    既有 2025-08-01 列不動（歷史學期重算結果不變）。
 
 Revision ID: aprreg01
-Revises: yebnd01
+Revises: recvisuq01
 Create Date: 2026-06-11
 
-⚠ merge 進 main 前須 re-parent down_revision 至當時 main head（撰寫時 main 為 recvisuq01；
-   前例見 auditack01/recvisuq01 的 reparent 註記），merge 後跑 alembic heads 驗單一 head。
+（2026-06-12 merge 時已 re-parent：yebnd01 → recvisuq01，對齊 merge 當時 main head。）
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "aprreg01"
-down_revision = "yebnd01"
+down_revision = "recvisuq01"
 branch_labels = None
 depends_on = None
 
