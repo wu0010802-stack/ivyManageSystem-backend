@@ -98,7 +98,7 @@ def test_apply_preserves_existing_recorded_by_on_conflict(session):
         StudentAttendance(
             student_id=student.id,
             date=date(2026, 5, 4),
-            status="到校",
+            status="出席",  # ck_student_attendances_status 白名單值（dbck01）
             remark="教師手寫",
             recorded_by=teacher.id,
         )

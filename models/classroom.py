@@ -6,6 +6,7 @@ from datetime import datetime
 from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     Integer,
     String,
@@ -247,6 +248,12 @@ class Student(Base):
             "enrollment_seq",
             name="uq_students_enrollment_year_seq",
         ),
+        # 值域同 LIFECYCLE_* 常數；變更必經 services/student_lifecycle.transition()
+        CheckConstraint(
+            "lifecycle_status IN ('prospect','enrolled','active','on_leave',"
+            "'transferred','withdrawn','graduated')",
+            name="ck_students_lifecycle_status",
+        ),
     )
 
     created_at = Column(DateTime, default=now_taipei_naive)
@@ -300,6 +307,11 @@ class StudentAttendance(Base):
         UniqueConstraint("student_id", "date", name="uq_student_attendance_date"),
         Index("ix_student_attendance_date", "date"),
         Index("ix_student_attendance_student", "student_id"),
+        # 值域同 API 層白名單 VALID_STATUSES（api/student_attendance.py）
+        CheckConstraint(
+            "status IN ('出席','缺席','病假','事假','遲到')",
+            name="ck_student_attendances_status",
+        ),
     )
 
 

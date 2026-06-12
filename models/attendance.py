@@ -7,6 +7,7 @@ from datetime import datetime
 from utils.taipei_time import now_taipei_naive
 
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     Integer,
     String,
@@ -48,7 +49,10 @@ class Attendance(Base):
     punch_out_time = Column(DateTime, comment="下班打卡時間")
 
     status = Column(
-        String(20), default=AttendanceStatus.NORMAL.value, comment="考勤狀態"
+        String(20),
+        nullable=False,
+        default=AttendanceStatus.NORMAL.value,
+        comment="考勤狀態",
     )
     is_late = Column(Boolean, default=False, comment="是否遲到")
     is_early_leave = Column(Boolean, default=False, comment="是否早退")
@@ -98,6 +102,11 @@ class Attendance(Base):
         ),
         UniqueConstraint(
             "employee_id", "attendance_date", name="uq_attendance_employee_date"
+        ),
+        # 值域同 AttendanceStatus enum（models/attendance.py 上方）；新增狀態值需同步改此 CHECK
+        CheckConstraint(
+            "status IN ('normal','late','early_leave','missing','absent','leave')",
+            name="ck_attendances_status",
         ),
     )
 

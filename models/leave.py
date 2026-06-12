@@ -48,9 +48,9 @@ class LeaveRecord(Base):
     end_date = Column(Date, nullable=False, comment="結束日期")
     start_time = Column(String(5), nullable=True, comment="開始時間 HH:MM")
     end_time = Column(String(5), nullable=True, comment="結束時間 HH:MM")
-    leave_hours = Column(Float, default=8, comment="請假時數")
+    leave_hours = Column(Float, nullable=False, default=8, comment="請假時數")
 
-    is_deductible = Column(Boolean, default=True, comment="是否扣薪")
+    is_deductible = Column(Boolean, nullable=False, default=True, comment="是否扣薪")
     deduction_ratio = Column(Float, default=1.0, comment="扣薪比例")
 
     # 病假住院旗標（勞工請假規則第 4 條：未住院 30 天/年；住院 1 年/年）
