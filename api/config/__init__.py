@@ -11,6 +11,7 @@ from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.constants import MIN_CONFIG_YEAR, MAX_CONFIG_YEAR
+from utils.taipei_time import today_taipei
 from utils.finance_guards import (
     MIN_FINANCE_REASON_LENGTH,
     require_adjustment_reason,
@@ -125,12 +126,17 @@ def init_config_services(salary_engine, line_service=None):
 class AttendancePolicyUpdate(BaseModel):
     """考勤政策更新。
 
+    config_year：適用年度（西元）。未帶時 stamp 為「當前台北年度」；帶
+    config_year=2027 即為「建立 2027 年度設定」的入口（薪資引擎以
+    config_year == 結算年度 解析設定，見 services/salary/config_resolver）。
+
     Deprecated 欄位（不再進入薪資計算，已從 schema 移除）：
       - late_deduction / early_leave_deduction / missing_punch_deduction
         實際扣款固定以勞基法基準（每分鐘 = 月薪 / 30 / 8 / 60）計算，
         詳見 services/salary/deduction.py。DB 欄位保留以支援既有資料相容性。
     """
 
+    config_year: Optional[int] = Field(None, ge=MIN_CONFIG_YEAR, le=MAX_CONFIG_YEAR)
     default_work_start: Optional[str] = None
     default_work_end: Optional[str] = None
     # le=24:節慶獎金資格門檻單位為月,實務常見 3~6 個月;設上限避免極端值
@@ -292,6 +298,13 @@ def update_attendance_policy(
         for key, value in update_data.items():
             if value is not None:
                 setattr(new_policy, key, value)
+
+        # config_year 蓋章：未帶時 stamp 當前台北年度（writer 對齊 reader：
+        # config_resolver 以 config_year == 結算年度解析，落 default 0 的列
+        # 永遠不會被引擎撿到 → 新值靜默失效）。帶 config_year=2027 即建立
+        # 2027 年度設定列。
+        if data.config_year is None:
+            new_policy.config_year = today_taipei().year
 
         if old_policy:
             old_policy.is_active = False

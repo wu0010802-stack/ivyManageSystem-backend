@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from models.base import Base
+from models.types import Money
 
 
 class Holiday(Base):
@@ -98,7 +99,7 @@ class MeetingRecord(Base):
     )
     attended = Column(Boolean, default=True, comment="是否出席")
     overtime_hours = Column(Float, default=0, comment="加班時數")
-    overtime_pay = Column(Float, default=0, comment="加班費")
+    overtime_pay = Column(Money, default=0, comment="加班費")
 
     remark = Column(Text, comment="備註")
 

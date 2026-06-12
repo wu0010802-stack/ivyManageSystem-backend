@@ -28,7 +28,9 @@ from utils.finance_guards import (
     require_finance_approve,
     require_not_self_salary_record,
 )
+from utils.constants import MIN_CONFIG_YEAR, MAX_CONFIG_YEAR
 from utils.permissions import Permission
+from utils.taipei_time import today_taipei
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +41,39 @@ router = APIRouter()
 _POSITION_SALARY_MAX = 500_000.0
 
 
+# PositionSalaryConfig 的 15 個標準底薪欄位（建立新年度列時複製 baseline 用）
+_POSITION_SALARY_FIELDS = [
+    "head_teacher_a",
+    "head_teacher_b",
+    "head_teacher_c",
+    "assistant_teacher_a",
+    "assistant_teacher_b",
+    "assistant_teacher_c",
+    "admin_staff",
+    "english_teacher",
+    "art_teacher",
+    "designer",
+    "nurse",
+    "driver",
+    "kitchen_staff",
+    "director",
+    "principal",
+]
+
+
 class PositionSalaryUpdate(BaseModel):
     """職位標準底薪設定更新
+
+    config_year：適用年度（西元）。未帶時 stamp 為「當前台北年度」；帶
+    config_year=2027 即為「建立 2027 年度標準底薪」的入口（薪資引擎以
+    config_year == 結算年度 解析，見 services/salary/config_resolver；
+    新年度列以最新一列為 baseline 複製後套用本次變更）。
 
     每欄位 le=_POSITION_SALARY_MAX：與 manual-adjust 同一上限，避免天文數字標準
     透過 sync 繞過手動調薪審批。
     """
 
+    config_year: Optional[int] = Field(None, ge=MIN_CONFIG_YEAR, le=MAX_CONFIG_YEAR)
     head_teacher_a: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
     head_teacher_b: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
     head_teacher_c: Optional[float] = Field(None, ge=0, le=_POSITION_SALARY_MAX)
@@ -226,23 +254,49 @@ def update_position_salary(
 
     session = get_session()
     try:
-        config = (
-            session.query(PositionSalaryConfig)
-            .order_by(PositionSalaryConfig.id.desc())
-            .first()
+        # config_year 蓋章：未帶時 stamp 當前台北年度（writer 對齊 reader：
+        # config_resolver 以 config_year == 結算年度解析；落 default 0 的列
+        # 永遠不會被引擎撿到 → 新標準靜默失效）。帶 config_year=2027 即
+        # 建立 2027 年度列（行政建立新年度設定的入口）。
+        target_year = (
+            data.config_year if data.config_year is not None else today_taipei().year
         )
         update_data = data.dict(exclude_none=True)
+        update_data.pop("config_year", None)
         operator = current_user.get("username", "")
 
+        config = (
+            session.query(PositionSalaryConfig)
+            .filter(PositionSalaryConfig.config_year == target_year)
+            .order_by(
+                PositionSalaryConfig.version.desc(), PositionSalaryConfig.id.desc()
+            )
+            .first()
+        )
         if config:
+            # 同年度：就地更新並遞增 version（resolver 取該年度最高 version）
             for key, value in update_data.items():
                 setattr(config, key, value)
             config.version = (config.version or 1) + 1
             config.changed_by = operator
         else:
+            # 新年度（或空表）：以最新一列為 baseline 複製，再套用本次變更，
+            # 避免行政建立新年度時未帶的欄位掉回程式預設。
+            latest = (
+                session.query(PositionSalaryConfig)
+                .order_by(PositionSalaryConfig.id.desc())
+                .first()
+            )
+            baseline = (
+                {f: getattr(latest, f) for f in _POSITION_SALARY_FIELDS}
+                if latest is not None
+                else {}
+            )
+            baseline.update(update_data)
             config = PositionSalaryConfig(
+                config_year=target_year,
                 changed_by=operator,
-                **update_data,
+                **baseline,
             )
             session.add(config)
 

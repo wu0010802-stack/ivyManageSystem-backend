@@ -146,8 +146,13 @@ class YearEndCycle(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    # 設計體檢 2026-06-12 Finding 4：刪 cycle 不得連帶清掉結算/快照/特獎
+    # （原 delete-orphan 會在 ORM 層先刪光 settlements，DB RESTRICT 攔不到）。
+    # passive_deletes="all"：flush 不碰子列，由 DB FK RESTRICT 拒絕（cascfx01）。
     settlements: Mapped[list["YearEndSettlement"]] = relationship(
-        back_populates="cycle", cascade="all, delete-orphan"
+        back_populates="cycle",
+        cascade="save-update, merge",
+        passive_deletes="all",
     )
 
 
@@ -168,7 +173,7 @@ class OrgYearSettings(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     year_end_cycle_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("year_end_cycles.id", ondelete="CASCADE"),
+        ForeignKey("year_end_cycles.id", ondelete="RESTRICT"),
         nullable=False,
     )
     semester_first: Mapped[bool] = mapped_column(
@@ -246,7 +251,7 @@ class ClassEnrollmentTarget(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     year_end_cycle_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("year_end_cycles.id", ondelete="CASCADE"),
+        ForeignKey("year_end_cycles.id", ondelete="RESTRICT"),
         nullable=False,
     )
     semester_first: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -304,7 +309,7 @@ class EmployeeYearEndSnapshot(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     year_end_cycle_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("year_end_cycles.id", ondelete="CASCADE"),
+        ForeignKey("year_end_cycles.id", ondelete="RESTRICT"),
         nullable=False,
     )
     employee_id: Mapped[int] = mapped_column(
@@ -383,7 +388,7 @@ class YearEndSettlement(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     year_end_cycle_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("year_end_cycles.id", ondelete="CASCADE"),
+        ForeignKey("year_end_cycles.id", ondelete="RESTRICT"),
         nullable=False,
     )
     employee_id: Mapped[int] = mapped_column(
@@ -591,7 +596,7 @@ class SpecialBonusItem(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     year_end_cycle_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("year_end_cycles.id", ondelete="CASCADE"),
+        ForeignKey("year_end_cycles.id", ondelete="RESTRICT"),
         nullable=False,
     )
     employee_id: Mapped[int] = mapped_column(

@@ -214,17 +214,28 @@ class Employee(Base):
         Index("ix_employee_is_active", "is_active"),
     )
 
+    # 設計體檢 2026-06-12 Finding 4：移除 delete/delete-orphan cascade。
+    # 考勤/假單/薪資為法定保存資料，刪員工不得連帶清掉；passive_deletes="all"
+    # 讓 flush 完全不碰子列（不 NULL FK、不刪），由 DB FK 拒絕刪有子列的員工。
+    # runtime 刪員工一律走軟刪除（api/employees.py delete_employee）。
     attendances = relationship(
-        "Attendance", back_populates="employee", cascade="all, delete-orphan"
+        "Attendance",
+        back_populates="employee",
+        cascade="save-update, merge",
+        passive_deletes="all",
     )
     leaves = relationship(
         "LeaveRecord",
         foreign_keys="[LeaveRecord.employee_id]",
         back_populates="employee",
-        cascade="all, delete-orphan",
+        cascade="save-update, merge",
+        passive_deletes="all",
     )
     salaries = relationship(
-        "SalaryRecord", back_populates="employee", cascade="all, delete-orphan"
+        "SalaryRecord",
+        back_populates="employee",
+        cascade="save-update, merge",
+        passive_deletes="all",
     )
     offboarding_record = relationship(
         "EmployeeOffboardingRecord",

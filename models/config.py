@@ -24,6 +24,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
 from models.base import Base
+from models.types import Money
 
 
 class AttendancePolicy(Base):
@@ -80,10 +81,10 @@ class BonusConfig(Base):
     designer_festival = Column(Float, default=1000)
     admin_festival = Column(Float, default=2000)
 
-    principal_dividend = Column(Float, default=5000)
-    director_dividend = Column(Float, default=4000)
-    leader_dividend = Column(Float, default=3000)
-    vice_leader_dividend = Column(Float, default=1500)
+    principal_dividend = Column(Money, default=5000)
+    director_dividend = Column(Money, default=4000)
+    leader_dividend = Column(Money, default=3000)
+    vice_leader_dividend = Column(Money, default=1500)
 
     overtime_head_normal = Column(Float, default=400)
     overtime_head_baby = Column(Float, default=450)
@@ -328,21 +329,21 @@ class PositionSalaryConfig(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     config_year = Column(Integer, nullable=False, default=0, comment="適用年度（西元）")
-    head_teacher_a = Column(Float, default=39240, comment="A 級班導師標準底薪")
-    head_teacher_b = Column(Float, default=37160, comment="B 級班導師標準底薪")
-    head_teacher_c = Column(Float, default=33000, comment="C 級班導師標準底薪")
-    assistant_teacher_a = Column(Float, default=35240, comment="A 級副班導師標準底薪")
-    assistant_teacher_b = Column(Float, default=33000, comment="B 級副班導師標準底薪")
-    assistant_teacher_c = Column(Float, default=29500, comment="C 級副班導師標準底薪")
-    admin_staff = Column(Float, default=37160, comment="行政標準底薪")
-    english_teacher = Column(Float, default=32500, comment="美語老師標準底薪")
-    art_teacher = Column(Float, default=30000, comment="藝術老師標準底薪")
-    designer = Column(Float, default=30000, comment="美編標準底薪")
-    nurse = Column(Float, default=29800, comment="護理人員標準底薪")
-    driver = Column(Float, default=30000, comment="司機標準底薪")
-    kitchen_staff = Column(Float, default=29700, comment="廚房標準底薪")
-    director = Column(Float, nullable=True, comment="主任標準底薪")
-    principal = Column(Float, nullable=True, comment="園長標準底薪")
+    head_teacher_a = Column(Money, default=39240, comment="A 級班導師標準底薪")
+    head_teacher_b = Column(Money, default=37160, comment="B 級班導師標準底薪")
+    head_teacher_c = Column(Money, default=33000, comment="C 級班導師標準底薪")
+    assistant_teacher_a = Column(Money, default=35240, comment="A 級副班導師標準底薪")
+    assistant_teacher_b = Column(Money, default=33000, comment="B 級副班導師標準底薪")
+    assistant_teacher_c = Column(Money, default=29500, comment="C 級副班導師標準底薪")
+    admin_staff = Column(Money, default=37160, comment="行政標準底薪")
+    english_teacher = Column(Money, default=32500, comment="美語老師標準底薪")
+    art_teacher = Column(Money, default=30000, comment="藝術老師標準底薪")
+    designer = Column(Money, default=30000, comment="美編標準底薪")
+    nurse = Column(Money, default=29800, comment="護理人員標準底薪")
+    driver = Column(Money, default=30000, comment="司機標準底薪")
+    kitchen_staff = Column(Money, default=29700, comment="廚房標準底薪")
+    director = Column(Money, nullable=True, comment="主任標準底薪")
+    principal = Column(Money, nullable=True, comment="園長標準底薪")
     version = Column(Integer, default=1)
     changed_by = Column(String(50))
     created_at = Column(DateTime, server_default=func.now())
