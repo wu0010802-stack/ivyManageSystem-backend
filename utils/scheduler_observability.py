@@ -47,6 +47,20 @@ logger = logging.getLogger(__name__)
 ALERT_THRESHOLD = 3
 
 
+def _should_line_alert(failure_count: int) -> bool:
+    """LINE 告警節流：只在 ALERT_THRESHOLD 的冪次（3/9/27/81…）告警。
+
+    跨過 threshold 那一次先告警，其後指數退避避免每次迭代轟炸，
+    但持續惡化（失敗未止）仍會週期性再提醒。
+    """
+    if failure_count < ALERT_THRESHOLD:
+        return False
+    n = ALERT_THRESHOLD
+    while n < failure_count:
+        n *= ALERT_THRESHOLD
+    return n == failure_count
+
+
 @dataclass
 class SchedulerStats:
     last_success_at: datetime | None = None
@@ -138,6 +152,10 @@ def scheduler_iteration(
     event_level=ERROR 自動抓），達閾值才透過 ``utils.sentry_init.capture_exception``
     顯式上報；保證每連串失敗最多上報 1 次（除非真的繼續累計新 3 次）。
 
+    LINE 告警：連續失敗達 ALERT_THRESHOLD 的冪次（3/9/27…）時，透過
+    ``services.ops_alert.notify_scheduler_failure`` 推 LINE group（group_id
+    未設則 no-op）；指數退避避免每次迭代轟炸。告警自身例外 swallow。
+
     expected_interval_seconds：選填。若 caller 傳入則同時 UPSERT
     scheduler_heartbeats DB row（解決 in-memory metrics 在 process restart 後
     丟失最近成功時間的問題）。未傳則僅更新 in-memory 不寫 DB（既有 caller 行為
@@ -166,7 +184,24 @@ def scheduler_iteration(
                 exc_info=True,
             )
             capture_exception(exc, level="error")
-        else:
+        if _should_line_alert(failure_count):
+            try:
+                # 延遲 import 避免 utils ↔ services 循環；以模組屬性呼叫
+                # 讓測試可 monkeypatch ops_alert.notify_scheduler_failure。
+                from services import ops_alert  # noqa: PLC0415
+
+                ops_alert.notify_scheduler_failure(
+                    scheduler_name=scheduler_name,
+                    error=exc,
+                    consecutive_failures=failure_count,
+                )
+            except Exception:  # noqa: BLE001 — 告警失敗不能炸 scheduler loop
+                logger.warning(
+                    "scheduler failure LINE alert 發送失敗 for %s",
+                    scheduler_name,
+                    exc_info=True,
+                )
+        if failure_count < ALERT_THRESHOLD:
             logger.warning(
                 "%s 第 %d 次失敗（<%d 暫不上報 Sentry）: %s",
                 scheduler_name,
