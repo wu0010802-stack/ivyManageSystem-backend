@@ -348,3 +348,91 @@ def test_np1_3_attendance_deductions_batch_query_count_bounded(seed):
         f"（上限 12；修補後本 seed 實測 ~5 = 考勤/請假/會議 3 條 GROUP BY + cfg ~2，"
         f"修補前 ~52）；疑似 per-employee 查詢回歸。\n{_breakdown(counter)}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# NP1-4：build_settlements 主迴圈批次預載（settlement/snapshot/special/target）#
+# --------------------------------------------------------------------------- #
+def test_np1_4_build_settlements_main_loop_query_count_bounded(seed):
+    """refresh_rates=False 隔離主迴圈（refresh/derive_all 屬 NP1-1/2/3 各自的測試）。
+
+    修補前：每員工查 settlement 1 + 班導 target 2（class-role）+ special SUM 1 +
+    snapshot 1（10 員工 ≈ 50 條）+ 副班導查不到 target 的全校舊生率 fallback 逐人重算。
+
+    修補後：四者迴圈外各一條撈成 dict + 全校舊生率 fallback cycle 級 memo →
+    常數級。上限 30：任何 per-employee 查詢回歸（+10）即超標。
+    """
+    from services.year_end.settlement_builder import build_settlements
+
+    db = seed["db"]
+    employees = seed["employees"]
+    _ = [e.id for e in employees]  # 排除 expired refresh 的計數雜訊（同 NP1-3 註解）
+
+    with SelectCounter(db.get_bind()) as counter:
+        result = build_settlements(
+            db, 114, included_resigned_ids=None, actor_id=None, refresh_rates=False
+        )
+    db.commit()
+
+    assert result.built == 10
+    assert result.skipped_finalized == 0
+
+    assert counter.count <= 30, (
+        f"build_settlements 主迴圈發出 {counter.count} 條 SELECT（上限 30；"
+        f"修補後本 seed 實測 24 = 預載 4 dict + 扣款批次 + 底薪/級距等常數，修補前 72）；"
+        f"疑似 per-employee 查詢回歸。\n{_breakdown(counter)}"
+    )
+
+
+def test_np1_4_build_settlements_idempotent_rerun_query_count(seed):
+    """重跑 build（settlement/snapshot 已存在 → 走 update 路徑）查詢數同樣有界，
+    且兩輪結果 idempotent（version bump、金額不變）——守住「預載 dict 取代逐筆
+    select 後，update 路徑仍對得到既有列、不會誤建重複列」。"""
+    from sqlalchemy import select as _select
+
+    from models.year_end import EmployeeYearEndSnapshot, YearEndSettlement
+    from services.year_end.settlement_builder import build_settlements
+
+    db = seed["db"]
+    cycle = seed["cycle"]
+
+    build_settlements(db, 114, included_resigned_ids=None, actor_id=None)
+    db.commit()
+    first_amounts = {
+        s.employee_id: (s.total_amount, s.version)
+        for s in db.scalars(
+            _select(YearEndSettlement).where(
+                YearEndSettlement.year_end_cycle_id == cycle.id
+            )
+        )
+    }
+    assert len(first_amounts) == 10
+
+    with SelectCounter(db.get_bind()) as counter:
+        result = build_settlements(db, 114, included_resigned_ids=None, actor_id=None)
+    db.commit()
+
+    assert result.built == 10
+    rows = db.scalars(
+        _select(YearEndSettlement).where(
+            YearEndSettlement.year_end_cycle_id == cycle.id
+        )
+    ).all()
+    snaps = db.scalars(
+        _select(EmployeeYearEndSnapshot).where(
+            EmployeeYearEndSnapshot.year_end_cycle_id == cycle.id
+        )
+    ).all()
+    assert len(rows) == 10, "重跑不可誤建重複 settlement"
+    assert len(snaps) == 10, "重跑不可誤建重複 snapshot"
+    for row in rows:
+        amount, version = first_amounts[row.employee_id]
+        assert row.total_amount == amount, "重跑金額必須 idempotent"
+        assert row.version == version + 1, "重跑應 bump version"
+
+    # refresh_rates=True 全鏈（refresh + derive_all + 主迴圈）：NP1-1~4 合計上限。
+    # 修補前 dev 規模單次 build ≈ 900–1,100 條；修補後本 seed 實測 187。
+    assert counter.count <= 220, (
+        f"build_settlements 全鏈（refresh_rates=True）發出 {counter.count} 條 SELECT"
+        f"（上限 220）；疑似 N+1 回歸。\n{_breakdown(counter)}"
+    )
