@@ -19,6 +19,11 @@ from utils.scheduler_observability import record_rows, scheduler_iteration
 logger = logging.getLogger(__name__)
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
+# 每日 03:00 跑一次 → heartbeat expected interval 為一天。
+# 注意不可用 check_interval（60s 巡檢週期），否則 /health/schedulers
+# 以 lag > 2×expected 判定時，日級 job 永遠被誤判 lagging。
+_DAILY_INTERVAL_SEC = 24 * 60 * 60
+
 
 def scheduler_enabled() -> bool:
     return bool(get_settings().scheduler.data_quality_enabled)
@@ -107,7 +112,10 @@ async def run_data_quality_scheduler(stop_event: asyncio.Event) -> None:
                         run_key=now.date().isoformat(),
                     ) as acquired:
                         if acquired:
-                            with scheduler_iteration("data_quality"):
+                            with scheduler_iteration(
+                                "data_quality",
+                                expected_interval_seconds=_DAILY_INTERVAL_SEC,
+                            ):
                                 result = run_data_quality_once()
                                 record_rows(
                                     "data_quality",
