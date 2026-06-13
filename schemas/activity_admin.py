@@ -1196,9 +1196,15 @@ class PosOutstandingGroupOut(IvyBaseModel):
 
 
 class PosOutstandingOut(IvyBaseModel):
-    """GET /pos/outstanding-by-student 完整回應。"""
+    """GET /pos/outstanding-by-student 完整回應。
+
+    truncated/total_active（M3）：底層查詢有防爆上限（_POS_LIST_QUERY_LIMIT），
+    超限時 truncated=True 且 total_active 為過濾後全量筆數，避免無聲截斷。
+    """
 
     groups: list[PosOutstandingGroupOut]
+    truncated: bool = False
+    total_active: int = 0
 
 
 class PosCheckoutItemResultOut(IvyBaseModel):
@@ -1357,10 +1363,17 @@ class PosSemesterReconciliationTotalsOut(IvyBaseModel):
 
 class PosSemesterReconciliationOut(IvyBaseModel):
     """GET /pos/semester-reconciliation 完整回應（學期對帳總表，與 PosReconciliationOut
-    日結區間對帳不同名不衝突）。"""
+    日結區間對帳不同名不衝突）。
+
+    truncated/total_active（M3）：底層查詢有防爆上限（_POS_LIST_QUERY_LIMIT），
+    超限時 truncated=True 且 total_active 為過濾後 active 全量筆數，避免對帳
+    總表無聲截斷。
+    """
 
     school_year: int
     semester: int
+    truncated: bool = False
+    total_active: int = 0
     items: list[PosSemesterReconciliationItemOut]
     totals: PosSemesterReconciliationTotalsOut
 

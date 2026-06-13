@@ -487,6 +487,79 @@ def test_cross_bucket_refund_exceeds_pos_records(pos_client):
     assert it["offline_paid_amount"] == 500
 
 
+def test_semester_reconciliation_truncated_flag(pos_client, monkeypatch):
+    """M3：超過查詢上限時不可無聲截斷——response 需帶 truncated=True 與 total_active。"""
+    from api.activity import pos as pos_mod
+
+    monkeypatch.setattr(pos_mod, "_POS_LIST_QUERY_LIMIT", 1)
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="截斷甲", paid_amount=0)
+        _setup_reg(s, student_name="截斷乙", paid_amount=0, course_name="勞作")
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["truncated"] is True
+    assert data["total_active"] == 2
+    assert len(data["items"]) == 1
+
+
+def test_semester_reconciliation_not_truncated(pos_client):
+    """未超限時 truncated=False、total_active = 全量筆數。"""
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="未截斷", paid_amount=0)
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["truncated"] is False
+    assert data["total_active"] == 1
+
+
+def test_outstanding_truncated_flag(pos_client, monkeypatch):
+    """M3：未結清查詢超過上限同樣需帶 truncated/total_active（兩端點一致）。"""
+    from api.activity import pos as pos_mod
+
+    monkeypatch.setattr(pos_mod, "_POS_LIST_QUERY_LIMIT", 1)
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="欠費甲", paid_amount=0)
+        _setup_reg(s, student_name="欠費乙", paid_amount=0, course_name="勞作")
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = client.get("/api/activity/pos/outstanding-by-student")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["truncated"] is True
+    assert data["total_active"] == 2
+    assert len(data["groups"]) == 1
+
+
+def test_outstanding_not_truncated(pos_client):
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="欠費單", paid_amount=0)
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = client.get("/api/activity/pos/outstanding-by-student")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["truncated"] is False
+    assert data["total_active"] == 1
+
+
 def test_voided_refund_excluded_from_offline_paid(pos_client):
     """Finding C / backlog ④：學期對帳 bucket 必須排除 voided 流水。
 

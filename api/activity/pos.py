@@ -381,6 +381,10 @@ def _recent_duplicate_payment(
 
 OVERDUE_DAYS_THRESHOLD = 14
 
+# 未結清查詢 / 學期對帳的查詢上限（防爆守衛）。M3：超限時不可無聲截斷——
+# response 一律帶 truncated + total_active 讓前端/對帳者知道清單不完整。
+_POS_LIST_QUERY_LIMIT = 2000
+
 
 @router.get("/pos/receipts/{receipt_no}/print.pdf")
 def print_pos_receipt_pdf(
@@ -484,17 +488,27 @@ def outstanding_by_student(
         if overdue_only and filter == "outstanding":
             cutoff = now_taipei_naive() - timedelta(days=OVERDUE_DAYS_THRESHOLD)
             query = query.filter(ActivityRegistration.created_at < cutoff)
+        # M3：limit 防爆保留，但超限不可無聲截斷——先 count 總數，超限時
+        # 標 truncated 讓前端知道清單不完整（與 semester-reconciliation 一致）。
+        total_active = query.count()
+        truncated = total_active > _POS_LIST_QUERY_LIMIT
+        if truncated:
+            logger.warning(
+                "POS outstanding-by-student 查詢超過上限被截斷：total=%d limit=%d",
+                total_active,
+                _POS_LIST_QUERY_LIMIT,
+            )
         regs = (
             query.order_by(
                 ActivityRegistration.student_name.asc(),
                 ActivityRegistration.birthday.asc(),
                 ActivityRegistration.created_at.asc(),
             )
-            .limit(2000)
+            .limit(_POS_LIST_QUERY_LIMIT)
             .all()
         )
         if not regs:
-            return {"groups": []}
+            return {"groups": [], "truncated": truncated, "total_active": total_active}
 
         reg_ids = [r.id for r in regs]
         total_map = _batch_calc_total_amounts(session, reg_ids)
@@ -562,7 +576,11 @@ def outstanding_by_student(
             )
 
         result_groups.sort(key=lambda g: (-g["group_owed_total"], g["student_name"]))
-        return {"groups": result_groups[:limit]}
+        return {
+            "groups": result_groups[:limit],
+            "truncated": truncated,
+            "total_active": total_active,
+        }
     finally:
         session.close()
 
@@ -1310,8 +1328,20 @@ def pos_semester_reconciliation(
             classroom_name=classroom_name,
             payment_status=payment_status,
         )
+        # M3：limit 防爆保留，但超限不可無聲截斷——先 count 總數，超限時
+        # 標 truncated 讓對帳者知道總表不完整（與 outstanding-by-student 一致）。
+        total_active = q.count()
+        truncated = total_active > _POS_LIST_QUERY_LIMIT
+        if truncated:
+            logger.warning(
+                "POS semester-reconciliation 查詢超過上限被截斷：total=%d limit=%d",
+                total_active,
+                _POS_LIST_QUERY_LIMIT,
+            )
         active_regs = (
-            q.order_by(ActivityRegistration.created_at.desc()).limit(2000).all()
+            q.order_by(ActivityRegistration.created_at.desc())
+            .limit(_POS_LIST_QUERY_LIMIT)
+            .all()
         )
 
         # 額外納入 inactive 但本學期仍有 payment_records 的 reg，
@@ -1468,6 +1498,8 @@ def pos_semester_reconciliation(
         return {
             "school_year": sy,
             "semester": sem,
+            "truncated": truncated,
+            "total_active": total_active,
             "items": items,
             "totals": {
                 "registration_count": len(items),
