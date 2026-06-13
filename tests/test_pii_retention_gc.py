@@ -47,7 +47,12 @@ def _make_guardian_pair(
 
 
 def test_gc_redacts_after_365_days(test_db_session, monkeypatch):
-    monkeypatch.setenv("PII_RETENTION_GC_DRY_RUN", "0")
+    # 直接 patch dry_run_enabled（與 test_gc_redacts_student_parent_snapshot 一致）：
+    # setenv 在 test_db_session 已觸發 get_settings() 快取後才設定 → 太晚，dry_run
+    # 仍為預設安全值 True → GC 不抹 → 測試在隔離/全套件下不穩定。
+    monkeypatch.setattr(
+        "services.pii_retention_scheduler.dry_run_enabled", lambda: False
+    )
     student, g = _make_guardian_pair(
         test_db_session,
         lifecycle=LIFECYCLE_GRADUATED,
@@ -225,3 +230,34 @@ def test_gc_redact_unlinks_user_so_parent_portal_returns_empty(
     guardian_ids, student_ids = _get_parent_student_ids(test_db_session, 99)
     assert guardian_ids == []
     assert student_ids == []
+
+
+def test_gc_redacts_soft_deleted_guardian(test_db_session, monkeypatch):
+    """P2：軟刪除的 Guardian（deleted_at 已設）其 student 進終態 >365d 也必須被 GC
+
+    抹 PII。原本 SELECT 帶 g.deleted_at IS NULL → 排除所有軟刪 Guardian → 離開
+    系統的家長 PII（手機/Email/LINE user_id/監護說明）永久殘留（個資法 §11 破口）。
+    """
+    monkeypatch.setattr(
+        "services.pii_retention_scheduler.dry_run_enabled", lambda: False
+    )
+    student, g = _make_guardian_pair(
+        test_db_session,
+        lifecycle=LIFECYCLE_GRADUATED,
+        days_ago=400,
+        user_id=7,
+    )
+    # 軟刪除（監護權變更/離婚/誤建修正）
+    g.deleted_at = datetime.now(timezone.utc) - timedelta(days=30)
+    test_db_session.commit()
+
+    _run_pii_retention_gc(session=test_db_session)
+
+    test_db_session.expire_all()
+    test_db_session.refresh(g)
+    assert g.name == "[已離校家長]"
+    assert g.phone is None
+    assert g.email is None
+    assert g.user_id is None
+    assert g.custody_note is None
+    assert g.pii_redacted_at is not None
