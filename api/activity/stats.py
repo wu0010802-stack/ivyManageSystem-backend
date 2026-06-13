@@ -7,6 +7,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from models.database import get_session
+from schemas.activity_admin import (
+    ActivityDashboardTableOut,
+    ActivityStatsChartsOut,
+    ActivityStatsOut,
+    ActivityStatsSummaryOut,
+)
 from utils.academic import resolve_academic_term_filters
 from utils.auth import require_staff_permission
 from utils.excel_utils import SafeWorksheet
@@ -16,7 +22,7 @@ from services.activity_service import activity_service
 router = APIRouter()
 
 
-@router.get("/stats")
+@router.get("/stats", response_model=ActivityStatsOut)
 def get_stats(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
@@ -35,7 +41,7 @@ def get_stats(
         session.close()
 
 
-@router.get("/stats-summary")
+@router.get("/stats-summary", response_model=ActivityStatsSummaryOut)
 def get_stats_summary(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
@@ -54,7 +60,7 @@ def get_stats_summary(
         session.close()
 
 
-@router.get("/stats-charts")
+@router.get("/stats-charts", response_model=ActivityStatsChartsOut)
 def get_stats_charts(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
@@ -73,7 +79,7 @@ def get_stats_charts(
         session.close()
 
 
-@router.get("/dashboard-table")
+@router.get("/dashboard-table", response_model=ActivityDashboardTableOut)
 def get_dashboard_table(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),

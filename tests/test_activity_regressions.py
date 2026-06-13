@@ -351,6 +351,83 @@ class TestStatsTermParams:
         assert charts_res.json()["topCourses"] == []
 
 
+class TestStatsResponseModels:
+    """T3：stats.py 4 個 JSON 端點補 response_model（shape 不可變）。"""
+
+    def test_stats_json_endpoints_declare_response_model(self):
+        from api.activity import stats as stats_module
+
+        wanted = {"/stats", "/stats-summary", "/stats-charts", "/dashboard-table"}
+        models = {
+            route.path: route.response_model
+            for route in stats_module.router.routes
+            if route.path in wanted
+        }
+        assert set(models) == wanted
+        assert all(m is not None for m in models.values())
+
+    def test_dashboard_table_shape_survives_response_model(self, activity_client):
+        """response_model 不可 silent strip 既有 dashboard-table 欄位。"""
+        from models.database import ClassGrade, Student
+
+        client, session_factory = activity_client
+        sy, sem = _current_term()
+
+        with session_factory() as session:
+            _create_admin(session)
+            grade = ClassGrade(name="大班", sort_order=1, is_active=True)
+            session.add(grade)
+            session.flush()
+            classroom = Classroom(
+                name="海豚班",
+                is_active=True,
+                grade_id=grade.id,
+                school_year=sy,
+                semester=sem,
+            )
+            session.add(classroom)
+            session.flush()
+            session.add(
+                Student(
+                    student_id="S001",
+                    name="王小明",
+                    classroom_id=classroom.id,
+                    is_active=True,
+                )
+            )
+            course = _create_course(session, "圍棋", 1200)
+            course_id = course.id
+            reg = _create_registration(
+                session, student_name="王小明", class_name="海豚班"
+            )
+            reg.classroom_id = classroom.id
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course_id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+            session.commit()
+
+        assert _login(client).status_code == 200
+        res = client.get("/api/activity/dashboard-table")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["school_year"] == sy
+        assert data["semester"] == sem
+        assert data["grand_total"]["student_count"] == 1
+        assert data["grand_total"]["courses"] == {str(course_id): 1}
+        grade_row = data["grades"][0]
+        assert grade_row["target_percent"] == 100
+        assert grade_row["subtotal"]["total_enrollments"] == 1
+        classroom_row = grade_row["classrooms"][0]
+        assert classroom_row["classroom_name"] == "海豚班"
+        assert classroom_row["courses"] == {str(course_id): 1}
+        assert classroom_row["ratio"] == 100
+
+
 class TestRegistrationListAggregation:
     def test_admin_registration_list_preserves_counts_and_course_names(
         self, activity_client
