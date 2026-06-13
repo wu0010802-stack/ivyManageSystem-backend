@@ -678,6 +678,47 @@ class TestAdminApprovalWorkflow:
             assert reg.pending_review is True
             assert "已還原" in (reg.remark or "")
 
+    def test_restore_acquires_registration_lock(self, pending_client, monkeypatch):
+        """P2-3：restore 須對報名身分取 advisory lock，序列化同學生同學期的並發
+        restore（補 dup 檢查 check-then-write TOCTOU 造成的雙活躍）。
+
+        SQLite 下 lock 為 no-op，本測試聚焦 wiring（restore 確實呼叫且帶身分）。
+        """
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        r_reg = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        reg_id = r_reg.json()["id"]
+
+        _login(client)
+        client.post(
+            f"/api/activity/registrations/{reg_id}/reject",
+            json={"reason": "測試用拒絕原因"},
+        )
+
+        calls = []
+        from utils import advisory_lock as advisory_lock_mod
+
+        real_fn = advisory_lock_mod.acquire_activity_registration_lock
+
+        def spy(session, **kw):
+            calls.append(kw)
+            return real_fn(session, **kw)
+
+        monkeypatch.setattr(
+            advisory_lock_mod, "acquire_activity_registration_lock", spy
+        )
+        from api.activity import registrations_pending as rp_mod
+
+        monkeypatch.setattr(rp_mod, "acquire_activity_registration_lock", spy)
+
+        res = client.post(f"/api/activity/registrations/{reg_id}/restore")
+        assert res.status_code == 200, res.text
+        assert calls, "restore 應對報名身分取 advisory lock"
+        assert calls[0].get("student_name"), f"取鎖應帶報名身分，實際 {calls}"
+
     def test_restore_rejects_non_rejected_registration(self, pending_client):
         """非 rejected 狀態的 reg 呼叫 restore 應回 400。"""
         client, sf = pending_client
