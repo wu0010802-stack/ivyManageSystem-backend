@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from contextlib import contextmanager
+from datetime import date
 from typing import Iterator, Optional
 
 from sqlalchemy import text
@@ -232,6 +233,52 @@ def acquire_activity_refund_lock(session: Session, registration_id: int) -> None
         )
         raise
     logger.debug("acquire_activity_refund_lock: reg=%s key=%d", registration_id, key)
+
+
+def _key_for_activity_daily_close(close_date: date) -> int:
+    """把 (activity_daily_close, close_date) 雜湊成 63-bit int 作為 advisory lock key。
+
+    namespace 以 seed 字串前綴 `activity_daily_close|` 與其他業務隔離。
+    """
+    seed = f"activity_daily_close|{close_date.isoformat()}".encode()
+    raw = hashlib.md5(seed).digest()
+    return int.from_bytes(raw[:8], "big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+
+
+def acquire_activity_daily_close_lock(session: Session, close_date: date) -> None:
+    """為「POS 日結簽核 vs 該日交易寫入」取得 per-date 的 advisory lock（M2）。
+
+    鎖協議（兩側必須走同一把鎖）：
+    - 簽核端 `approve_daily_close`：取鎖後才 compute snapshot → insert close row，
+      commit 時釋放 → 並發 checkout 若先取到鎖，簽核會等它 commit，snapshot
+      必含該筆；若簽核先取到鎖，checkout 的守衛會等簽核 commit 後看到 close row
+      → 400 拒寫。
+    - 寫入端 `_require_daily_close_unlocked`（pos checkout / 付款補登 / 沖帳）：
+      守衛內先取鎖再讀 close 表，鎖持有到該 transaction 結束，覆蓋後續寫入。
+
+    無此鎖的 race：守衛讀到「未簽核」、老闆同時簽核（snapshot 看不到未 commit
+    的 checkout）→ 兩邊都成功，凍結 snapshot 永久漏單。
+
+    PG：`pg_advisory_xact_lock(key)`，commit/rollback 自動釋放
+    SQLite/其他：no-op（測試降級；單 process 無此 race）
+    """
+    if not _is_postgres(session):
+        logger.debug(
+            "acquire_activity_daily_close_lock no-op (non-postgres): date=%s",
+            close_date,
+        )
+        return
+    key = _key_for_activity_daily_close(close_date)
+    try:
+        session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
+    except OperationalError as exc:
+        logger.error(
+            "acquire_activity_daily_close_lock failed: date=%s err=%s",
+            close_date,
+            exc,
+        )
+        raise
+    logger.debug("acquire_activity_daily_close_lock: date=%s key=%d", close_date, key)
 
 
 @contextmanager
