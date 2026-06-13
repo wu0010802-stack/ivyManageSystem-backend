@@ -125,7 +125,17 @@ def migrate_school_year_to_roc():
             )
         )
 
-        for table_name in ("fee_items", "student_fee_records"):
+        # period 欄位所在的費用表。逐表前先確認存在：缺表（歷史改名/移除，例如
+        # 已不存在的 fee_items）若直接 UPDATE 會拋 UndefinedTable，連帶 rollback
+        # 整個交易（含上面的 Classroom 更新），使 ROC 轉換在啟動時靜默失效。
+        existing_tables = set(sa_inspect(session.get_bind()).get_table_names())
+        for table_name in ("student_fee_records",):
+            if table_name not in existing_tables:
+                logger.info(
+                    "migrate_school_year_to_roc：表 %s 不存在，略過 period 轉換",
+                    table_name,
+                )
+                continue
             session.execute(
                 text(
                     f"UPDATE {table_name} "
