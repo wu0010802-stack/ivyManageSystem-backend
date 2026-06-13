@@ -460,3 +460,63 @@ class TestInquiryPhoneValidation:
         res = _post_inquiry(client, "電話：0912")
         assert res.status_code == 422
         assert "電話" in str(res.json())
+
+
+# ────────────────────────────────────────────────────────────────── #
+# K7 — inquiry list 回傳全量 unread_count（前端 badge 跨頁/跨篩選正確）
+# ────────────────────────────────────────────────────────────────── #
+
+
+class TestInquiriesUnreadCount:
+    def _seed(self, sf, unread=2, read=1):
+        from models.database import ParentInquiry
+
+        with sf() as s:
+            for i in range(unread):
+                s.add(
+                    ParentInquiry(
+                        name=f"家長{i}", phone="0912345678", question="未讀提問"
+                    )
+                )
+            for i in range(read):
+                s.add(
+                    ParentInquiry(
+                        name=f"已讀家長{i}",
+                        phone="0912345678",
+                        question="已讀提問",
+                        is_read=True,
+                    )
+                )
+            s.commit()
+
+    def test_unread_count_is_global_regardless_of_filter(self, client_factory):
+        """is_read=true 篩選下 unread_count 仍須回全量未讀數。"""
+        client, sf = client_factory
+        _setup_admin(sf, client)
+        self._seed(sf, unread=2, read=1)
+
+        res = client.get("/api/activity/inquiries", params={"is_read": True})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["total"] == 1
+        assert body["unread_count"] == 2
+
+    def test_unread_count_ignores_pagination(self, client_factory):
+        client, sf = client_factory
+        _setup_admin(sf, client)
+        self._seed(sf, unread=3, read=0)
+
+        res = client.get("/api/activity/inquiries", params={"limit": 1})
+        assert res.status_code == 200
+        body = res.json()
+        assert len(body["items"]) == 1
+        assert body["unread_count"] == 3
+
+    def test_unread_count_zero_when_all_read(self, client_factory):
+        client, sf = client_factory
+        _setup_admin(sf, client)
+        self._seed(sf, unread=0, read=2)
+
+        res = client.get("/api/activity/inquiries")
+        assert res.status_code == 200
+        assert res.json()["unread_count"] == 0
