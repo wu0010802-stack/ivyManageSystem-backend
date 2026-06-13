@@ -560,6 +560,29 @@ def test_outstanding_not_truncated(pos_client):
     assert data["total_active"] == 1
 
 
+def test_outstanding_search_escapes_like_wildcards(pos_client):
+    """M4：搜尋字串含 `%`/`_` 不可被當 LIKE 萬用字元——搜 `%` 只命中名字
+    真的含 `%` 的學生，而非萬用匹配全部。"""
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="百分%生", paid_amount=0)
+        _setup_reg(s, student_name="普通生", paid_amount=0, course_name="勞作")
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = client.get("/api/activity/pos/outstanding-by-student", params={"q": "%"})
+    assert res.status_code == 200, res.text
+    data = res.json()
+    names = [g["student_name"] for g in data["groups"]]
+    assert names == ["百分%生"]
+
+    # 底線同理：`_` 不可匹配任意單一字元
+    res = client.get("/api/activity/pos/outstanding-by-student", params={"q": "_"})
+    assert res.status_code == 200, res.text
+    assert res.json()["groups"] == []
+
+
 def test_voided_refund_excluded_from_offline_paid(pos_client):
     """Finding C / backlog ④：學期對帳 bucket 必須排除 voided 流水。
 

@@ -47,6 +47,7 @@ from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
 from utils.portfolio_access import can_view_student_pii
 from utils.rate_limit import create_limiter
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 from services.activity_payment_guards import require_approve_for_refund_diff
 from services.activity_refund_query import build_refund_suggestion
@@ -475,12 +476,19 @@ def outstanding_by_student(
         )
         keyword = (q or "").strip()
         if keyword:
-            like = f"%{keyword}%"
+            # M4：跳脫 LIKE 萬用字元，避免使用者輸入 `%`/`_` 變成萬用匹配
+            like = f"%{escape_like_pattern(keyword)}%"
             query = query.filter(
                 or_(
-                    ActivityRegistration.student_name.ilike(like),
-                    ActivityRegistration.class_name.ilike(like),
-                    ActivityRegistration.parent_phone.ilike(like),
+                    ActivityRegistration.student_name.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
+                    ActivityRegistration.class_name.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
+                    ActivityRegistration.parent_phone.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
                 )
             )
         if classroom:
