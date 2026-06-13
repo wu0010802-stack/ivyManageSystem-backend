@@ -611,3 +611,92 @@ def test_voided_refund_excluded_from_offline_paid(pos_client):
         it["offline_paid_amount"] == 0
     ), "voided refund 不應讓正常 POS 收款被歸成離線已繳"
     assert it["pending_paid_amount"] == 1000
+
+
+def test_voided_payment_and_refund_do_not_affect_buckets(pos_client):
+    """voided payment 與 voided refund 都不得進三 bucket。
+
+    基準：closed 日收款 800 + open 日收款 400，paid=1200
+    → approved=800 / pending=400 / offline=0。
+    再各加一筆 voided payment 9999（closed 日）與 voided refund 9999（open 日）；
+    reg.paid_amount 權威值不變（void 時已重算排除），三 bucket 應與基準完全相同。
+    若 voided 流水滲入：approved 會虛增 9999、或 voided refund 砍掉 pending
+    → offline 虛增。"""
+    client, sf = pos_client
+    d_closed = date.today() - timedelta(days=3)
+    d_open = date.today()
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="作廢不影響", paid_amount=1200, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=800, payment_date=d_closed)
+        _add_payment(s, reg_id=reg.id, amount=400, payment_date=d_open)
+        voided_pay = _add_payment(s, reg_id=reg.id, amount=9999, payment_date=d_closed)
+        voided_pay.voided_at = datetime.now()
+        voided_refund = _add_payment(
+            s, reg_id=reg.id, amount=9999, payment_date=d_open, type_="refund"
+        )
+        voided_refund.voided_at = datetime.now()
+        _mark_closed(s, d_closed)
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert it["approved_paid_amount"] == 800
+    assert it["pending_paid_amount"] == 400
+    assert it["offline_paid_amount"] == 0
+    assert (
+        it["approved_paid_amount"]
+        + it["pending_paid_amount"]
+        + it["offline_paid_amount"]
+        == it["paid_amount"]
+        == 1200
+    )
+
+
+# ── _net_reconciliation_buckets 純函式測試 ───────────────────────────────
+
+
+def test_net_buckets_excess_guard_pure():
+    """excess>0 資料不一致守衛：歷史手改 paid_amount 低於 POS 軋差總額時，
+    依序壓低 pending（未簽核較不權威）再壓 approved，維持不變式
+    approved + pending + offline == max(0, paid) 且全部 >= 0。"""
+    from api.activity.pos import _net_reconciliation_buckets
+
+    # 只壓 pending 即可吸收殘額（excess=300 < pending_net=500）
+    assert _net_reconciliation_buckets(
+        approved_paid=1000,
+        approved_refund=0,
+        pending_paid=500,
+        pending_refund=0,
+        paid=1200,
+    ) == (1000, 200, 0)
+
+    # pending 壓光仍有殘額 → 再壓 approved（excess=900 → pending 0、approved 600）
+    assert _net_reconciliation_buckets(
+        approved_paid=1000,
+        approved_refund=0,
+        pending_paid=500,
+        pending_refund=0,
+        paid=600,
+    ) == (600, 0, 0)
+
+    # paid=0：兩 bucket 全壓光，offline 也為 0
+    assert _net_reconciliation_buckets(
+        approved_paid=1000,
+        approved_refund=0,
+        pending_paid=500,
+        pending_refund=0,
+        paid=0,
+    ) == (0, 0, 0)
+
+    # paid 為負（理論上不會發生）：clamp 至 0，輸出不可為負
+    assert _net_reconciliation_buckets(
+        approved_paid=1000,
+        approved_refund=0,
+        pending_paid=0,
+        pending_refund=0,
+        paid=-50,
+    ) == (0, 0, 0)
