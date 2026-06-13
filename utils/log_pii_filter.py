@@ -18,16 +18,25 @@ from utils.sentry_init import _FILTERED, _key_is_pii, _scrub_mapping
 # 抓 key=value 形式（key 為英數+底線、value 為非空白/非中文標點字串到下一個空白）
 # 例：student_id=42 / student_name=小明 / phone=0912-345-678
 # 不抓 key 含空白 / value 跨多 token 的 case（保守 redaction 避免破壞 log debug）
-_KEY_VALUE_RE = re.compile(r"(?P<key>[a-zA-Z_][a-zA-Z0-9_]*)=(?P<value>[^\s,，。]+)")
+# 審查修正（2026-06-13）：value 補 bytes repr 分支（b'...' / b"..."，容許跳脫），
+# 否則 b'0912 345678' 這種含空白的 bytes repr 只遮到空白前、尾段外洩。
+_KEY_VALUE_RE = re.compile(
+    r"""(?P<key>[a-zA-Z_][a-zA-Z0-9_]*)="""
+    r"""(?P<value>b'(?:[^'\\]|\\.)*'|b"(?:[^"\\]|\\.)*"|[^\s,，。]+)"""
+)
 
 # S4（2026-06-13）：SQLAlchemy StatementError 的 `[parameters: {'key': 'value'}]`
 # 是 `'key': 'value'`（repr dict）格式，不是 key=value，舊 regex 不命中 →
 # DB 例外 log 直接洩 PII。補一條 quoted-key regex：
 #   - key 被單/雙引號包住（(?P=kq) backreference 保證前後同款引號）
-#   - value 為帶引號字串（容許跳脫字元）或裸 token（數字 / None 等）
+#   - value 為帶引號字串（可帶 bytes 前綴 b、容許跳脫字元）或裸 token（數字 / None 等）
+# 審查修正（2026-06-13）：裸 token 分支排除 `{`/`'`/`"`，否則外層非 PII key 的
+# dict value（如 'payload': {'parent_phone': ...}）會把 `{'parent_phone':` 吞進
+# match，內層 PII key 永遠不被命中；排除後 dict 開頭 value 不成 match，
+# regex 引擎前進改命中內層 key。
 _QUOTED_KEY_VALUE_RE = re.compile(
     r"""(?P<kq>['"])(?P<key>[a-zA-Z_][a-zA-Z0-9_]*)(?P=kq)\s*:\s*"""
-    r"""(?P<value>'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|[^\s,，。}\]]+)"""
+    r"""(?P<value>b?'(?:[^'\\]|\\.)*'|b?"(?:[^"\\]|\\.)*"|[^\s,，。}\]{'"]+)"""
 )
 
 

@@ -172,3 +172,57 @@ def test_parameters_dict_non_pii_keys_untouched(logger_with_filter):
     out = stream.getvalue()
     assert "'status': 'late'" in out
     assert "[Filtered]" not in out
+
+
+# ── 審查修正（2026-06-13）：巢狀 dict 內層 PII key 被外層 value 吞掉 ──────────
+
+
+def test_nested_dict_inner_pii_key_redacted(logger_with_filter):
+    """巢狀 dict：外層非 PII key 的 value 是 dict 時，內層 PII key 必須被遮。
+
+    回歸 — 舊版 bare-token value 分支 `[^\\s,，。}\\]]+` 不排除 `{`/引號，
+    外層 `'payload'` 的 match 消耗到 `{'parent_phone':`，內層 key 永遠
+    沒機會被命中 → 原樣輸出。
+    """
+    log, stream = logger_with_filter
+    log.error("webhook 失敗 {'payload': {'parent_phone': '0912345678'}}")
+    out = stream.getvalue()
+    assert "0912345678" not in out
+    assert "[Filtered]" in out
+    # 外層非 PII key 保留（debug context）
+    assert "'payload'" in out
+
+
+def test_nested_dict_non_pii_keys_not_overredacted(logger_with_filter):
+    """巢狀 dict 全為非 PII key 時不誤遮。"""
+    log, stream = logger_with_filter
+    log.warning("{'meta': {'status': 'ok', 'amount': 500}}")
+    out = stream.getvalue()
+    assert "'status': 'ok'" in out
+    assert "500" in out
+    assert "[Filtered]" not in out
+
+
+# ── 審查修正（2026-06-13）：bytes repr 含空白只遮一半 ────────────────────────
+
+
+def test_bytes_value_with_space_fully_redacted_key_value(logger_with_filter):
+    """key=value 格式：phone=b'0912 345678' 整段被遮（舊版尾段 345678' 漏）。"""
+    log, stream = logger_with_filter
+    log.error("decode 失敗 phone=b'0912 345678' skipped")
+    out = stream.getvalue()
+    assert "0912" not in out
+    assert "345678" not in out
+    assert "phone=[Filtered]" in out
+    assert "skipped" in out
+
+
+def test_bytes_value_with_space_fully_redacted_quoted_key(logger_with_filter):
+    """'key': value 格式：{'parent_phone': b'0912 345678'} 整段被遮。"""
+    log, stream = logger_with_filter
+    log.error("[parameters: {'parent_phone': b'0912 345678', 'status': 'ok'}]")
+    out = stream.getvalue()
+    assert "0912" not in out
+    assert "345678" not in out
+    assert "[Filtered]" in out
+    assert "'status': 'ok'" in out
