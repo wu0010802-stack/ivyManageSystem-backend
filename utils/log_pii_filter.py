@@ -20,9 +20,20 @@ from utils.sentry_init import _FILTERED, _key_is_pii, _scrub_mapping
 # 不抓 key 含空白 / value 跨多 token 的 case（保守 redaction 避免破壞 log debug）
 _KEY_VALUE_RE = re.compile(r"(?P<key>[a-zA-Z_][a-zA-Z0-9_]*)=(?P<value>[^\s,，。]+)")
 
+# S4（2026-06-13）：SQLAlchemy StatementError 的 `[parameters: {'key': 'value'}]`
+# 是 `'key': 'value'`（repr dict）格式，不是 key=value，舊 regex 不命中 →
+# DB 例外 log 直接洩 PII。補一條 quoted-key regex：
+#   - key 被單/雙引號包住（(?P=kq) backreference 保證前後同款引號）
+#   - value 為帶引號字串（容許跳脫字元）或裸 token（數字 / None 等）
+_QUOTED_KEY_VALUE_RE = re.compile(
+    r"""(?P<kq>['"])(?P<key>[a-zA-Z_][a-zA-Z0-9_]*)(?P=kq)\s*:\s*"""
+    r"""(?P<value>'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|[^\s,，。}\]]+)"""
+)
+
 
 def _redact_string(s: str) -> str:
-    """對 string 內所有 key=value pattern，若 key 命中 PII denylist 替換 value 為 [Filtered]。"""
+    """對 string 內 key=value 與 'key': 'value' 兩種 pattern，
+    若 key 命中 PII denylist 替換 value 為 [Filtered]。"""
 
     def _replace(m: re.Match) -> str:
         key = m.group("key")
@@ -30,7 +41,15 @@ def _redact_string(s: str) -> str:
             return f"{key}={_FILTERED}"
         return m.group(0)
 
-    return _KEY_VALUE_RE.sub(_replace, s)
+    def _replace_quoted(m: re.Match) -> str:
+        key = m.group("key")
+        if _key_is_pii(key):
+            kq = m.group("kq")
+            return f"{kq}{key}{kq}: {_FILTERED}"
+        return m.group(0)
+
+    s = _KEY_VALUE_RE.sub(_replace, s)
+    return _QUOTED_KEY_VALUE_RE.sub(_replace_quoted, s)
 
 
 def _redact_args(args: Any) -> Any:

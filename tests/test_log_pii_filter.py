@@ -117,3 +117,58 @@ def test_positional_pii_args_redacted_in_final_output(logger_with_filter):
     assert "phone=[Filtered]" in out
     # 非 PII 文字保留、未 crash（有完整輸出）
     assert "parent bind" in out and "done" in out
+
+
+# ── S4（2026-06-13）：SQLAlchemy StatementError parameters dict 格式 ─────────
+
+
+def test_sqlalchemy_parameters_dict_pii_redacted(logger_with_filter):
+    """SQLAlchemy StatementError 的 [parameters: {'key': 'value'}] 為
+    `'key': 'value'` 格式（非 key=value），PII value 也必須被遮。"""
+    log, stream = logger_with_filter
+    log.error(
+        "(sqlite3.IntegrityError) NOT NULL constraint failed "
+        "[parameters: {'student_name': '王小明', 'parent_phone': '0912345678', "
+        "'status': 'pending'}]"
+    )
+    out = stream.getvalue()
+    assert "王小明" not in out
+    assert "0912345678" not in out
+    assert "[Filtered]" in out
+    # 非 PII key 的 value 保留（debug context）
+    assert "pending" in out
+
+
+def test_double_quoted_parameters_dict_pii_redacted(logger_with_filter):
+    """雙引號 JSON-style `"key": "value"` 格式同樣命中。"""
+    log, stream = logger_with_filter
+    log.error('payload={"parent_phone": "0912-345-678", "status": "ok"}')
+    out = stream.getvalue()
+    assert "0912-345-678" not in out
+    assert "[Filtered]" in out
+    assert '"status": "ok"' in out
+
+
+def test_exc_info_sqlalchemy_parameters_redacted(logger_with_filter):
+    """exc_info 路徑（exception.args 內含 parameters dict 字串）同樣生效。"""
+    log, stream = logger_with_filter
+    # 動態組值：避免 traceback 的「source line 回顯」也含字面值（真實情境中
+    # SQL 參數為 runtime 值，不會出現在 source line）
+    params = {"student_name": "小" + "明", "phone": "0987" + "654321"}
+    try:
+        raise ValueError(f"StatementError [parameters: {params!r}]")
+    except ValueError:
+        log.error("DB 寫入失敗", exc_info=True)
+    out = stream.getvalue()
+    assert "小明" not in out
+    assert "0987654321" not in out
+    assert "[Filtered]" in out
+
+
+def test_parameters_dict_non_pii_keys_untouched(logger_with_filter):
+    """全部都是非 PII key 時 dict 字串原樣保留。"""
+    log, stream = logger_with_filter
+    log.warning("[parameters: {'status': 'late', 'amount': 500}]")
+    out = stream.getvalue()
+    assert "'status': 'late'" in out
+    assert "[Filtered]" not in out
