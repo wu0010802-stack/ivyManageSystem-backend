@@ -37,6 +37,8 @@ from ._shared import (
     SYSTEM_RECONCILE_METHOD,
     _compute_is_paid,
     _derive_payment_status,
+    _desensitize_operator,
+    has_payment_approve,
     _invalidate_activity_dashboard_caches,
     _invalidate_finance_summary_cache,
     _batch_calc_total_amounts,
@@ -51,20 +53,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-_export_limiter = create_limiter(
+# instance 與 dependency 分開存（對齊 public.py 慣例），測試 fixture 可清
+# limiter._timestamps 避免跨測試污染
+_export_limiter_instance = create_limiter(
     max_calls=5,
     window_seconds=60,
     name="activity_export",
     error_detail="匯出過於頻繁，請稍後再試",
-).as_dependency()
+)
+_export_limiter = _export_limiter_instance.as_dependency()
 
 # 批次繳費寫入每次影響多筆 registration + 繳費紀錄，放寬但仍需限流
-_batch_payment_limiter = create_limiter(
+_batch_payment_limiter_instance = create_limiter(
     max_calls=10,
     window_seconds=60,
     name="activity_batch_payment",
     error_detail="批次繳費操作過於頻繁，請稍後再試",
-).as_dependency()
+)
+_batch_payment_limiter = _batch_payment_limiter_instance.as_dependency()
 
 # 匯出單次查詢上限，避免大報表造成記憶體爆炸或 timeout
 MAX_EXPORT_ROWS = 5000
@@ -407,6 +413,10 @@ def export_payment_report(
             cell.fill = _HEADER_FILL
             cell.alignment = _CENTER
 
+        # S5：operator / voided_by 去敏化對齊 JSON API（GET payments）——
+        # 非 ACTIVITY_PAYMENT_APPROVE 持有者只見首字+***
+        viewer_has_approve = has_payment_approve(current_user)
+
         reg_meta = {r.id: r for r in regs}
         for pr in payment_records:
             reg = reg_meta.get(pr.registration_id)
@@ -422,10 +432,10 @@ def export_payment_report(
                     pr.amount,
                     pr.payment_method or "",
                     pr.payment_date.isoformat() if pr.payment_date else "",
-                    pr.operator or "",
+                    _desensitize_operator(pr.operator, viewer_has_approve),
                     pr.notes or "",
                     "已作廢" if is_voided else "",
-                    pr.voided_by or "",
+                    _desensitize_operator(pr.voided_by, viewer_has_approve),
                     pr.voided_at.isoformat() if pr.voided_at else "",
                     pr.void_reason or "",
                 ]

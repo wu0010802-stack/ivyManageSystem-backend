@@ -59,12 +59,14 @@ def client(tmp_path):
     _ip_attempts.clear()
     _account_failures.clear()
 
-    # 清空 public / registrations / pos 模組的 limiter 計數，避免跨測試污染
+    # 清空 public / registrations / pos / registrations_static 模組的
+    # limiter 計數，避免跨測試污染
     from api.activity import public as public_mod
     from api.activity import registrations as reg_mod
     from api.activity import pos as pos_mod
+    from api.activity import registrations_static as reg_static_mod
 
-    for mod in (public_mod, reg_mod, pos_mod):
+    for mod in (public_mod, reg_mod, pos_mod, reg_static_mod):
         for attr in dir(mod):
             obj = getattr(mod, attr)
             if hasattr(obj, "_timestamps"):
@@ -509,3 +511,74 @@ class TestIlikeWildcardEscape:
         assert res.status_code == 200, res.text
         names = [it["name"] for it in res.json()["items"]]
         assert names == ["百分%童"]
+
+
+# ── 8. payment-report 操作人員 / 作廢人去敏化（對齊 JSON API） ──────────────
+
+
+def _reader(session, username="sec_reader"):
+    """只有 ACTIVITY_READ（無 ACTIVITY_PAYMENT_APPROVE）的閱讀者。"""
+    user = User(
+        username=username,
+        password_hash=hash_password("Temp123456"),
+        role="admin",
+        permission_names=["ACTIVITY_READ"],
+        is_active=True,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+class TestPaymentReportOperatorMasking:
+    """S5：ws2「繳費明細」operator / voided_by 過去原文輸出；
+    JSON API（GET payments）已用 _desensitize_operator 對非簽核權限者
+    遮成首字+***，export 路徑必須對齊。"""
+
+    def _seed_payment(self, sf):
+        from datetime import datetime
+
+        with sf() as s:
+            _admin(s)
+            _reader(s)
+            reg, _ = _make_reg(s, paid_amount=1000)
+            s.flush()
+            s.add(
+                ActivityPaymentRecord(
+                    registration_id=reg.id,
+                    type="payment",
+                    amount=1000,
+                    payment_date=date.today(),
+                    payment_method="現金",
+                    operator="fee_admin",
+                    voided_at=datetime(2026, 6, 1, 10, 0),
+                    voided_by="boss_user",
+                    void_reason="重複入帳",
+                )
+            )
+            s.commit()
+
+    def _export_ws2(self, c):
+        import io
+
+        import openpyxl
+
+        res = c.get("/api/activity/registrations/payment-report")
+        assert res.status_code == 200, res.text
+        return openpyxl.load_workbook(io.BytesIO(res.content))["繳費明細"]
+
+    def test_reader_without_approve_sees_masked_operator(self, client):
+        c, sf = client
+        self._seed_payment(sf)
+        assert _login(c, username="sec_reader").status_code == 200
+        ws2 = self._export_ws2(c)
+        assert ws2.cell(row=2, column=7).value == "f***"  # operator
+        assert ws2.cell(row=2, column=10).value == "b***"  # voided_by
+
+    def test_approver_sees_full_operator(self, client):
+        c, sf = client
+        self._seed_payment(sf)
+        assert _login(c).status_code == 200  # sec_admin 持 APPROVE
+        ws2 = self._export_ws2(c)
+        assert ws2.cell(row=2, column=7).value == "fee_admin"
+        assert ws2.cell(row=2, column=10).value == "boss_user"

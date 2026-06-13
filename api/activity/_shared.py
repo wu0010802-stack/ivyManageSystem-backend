@@ -90,6 +90,26 @@ from services.activity_payment_guards import (  # noqa: E402, F401
     require_approve_for_cumulative_refund,
 )
 
+
+def _desensitize_operator(operator: Optional[str], viewer_has_approve: bool) -> str:
+    """對 operator / voided_by 欄位去敏化：非簽核權限者只看得到首字 + ***。
+
+    Why: 員工帳號暴露給過廣的閱讀者（ACTIVITY_READ）等同於社工輔助材料；
+    但對於能執行簽核的主管/老闆仍需看完整帳號以便對帳追責。
+
+    S5（2026-06-13）：原位於 registrations_payments.py，因 Excel 匯出
+    （registrations_static.export_payment_report）也需共用而移至此處。
+    """
+    if not operator:
+        return ""
+    if viewer_has_approve:
+        return operator
+    if operator == "system":
+        return "system"
+    # 保留首字，其餘遮蔽（例如 "fee_admin" → "f***"）
+    return operator[0] + "***"
+
+
 # F2 第一階段：時區 helper 抽到 utils/taipei_time.py 共用（fees / activity / portal
 # 都需要同一條台灣時區邏輯）。本檔保留 re-export 維持既有 import surface。
 from utils.taipei_time import (  # noqa: F401

@@ -49,6 +49,7 @@ from ._shared import (
     _invalidate_activity_dashboard_caches,
     _invalidate_finance_summary_cache,
     _lock_registration,
+    _desensitize_operator,  # S5：移至 _shared 供 Excel 匯出共用
     has_payment_approve,
     require_refund_reason,
     require_approve_for_large_refund,
@@ -59,22 +60,6 @@ from ._shared import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-def _desensitize_operator(operator: Optional[str], viewer_has_approve: bool) -> str:
-    """對 operator 欄位去敏化：非簽核權限者只看得到首字 + ***。
-
-    Why: 員工帳號暴露給過廣的閱讀者（ACTIVITY_READ）等同於社工輔助材料；
-    但對於能執行簽核的主管/老闆仍需看完整帳號以便對帳追責。
-    """
-    if not operator:
-        return ""
-    if viewer_has_approve:
-        return operator
-    if operator == "system":
-        return "system"
-    # 保留首字，其餘遮蔽（例如 "fee_admin" → "f***"）
-    return operator[0] + "***"
 
 
 @router.put("/registrations/{registration_id}/payment")
