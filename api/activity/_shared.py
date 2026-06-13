@@ -38,6 +38,7 @@ from services.activity_service import activity_service
 from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission, JWT_SECRET_KEY
 from utils.permissions import Permission
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -639,12 +640,13 @@ def _build_registration_filter_query(
     if match_status:
         q = q.filter(ActivityRegistration.match_status == match_status)
     if search:
-        like = f"%{search}%"
+        # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 全表匹配（對齊 api/audit.py 慣例）
+        like = f"%{escape_like_pattern(search)}%"
         q = q.filter(
             or_(
-                ActivityRegistration.student_name.ilike(like),
-                ActivityRegistration.class_name.ilike(like),
-                ActivityRegistration.parent_phone.ilike(like),
+                ActivityRegistration.student_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                ActivityRegistration.class_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                ActivityRegistration.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR),
             )
         )
     if payment_status == "paid":
@@ -798,7 +800,9 @@ def query_valid_session_registrations(
         )
     )
     if classroom_ids_filter is not None:
-        query = query.filter(ActivityRegistration.classroom_id.in_(classroom_ids_filter))
+        query = query.filter(
+            ActivityRegistration.classroom_id.in_(classroom_ids_filter)
+        )
     return query.all()
 
 

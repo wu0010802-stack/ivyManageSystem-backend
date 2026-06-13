@@ -406,3 +406,106 @@ class TestPaymentReportFormulaInjection:
         wb = self._export_workbook(c)
         ws1 = wb["繳費總覽"]
         assert ws1.cell(row=2, column=2).value == "王小明"
+
+
+# ── 7. ILIKE 萬用字元跳脫（搜尋 % / _ 不再全表匹配） ───────────────────────
+
+
+def _staff_with_students_read(session, username="sec_staff"):
+    user = User(
+        username=username,
+        password_hash=hash_password("Temp123456"),
+        role="admin",
+        permission_names=[
+            "ACTIVITY_READ",
+            "ACTIVITY_WRITE",
+            "STUDENTS_READ",
+            "GUARDIANS_READ",
+        ],
+        is_active=True,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+class TestIlikeWildcardEscape:
+    """S2：raw f"%{search}%" 未跳脫 % / _，搜尋 '%' 會全表匹配
+    （registrations 列表 / pending 列表 / students/search 三處）。"""
+
+    def test_registrations_list_percent_literal(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="王小明")
+            _make_reg(s, student_name="折扣50%生")
+            s.commit()
+
+        assert _login(c).status_code == 200
+        res = c.get("/api/activity/registrations", params={"search": "%"})
+        assert res.status_code == 200, res.text
+        names = [it["student_name"] for it in res.json()["items"]]
+        assert names == ["折扣50%生"]
+
+    def test_registrations_list_underscore_literal(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="王小明")
+            _make_reg(s, student_name="A_B")
+            s.commit()
+
+        assert _login(c).status_code == 200
+        res = c.get("/api/activity/registrations", params={"search": "_"})
+        assert res.status_code == 200, res.text
+        names = [it["student_name"] for it in res.json()["items"]]
+        assert names == ["A_B"]
+
+    def test_pending_list_percent_literal(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="王小明", match_status="pending")
+            _make_reg(s, student_name="折扣50%生", match_status="pending")
+            s.commit()
+        with sf() as s:
+            for reg in s.query(ActivityRegistration).all():
+                reg.pending_review = True
+            s.commit()
+
+        assert _login(c).status_code == 200
+        res = c.get(
+            "/api/activity/registrations/pending",
+            params={"search": "%", "status": "pending"},
+        )
+        assert res.status_code == 200, res.text
+        names = [it["student_name"] for it in res.json()["items"]]
+        assert names == ["折扣50%生"]
+
+    def test_admin_search_students_percent_literal(self, client):
+        c, sf = client
+        from models.database import Student
+
+        with sf() as s:
+            _staff_with_students_read(s)
+            s.add(
+                Student(
+                    student_id="S001",
+                    name="王小明",
+                    is_active=True,
+                )
+            )
+            s.add(
+                Student(
+                    student_id="S002",
+                    name="百分%童",
+                    is_active=True,
+                )
+            )
+            s.commit()
+
+        assert _login(c, username="sec_staff").status_code == 200
+        res = c.get("/api/activity/students/search", params={"q": "%"})
+        assert res.status_code == 200, res.text
+        names = [it["name"] for it in res.json()["items"]]
+        assert names == ["百分%童"]

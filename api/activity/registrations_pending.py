@@ -29,6 +29,7 @@ from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 from ._shared import (
     _invalidate_activity_dashboard_caches,
@@ -180,12 +181,19 @@ def list_pending_registrations(
         else:
             q = q.filter(or_(pending_cond, rejected_cond))
         if search:
-            like = f"%{search}%"
+            # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 全表匹配
+            like = f"%{escape_like_pattern(search)}%"
             q = q.filter(
                 or_(
-                    ActivityRegistration.student_name.ilike(like),
-                    ActivityRegistration.class_name.ilike(like),
-                    ActivityRegistration.parent_phone.ilike(like),
+                    ActivityRegistration.student_name.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
+                    ActivityRegistration.class_name.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
+                    ActivityRegistration.parent_phone.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
                 )
             )
         total = q.count()
@@ -243,17 +251,20 @@ def admin_search_students(
 
     session = get_session()
     try:
-        like = f"%{q.strip()}%"
+        # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 拉全校學生目錄
+        like = f"%{escape_like_pattern(q.strip())}%"
         rows = (
             session.query(Student, Classroom)
             .outerjoin(Classroom, Classroom.id == Student.classroom_id)
             .filter(
                 Student.is_active.is_(True),
                 or_(
-                    Student.name.ilike(like),
-                    Student.student_id.ilike(like),
-                    Student.parent_phone.ilike(like),
-                    Student.emergency_contact_phone.ilike(like),
+                    Student.name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                    Student.student_id.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                    Student.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                    Student.emergency_contact_phone.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
                 ),
             )
             .limit(limit)
@@ -277,7 +288,10 @@ def admin_search_students(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/match", response_model=PendingRegistrationActionResultOut)
+@router.post(
+    "/registrations/{registration_id}/match",
+    response_model=PendingRegistrationActionResultOut,
+)
 def match_registration(
     registration_id: int,
     body: RegistrationMatchRequest,
@@ -348,7 +362,10 @@ def match_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/reject", response_model=PendingRegistrationActionResultOut)
+@router.post(
+    "/registrations/{registration_id}/reject",
+    response_model=PendingRegistrationActionResultOut,
+)
 def reject_registration(
     registration_id: int,
     body: RegistrationRejectRequest,
@@ -418,7 +435,10 @@ def reject_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/rematch", response_model=PendingRegistrationRematchResultOut)
+@router.post(
+    "/registrations/{registration_id}/rematch",
+    response_model=PendingRegistrationRematchResultOut,
+)
 def rematch_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
@@ -542,7 +562,10 @@ def rematch_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/force-accept", response_model=PendingRegistrationForceAcceptResultOut)
+@router.post(
+    "/registrations/{registration_id}/force-accept",
+    response_model=PendingRegistrationForceAcceptResultOut,
+)
 def force_accept_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
@@ -642,7 +665,10 @@ def force_accept_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/restore", response_model=PendingRegistrationActionResultOut)
+@router.post(
+    "/registrations/{registration_id}/restore",
+    response_model=PendingRegistrationActionResultOut,
+)
 def restore_registration(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -754,5 +780,3 @@ def restore_registration(
         raise_safe_500(e)
     finally:
         session.close()
-
-
