@@ -936,6 +936,19 @@ def update_leave(
                 detail=f"修改後的日期與已核准的請假記錄重疊（{overlap.start_date} ~ {overlap.end_date}，ID: {overlap.id}）",
             )
 
+        # P1-2：跨類重疊檢查——與 create_leave 對齊。update 原本只查 leave↔leave
+        # overlap，可把假單移到已有 approved/pending 加班的日子，繞過 2026-05-11
+        # P1-5 跨類守衛 → 同日扣請假薪 + 付加班費雙重給付。helper 查的是
+        # OvertimeRecord，被改的 leave 不在該表故無自我衝突、無需 exclude。
+        _check_employee_has_conflicting_overtime(
+            session,
+            leave.employee_id,
+            new_start,
+            new_end,
+            new_start_time,
+            new_end_time,
+        )
+
         new_type = data.leave_type or leave.leave_type
         new_hours = (
             data.leave_hours if data.leave_hours is not None else leave.leave_hours
