@@ -555,6 +555,21 @@ class TestStatsTermFiltering:
         assert result["total_sessions"] == 1
         assert result["avg_attendance_rate"] == 1.0
 
+    def test_dashboard_table_courses_excludes_other_term(self, session, svc):
+        """P2-7：dashboard-table 的 courses 表頭只列當學期課程。
+
+        原本 courses 查詢只濾 is_active 不濾學期，切學期時他學期 active 課程
+        會混入表頭（每格 enrollment 查不到 key 全為 0），與 enrollment_map
+        (有學期過濾) 口徑不一致，Excel 匯出同樣污染。
+        """
+        _add_course(session, name="本學期課")
+        _add_course(session, name="上學期課", **OTHER_TERM)
+        session.commit()
+
+        data = svc._compute_dashboard_table(session, **TERM)
+        names = [c["name"] for c in data["courses"]]
+        assert names == ["本學期課"]
+
     def test_revenue_term_isolated_for_partial_payment(self, session, svc):
         """上學期的 partial 實收不可滲入本學期 totalRevenue/totalUnpaid。"""
         course = _add_course(session, price=1000)
