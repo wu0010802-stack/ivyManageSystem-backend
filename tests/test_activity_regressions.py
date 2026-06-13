@@ -1114,6 +1114,66 @@ class TestAttendanceCourseEnrollmentGuard:
         assert res.status_code == 200
         assert res.json()["updated"] == 1
 
+    def test_batch_update_dedups_duplicate_registration_id(self, activity_client):
+        """P2-6：body 含重複 registration_id（且該 reg 本場次尚無紀錄）不可 500。
+
+        原本兩個重複 item 都走 else 分支各 session.add 一筆相同
+        (session_id, registration_id) → commit 撞 uq_activity_attendance_session_reg
+        IntegrityError、整批點名靜默漏存。修法去重保留最後一筆。
+        """
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            course = _create_course(session, "圍棋", 1000)
+            reg = _create_registration(
+                session,
+                student_name="阿重複",
+                class_name="大班",
+                parent_phone="0944444444",
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1000,
+                )
+            )
+            sess = ActivitySession(
+                course_id=course.id,
+                session_date=date.today(),
+                created_by="test",
+            )
+            session.add(sess)
+            session.commit()
+            session_id = sess.id
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+
+        res = client.put(
+            f"/api/activity/attendance/sessions/{session_id}/records",
+            json={
+                "records": [
+                    {"registration_id": reg_id, "is_present": True, "notes": "first"},
+                    {"registration_id": reg_id, "is_present": False, "notes": "last"},
+                ]
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        with session_factory() as session:
+            atts = (
+                session.query(ActivityAttendance)
+                .filter(ActivityAttendance.session_id == session_id)
+                .all()
+            )
+            assert len(atts) == 1
+            # 去重保留最後一筆
+            assert atts[0].is_present is False
+            assert atts[0].notes == "last"
+
 
 class TestTimestampsUseTaipeiTimezone:
     """寫入 naive datetime 欄位的端點必須走台灣時間 helper。
