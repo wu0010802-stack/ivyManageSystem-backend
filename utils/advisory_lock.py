@@ -281,6 +281,71 @@ def acquire_activity_daily_close_lock(session: Session, close_date: date) -> Non
     logger.debug("acquire_activity_daily_close_lock: date=%s key=%d", close_date, key)
 
 
+def _key_for_activity_registration(
+    student_name: str, birthday: str, school_year: int, semester: int
+) -> int:
+    """把報名身分 (student_name, birthday, school_year, semester) 雜湊成 63-bit int。
+
+    Why (P2-2)：admin_create_registration 的「同學生同學期不可重複」去重是
+    check-then-insert（純 SELECT 後 INSERT，無行鎖）。DB partial unique index 的
+    鍵含 parent_phone，admin 路徑建立的列 parent_phone 為 NULL，PG 預設 NULL 互不
+    相等 → 兩筆 NULL-phone 列不被攔。以報名身分為鍵的 advisory lock 序列化同一
+    學生同學期的並發建立，補住此 TOCTOU。
+
+    namespace 以 seed 前綴 `activity_registration|` 與其他業務隔離。
+    """
+    seed = (
+        f"activity_registration|{student_name}|{birthday}|{school_year}|{semester}"
+    ).encode()
+    raw = hashlib.md5(seed).digest()
+    return int.from_bytes(raw[:8], "big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+
+
+def acquire_activity_registration_lock(
+    session: Session,
+    *,
+    student_name: str,
+    birthday: str,
+    school_year: int,
+    semester: int,
+) -> None:
+    """為「同學生同學期報名」去重取得 advisory lock（P2-2）。
+
+    呼叫時機：admin_create_registration 在去重 SELECT 之前，序列化同身分的並發
+    建立，避免 check-then-insert TOCTOU 產生重複有效報名（DB unique index 因
+    admin 列 parent_phone=NULL 不攔）。commit/rollback 自動釋放。
+
+    PG：`pg_advisory_xact_lock(key)`；SQLite/其他：no-op（測試降級）
+    """
+    if not _is_postgres(session):
+        logger.debug(
+            "acquire_activity_registration_lock no-op (non-postgres): name=%s term=%s-%s",
+            student_name,
+            school_year,
+            semester,
+        )
+        return
+    key = _key_for_activity_registration(student_name, birthday, school_year, semester)
+    try:
+        session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
+    except OperationalError as exc:
+        logger.error(
+            "acquire_activity_registration_lock failed: name=%s term=%s-%s err=%s",
+            student_name,
+            school_year,
+            semester,
+            exc,
+        )
+        raise
+    logger.debug(
+        "acquire_activity_registration_lock: name=%s term=%s-%s key=%d",
+        student_name,
+        school_year,
+        semester,
+        key,
+    )
+
+
 @contextmanager
 def try_salary_lock(
     session: Session,

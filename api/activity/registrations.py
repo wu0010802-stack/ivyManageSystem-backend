@@ -37,6 +37,7 @@ from services.activity_service import activity_service
 from services.activity_refund_query import build_refund_suggestion
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
+from utils.advisory_lock import acquire_activity_registration_lock
 from utils.permissions import Permission, list_active_user_ids_with_permission
 from utils.portfolio_access import can_view_guardian_pii
 from utils.finance_guards import (
@@ -108,7 +109,9 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
 # ── 後台手動新增報名 ─────────────────────────────────────────────────────────
 
 
-@router.post("/registrations", status_code=201, response_model=RegistrationCreateResultOut)
+@router.post(
+    "/registrations", status_code=201, response_model=RegistrationCreateResultOut
+)
 def admin_create_registration(
     body: AdminRegistrationPayload,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -121,6 +124,19 @@ def admin_create_registration(
     session = get_session()
     try:
         sy, sem = resolve_academic_term_filters(body.school_year, body.semester)
+
+        # P2-2：以報名身分取 advisory lock 序列化同學生同學期的並發建立。去重是
+        # check-then-insert（純 SELECT 後 INSERT，無行鎖），且 DB partial unique
+        # index 鍵含 parent_phone，admin 路徑建立的列 parent_phone 為 NULL，PG 預設
+        # NULL 互不相等故不攔重複 → 兩名 admin 同時建立同學生會產生兩筆有效報名
+        # （容量多佔、在籍人數灌水、對帳分裂）。SQLite 測試 no-op。
+        acquire_activity_registration_lock(
+            session,
+            student_name=body.name,
+            birthday=body.birthday,
+            school_year=sy,
+            semester=sem,
+        )
 
         existing = (
             session.query(ActivityRegistration)
@@ -578,7 +594,9 @@ def update_remark(
         session.close()
 
 
-@router.put("/registrations/{registration_id}", response_model=RegistrationBasicUpdateResultOut)
+@router.put(
+    "/registrations/{registration_id}", response_model=RegistrationBasicUpdateResultOut
+)
 def update_registration_basic(
     registration_id: int,
     body: AdminRegistrationBasicUpdate,
@@ -828,7 +846,10 @@ def delete_registration(
         session.close()
 
 
-@router.get("/registrations/{registration_id}/refund-suggestion", response_model=RefundSuggestionResponse)
+@router.get(
+    "/registrations/{registration_id}/refund-suggestion",
+    response_model=RefundSuggestionResponse,
+)
 def get_refund_suggestion(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
