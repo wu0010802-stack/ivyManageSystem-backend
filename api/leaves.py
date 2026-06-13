@@ -1979,6 +1979,9 @@ def batch_approve_leaves(
                 session.expire_all()
 
         # ── Pass 2：套用 setattr + lock + ApprovalLog（仍不 commit）──────
+        # 考勤同步 hook 與單筆核准路徑共用同一模組（lazy import 避免 circular）。
+        from services import employee_leave_attendance_sync as sync
+
         applied = []
         for _i, (
             leave_id,
@@ -2049,28 +2052,51 @@ def batch_approve_leaves(
                         )
                 # ─────────────────────────────────────────────────────────────
 
-                leave.status = (
-                    ApprovalStatus.APPROVED.value
-                    if data.approved
-                    else ApprovalStatus.REJECTED.value
-                )
-                leave.approved_by = (
-                    current_user.get("username", "管理員") if data.approved else None
-                )
-                leave.rejection_reason = (
-                    data.rejection_reason.strip()
-                    if not data.approved and data.rejection_reason
-                    else None
-                )
-                action = "approved" if data.approved else "rejected"
-                approval_log_row = _write_approval_log(
-                    session=session,
-                    doc_type="leave",
-                    doc_id=leave_id,
-                    action=action,
-                    approver=current_user,
-                    comment=data.rejection_reason if not data.approved else None,
-                )
+                # 用 savepoint 把「狀態翻面 + 稽核 log + 考勤同步」包成原子單位：
+                # sync 衝突（LeaveAttendanceConflict/LeavePartialTimeMissing）時整筆
+                # 回滾、只讓該筆 failed，不污染同批其他條目，也不留下「已核准卻沒
+                # 同步 attendance」的半套狀態（P1-1：批次原本完全漏呼叫 sync.apply/
+                # revert，扣薪假別在 Attendance 留不下 LEAVE/partial → 薪資引擎 join
+                # 不到 → 整批漏扣薪且可被 finalize 封存）。
+                try:
+                    with session.begin_nested():
+                        leave.status = (
+                            ApprovalStatus.APPROVED.value
+                            if data.approved
+                            else ApprovalStatus.REJECTED.value
+                        )
+                        leave.approved_by = (
+                            current_user.get("username", "管理員")
+                            if data.approved
+                            else None
+                        )
+                        leave.rejection_reason = (
+                            data.rejection_reason.strip()
+                            if not data.approved and data.rejection_reason
+                            else None
+                        )
+                        action = "approved" if data.approved else "rejected"
+                        approval_log_row = _write_approval_log(
+                            session=session,
+                            doc_type="leave",
+                            doc_id=leave_id,
+                            action=action,
+                            approver=current_user,
+                            comment=(
+                                data.rejection_reason if not data.approved else None
+                            ),
+                        )
+                        # 與單筆 approve_leave 對齊：真實核准→apply、撤銷已核准→revert。
+                        if data.approved is True and approval_changed:
+                            sync.apply(session, leave_id)
+                        elif is_reject_of_approved:
+                            sync.revert(session, leave_id)
+                except (
+                    sync.LeaveAttendanceConflict,
+                    sync.LeavePartialTimeMissing,
+                ) as exc:
+                    failed.append({"id": leave_id, "reason": str(exc)})
+                    continue
                 applied.append(
                     (
                         leave_id,

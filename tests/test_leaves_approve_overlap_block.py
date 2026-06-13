@@ -198,6 +198,10 @@ class TestBatchApproveOverlapBlock:
                 return_value=False,
             ),
             patch("api.leaves._batch_approve_limiter"),
+            # 批次核准現在與單筆核准一樣會觸發 leave→attendance sync hook（P1-1）；
+            # 這個 mock-session 測試只驗 overlap 阻擋，跳過考勤同步。
+            patch("services.employee_leave_attendance_sync.apply"),
+            patch("services.employee_leave_attendance_sync.revert"),
         ]
 
     def test_overlap_record_marked_as_failed(self):
