@@ -284,12 +284,54 @@ class TestActiveJobGuard:
 
         monkeypatch.setattr(salary_module, "_run_salary_calc_job", _never_run)
 
-        first = c.post("/api/salaries/calculate-async?year=2099&month=12")
+        # month=11 為非發放月：避開發放月在籍人數快照 gate（決策2，2026-06-13），
+        # 本測試專測「重複 async job → 409」guard，與快照無關。
+        first = c.post("/api/salaries/calculate-async?year=2099&month=11")
         assert first.status_code == 202
 
-        second = c.post("/api/salaries/calculate-async?year=2099&month=12")
+        second = c.post("/api/salaries/calculate-async?year=2099&month=11")
         assert second.status_code == 409
         assert "計算中" in second.json()["detail"]
         assert first.json()["job_id"] in second.json()["detail"]
+
+
+class TestDistributionMonthSnapshotGate:
+    """發放月結算前在籍人數快照 gate（決策2，2026-06-13）。"""
+
+    def test_distribution_month_without_confirmed_snapshot_returns_422(self, client):
+        c, sf = client
+        _login_admin(c, sf)
+        salary_job_registry.clear_all()
+        # 2099 年 12 月發放月，涵蓋 9-11 月，皆無快照 → 422
+        res = c.post("/api/salaries/calculate-async?year=2099&month=12")
+        assert res.status_code == 422
+        assert "在籍人數快照" in res.json()["detail"]
+
+    def test_passes_after_all_covered_months_confirmed(self, client, monkeypatch):
+        from models.enrollment_snapshot import ClassEnrollmentSnapshot
+        from services.salary.enrollment_snapshot import generate_snapshot
+
+        c, sf = client
+        _login_admin(c, sf)
+        salary_job_registry.clear_all()
+
+        with sf() as session:
+            for m in (9, 10, 11):
+                generate_snapshot(session, 2099, m, updated_by="t")
+                for row in (
+                    session.query(ClassEnrollmentSnapshot)
+                    .filter_by(snapshot_year=2099, snapshot_month=m)
+                    .all()
+                ):
+                    row.is_confirmed = True
+            session.commit()
+
+        monkeypatch.setattr(
+            salary_module,
+            "_run_salary_calc_job",
+            lambda job_id, year, month: salary_job_registry.mark_running(job_id),
+        )
+        res = c.post("/api/salaries/calculate-async?year=2099&month=12")
+        assert res.status_code == 202  # gate 放行
 
         salary_job_registry.clear_all()

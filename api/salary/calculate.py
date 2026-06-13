@@ -41,6 +41,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _assert_enrollment_snapshot_confirmed(year: int, month: int) -> None:
+    """發放月結算前 gate（決策2）：涵蓋月在籍人數快照須全部產生並確認。
+
+    用獨立 session 唯讀檢查（與外層 calculate 流程的 session 解耦，避免提早
+    觸發外層查詢的 autoflush）。非發放月 unconfirmed 回 [] → 直接通過。
+    """
+    from services.salary.enrollment_snapshot import unconfirmed_distribution_months
+
+    with session_scope() as session:
+        pending = unconfirmed_distribution_months(session, year, month)
+    if pending:
+        labels = "、".join(f"{y} 年 {m} 月" for y, m in pending)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{year} 年 {month} 月為節慶/超額獎金發放月，結算前須先於"
+                f"「結算前檢查」產生並確認涵蓋月的在籍人數快照。尚未完成：{labels}。"
+            ),
+        )
+
+
 def _enqueue_salary_batch_completed(
     *, year: int, month: int, count: int, total_net: int
 ) -> None:
@@ -228,6 +249,11 @@ def calculate_salaries_alt(
             )
         # ─────────────────────────────────────────────────────────────────────────
 
+        # 發放月快照 gate（決策2）：節慶/超額獎金以涵蓋月在籍人數累計，結算前
+        # 必須先於「結算前檢查」產生並確認各涵蓋月的人數快照，避免用未經 HR
+        # 核對的人數結帳。非發放月不設限。
+        _assert_enrollment_snapshot_confirmed(year, month)
+
         from services.salary.engine import SalaryEngine as Engine
 
         engine = Engine(load_from_db=True)
@@ -364,6 +390,9 @@ def calculate_salaries_async_start(
                     "請先解除整月封存再重試"
                 ),
             )
+
+        # 發放月快照 gate（決策2，同步端點一致）
+        _assert_enrollment_snapshot_confirmed(year, month)
 
         total = (
             session.query(Employee.id)

@@ -241,6 +241,32 @@ def generate_snapshot(
     return {"generated": generated, "changes": changes}
 
 
+def unconfirmed_distribution_months(session, year: int, month: int):
+    """發放月結算前 gate：回「尚未產生或尚未確認」的涵蓋月清單（決策2）。
+
+    非發放月回 []（人數不進累計，不設限）。發放月（2/6/9/12）逐一檢查
+    get_distribution_period_months 的涵蓋月：該月無任何快照列、或有任一列
+    未 is_confirmed → 列為待辦。calculate 端點據此決定是否 raise 422。
+    """
+    from models.enrollment_snapshot import ClassEnrollmentSnapshot
+    from services.salary.utils import get_distribution_period_months
+
+    covered = get_distribution_period_months(year, month)
+    pending = []
+    for y, m in covered:
+        rows = (
+            session.query(ClassEnrollmentSnapshot.is_confirmed)
+            .filter(
+                ClassEnrollmentSnapshot.snapshot_year == y,
+                ClassEnrollmentSnapshot.snapshot_month == m,
+            )
+            .all()
+        )
+        if not rows or not all(confirmed for (confirmed,) in rows):
+            pending.append((y, m))
+    return pending
+
+
 def get_snapshot_counts(session, year: int, month: int):
     """讀該月快照：{"school": n, "classes": {...}}；無任何列回 None。
 
