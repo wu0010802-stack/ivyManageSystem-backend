@@ -378,6 +378,211 @@ def test_invalid_approval_status_rejected(pos_client):
     assert res.status_code == 400
 
 
+def test_cross_bucket_refund_payment_approved_refund_pending(pos_client):
+    """M1 案例 A：繳費日已簽核 + 退費日未簽核（最常見退費時序）。
+
+    payment 1000（closed）+ refund 400（open），reg.paid_amount=600。
+    修前：pending_net = max(0, 0-400) = 0 → 退費 400 被 clamp 蒸發，
+    approved_net 仍 1000 > paid 600 自相矛盾。
+    修後：退費跨 bucket 沖銷 → approved_net=600、pending_net=0、offline=0，
+    三 bucket 加總 == paid。"""
+    client, sf = pos_client
+    d_closed = date.today() - timedelta(days=3)
+    d_open = date.today()
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="跨桶退費A", paid_amount=600, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=1000, payment_date=d_closed)
+        _add_payment(s, reg_id=reg.id, amount=400, payment_date=d_open, type_="refund")
+        _mark_closed(s, d_closed)
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert it["approved_paid_amount"] == 600
+    assert it["pending_paid_amount"] == 0
+    assert it["offline_paid_amount"] == 0
+    assert (
+        it["approved_paid_amount"]
+        + it["pending_paid_amount"]
+        + it["offline_paid_amount"]
+        == it["paid_amount"]
+        == 600
+    )
+
+
+def test_cross_bucket_refund_payment_pending_refund_approved(pos_client):
+    """M1 案例 B：繳費日未簽核 + 退費日已簽核（反向，少見但對稱）。
+
+    payment 1000（open）+ refund 400（closed），paid=600。
+    修前：approved_net = max(0, 0-400) = 0 蒸發退費 → pending_net 仍 1000。
+    修後：pending_net=600、approved_net=0、offline=0。"""
+    client, sf = pos_client
+    d_closed = date.today() - timedelta(days=3)
+    d_open = date.today()
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="跨桶退費B", paid_amount=600, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=1000, payment_date=d_open)
+        _add_payment(
+            s, reg_id=reg.id, amount=400, payment_date=d_closed, type_="refund"
+        )
+        _mark_closed(s, d_closed)
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert it["approved_paid_amount"] == 0
+    assert it["pending_paid_amount"] == 600
+    assert it["offline_paid_amount"] == 0
+    assert (
+        it["approved_paid_amount"]
+        + it["pending_paid_amount"]
+        + it["offline_paid_amount"]
+        == it["paid_amount"]
+        == 600
+    )
+
+
+def test_cross_bucket_refund_exceeds_pos_records(pos_client):
+    """M1 案例 C：退費總額超過 POS 流水（offline 沖銷邊界）。
+
+    payment 1000（closed）+ refund 1500（open），paid=500
+    （隱含 1000 為歷史離線收款，其中 500 已被退）。
+    兩 bucket 沖銷後仍負 → 殘額由 offline 吸收，全部 >= 0 且加總 == paid。"""
+    client, sf = pos_client
+    d_closed = date.today() - timedelta(days=3)
+    d_open = date.today()
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="跨桶退費C", paid_amount=500, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=1000, payment_date=d_closed)
+        _add_payment(s, reg_id=reg.id, amount=1500, payment_date=d_open, type_="refund")
+        _mark_closed(s, d_closed)
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert it["approved_paid_amount"] >= 0
+    assert it["pending_paid_amount"] >= 0
+    assert it["offline_paid_amount"] >= 0
+    assert (
+        it["approved_paid_amount"]
+        + it["pending_paid_amount"]
+        + it["offline_paid_amount"]
+        == it["paid_amount"]
+        == 500
+    )
+    assert it["approved_paid_amount"] == 0
+    assert it["pending_paid_amount"] == 0
+    assert it["offline_paid_amount"] == 500
+
+
+def test_semester_reconciliation_truncated_flag(pos_client, monkeypatch):
+    """M3：超過查詢上限時不可無聲截斷——response 需帶 truncated=True 與 total_active。"""
+    from api.activity import pos as pos_mod
+
+    monkeypatch.setattr(pos_mod, "_POS_LIST_QUERY_LIMIT", 1)
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="截斷甲", paid_amount=0)
+        _setup_reg(s, student_name="截斷乙", paid_amount=0, course_name="勞作")
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["truncated"] is True
+    assert data["total_active"] == 2
+    assert len(data["items"]) == 1
+
+
+def test_semester_reconciliation_not_truncated(pos_client):
+    """未超限時 truncated=False、total_active = 全量筆數。"""
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="未截斷", paid_amount=0)
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["truncated"] is False
+    assert data["total_active"] == 1
+
+
+def test_outstanding_truncated_flag(pos_client, monkeypatch):
+    """M3：未結清查詢超過上限同樣需帶 truncated/total_active（兩端點一致）。"""
+    from api.activity import pos as pos_mod
+
+    monkeypatch.setattr(pos_mod, "_POS_LIST_QUERY_LIMIT", 1)
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="欠費甲", paid_amount=0)
+        _setup_reg(s, student_name="欠費乙", paid_amount=0, course_name="勞作")
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = client.get("/api/activity/pos/outstanding-by-student")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["truncated"] is True
+    assert data["total_active"] == 2
+    assert len(data["groups"]) == 1
+
+
+def test_outstanding_not_truncated(pos_client):
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="欠費單", paid_amount=0)
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = client.get("/api/activity/pos/outstanding-by-student")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["truncated"] is False
+    assert data["total_active"] == 1
+
+
+def test_outstanding_search_escapes_like_wildcards(pos_client):
+    """M4：搜尋字串含 `%`/`_` 不可被當 LIKE 萬用字元——搜 `%` 只命中名字
+    真的含 `%` 的學生，而非萬用匹配全部。"""
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        _setup_reg(s, student_name="百分%生", paid_amount=0)
+        _setup_reg(s, student_name="普通生", paid_amount=0, course_name="勞作")
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = client.get("/api/activity/pos/outstanding-by-student", params={"q": "%"})
+    assert res.status_code == 200, res.text
+    data = res.json()
+    names = [g["student_name"] for g in data["groups"]]
+    assert names == ["百分%生"]
+
+    # 底線同理：`_` 不可匹配任意單一字元
+    res = client.get("/api/activity/pos/outstanding-by-student", params={"q": "_"})
+    assert res.status_code == 200, res.text
+    assert res.json()["groups"] == []
+
+
 def test_voided_refund_excluded_from_offline_paid(pos_client):
     """Finding C / backlog ④：學期對帳 bucket 必須排除 voided 流水。
 
@@ -406,3 +611,92 @@ def test_voided_refund_excluded_from_offline_paid(pos_client):
         it["offline_paid_amount"] == 0
     ), "voided refund 不應讓正常 POS 收款被歸成離線已繳"
     assert it["pending_paid_amount"] == 1000
+
+
+def test_voided_payment_and_refund_do_not_affect_buckets(pos_client):
+    """voided payment 與 voided refund 都不得進三 bucket。
+
+    基準：closed 日收款 800 + open 日收款 400，paid=1200
+    → approved=800 / pending=400 / offline=0。
+    再各加一筆 voided payment 9999（closed 日）與 voided refund 9999（open 日）；
+    reg.paid_amount 權威值不變（void 時已重算排除），三 bucket 應與基準完全相同。
+    若 voided 流水滲入：approved 會虛增 9999、或 voided refund 砍掉 pending
+    → offline 虛增。"""
+    client, sf = pos_client
+    d_closed = date.today() - timedelta(days=3)
+    d_open = date.today()
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="作廢不影響", paid_amount=1200, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=800, payment_date=d_closed)
+        _add_payment(s, reg_id=reg.id, amount=400, payment_date=d_open)
+        voided_pay = _add_payment(s, reg_id=reg.id, amount=9999, payment_date=d_closed)
+        voided_pay.voided_at = datetime.now()
+        voided_refund = _add_payment(
+            s, reg_id=reg.id, amount=9999, payment_date=d_open, type_="refund"
+        )
+        voided_refund.voided_at = datetime.now()
+        _mark_closed(s, d_closed)
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert it["approved_paid_amount"] == 800
+    assert it["pending_paid_amount"] == 400
+    assert it["offline_paid_amount"] == 0
+    assert (
+        it["approved_paid_amount"]
+        + it["pending_paid_amount"]
+        + it["offline_paid_amount"]
+        == it["paid_amount"]
+        == 1200
+    )
+
+
+# ── _net_reconciliation_buckets 純函式測試 ───────────────────────────────
+
+
+def test_net_buckets_excess_guard_pure():
+    """excess>0 資料不一致守衛：歷史手改 paid_amount 低於 POS 軋差總額時，
+    依序壓低 pending（未簽核較不權威）再壓 approved，維持不變式
+    approved + pending + offline == max(0, paid) 且全部 >= 0。"""
+    from api.activity.pos import _net_reconciliation_buckets
+
+    # 只壓 pending 即可吸收殘額（excess=300 < pending_net=500）
+    assert _net_reconciliation_buckets(
+        approved_paid=1000,
+        approved_refund=0,
+        pending_paid=500,
+        pending_refund=0,
+        paid=1200,
+    ) == (1000, 200, 0)
+
+    # pending 壓光仍有殘額 → 再壓 approved（excess=900 → pending 0、approved 600）
+    assert _net_reconciliation_buckets(
+        approved_paid=1000,
+        approved_refund=0,
+        pending_paid=500,
+        pending_refund=0,
+        paid=600,
+    ) == (600, 0, 0)
+
+    # paid=0：兩 bucket 全壓光，offline 也為 0
+    assert _net_reconciliation_buckets(
+        approved_paid=1000,
+        approved_refund=0,
+        pending_paid=500,
+        pending_refund=0,
+        paid=0,
+    ) == (0, 0, 0)
+
+    # paid 為負（理論上不會發生）：clamp 至 0，輸出不可為負
+    assert _net_reconciliation_buckets(
+        approved_paid=1000,
+        approved_refund=0,
+        pending_paid=0,
+        pending_refund=0,
+        paid=-50,
+    ) == (0, 0, 0)

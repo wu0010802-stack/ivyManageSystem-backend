@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy import func
 
 from models.database import ActivityPaymentRecord, ActivityPosDailyClose
+from utils.advisory_lock import acquire_activity_daily_close_lock
 
 
 def _is_daily_closed(session, target_date: date) -> bool:
@@ -38,7 +39,22 @@ def _require_daily_close_unlocked(session, target_date: date) -> None:
 
     Why: payment_date 允許回補 30 天，但若該日已被老闆簽核，snapshot 已凍結。
     此時新增交易會讓 DB 實際值與 snapshot 永久失準（reconciliation 永遠用 snapshot）。
+
+    M2 鎖協議：先取 per-date advisory lock（PG xact lock，commit/rollback 釋放）
+    再讀 close 表，與簽核端 approve_daily_close 共用同一把鎖——否則「守衛讀到
+    未簽核 ↔ 老闆同時簽核（snapshot 看不到未 commit 的寫入）」的 check-then-act
+    race 會讓兩邊都成功、凍結 snapshot 永久漏單。鎖持有到 transaction 結束，
+    故守衛之後的本筆寫入也在鎖下完成。SQLite 測試環境降級 no-op。
+
+    鎖序協議（全 caller 統一）：**advisory lock 先、row lock（with_for_update）後**。
+    本守衛必須在 caller 取得任何 registration 行級鎖之前呼叫；若 caller 先鎖 row
+    再進本守衛取 advisory（鎖序倒置），會與「advisory 先」的端點形成
+    txn1（持 row lock 等 advisory）↔ txn2（持 advisory 等同一 row lock）互等 deadlock。
+    若守衛日期需讀 row 上的值（如 void 的 payment.payment_date），caller 應先
+    無鎖預讀該日期呼叫本守衛取 advisory，row lock 後再以鎖內值複驗。
     """
+    if target_date is not None:
+        acquire_activity_daily_close_lock(session, target_date)
     if _is_daily_closed(session, target_date):
         raise HTTPException(
             status_code=400,

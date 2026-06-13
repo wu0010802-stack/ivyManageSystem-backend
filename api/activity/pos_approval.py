@@ -39,6 +39,7 @@ from schemas.activity_admin import (
     PosReconciliationOut,
     PosUnlockEventsOut,
 )
+from utils.advisory_lock import acquire_activity_daily_close_lock
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -280,7 +281,11 @@ def get_daily_close(
 # ── 端點 3：簽核某日 ─────────────────────────────────────────────────
 
 
-@router.post("/pos/daily-close/{date_str}", status_code=status.HTTP_201_CREATED, response_model=PosDailyCloseApproveOut)
+@router.post(
+    "/pos/daily-close/{date_str}",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PosDailyCloseApproveOut,
+)
 def approve_daily_close(
     date_str: str,
     body: DailyCloseCreate,
@@ -297,6 +302,13 @@ def approve_daily_close(
 
     session = get_session()
     try:
+        # M2 鎖協議：與寫入端守衛 _require_daily_close_unlocked 共用同一把
+        # per-date advisory lock（PG xact lock）。簽核整段（重複檢查 → compute
+        # snapshot → insert）持鎖到 commit：並發 checkout 先取鎖則簽核等它
+        # commit（snapshot 必含該筆）；簽核先取鎖則 checkout 守衛等簽核 commit
+        # 後看到 close row → 400。SQLite 測試降級 no-op。
+        acquire_activity_daily_close_lock(session, target)
+
         existing = (
             session.query(ActivityPosDailyClose)
             .filter(ActivityPosDailyClose.close_date == target)
@@ -418,7 +430,11 @@ def approve_daily_close(
 # ── 端點 3：解鎖重簽 ─────────────────────────────────────────────────
 
 
-@router.delete("/pos/daily-close/{date_str}", status_code=200, response_model=PosDailyCloseUnlockOut)
+@router.delete(
+    "/pos/daily-close/{date_str}",
+    status_code=200,
+    response_model=PosDailyCloseUnlockOut,
+)
 def unlock_daily_close(
     date_str: str,
     body: DailyCloseUnlock,
@@ -717,7 +733,18 @@ def pos_reconciliation(
                 {
                     "date": d.isoformat(),
                     "is_approved": data["is_approved"],
-                    "status": data.get("status", ApprovalStatus.REJECTED.value if data.get("is_approved") is False else (ApprovalStatus.APPROVED.value if data.get("is_approved") else ApprovalStatus.PENDING.value)),
+                    "status": data.get(
+                        "status",
+                        (
+                            ApprovalStatus.REJECTED.value
+                            if data.get("is_approved") is False
+                            else (
+                                ApprovalStatus.APPROVED.value
+                                if data.get("is_approved")
+                                else ApprovalStatus.PENDING.value
+                            )
+                        ),
+                    ),
                     "payment_total": data["payment_total"],
                     "refund_total": data["refund_total"],
                     "net_total": data["net_total"],

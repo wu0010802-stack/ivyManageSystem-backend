@@ -75,6 +75,13 @@ def update_payment(
     """
     session = get_session()
     try:
+        # M2 鎖序協議：advisory lock 先、row lock 後（協議見
+        # _require_daily_close_unlocked docstring）。守衛日期為 today，
+        # 不依賴 row 值，可在 row lock 前取得。
+        # 今日若已簽核，任何補齊/沖帳都會讓 snapshot 失準，先擋。
+        today = today_taipei()
+        _require_daily_close_unlocked(session, today)
+
         reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
@@ -82,9 +89,6 @@ def update_payment(
         total_amount = _calc_total_amount(session, registration_id)
         operator = current_user.get("username", "")
 
-        today = today_taipei()
-        # 今日若已簽核，任何補齊/沖帳都會讓 snapshot 失準，先擋
-        _require_daily_close_unlocked(session, today)
         if body.is_paid:
             if not reg.is_paid:
                 shortfall = total_amount - (reg.paid_amount or 0)
@@ -613,6 +617,20 @@ def delete_registration_payment(
     """
     session = get_session()
     try:
+        # M2 鎖序協議：advisory lock 先、row lock 後（協議見
+        # _require_daily_close_unlocked docstring）。守衛日期在 payment row 上，
+        # 故先無鎖預讀 payment_date 取 per-date advisory，row lock 後再以鎖內值複驗。
+        pre_lock_payment_date = (
+            session.query(ActivityPaymentRecord.payment_date)
+            .filter(
+                ActivityPaymentRecord.id == payment_id,
+                ActivityPaymentRecord.registration_id == registration_id,
+            )
+            .scalar()
+        )
+        # 若被刪除的付款日期已被日結簽核，拒絕刪除以免 snapshot 與 DB 失準
+        _require_daily_close_unlocked(session, pre_lock_payment_date)
+
         reg = _lock_registration(session, registration_id)
         if not reg:
             raise _not_found("報名資料")
@@ -635,8 +653,10 @@ def delete_registration_payment(
                 detail="此繳費記錄已於稍早被軟刪，不可重複操作",
             )
 
-        # 若被刪除的付款日期已被日結簽核，拒絕刪除以免 snapshot 與 DB 失準
-        _require_daily_close_unlocked(session, payment.payment_date)
+        # 鎖內複驗：payment_date 建檔後不可變，此分支屬防禦性——若預讀與鎖內值
+        # 不一致（理論上不會發生），對實際日期補做 advisory + close 檢查
+        if payment.payment_date != pre_lock_payment_date:
+            _require_daily_close_unlocked(session, payment.payment_date)
 
         operator = current_user.get("username", "")
         now = datetime.now(TAIPEI_TZ).replace(tzinfo=None)

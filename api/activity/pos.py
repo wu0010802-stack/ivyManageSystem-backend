@@ -46,6 +46,7 @@ from utils.finance_cache import invalidate_finance_summary_cache
 from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
 from utils.rate_limit import create_limiter
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 from services.activity_payment_guards import require_approve_for_refund_diff
 from services.activity_refund_query import build_refund_suggestion
@@ -382,6 +383,10 @@ def _recent_duplicate_payment(
 
 OVERDUE_DAYS_THRESHOLD = 14
 
+# 未結清查詢 / 學期對帳的查詢上限（防爆守衛）。M3：超限時不可無聲截斷——
+# response 一律帶 truncated + total_active 讓前端/對帳者知道清單不完整。
+_POS_LIST_QUERY_LIMIT = 2000
+
 
 @router.get("/pos/receipts/{receipt_no}/print.pdf")
 def print_pos_receipt_pdf(
@@ -472,12 +477,19 @@ def outstanding_by_student(
         )
         keyword = (q or "").strip()
         if keyword:
-            like = f"%{keyword}%"
+            # M4：跳脫 LIKE 萬用字元，避免使用者輸入 `%`/`_` 變成萬用匹配
+            like = f"%{escape_like_pattern(keyword)}%"
             query = query.filter(
                 or_(
-                    ActivityRegistration.student_name.ilike(like),
-                    ActivityRegistration.class_name.ilike(like),
-                    ActivityRegistration.parent_phone.ilike(like),
+                    ActivityRegistration.student_name.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
+                    ActivityRegistration.class_name.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
+                    ActivityRegistration.parent_phone.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
                 )
             )
         if classroom:
@@ -485,17 +497,27 @@ def outstanding_by_student(
         if overdue_only and filter == "outstanding":
             cutoff = now_taipei_naive() - timedelta(days=OVERDUE_DAYS_THRESHOLD)
             query = query.filter(ActivityRegistration.created_at < cutoff)
+        # M3：limit 防爆保留，但超限不可無聲截斷——先 count 總數，超限時
+        # 標 truncated 讓前端知道清單不完整（與 semester-reconciliation 一致）。
+        total_active = query.count()
+        truncated = total_active > _POS_LIST_QUERY_LIMIT
+        if truncated:
+            logger.warning(
+                "POS outstanding-by-student 查詢超過上限被截斷：total=%d limit=%d",
+                total_active,
+                _POS_LIST_QUERY_LIMIT,
+            )
         regs = (
             query.order_by(
                 ActivityRegistration.student_name.asc(),
                 ActivityRegistration.birthday.asc(),
                 ActivityRegistration.created_at.asc(),
             )
-            .limit(2000)
+            .limit(_POS_LIST_QUERY_LIMIT)
             .all()
         )
         if not regs:
-            return {"groups": []}
+            return {"groups": [], "truncated": truncated, "total_active": total_active}
 
         reg_ids = [r.id for r in regs]
         total_map = _batch_calc_total_amounts(session, reg_ids)
@@ -569,7 +591,11 @@ def outstanding_by_student(
             )
 
         result_groups.sort(key=lambda g: (-g["group_owed_total"], g["student_name"]))
-        return {"groups": result_groups[:limit]}
+        return {
+            "groups": result_groups[:limit],
+            "truncated": truncated,
+            "total_active": total_active,
+        }
     finally:
         session.close()
 
@@ -1223,6 +1249,60 @@ _APPROVAL_STATUS_VALUES = {
 }
 
 
+def _net_reconciliation_buckets(
+    *,
+    approved_paid: int,
+    approved_refund: int,
+    pending_paid: int,
+    pending_refund: int,
+    paid: int,
+) -> tuple[int, int, int]:
+    """三 bucket 軋差（含跨 bucket 退費沖銷），回傳 (approved_net, pending_net, offline_paid)。
+
+    Why（M1）：bucket 歸屬看「該筆流水自己的 payment_date 是否已簽核」，最常見退費
+    時序為「繳費日早已簽核、退費日尚未簽核」→ 舊版 `max(0, pending_paid - pending_refund)`
+    把退費 clamp 蒸發，approved_net 仍顯示原額 > reg.paid_amount，自相矛盾且
+    totals「已簽核實收」系統性高估。
+
+    協議：各 bucket 先各自軋差；某 bucket 為負（退費跨簽核日）時把負溢額沖到另一
+    bucket；兩 bucket 沖銷後仍負（退費總額超過全部 POS 流水 = 退到歷史離線收款）
+    clamp 至 0，殘額由 offline 吸收。offline_paid 語意不變：reg.paid_amount 中
+    無對應 POS 流水的歷史差額。
+
+    不變式：approved_net + pending_net + offline_paid == max(0, paid) 且全部 >= 0。
+    """
+    approved_net = approved_paid - approved_refund
+    pending_net = pending_paid - pending_refund
+
+    # 跨 bucket 沖銷：一正一負時，把負溢額沖到正的那邊
+    if approved_net < 0 < pending_net:
+        transfer = min(-approved_net, pending_net)
+        approved_net += transfer
+        pending_net -= transfer
+    elif pending_net < 0 < approved_net:
+        transfer = min(-pending_net, approved_net)
+        pending_net += transfer
+        approved_net -= transfer
+
+    # 沖銷後殘負 = 退費超過全部 POS 流水（退到離線收款），由 offline 殘額吸收
+    approved_net = max(0, approved_net)
+    pending_net = max(0, pending_net)
+
+    paid = max(0, paid)
+    # 資料不一致守衛：POS 軋差總額不可能超過權威值 paid_amount（paid_amount 由
+    # checkout / void 同步維護）。若仍超過（歷史手改 paid_amount），依序壓低
+    # pending（未簽核較不權威）再壓 approved，維持不變式。
+    excess = approved_net + pending_net - paid
+    if excess > 0:
+        cut = min(excess, pending_net)
+        pending_net -= cut
+        excess -= cut
+        approved_net -= min(excess, approved_net)
+
+    offline_paid = paid - approved_net - pending_net
+    return approved_net, pending_net, offline_paid
+
+
 @router.get("/pos/semester-reconciliation", response_model=PosSemesterReconciliationOut)
 def pos_semester_reconciliation(
     school_year: Optional[int] = Query(None, ge=100, le=200),
@@ -1263,8 +1343,20 @@ def pos_semester_reconciliation(
             classroom_name=classroom_name,
             payment_status=payment_status,
         )
+        # M3：limit 防爆保留，但超限不可無聲截斷——先 count 總數，超限時
+        # 標 truncated 讓對帳者知道總表不完整（與 outstanding-by-student 一致）。
+        total_active = q.count()
+        truncated = total_active > _POS_LIST_QUERY_LIMIT
+        if truncated:
+            logger.warning(
+                "POS semester-reconciliation 查詢超過上限被截斷：total=%d limit=%d",
+                total_active,
+                _POS_LIST_QUERY_LIMIT,
+            )
         active_regs = (
-            q.order_by(ActivityRegistration.created_at.desc()).limit(2000).all()
+            q.order_by(ActivityRegistration.created_at.desc())
+            .limit(_POS_LIST_QUERY_LIMIT)
+            .all()
         )
 
         # 額外納入 inactive 但本學期仍有 payment_records 的 reg，
@@ -1360,11 +1452,16 @@ def pos_semester_reconciliation(
                 if latest_date is None or pd > latest_date:
                     latest_date = pd
 
-            approved_net = max(0, approved_paid - approved_refund)
-            pending_net = max(0, pending_paid - pending_refund)
-            # 非 POS 已繳：reg.paid_amount 未對應到任何 payment_record 的差額
-            # 常見於歷史匯入或直接寫入 paid_amount 的資料，系統無從判斷簽核狀態
-            offline_paid = max(0, paid - approved_net - pending_net)
+            # 非 POS 已繳（offline_paid）：reg.paid_amount 未對應到任何
+            # payment_record 的差額，常見於歷史匯入或直接寫入 paid_amount 的資料。
+            # 跨 bucket 退費沖銷協議見 _net_reconciliation_buckets docstring。
+            approved_net, pending_net, offline_paid = _net_reconciliation_buckets(
+                approved_paid=approved_paid,
+                approved_refund=approved_refund,
+                pending_paid=pending_paid,
+                pending_refund=pending_refund,
+                paid=paid,
+            )
 
             if paid <= 0:
                 approval = "no_payment"
@@ -1416,6 +1513,8 @@ def pos_semester_reconciliation(
         return {
             "school_year": sy,
             "semester": sem,
+            "truncated": truncated,
+            "total_active": total_active,
             "items": items,
             "totals": {
                 "registration_count": len(items),

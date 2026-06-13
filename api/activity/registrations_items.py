@@ -30,6 +30,7 @@ from models.database import (
     ActivityAttendance,
 )
 from services.activity_service import activity_service
+from utils.advisory_lock import acquire_activity_daily_close_lock
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -279,6 +280,15 @@ def remove_registration_supply(
     """
     session = get_session()
     try:
+        # M2 鎖序協議：advisory lock 先、row lock 後（協議見
+        # _require_daily_close_unlocked docstring）。本端點僅在 force_refund
+        # 實際產生退費時才寫 payment record，close 檢查留在退費分支；
+        # 此處先取 per-date advisory lock 固定鎖序，避免與「advisory 先」的
+        # 端點（POS checkout / 付款補登）形成 row ↔ advisory 互等 deadlock。
+        today = today_taipei()
+        if force_refund:
+            acquire_activity_daily_close_lock(session, today)
+
         reg = (
             session.query(ActivityRegistration)
             .filter(
@@ -345,7 +355,9 @@ def remove_registration_supply(
         refund_needed = max(0, paid_amount - new_total)
 
         if refund_needed > 0 and force_refund:
-            today = today_taipei()
+            # 沿用 row lock 前取得的 today 與其 advisory（同 key 重取為 reentrant），
+            # 此處做 close 檢查；勿改回在此重算 today（跨午夜會引入新日期的
+            # advisory 於 row lock 之後，重現鎖序倒置）
             _require_daily_close_unlocked(session, today)
             session.add(
                 ActivityPaymentRecord(
@@ -419,6 +431,13 @@ def withdraw_course(
     """
     session = get_session()
     try:
+        # M2 鎖序協議：advisory lock 先、row lock 後（協議見
+        # _require_daily_close_unlocked docstring）。close 檢查留在退費分支，
+        # 此處先取 per-date advisory lock 固定鎖序，避免互等 deadlock。
+        today = today_taipei()
+        if force_refund:
+            acquire_activity_daily_close_lock(session, today)
+
         reg = (
             session.query(ActivityRegistration)
             .filter(
@@ -515,7 +534,9 @@ def withdraw_course(
 
         # 若需要自動沖帳，寫 refund 紀錄並扣 paid_amount
         if refund_needed > 0 and force_refund:
-            today = today_taipei()
+            # 沿用 row lock 前取得的 today 與其 advisory（同 key 重取為 reentrant），
+            # 此處做 close 檢查；勿改回在此重算 today（跨午夜會引入新日期的
+            # advisory 於 row lock 之後，重現鎖序倒置）
             _require_daily_close_unlocked(session, today)
             session.add(
                 ActivityPaymentRecord(
