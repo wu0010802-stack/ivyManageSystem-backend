@@ -685,16 +685,34 @@ def import_year_end_to_db(
         special_count += 1
 
     session.flush()
-    # 把 special_bonus_total 同步到 settlements
-    for emp_id, total in employee_special_totals.items():
+    # 把 special_bonus_total 同步到 settlements。
+    # P1-8：必須自 DB 全表 SUM(SpecialBonusItem) 重算，而非只加總本次 Excel 子集
+    # （employee_special_totals）——先 derive 的 auto item（FESTIVAL_DIFF / 才藝鼓勵 /
+    # 學期紅利 等，period_label 不同故 upsert 不會刪）與本次 Excel 列共存；用子集覆寫
+    # 會把這些既有項目靜默踢出 total_amount（實際匯款額）→ 年終轉帳短算。
+    for emp_id in employee_special_totals:
         settlement = (
             session.query(YearEndSettlement)
             .filter_by(year_end_cycle_id=cycle.id, employee_id=emp_id)
             .one_or_none()
         )
-        if settlement is not None:
-            settlement.special_bonus_total = total
-            settlement.total_amount = settlement.payable_amount + total
+        if settlement is None:
+            continue
+        # FINALIZED 轉帳金額視為不可變承諾（補住第二迴圈漏洞：上方 settlements loop
+        # 已 skip FINALIZED，但原本此 sync loop 仍會覆寫其 special_bonus_total）。
+        if settlement.status == YearEndSettlementStatus.FINALIZED:
+            continue
+        db_total = sum(
+            (
+                row.amount
+                for row in session.query(SpecialBonusItem.amount)
+                .filter_by(year_end_cycle_id=cycle.id, employee_id=emp_id)
+                .all()
+            ),
+            Decimal("0"),
+        )
+        settlement.special_bonus_total = db_total
+        settlement.total_amount = settlement.payable_amount + db_total
 
     session.flush()
     return YearEndImportResult(

@@ -272,6 +272,75 @@ def test_excel_io_update_path_skips_finalized_settlement(test_db_session):
     assert settlement.base_salary == Decimal("30000")
 
 
+def test_excel_io_sync_total_includes_existing_auto_derived_items(test_db_session):
+    """P1-8：import_excel 同步 special_bonus_total 必須自 DB 全表 SUM，
+
+    而非只加總本次 Excel 子集。否則先 derive 的 auto item（period_label 不同、
+    upsert 不會刪）會被 Excel 子集覆寫踢出 total_amount → 年終轉帳短算。
+    """
+    from services.year_end.excel_io import (
+        ParsedSpecialBonus,
+        ParsedYearEndExcel,
+        import_year_end_to_db,
+    )
+
+    session = test_db_session
+    cycle = _make_cycle(session)
+    EMP_ID = 21
+
+    # 既有 settlement（DRAFT）+ 先 derive 的 auto item（如節慶差額 500）
+    s = _make_settlement(
+        session, cycle.id, employee_id=EMP_ID, payable=Decimal("30000")
+    )
+    session.add(
+        SpecialBonusItem(
+            year_end_cycle_id=cycle.id,
+            employee_id=EMP_ID,
+            bonus_type=SpecialBonusType.CUSTOM,
+            period_label="2025-節慶差額(auto)",
+            amount=Decimal("500"),
+        )
+    )
+    s.special_bonus_total = Decimal("500")
+    s.total_amount = Decimal("30500")
+    session.commit()
+
+    # 本次 Excel 只帶另一筆特別獎金（300，period_label 不同 → 與 auto item 共存）
+    parsed = ParsedYearEndExcel(
+        academic_year=114,
+        settlements=[],
+        special_bonuses=[
+            ParsedSpecialBonus(
+                name="王測試",
+                bonus_type=SpecialBonusType.CUSTOM,
+                period_label="預發紅包",
+                amount=Decimal("300"),
+            )
+        ],
+        class_targets=[],
+    )
+    import_year_end_to_db(
+        parsed,
+        session,
+        employee_resolver=lambda name: EMP_ID if name == "王測試" else None,
+        cycle_dates=(date(2025, 1, 1), date(2025, 12, 31), date(2026, 1, 15)),
+        org_achievement_rate_first=Decimal("100"),
+        org_achievement_rate_second=Decimal("100"),
+    )
+    session.commit()
+
+    settlement = (
+        session.query(YearEndSettlement)
+        .filter_by(year_end_cycle_id=cycle.id, employee_id=EMP_ID)
+        .one()
+    )
+    # auto item 500 + Excel 300 = 800（而非只有 Excel 子集 300）
+    assert settlement.special_bonus_total == Decimal(
+        "800"
+    ), f"special_bonus_total 應含既有 auto item，實際 {settlement.special_bonus_total}"
+    assert settlement.total_amount == settlement.payable_amount + Decimal("800")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # P1-7: SalarySnapshot partial unique
 # ─────────────────────────────────────────────────────────────────────────────
