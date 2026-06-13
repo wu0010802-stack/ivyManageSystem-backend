@@ -980,6 +980,12 @@ get_storage_path("attendance_imports")
 
 app.include_router(employees_router)
 app.include_router(employees_docs_router)
+# 靜態子路由（/api/students/communications、/api/students/change-logs）必須在
+# students_router（含 GET /api/students/{student_id}）之前註冊，否則同 method
+# 的請求會被動態路由攔下、把靜態段當 student_id 解析成 422。
+# 回歸測試：tests/test_route_registration_order.py
+app.include_router(student_change_logs_router)
+app.include_router(student_communications_router)
 app.include_router(students_router)
 app.include_router(student_attendance_router)
 app.include_router(student_incidents_router)
@@ -1031,8 +1037,6 @@ app.include_router(recruitment_router)
 app.include_router(recruitment_ivykids_router)
 app.include_router(recruitment_gov_kindergartens_router)
 app.include_router(student_enrollment_router)
-app.include_router(student_change_logs_router)
-app.include_router(student_communications_router)
 app.include_router(bonus_preview_router)
 app.include_router(health_router)
 # Portfolio / 幼兒成長歷程（Batch A）
