@@ -45,6 +45,13 @@ def _require_daily_close_unlocked(session, target_date: date) -> None:
     未簽核 ↔ 老闆同時簽核（snapshot 看不到未 commit 的寫入）」的 check-then-act
     race 會讓兩邊都成功、凍結 snapshot 永久漏單。鎖持有到 transaction 結束，
     故守衛之後的本筆寫入也在鎖下完成。SQLite 測試環境降級 no-op。
+
+    鎖序協議（全 caller 統一）：**advisory lock 先、row lock（with_for_update）後**。
+    本守衛必須在 caller 取得任何 registration 行級鎖之前呼叫；若 caller 先鎖 row
+    再進本守衛取 advisory（鎖序倒置），會與「advisory 先」的端點形成
+    txn1（持 row lock 等 advisory）↔ txn2（持 advisory 等同一 row lock）互等 deadlock。
+    若守衛日期需讀 row 上的值（如 void 的 payment.payment_date），caller 應先
+    無鎖預讀該日期呼叫本守衛取 advisory，row lock 後再以鎖內值複驗。
     """
     if target_date is not None:
         acquire_activity_daily_close_lock(session, target_date)

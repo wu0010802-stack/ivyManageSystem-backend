@@ -88,6 +88,13 @@ def batch_update_payment(
     """
     session = get_session()
     try:
+        # M2 鎖序協議：advisory lock 先、row lock 後（協議見
+        # _require_daily_close_unlocked docstring），避免與「advisory 先」的端點
+        # 形成 row ↔ advisory 互等 deadlock。
+        # 批次補齊皆寫 today；若今日已簽核則拒絕，避免日結 snapshot 失準。
+        today = today_taipei()
+        _require_daily_close_unlocked(session, today)
+
         regs = (
             session.query(ActivityRegistration)
             .filter(
@@ -101,10 +108,6 @@ def batch_update_payment(
             raise HTTPException(status_code=404, detail="找不到指定報名資料")
 
         operator = current_user.get("username", "")
-        today = today_taipei()
-
-        # 批次補齊皆寫 today；若今日已簽核則拒絕，避免日結 snapshot 失準
-        _require_daily_close_unlocked(session, today)
 
         # P3 N+1 修正：一次 GROUP BY 查詢所有應繳金額
         unpaid_reg_ids = [reg.id for reg in regs if not reg.is_paid]
