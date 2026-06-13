@@ -273,6 +273,84 @@ class TestActivityCacheInvalidation:
         assert second_summary.json()["unreadInquiries"] == 0
 
 
+class TestStatsTermParams:
+    """stats 端點學期參數接線（與 dashboard-table 同名同語意，缺省=當前學期）。"""
+
+    def test_stats_summary_requires_both_term_params(self, activity_client):
+        client, session_factory = activity_client
+        with session_factory() as session:
+            _create_admin(session)
+            session.commit()
+        assert _login(client).status_code == 200
+
+        # 只給一個參數 → 400（resolve_academic_term_filters 既有慣例）
+        res = client.get("/api/activity/stats-summary?school_year=114")
+        assert res.status_code == 400
+
+    def test_stats_endpoints_filter_by_term(self, activity_client):
+        client, session_factory = activity_client
+        sy, sem = _current_term()
+        prev_sy, prev_sem = (sy, 1) if sem == 2 else (sy - 1, 2)
+
+        with session_factory() as session:
+            _create_admin(session)
+            course = _create_course(session, "圍棋", 1200)
+            reg = _create_registration(
+                session, student_name="王小明", class_name="大班"
+            )
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=1200,
+                )
+            )
+            # 上學期報名：不應計入當前學期 summary
+            old_reg = ActivityRegistration(
+                student_name="舊學期生",
+                birthday="2020-01-01",
+                class_name="大班",
+                is_active=True,
+                school_year=prev_sy,
+                semester=prev_sem,
+            )
+            session.add(old_reg)
+            session.commit()
+
+        assert _login(client).status_code == 200
+
+        # 缺省 = 當前學期
+        default_res = client.get("/api/activity/stats-summary")
+        assert default_res.status_code == 200
+        assert default_res.json()["totalRegistrations"] == 1
+
+        # 顯式指定當前學期 = 同結果
+        explicit_res = client.get(
+            f"/api/activity/stats-summary?school_year={sy}&semester={sem}"
+        )
+        assert explicit_res.status_code == 200
+        assert explicit_res.json()["totalRegistrations"] == 1
+
+        # 指定上學期 → 只看到上學期那筆（無 enrolled 課程）
+        prev_res = client.get(
+            f"/api/activity/stats-summary?school_year={prev_sy}&semester={prev_sem}"
+        )
+        assert prev_res.status_code == 200
+        assert prev_res.json()["totalRegistrations"] == 1
+        assert prev_res.json()["totalEnrollments"] == 0
+
+        # /stats 與 /stats-charts 同樣接受學期參數
+        stats_res = client.get(f"/api/activity/stats?school_year={sy}&semester={sem}")
+        assert stats_res.status_code == 200
+        assert stats_res.json()["statistics"]["totalRegistrations"] == 1
+        charts_res = client.get(
+            f"/api/activity/stats-charts?school_year={prev_sy}&semester={prev_sem}"
+        )
+        assert charts_res.status_code == 200
+        assert charts_res.json()["topCourses"] == []
+
+
 class TestRegistrationListAggregation:
     def test_admin_registration_list_preserves_counts_and_course_names(
         self, activity_client
@@ -1021,7 +1099,11 @@ class TestTimestampsUseTaipeiTimezone:
             assert reg_row.reviewed_at is not None
             # reviewed_at 必須落在 [before - 1s, after + 1s] 視窗內
             # （server 若在 UTC 而寫入用 datetime.now()，會偏離 8 小時被抓出）
-            assert before - timedelta(seconds=1) <= reg_row.reviewed_at <= after + timedelta(seconds=1)
+            assert (
+                before - timedelta(seconds=1)
+                <= reg_row.reviewed_at
+                <= after + timedelta(seconds=1)
+            )
 
 
 class TestCourseSupplyRenameAcrossTerms:
@@ -1032,7 +1114,9 @@ class TestCourseSupplyRenameAcrossTerms:
     存在的同名項目誤判為衝突，阻擋正當的改名/重新命名操作。
     """
 
-    def test_course_rename_to_other_term_existing_name_is_allowed(self, activity_client):
+    def test_course_rename_to_other_term_existing_name_is_allowed(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:
@@ -1088,7 +1172,9 @@ class TestCourseSupplyRenameAcrossTerms:
         )
         assert res.status_code == 400
 
-    def test_supply_rename_to_other_term_existing_name_is_allowed(self, activity_client):
+    def test_supply_rename_to_other_term_existing_name_is_allowed(
+        self, activity_client
+    ):
         client, session_factory = activity_client
 
         with session_factory() as session:

@@ -216,7 +216,13 @@ class DashboardQueryService:
         }
 
     def build_activity_stats(self, session) -> dict:
-        return activity_service.get_stats(session)
+        # 工作台儀表板固定看當前學期（stats 端點同樣以當前學期為缺省）
+        from utils.academic import resolve_current_academic_term
+
+        school_year, semester = resolve_current_academic_term(session=session)
+        return activity_service.get_stats(
+            session, school_year=school_year, semester=semester
+        )
 
     def build_graduation_preview(self, session) -> dict | None:
         """畢業日前 N 天顯示「即將自動畢業」提醒；超出視窗回 None。"""
@@ -330,7 +336,9 @@ class DashboardQueryService:
             StudentMedicationOrder.order_date == today
         )
         if current_user is not None:
-            scope = student_ids_in_scope(session, current_user, code=Permission.STUDENTS_HEALTH_READ.value)
+            scope = student_ids_in_scope(
+                session, current_user, code=Permission.STUDENTS_HEALTH_READ.value
+            )
             if scope is None:
                 pass  # admin/hr/supervisor：不過濾
             elif not scope:

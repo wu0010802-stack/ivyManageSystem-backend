@@ -185,15 +185,28 @@ class ActivityService:
     # 統計儀表板
     # ------------------------------------------------------------------ #
 
-    def _compute_stats_summary(self, session) -> dict:
-        """取得儀表板摘要統計。"""
+    def _compute_stats_summary(self, session, school_year: int, semester: int) -> dict:
+        """取得儀表板摘要統計（學期感知）。
+
+        所有報名向統計（含 enrollmentRate 分子）與課程容量（分母）一律
+        限定同一學期，對齊 _compute_dashboard_table 既有過濾慣例；
+        unreadInquiries 為全域收件匣概念，不分學期。
+        """
         today = datetime.now(TAIPEI_TZ).date()
         active_registration_filter = ActivityRegistration.is_active.is_(True)
+        reg_term_filter = (
+            ActivityRegistration.school_year == school_year,
+            ActivityRegistration.semester == semester,
+        )
+        course_term_filter = (
+            ActivityCourse.school_year == school_year,
+            ActivityCourse.semester == semester,
+        )
 
         summary_row = session.execute(
             select(
                 select(func.count(ActivityRegistration.id))
-                .where(active_registration_filter)
+                .where(active_registration_filter, *reg_term_filter)
                 .scalar_subquery()
                 .label("total_registrations"),
                 select(func.count(RegistrationCourse.id))
@@ -204,6 +217,7 @@ class ActivityService:
                 .where(
                     RegistrationCourse.status == "enrolled",
                     active_registration_filter,
+                    *reg_term_filter,
                 )
                 .scalar_subquery()
                 .label("total_enrollments"),
@@ -215,6 +229,7 @@ class ActivityService:
                 .where(
                     RegistrationCourse.status == "waitlist",
                     active_registration_filter,
+                    *reg_term_filter,
                 )
                 .scalar_subquery()
                 .label("total_waitlist"),
@@ -223,12 +238,13 @@ class ActivityService:
                     ActivityRegistration,
                     RegistrationSupply.registration_id == ActivityRegistration.id,
                 )
-                .where(active_registration_filter)
+                .where(active_registration_filter, *reg_term_filter)
                 .scalar_subquery()
                 .label("total_supply_orders"),
                 select(func.count(ActivityRegistration.id))
                 .where(
                     active_registration_filter,
+                    *reg_term_filter,
                     func.date(ActivityRegistration.created_at) == today,
                 )
                 .scalar_subquery()
@@ -241,6 +257,7 @@ class ActivityService:
                 .where(
                     ActivityRegistration.is_paid.is_(True),
                     active_registration_filter,
+                    *reg_term_filter,
                     RegistrationCourse.status == "enrolled",
                 )
                 .scalar_subquery()
@@ -253,6 +270,7 @@ class ActivityService:
                 .where(
                     ActivityRegistration.is_paid.is_(True),
                     active_registration_filter,
+                    *reg_term_filter,
                 )
                 .scalar_subquery()
                 .label("paid_revenue_supplies"),
@@ -264,6 +282,7 @@ class ActivityService:
                 .where(
                     ActivityRegistration.is_paid.is_(False),
                     active_registration_filter,
+                    *reg_term_filter,
                     RegistrationCourse.status == "enrolled",
                 )
                 .scalar_subquery()
@@ -276,11 +295,12 @@ class ActivityService:
                 .where(
                     ActivityRegistration.is_paid.is_(False),
                     active_registration_filter,
+                    *reg_term_filter,
                 )
                 .scalar_subquery()
                 .label("unpaid_revenue_supplies"),
                 select(func.coalesce(func.sum(ActivityCourse.capacity), 0))
-                .where(ActivityCourse.is_active.is_(True))
+                .where(ActivityCourse.is_active.is_(True), *course_term_filter)
                 .scalar_subquery()
                 .label("total_capacity"),
                 select(func.count(ParentInquiry.id))
@@ -312,9 +332,13 @@ class ActivityService:
             "unreadInquiries": int(summary_row.unread_inquiries or 0),
         }
 
-    def _compute_stats_charts(self, session) -> dict:
-        """取得儀表板圖表資料。"""
+    def _compute_stats_charts(self, session, school_year: int, semester: int) -> dict:
+        """取得儀表板圖表資料（學期感知，按報名所屬學期過濾）。"""
         chart_window_start = datetime.now(TAIPEI_TZ).date() - timedelta(days=29)
+        reg_term_filter = (
+            ActivityRegistration.school_year == school_year,
+            ActivityRegistration.semester == semester,
+        )
 
         # 每日報名趨勢（最近 30 個有資料日期）
         daily_rows = (
@@ -324,6 +348,7 @@ class ActivityService:
             )
             .filter(
                 ActivityRegistration.is_active.is_(True),
+                *reg_term_filter,
                 func.date(ActivityRegistration.created_at) >= chart_window_start,
             )
             .group_by(func.date(ActivityRegistration.created_at))
@@ -349,6 +374,7 @@ class ActivityService:
             .filter(
                 RegistrationCourse.status == "enrolled",
                 ActivityRegistration.is_active.is_(True),
+                *reg_term_filter,
             )
             .group_by(ActivityCourse.name)
             .order_by(func.count(RegistrationCourse.id).desc())
@@ -362,33 +388,72 @@ class ActivityService:
             "topCourses": top_courses,
         }
 
-    def get_stats_summary(self, session, *, force_refresh: bool = False) -> dict:
+    def get_stats_summary(
+        self,
+        session,
+        *,
+        school_year: int,
+        semester: int,
+        force_refresh: bool = False,
+    ) -> dict:
         return report_cache_service.get_or_build(
             session,
             category="activity_stats_summary",
             ttl_seconds=ACTIVITY_STATS_SUMMARY_CACHE_TTL_SECONDS,
+            params={"school_year": school_year, "semester": semester},
             force_refresh=force_refresh,
-            builder=lambda: self._compute_stats_summary(session),
+            builder=lambda: self._compute_stats_summary(session, school_year, semester),
         )
 
-    def get_stats_charts(self, session, *, force_refresh: bool = False) -> dict:
+    def get_stats_charts(
+        self,
+        session,
+        *,
+        school_year: int,
+        semester: int,
+        force_refresh: bool = False,
+    ) -> dict:
         return report_cache_service.get_or_build(
             session,
             category="activity_stats_charts",
             ttl_seconds=ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS,
+            params={"school_year": school_year, "semester": semester},
             force_refresh=force_refresh,
-            builder=lambda: self._compute_stats_charts(session),
+            builder=lambda: self._compute_stats_charts(session, school_year, semester),
         )
 
-    def get_stats(self, session, *, force_refresh: bool = False) -> dict:
+    def get_stats(
+        self,
+        session,
+        *,
+        school_year: int,
+        semester: int,
+        force_refresh: bool = False,
+    ) -> dict:
         return {
-            "statistics": self.get_stats_summary(session, force_refresh=force_refresh),
-            "charts": self.get_stats_charts(session, force_refresh=force_refresh),
-            "attendance_stats": self.get_attendance_stats(session),
+            "statistics": self.get_stats_summary(
+                session,
+                school_year=school_year,
+                semester=semester,
+                force_refresh=force_refresh,
+            ),
+            "charts": self.get_stats_charts(
+                session,
+                school_year=school_year,
+                semester=semester,
+                force_refresh=force_refresh,
+            ),
+            "attendance_stats": self.get_attendance_stats(
+                session, school_year=school_year, semester=semester
+            ),
         }
 
-    def get_attendance_stats(self, session) -> dict:
-        """取得課程出席率統計（SQL 直接 GROUP BY 課程，省去 Python 端二次聚合）。"""
+    def get_attendance_stats(self, session, *, school_year: int, semester: int) -> dict:
+        """取得課程出席率統計（SQL 直接 GROUP BY 課程，省去 Python 端二次聚合）。
+
+        學期感知：課程本身即按學期建檔（uq_activity_course_name_term），
+        以課程學期欄位過濾即可同時限定場次與出席記錄。
+        """
         from models.activity import ActivitySession, ActivityAttendance
 
         rows = (
@@ -400,7 +465,11 @@ class ActivityService:
                     case((ActivityAttendance.is_present.is_(True), 1), else_=0)
                 ).label("present"),
             )
-            .filter(ActivityCourse.is_active.is_(True))
+            .filter(
+                ActivityCourse.is_active.is_(True),
+                ActivityCourse.school_year == school_year,
+                ActivityCourse.semester == semester,
+            )
             .join(ActivitySession, ActivityCourse.id == ActivitySession.course_id)
             .join(
                 ActivityAttendance, ActivitySession.id == ActivityAttendance.session_id
