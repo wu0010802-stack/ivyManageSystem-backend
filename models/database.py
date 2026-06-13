@@ -96,6 +96,7 @@ from models.activity import (
 )
 from models.dismissal import StudentDismissalCall
 from models.student_transfer import StudentClassroomTransfer
+from models.enrollment_snapshot import ClassEnrollmentSnapshot
 from models.recruitment import (
     RecruitmentVisit,
     RecruitmentIvykidsRecord,

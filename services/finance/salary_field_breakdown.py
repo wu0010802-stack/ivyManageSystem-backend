@@ -348,10 +348,14 @@ def _build_classroom_context(session, emp: Employee, end_date) -> dict | None:
         role = "head_teacher"
     elif classroom.art_teacher_id == emp.id:
         role = "art_teacher"
+    # 人數走 resolve_bonus_counts：有該月快照讀快照（L2）
+    from services.salary.enrollment_snapshot import resolve_bonus_counts
+
+    _, _cls_counts = resolve_bonus_counts(session, end_date.year, end_date.month)
     ctx = {
         "role": role,
         "grade_name": classroom.grade.name if classroom.grade else "",
-        "current_enrollment": count_students_active_on(session, end_date, classroom.id),
+        "current_enrollment": _cls_counts.get(classroom.id, 0),
         "has_assistant": bool(classroom.assistant_teacher_id),
         "is_shared_assistant": False,
     }
@@ -367,9 +371,7 @@ def _build_classroom_context(session, emp: Employee, end_date) -> dict | None:
             others = [
                 {
                     "grade_name": c.grade.name if c.grade else "",
-                    "current_enrollment": count_students_active_on(
-                        session, end_date, c.id
-                    ),
+                    "current_enrollment": _cls_counts.get(c.id, 0),
                 }
                 for c in shared_classes
                 if c.id != classroom.id
@@ -747,9 +749,10 @@ def build_salary_debug_snapshot(
     if supervisor_base is not None or (
         office_bonus_base is not None and not classroom_context
     ):
-        office_staff_context = {
-            "school_enrollment": count_students_active_on(session, end_date)
-        }
+        from services.salary.enrollment_snapshot import resolve_bonus_counts
+
+        _school_total, _ = resolve_bonus_counts(session, end_date.year, end_date.month)
+        office_staff_context = {"school_enrollment": _school_total}
 
     festival_detail = _calc_festival_detail(
         engine,

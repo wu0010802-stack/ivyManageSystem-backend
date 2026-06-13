@@ -2036,11 +2036,22 @@ class SalaryEngine:
             elif not is_eligible:
                 remark = "未滿3個月"
 
-            # 全校在籍人數：優先使用 _ctx 預先批次查詢的結果，避免 N 次相同查詢
+            # 全校在籍人數：優先序 _ctx 預載 → 該月快照 → 即時計算。
+            # 單筆路徑（_ctx 無預載）走 resolve_bonus_counts：有快照讀快照
+            # （HR 確認過的結算人數），無快照即時計算（零漂移）。班級人數
+            # 同步注入 _ctx["classroom_count_map"]，讓下游
+            # _build_classroom_context_from_db 用同一來源（L2）。
+            _resolved_cls_map = None
             if _ctx is not None and "school_active_students" in _ctx:
                 school_active_students = _ctx["school_active_students"]
             else:
-                school_active_students = count_students_active_on(session, month_end)
+                from services.salary.enrollment_snapshot import resolve_bonus_counts
+
+                school_active_students, _resolved_cls_map = resolve_bonus_counts(
+                    session, year, month
+                )
+                if _ctx is not None and "classroom_count_map" not in _ctx:
+                    _ctx["classroom_count_map"] = _resolved_cls_map
 
             supervisor_base = self.get_supervisor_festival_bonus(
                 title_name, position, supervisor_role
@@ -2087,7 +2098,7 @@ class SalaryEngine:
                     emp.id,
                     reference_date=month_end,
                     classroom_count_map=(
-                        _ctx.get("classroom_count_map") if _ctx else None
+                        _ctx.get("classroom_count_map") if _ctx else _resolved_cls_map
                     ),
                     assistant_to_classes_map=(
                         _ctx.get("assistant_to_classes_map") if _ctx else None
@@ -2427,16 +2438,26 @@ class SalaryEngine:
         以 end_date 對應的薪資月份反查當期班級（不再依賴 emp.classroom_id），
         避免班級頁面更新未同步至 Employee.classroom_id 時整段帶班獎金歸 0。
         """
+        # 人數統一走 resolve_bonus_counts：有該月快照讀快照，無快照即時（L2）
+        from services.salary.enrollment_snapshot import resolve_bonus_counts
+
+        total_students, cls_count_map = resolve_bonus_counts(
+            session, end_date.year, end_date.month
+        )
+
         classroom_context = None
         classroom = self._resolve_classroom_for_employee_in_month(
             session, emp.id, end_date.year, end_date.month
         )
         if classroom:
             classroom_context = self._build_classroom_context_from_db(
-                session, classroom, emp.id, reference_date=end_date
+                session,
+                classroom,
+                emp.id,
+                reference_date=end_date,
+                classroom_count_map=cls_count_map,
             )
 
-        total_students = count_students_active_on(session, end_date)
         office_staff_context = self._build_office_staff_context(
             emp, total_students, classroom_context
         )
@@ -3334,8 +3355,11 @@ class SalaryEngine:
             if tid not in employee_to_classroom:
                 employee_to_classroom[tid] = _c
 
-        # 5. 學生數（1 次批次查詢，取代每人 1 次）
-        db_count_map = classroom_student_count_map(session, end_date)
+        # 5. 學生數（1 次批次查詢，取代每人 1 次）；有該月快照讀快照（L2）。
+        # total_students 維持「班級列合計」既有語意（不取全校列），零漂移。
+        from services.salary.enrollment_snapshot import resolve_bonus_counts
+
+        _, db_count_map = resolve_bonus_counts(session, end_date.year, end_date.month)
         total_students = sum(db_count_map.values())
 
         # 6. 請假
@@ -3593,10 +3617,6 @@ class SalaryEngine:
             留空 → 下游 fall through 至逐筆 resolver 取跨學期 fallback。
         """
         from .utils import get_distribution_period_months as _gdpm
-        from services.student_enrollment import (
-            count_students_active_on as _csa,
-            classroom_student_count_map as _csm,
-        )
         from utils.academic import resolve_current_academic_term
 
         emp_id_list = list(employee_ids or [])
@@ -3661,15 +3681,19 @@ class SalaryEngine:
             )
             return {eid: int(cnt) for eid, cnt in rows}
 
+        from services.salary.enrollment_snapshot import resolve_bonus_counts
+
         monthly_ctx_cache: dict[tuple[int, int], dict] = {}
         for _y, _m in _gdpm(year, month):
             _, _last = calendar.monthrange(_y, _m)
             _ref = date(_y, _m, _last)
             _first = date(_y, _m, 1)
+            # 涵蓋月人數：有該月快照讀快照，無快照即時（L2）
+            _school_active, _cls_count_map = resolve_bonus_counts(session, _y, _m)
             monthly_ctx_cache[(_y, _m)] = {
                 "month_end": _ref,
-                "school_active": _csa(session, _ref),
-                "cls_count_map": _csm(session, _ref),
+                "school_active": _school_active,
+                "cls_count_map": _cls_count_map,
                 "classroom_map": classroom_map,
                 "classroom_for_emp": _classroom_for_emp_in_term(
                     resolve_current_academic_term(_first)
