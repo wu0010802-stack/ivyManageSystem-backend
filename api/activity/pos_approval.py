@@ -452,6 +452,14 @@ def unlock_daily_close(
     target = _parse_date(date_str)
     session = get_session()
     try:
+        # P2-1：與 approve / 寫入端守衛共用同一把 per-date advisory lock，序列化同日
+        # 的解鎖。否則兩個簽核人（或 admin override 雙擊）幾近同時 DELETE 同一
+        # close_date：各自讀到同一 row → 各 insert 一筆 history / cancelled
+        # ApprovalLog / 通知，第二筆 DELETE 匹配 0 列但 SQLAlchemy 預設只 warning
+        # 不 raise → 仍 commit，稽核軌跡與解鎖事件儀表板筆數被灌水、原簽核人收
+        # 重複通知。SQLite 測試降級 no-op。
+        acquire_activity_daily_close_lock(session, target)
+
         row = (
             session.query(ActivityPosDailyClose)
             .filter(ActivityPosDailyClose.close_date == target)
