@@ -681,7 +681,8 @@ from .calculate import (  # noqa: E402,F401
     _run_salary_calc_job,
     router as _calculate_router,
 )
-from .detail import router as _detail_router  # noqa: E402
+from .detail import router as _detail_router
+from .enrollment_snapshot import router as _enrollment_snapshot_router  # noqa: E402
 from .festival import router as _festival_router  # noqa: E402
 from .manual_adjust import (  # noqa: E402,F401
     _MANUAL_ADJUST_FIELD_MAX,
@@ -696,6 +697,7 @@ from .transfer_roster import router as _transfer_roster_router  # noqa: E402
 
 router.include_router(_calculate_router)
 router.include_router(_detail_router)
+router.include_router(_enrollment_snapshot_router)
 router.include_router(_festival_router)
 router.include_router(_manual_adjust_router)
 router.include_router(_records_router)

@@ -230,8 +230,7 @@ def _resolve_classroom_for_emp(
             c
             for c in classrooms
             if c.is_active
-            and emp_id
-            in (c.head_teacher_id, c.assistant_teacher_id, c.art_teacher_id)
+            and emp_id in (c.head_teacher_id, c.assistant_teacher_id, c.art_teacher_id)
         ]
         term_rows: list = sorted(
             (
@@ -309,11 +308,15 @@ def _build_meeting_absent_cache(
     人數 ctx（school_active / classroom_count_map）自 NP1-1（2026-06-12）起也在
     derive_festival_diff 內 per-month 預載——但**一律用 engine 自己的**
     `count_students_active_on` / `classroom_student_count_map`
-    （services/student_enrollment.py：僅 enrollment/graduation filter，**不含
-    withdrawal**），屬同函式同參數的等值 memoize。本模組的「應領」走
-    `count_enrolled_on`（含 withdrawal_date > d），兩者人數定義刻意不同：差額正是
-    這個「人數校正 true-up」。**絕不可**把 count_enrolled_on 注入 ctx——會把已發
-    強行套到年終人數函式上，消掉 true-up 的人數校正成分。
+    （services/student_enrollment.py），屬同函式同參數的等值 memoize，「已發」
+    永遠忠實鏡像 payroll 當下的人數語意。**絕不可**把 count_enrolled_on 注入
+    ctx——已發必須跟著 payroll 走，不跟年終人數函式。
+
+    歷史註：2026-06-13 L1a 前 payroll filter 不含 withdrawal_date，與「應領」的
+    `count_enrolled_on`（含 withdrawal_date > d）人數定義刻意不同，withdrawal
+    分量曾是本 true-up 的主成分；L1a 後兩 filter 收斂，true-up 剩餘成分為
+    分母差（年終用編制 head_count_target，payroll 用 TARGET_ENROLLMENT 目標）
+    與班別歸屬/基準日差異。
     """
     from sqlalchemy import func
 

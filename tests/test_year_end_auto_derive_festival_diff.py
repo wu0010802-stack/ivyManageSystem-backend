@@ -300,19 +300,20 @@ def test_supervisor_uses_schoolwide(seed):
         assert mrow["target"] == 40
 
 
-def test_paid_uses_payroll_count_not_year_end_count(seed):
-    """**人數校正 true-up 核心**：已發走 payroll 的 count_students_active_on（不含
-    withdrawal filter），應領走 count_enrolled_on（含 withdrawal_date > d）。兩者人數
-    定義刻意不同 → 退學學生只從「應領」消失、仍計入「已發」，差額正反映此校正。
+def test_paid_mirrors_payroll_count_semantics(seed):
+    """**已發鏡像 payroll**：已發走 payroll 的 count_students_active_on，應領走
+    count_enrolled_on。自 2026-06-13 L1a 起 payroll filter 也含 withdrawal_date
+    （兩 filter 收斂），退學學生同時從「應領」與「已發」消失；true-up 剩餘成分
+    為分母差（應領用編制 head_count_target=10，已發用 payroll 目標 24）。
 
-    同時兼作回歸守衛（非循環）：翻轉人數使總額確實改變（13998 → 1998）。
+    同時兼作回歸守衛（非循環）：翻轉人數使總額確實改變（13998 → 7002）。
 
     seed 後讓 10 位學生在 8/1 前退學（withdrawal_date）：
-      - 應領：count_enrolled_on=10（withdrawal 排除）→ 2000 × 10/10 = 2000/月
-      - 已發：count_students_active_on=**20**（payroll 不看 withdrawal）→
-              round(2000 × 20/24)=1667/月  ← 若誤把 count_enrolled_on 注入 ctx，
-              已發會變成 round(2000×10/24)=833，總額會錯成 7002。
-      - 差額/月 = 2000 − 1667 = 333 → 6 月總 = 1998。
+      - 應領：count_enrolled_on=10 → 2000 × 10/10 = 2000/月
+      - 已發：count_students_active_on=10（L1a 後同樣排除退學生）→
+              round(2000 × 10/24)=833/月
+      - 差額/月 = 2000 − 833 = 1167 → 6 月總 = 7002。
+      （L1a 前已發人數仍是 20 → 1667/月、總額 1998；該行為已隨 payroll 修正走入歷史）
     """
     db, cycle = seed["db"], seed["cycle"]
 
@@ -322,8 +323,7 @@ def test_paid_uses_payroll_count_not_year_end_count(seed):
     before = _amount_for(items, seed["emp_tsai"].id)
     assert before == Decimal("13998.00")
 
-    # 10 位學生在 8/1 之前退學 → count_enrolled_on（應領）全期見 10；
-    # count_students_active_on（已發/payroll）不看 withdrawal，全期仍見 20。
+    # 10 位學生在 8/1 之前退學 → 應領與已發（L1a 後）全期都見 10。
     students = list(
         db.scalars(select(Student).where(Student.classroom_id == seed["cls"].id)).all()
     )
@@ -336,16 +336,14 @@ def test_paid_uses_payroll_count_not_year_end_count(seed):
     items2 = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
     item = _item_for(items2, seed["emp_tsai"].id)
     after = item.amount
-    assert after == Decimal("1998.00")
+    assert after == Decimal("7002.00")
     assert after != before  # 翻轉人數確實改變總額（非循環）
 
-    # per-month 鐵證：應領用年終人數 10，已發仍是 payroll 人數 20（≠ 10）。
+    # per-month 鐵證：兩側人數收斂為 10，差額純粹來自分母（10 編制 vs 24 目標）。
     for mrow in item.calc_meta["months"]:
         assert mrow["enrolled"] == 10  # count_enrolled_on（應領）
         assert Decimal(mrow["due"]) == Decimal("2000.00")
-        assert Decimal(mrow["paid"]) == Decimal(
-            "1667.00"
-        )  # round(2000×20/24)，payroll 仍 20
+        assert Decimal(mrow["paid"]) == Decimal("833.00")  # round(2000×10/24)
 
 
 def test_skips_manual_item(seed):

@@ -93,6 +93,16 @@ class BonusConfig(Base):
 
     school_wide_target = Column(Integer, default=160)
 
+    # 在籍人數計算模式（L3，spec 2026-06-13-enrollment-count-correctness）：
+    # month_end=月底單日快照（既有語意）/ daily_weighted=按日加權平均（1 位小數）
+    enrollment_count_mode = Column(
+        String(20),
+        nullable=False,
+        default="month_end",
+        server_default="month_end",
+        comment="獎金在籍人數模式：month_end / daily_weighted",
+    )
+
     # 園規常數（NULL = 沿用程式預設）
     meeting_default_hours = Column(
         Float,

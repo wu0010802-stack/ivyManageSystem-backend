@@ -1317,6 +1317,13 @@ def promote_classrooms_to_academic_year(
                     student.classroom_id = target_classroom.id
                     moved_student_count += 1
 
+        # 班籍異動影響發放月節慶/超額人數 → 標記薪資需重算（L1c，spec
+        # 2026-06-13-enrollment-count-correctness）
+        if moved_student_count:
+            from services.salary.utils import mark_salary_stale_for_enrollment_event
+
+            mark_salary_stale_for_enrollment_event(session, today_taipei())
+
         # 升班完成後同步所有受影響教師的 Employee.classroom_id：
         # 把來源班教師（取消指派）與目標班教師（新指派）一併重算。
         affected_teacher_ids: set[int] = set()

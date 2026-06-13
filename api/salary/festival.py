@@ -63,9 +63,10 @@ def get_festival_bonus(
         _, _fb_last = _cal.monthrange(year, month)
         month_end = date(year, month, _fb_last)
 
-        # 批次預先查詢共用資料，避免 N+1
-        school_active = count_students_active_on(session, month_end)
-        cls_count_map = classroom_student_count_map(session, month_end)
+        # 批次預先查詢共用資料，避免 N+1；有該月快照讀快照（L2）
+        from services.salary.enrollment_snapshot import resolve_bonus_counts
+
+        school_active, cls_count_map = resolve_bonus_counts(session, year, month)
         classroom_map = {
             c.id: c
             for c in session.query(Classroom).options(joinedload(Classroom.grade)).all()
@@ -196,10 +197,14 @@ def get_festival_bonus_period_accrual(
             meeting_absent_count_map = {
                 int(emp_id): int(cnt or 0) for emp_id, cnt in meeting_absent_rows
             }
+            # 涵蓋月人數：有該月快照讀快照（L2）
+            from services.salary.enrollment_snapshot import resolve_bonus_counts
+
+            _school_active, _cls_count_map = resolve_bonus_counts(session, y, m)
             monthly_ctx_cache[(y, m)] = {
                 "month_end": month_end,
-                "school_active": count_students_active_on(session, month_end),
-                "cls_count_map": classroom_student_count_map(session, month_end),
+                "school_active": _school_active,
+                "cls_count_map": _cls_count_map,
                 "classroom_map": classroom_map_shared,
                 "meeting_absent_count_map": meeting_absent_count_map,
             }

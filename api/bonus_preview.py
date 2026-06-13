@@ -196,9 +196,12 @@ def preview_bonus_impact(
             _, month_last_day = calendar.monthrange(year, month)
             month_end = date(year, month, month_last_day)
 
-            # 當前人數
-            current_cls_map = classroom_student_count_map(session, month_end)
-            current_school_total = count_students_active_on(session, month_end)
+            # 當前人數：有該月快照讀快照（L2）
+            from services.salary.enrollment_snapshot import resolve_bonus_counts
+
+            current_school_total, current_cls_map = resolve_bonus_counts(
+                session, year, month
+            )
 
             # 投影人數
             projected_cls_map = dict(current_cls_map)

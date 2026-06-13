@@ -164,6 +164,20 @@ def transition(
         # 休學仍算在讀，保留 classroom_id 與 is_active
         student.is_active = True
 
+    # 在籍狀態實際變動（畢業/轉出/退學/復學）會改變班級與全校在籍人數 →
+    # 標記受影響發放月（節慶/超額累計）的未封存薪資需重算（L1c，spec
+    # 2026-06-13-enrollment-count-correctness）。ON_LEAVE 仍在籍不標。
+    if to_status in (
+        LIFECYCLE_GRADUATED,
+        LIFECYCLE_TRANSFERRED,
+        LIFECYCLE_WITHDRAWN,
+        LIFECYCLE_ACTIVE,
+        LIFECYCLE_ENROLLED,
+    ):
+        from services.salary.utils import mark_salary_stale_for_enrollment_event
+
+        mark_salary_stale_for_enrollment_event(session, event_date)
+
     # 寫稽核
     school_year, semester = resolve_current_academic_term()
     change_log = StudentChangeLog(
