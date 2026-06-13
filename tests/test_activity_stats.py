@@ -397,6 +397,75 @@ class TestGetStatsMixedRevenue:
         assert stats["totalUnpaid"] == 0
 
 
+class TestStatsActualReceiptBasis:
+    """T2（業主裁決）：totalRevenue / totalUnpaid 改實收口徑。
+
+    - totalRevenue = 學期內 active reg 的 paid_amount 加總
+      （含 partial 已繳、overpaid 超收照實計）
+    - totalUnpaid  = 學期內 active reg 的 max(0, 應繳總額 - paid_amount) 加總
+      （應繳總額 = enrolled 課程 + 用品 price_snapshot，沿用 _calc_total_amount 口徑）
+    舊口徑（is_paid 全額二分）會讓 partial 的已繳部分兩頭落空。
+    """
+
+    def test_partial_payment_counts_in_both_buckets(self, session, svc):
+        """繳 5000 / 應繳 10000 → revenue += 5000、unpaid += 5000。"""
+        course = _add_course(session, price=10000)
+        reg = _add_reg(session, is_paid=False, paid_amount=5000)
+        _enroll(session, reg.id, course.id, price=10000)
+        session.commit()
+
+        stats = svc.get_stats_summary(session, **TERM)
+        assert stats["totalRevenue"] == 5000
+        assert stats["totalUnpaid"] == 5000
+
+    def test_overpaid_counts_actual_receipt_and_zero_unpaid(self, session, svc):
+        """超收照實計入 revenue，unpaid 以 0 為下限不得為負。"""
+        course = _add_course(session, price=1000)
+        reg = _add_reg(session, is_paid=True, paid_amount=1500)
+        _enroll(session, reg.id, course.id, price=1000)
+        session.commit()
+
+        stats = svc.get_stats_summary(session, **TERM)
+        assert stats["totalRevenue"] == 1500
+        assert stats["totalUnpaid"] == 0
+
+    def test_unpaid_includes_supply_due(self, session, svc):
+        """應繳總額含用品快照價：課程 1000 + 用品 200，繳 600 → unpaid 600。"""
+        course = _add_course(session, price=1000)
+        supply = ActivitySupply(
+            name="圍裙",
+            price=200,
+            school_year=TERM["school_year"],
+            semester=TERM["semester"],
+        )
+        session.add(supply)
+        session.flush()
+
+        reg = _add_reg(session, paid_amount=600)
+        _enroll(session, reg.id, course.id, price=1000)
+        session.add(
+            RegistrationSupply(
+                registration_id=reg.id, supply_id=supply.id, price_snapshot=200
+            )
+        )
+        session.commit()
+
+        stats = svc.get_stats_summary(session, **TERM)
+        assert stats["totalRevenue"] == 600
+        assert stats["totalUnpaid"] == 600
+
+    def test_waitlist_price_not_in_due(self, session, svc):
+        """候補課程不計入應繳總額（對齊 _calc_total_amount 既有口徑）。"""
+        course = _add_course(session, price=3000)
+        reg = _add_reg(session)
+        _enroll(session, reg.id, course.id, price=3000, status="waitlist")
+        session.commit()
+
+        stats = svc.get_stats_summary(session, **TERM)
+        assert stats["totalRevenue"] == 0
+        assert stats["totalUnpaid"] == 0
+
+
 class TestStatsTermFiltering:
     """T1：stats-summary / stats-charts / attendance-stats 學期過濾。
 
@@ -485,6 +554,23 @@ class TestStatsTermFiltering:
         assert [c["course_name"] for c in result["by_course"]] == ["本學期課"]
         assert result["total_sessions"] == 1
         assert result["avg_attendance_rate"] == 1.0
+
+    def test_revenue_term_isolated_for_partial_payment(self, session, svc):
+        """上學期的 partial 實收不可滲入本學期 totalRevenue/totalUnpaid。"""
+        course = _add_course(session, price=1000)
+        other_course = _add_course(session, name="美術(舊)", price=2000, **OTHER_TERM)
+
+        reg = _add_reg(session, paid_amount=400)
+        _enroll(session, reg.id, course.id, price=1000)
+        old_reg = _add_reg(
+            session, student_name="上學期生", paid_amount=500, **OTHER_TERM
+        )
+        _enroll(session, old_reg.id, other_course.id, price=2000)
+        session.commit()
+
+        stats = svc.get_stats_summary(session, **TERM)
+        assert stats["totalRevenue"] == 400
+        assert stats["totalUnpaid"] == 600
 
     def test_summary_cache_keyed_by_term(self, session, svc):
         """不同學期的 summary 不可共用同一份快取 snapshot。"""

@@ -203,6 +203,29 @@ class ActivityService:
             ActivityCourse.semester == semester,
         )
 
+        # 實收口徑（業主裁決 2026-06-13）：
+        # - totalRevenue = active reg 的 paid_amount 加總（partial 已繳、overpaid
+        #   超收皆照實計）
+        # - totalUnpaid  = per-reg max(0, 應繳總額 - paid_amount) 加總；應繳總額 =
+        #   enrolled 課程 + 用品 price_snapshot（對齊 _calc_total_amount 口徑）
+        # 舊口徑以 is_paid 二分後全額計入，partial（繳5000/應繳10000）的 5000
+        # 在 totalRevenue 與 totalUnpaid 兩頭落空。
+        reg_course_due = (
+            select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
+            .where(
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+                RegistrationCourse.status == "enrolled",
+            )
+            .scalar_subquery()
+        )
+        reg_supply_due = (
+            select(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
+            .where(RegistrationSupply.registration_id == ActivityRegistration.id)
+            .scalar_subquery()
+        )
+        reg_due = reg_course_due + reg_supply_due
+        reg_paid = func.coalesce(ActivityRegistration.paid_amount, 0)
+
         summary_row = session.execute(
             select(
                 select(func.count(ActivityRegistration.id))
@@ -249,56 +272,21 @@ class ActivityService:
                 )
                 .scalar_subquery()
                 .label("today_new"),
-                select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
-                .join(
-                    ActivityRegistration,
-                    RegistrationCourse.registration_id == ActivityRegistration.id,
-                )
-                .where(
-                    ActivityRegistration.is_paid.is_(True),
-                    active_registration_filter,
-                    *reg_term_filter,
-                    RegistrationCourse.status == "enrolled",
-                )
+                select(func.coalesce(func.sum(reg_paid), 0))
+                .where(active_registration_filter, *reg_term_filter)
                 .scalar_subquery()
-                .label("paid_revenue_courses"),
-                select(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
-                .join(
-                    ActivityRegistration,
-                    RegistrationSupply.registration_id == ActivityRegistration.id,
+                .label("total_revenue"),
+                select(
+                    func.coalesce(
+                        func.sum(
+                            case((reg_due > reg_paid, reg_due - reg_paid), else_=0)
+                        ),
+                        0,
+                    )
                 )
-                .where(
-                    ActivityRegistration.is_paid.is_(True),
-                    active_registration_filter,
-                    *reg_term_filter,
-                )
+                .where(active_registration_filter, *reg_term_filter)
                 .scalar_subquery()
-                .label("paid_revenue_supplies"),
-                select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
-                .join(
-                    ActivityRegistration,
-                    RegistrationCourse.registration_id == ActivityRegistration.id,
-                )
-                .where(
-                    ActivityRegistration.is_paid.is_(False),
-                    active_registration_filter,
-                    *reg_term_filter,
-                    RegistrationCourse.status == "enrolled",
-                )
-                .scalar_subquery()
-                .label("unpaid_revenue_courses"),
-                select(func.coalesce(func.sum(RegistrationSupply.price_snapshot), 0))
-                .join(
-                    ActivityRegistration,
-                    RegistrationSupply.registration_id == ActivityRegistration.id,
-                )
-                .where(
-                    ActivityRegistration.is_paid.is_(False),
-                    active_registration_filter,
-                    *reg_term_filter,
-                )
-                .scalar_subquery()
-                .label("unpaid_revenue_supplies"),
+                .label("total_unpaid"),
                 select(func.coalesce(func.sum(ActivityCourse.capacity), 0))
                 .where(ActivityCourse.is_active.is_(True), *course_term_filter)
                 .scalar_subquery()
@@ -324,10 +312,8 @@ class ActivityService:
             "totalWaitlist": int(summary_row.total_waitlist or 0),
             "totalSupplyOrders": int(summary_row.total_supply_orders or 0),
             "todayNewRegistrations": int(summary_row.today_new or 0),
-            "totalRevenue": int(summary_row.paid_revenue_courses or 0)
-            + int(summary_row.paid_revenue_supplies or 0),
-            "totalUnpaid": int(summary_row.unpaid_revenue_courses or 0)
-            + int(summary_row.unpaid_revenue_supplies or 0),
+            "totalRevenue": int(summary_row.total_revenue or 0),
+            "totalUnpaid": int(summary_row.total_unpaid or 0),
             "enrollmentRate": enrollment_rate,
             "unreadInquiries": int(summary_row.unread_inquiries or 0),
         }
