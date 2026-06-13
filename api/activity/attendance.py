@@ -9,7 +9,7 @@ from typing import List, Optional
 from urllib.parse import quote
 
 import openpyxl
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -75,8 +75,10 @@ def list_sessions(
     course_id: Optional[int] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    skip: int = 0,
-    limit: int = 100,
+    # 裸 int 時 skip=-1 在 PG OFFSET 直接 500、limit 無上限可全表 dump；
+    # 對齊同 package 其他列表端點（courses/supplies）的 Query 驗證慣例
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
     current_user: dict = Depends(get_current_user),
 ):
     """場次列表（可依課程、日期範圍篩選，支援分頁）"""

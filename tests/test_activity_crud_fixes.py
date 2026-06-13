@@ -314,3 +314,41 @@ class TestDeleteSessionAudit:
         res = client.delete("/api/activity/attendance/sessions/99999")
         assert res.status_code == 404
         assert mock_audit.call_count == 0
+
+
+# ────────────────────────────────────────────────────────────────── #
+# K4 — list_sessions skip/limit 驗證
+# ────────────────────────────────────────────────────────────────── #
+
+
+class TestListSessionsPaginationValidation:
+    def test_negative_skip_rejected(self, client_factory):
+        """skip=-1 在 PG OFFSET 會炸 500，必須 422 擋下。"""
+        client, sf = client_factory
+        _setup_admin(sf, client)
+        res = client.get("/api/activity/attendance/sessions", params={"skip": -1})
+        assert res.status_code == 422
+
+    def test_oversized_limit_rejected(self, client_factory):
+        """limit=999999 全表 dump，必須 422 擋下（上限 500）。"""
+        client, sf = client_factory
+        _setup_admin(sf, client)
+        res = client.get("/api/activity/attendance/sessions", params={"limit": 999999})
+        assert res.status_code == 422
+
+    def test_zero_limit_rejected(self, client_factory):
+        client, sf = client_factory
+        _setup_admin(sf, client)
+        res = client.get("/api/activity/attendance/sessions", params={"limit": 0})
+        assert res.status_code == 422
+
+    def test_valid_pagination_ok(self, client_factory):
+        client, sf = client_factory
+        _setup_admin(sf, client)
+        res = client.get(
+            "/api/activity/attendance/sessions", params={"skip": 0, "limit": 500}
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["skip"] == 0
+        assert body["limit"] == 500
