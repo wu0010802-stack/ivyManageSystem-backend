@@ -699,7 +699,10 @@ class TestPaymentReportVoidedHandling:
         assert len(voided_rows) == 1
         assert len(valid_rows) == 1
         assert voided_rows[0][8] == "已作廢"  # 作廢狀態欄
-        assert voided_rows[0][9] == "admin"  # 作廢人
+        # S5（2026-06-13）：act_admin 無 ACTIVITY_PAYMENT_APPROVE，
+        # operator / voided_by 依 _desensitize_operator 遮成首字+***
+        assert voided_rows[0][9] == "a***"  # 作廢人（去敏化）
+        assert voided_rows[0][6] == "s***"  # 操作人員（去敏化）
         assert voided_rows[0][11] == "重複輸入收據"  # 作廢原因
 
 

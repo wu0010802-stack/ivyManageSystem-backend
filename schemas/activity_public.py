@@ -183,7 +183,8 @@ class PublicUpdatePayload(BaseModel):
     new_parent_phone: Optional[str] = Field(None, min_length=8, max_length=30)
     courses: list[PublicCourseItem] = Field(..., max_length=20)
     supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
-    remark: str = ""
+    # S3：對齊 register 版（PublicRegistrationPayload.remark）的 500 字上限
+    remark: str = Field(default="", max_length=500)
     # 選填：樂觀鎖 token，由 /public/query 回傳的 updated_at（ISO 字串）。
     # 提供時若與 reg.updated_at 不符即拒；不提供則沿用舊行為（向後相容）。
     if_unmodified_since: Optional[str] = Field(None, max_length=64)

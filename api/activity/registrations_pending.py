@@ -29,12 +29,15 @@ from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 from ._shared import (
     _invalidate_activity_dashboard_caches,
     _validate_tw_mobile,
     _not_found,
     now_taipei_naive,
+    resolve_student_pii_scope,
+    student_pii_row_visible,
 )
 
 from schemas.activity_admin import (
@@ -180,12 +183,19 @@ def list_pending_registrations(
         else:
             q = q.filter(or_(pending_cond, rejected_cond))
         if search:
-            like = f"%{search}%"
+            # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 全表匹配
+            like = f"%{escape_like_pattern(search)}%"
             q = q.filter(
                 or_(
-                    ActivityRegistration.student_name.ilike(like),
-                    ActivityRegistration.class_name.ilike(like),
-                    ActivityRegistration.parent_phone.ilike(like),
+                    ActivityRegistration.student_name.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
+                    ActivityRegistration.class_name.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
+                    ActivityRegistration.parent_phone.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
                 )
             )
         total = q.count()
@@ -200,13 +210,16 @@ def list_pending_registrations(
             .all()
         )
         # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII 欄位
-        can_see_student = can_view_student_pii(current_user)
+        # S7：STUDENTS_READ:own_class 者對非管轄班級的列照樣遮罩（per-row）
+        pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
         can_see_guardian = can_view_guardian_pii(current_user)
         return {
             "items": [
                 _serialize_pending_item(
                     r,
-                    can_see_student_pii=can_see_student,
+                    can_see_student_pii=student_pii_row_visible(
+                        pii_visible, pii_allowed, r.classroom_id
+                    ),
                     can_see_guardian_pii=can_see_guardian,
                 )
                 for r in rows
@@ -243,22 +256,32 @@ def admin_search_students(
 
     session = get_session()
     try:
-        like = f"%{q.strip()}%"
-        rows = (
+        # S7（D1）：STUDENTS_READ:own_class 者只能搜尋管轄班級的學生，
+        # 防止「ACTIVITY_WRITE + :own_class」自訂角色拉全校學生目錄
+        _, pii_allowed = resolve_student_pii_scope(session, current_user)
+        if pii_allowed is not None and not pii_allowed:
+            return {"items": []}
+
+        # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 拉全校學生目錄
+        like = f"%{escape_like_pattern(q.strip())}%"
+        query = (
             session.query(Student, Classroom)
             .outerjoin(Classroom, Classroom.id == Student.classroom_id)
             .filter(
                 Student.is_active.is_(True),
                 or_(
-                    Student.name.ilike(like),
-                    Student.student_id.ilike(like),
-                    Student.parent_phone.ilike(like),
-                    Student.emergency_contact_phone.ilike(like),
+                    Student.name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                    Student.student_id.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                    Student.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                    Student.emergency_contact_phone.ilike(
+                        like, escape=LIKE_ESCAPE_CHAR
+                    ),
                 ),
             )
-            .limit(limit)
-            .all()
         )
+        if pii_allowed is not None:
+            query = query.filter(Student.classroom_id.in_(pii_allowed))
+        rows = query.limit(limit).all()
         return {
             "items": [
                 {
@@ -277,7 +300,10 @@ def admin_search_students(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/match", response_model=PendingRegistrationActionResultOut)
+@router.post(
+    "/registrations/{registration_id}/match",
+    response_model=PendingRegistrationActionResultOut,
+)
 def match_registration(
     registration_id: int,
     body: RegistrationMatchRequest,
@@ -348,7 +374,10 @@ def match_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/reject", response_model=PendingRegistrationActionResultOut)
+@router.post(
+    "/registrations/{registration_id}/reject",
+    response_model=PendingRegistrationActionResultOut,
+)
 def reject_registration(
     registration_id: int,
     body: RegistrationRejectRequest,
@@ -418,7 +447,10 @@ def reject_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/rematch", response_model=PendingRegistrationRematchResultOut)
+@router.post(
+    "/registrations/{registration_id}/rematch",
+    response_model=PendingRegistrationRematchResultOut,
+)
 def rematch_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
@@ -542,7 +574,10 @@ def rematch_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/force-accept", response_model=PendingRegistrationForceAcceptResultOut)
+@router.post(
+    "/registrations/{registration_id}/force-accept",
+    response_model=PendingRegistrationForceAcceptResultOut,
+)
 def force_accept_registration(
     registration_id: int,
     body: Optional[RegistrationRematchRequest] = None,
@@ -642,7 +677,10 @@ def force_accept_registration(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/restore", response_model=PendingRegistrationActionResultOut)
+@router.post(
+    "/registrations/{registration_id}/restore",
+    response_model=PendingRegistrationActionResultOut,
+)
 def restore_registration(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -754,5 +792,3 @@ def restore_registration(
         raise_safe_500(e)
     finally:
         session.close()
-
-

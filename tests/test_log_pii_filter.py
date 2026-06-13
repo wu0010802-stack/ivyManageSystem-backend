@@ -117,3 +117,112 @@ def test_positional_pii_args_redacted_in_final_output(logger_with_filter):
     assert "phone=[Filtered]" in out
     # 非 PII 文字保留、未 crash（有完整輸出）
     assert "parent bind" in out and "done" in out
+
+
+# ── S4（2026-06-13）：SQLAlchemy StatementError parameters dict 格式 ─────────
+
+
+def test_sqlalchemy_parameters_dict_pii_redacted(logger_with_filter):
+    """SQLAlchemy StatementError 的 [parameters: {'key': 'value'}] 為
+    `'key': 'value'` 格式（非 key=value），PII value 也必須被遮。"""
+    log, stream = logger_with_filter
+    log.error(
+        "(sqlite3.IntegrityError) NOT NULL constraint failed "
+        "[parameters: {'student_name': '王小明', 'parent_phone': '0912345678', "
+        "'status': 'pending'}]"
+    )
+    out = stream.getvalue()
+    assert "王小明" not in out
+    assert "0912345678" not in out
+    assert "[Filtered]" in out
+    # 非 PII key 的 value 保留（debug context）
+    assert "pending" in out
+
+
+def test_double_quoted_parameters_dict_pii_redacted(logger_with_filter):
+    """雙引號 JSON-style `"key": "value"` 格式同樣命中。"""
+    log, stream = logger_with_filter
+    log.error('payload={"parent_phone": "0912-345-678", "status": "ok"}')
+    out = stream.getvalue()
+    assert "0912-345-678" not in out
+    assert "[Filtered]" in out
+    assert '"status": "ok"' in out
+
+
+def test_exc_info_sqlalchemy_parameters_redacted(logger_with_filter):
+    """exc_info 路徑（exception.args 內含 parameters dict 字串）同樣生效。"""
+    log, stream = logger_with_filter
+    # 動態組值：避免 traceback 的「source line 回顯」也含字面值（真實情境中
+    # SQL 參數為 runtime 值，不會出現在 source line）
+    params = {"student_name": "小" + "明", "phone": "0987" + "654321"}
+    try:
+        raise ValueError(f"StatementError [parameters: {params!r}]")
+    except ValueError:
+        log.error("DB 寫入失敗", exc_info=True)
+    out = stream.getvalue()
+    assert "小明" not in out
+    assert "0987654321" not in out
+    assert "[Filtered]" in out
+
+
+def test_parameters_dict_non_pii_keys_untouched(logger_with_filter):
+    """全部都是非 PII key 時 dict 字串原樣保留。"""
+    log, stream = logger_with_filter
+    log.warning("[parameters: {'status': 'late', 'amount': 500}]")
+    out = stream.getvalue()
+    assert "'status': 'late'" in out
+    assert "[Filtered]" not in out
+
+
+# ── 審查修正（2026-06-13）：巢狀 dict 內層 PII key 被外層 value 吞掉 ──────────
+
+
+def test_nested_dict_inner_pii_key_redacted(logger_with_filter):
+    """巢狀 dict：外層非 PII key 的 value 是 dict 時，內層 PII key 必須被遮。
+
+    回歸 — 舊版 bare-token value 分支 `[^\\s,，。}\\]]+` 不排除 `{`/引號，
+    外層 `'payload'` 的 match 消耗到 `{'parent_phone':`，內層 key 永遠
+    沒機會被命中 → 原樣輸出。
+    """
+    log, stream = logger_with_filter
+    log.error("webhook 失敗 {'payload': {'parent_phone': '0912345678'}}")
+    out = stream.getvalue()
+    assert "0912345678" not in out
+    assert "[Filtered]" in out
+    # 外層非 PII key 保留（debug context）
+    assert "'payload'" in out
+
+
+def test_nested_dict_non_pii_keys_not_overredacted(logger_with_filter):
+    """巢狀 dict 全為非 PII key 時不誤遮。"""
+    log, stream = logger_with_filter
+    log.warning("{'meta': {'status': 'ok', 'amount': 500}}")
+    out = stream.getvalue()
+    assert "'status': 'ok'" in out
+    assert "500" in out
+    assert "[Filtered]" not in out
+
+
+# ── 審查修正（2026-06-13）：bytes repr 含空白只遮一半 ────────────────────────
+
+
+def test_bytes_value_with_space_fully_redacted_key_value(logger_with_filter):
+    """key=value 格式：phone=b'0912 345678' 整段被遮（舊版尾段 345678' 漏）。"""
+    log, stream = logger_with_filter
+    log.error("decode 失敗 phone=b'0912 345678' skipped")
+    out = stream.getvalue()
+    assert "0912" not in out
+    assert "345678" not in out
+    assert "phone=[Filtered]" in out
+    assert "skipped" in out
+
+
+def test_bytes_value_with_space_fully_redacted_quoted_key(logger_with_filter):
+    """'key': value 格式：{'parent_phone': b'0912 345678'} 整段被遮。"""
+    log, stream = logger_with_filter
+    log.error("[parameters: {'parent_phone': b'0912 345678', 'status': 'ok'}]")
+    out = stream.getvalue()
+    assert "0912" not in out
+    assert "345678" not in out
+    assert "[Filtered]" in out
+    assert "'status': 'ok'" in out

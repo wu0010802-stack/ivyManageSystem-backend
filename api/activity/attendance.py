@@ -29,6 +29,7 @@ from api.activity._shared import (
     _build_session_detail_response,
     build_session_rows_with_stats,
     query_valid_session_registrations,
+    resolve_student_pii_scope,
 )
 from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
 from schemas.activity_admin import (
@@ -259,7 +260,17 @@ def get_session_detail(
         if not sess:
             raise HTTPException(status_code=404, detail="找不到場次")
         group_key = "classroom" if group_by == "classroom" else None
-        return _build_session_detail_response(session, sess, group_by=group_key)
+        # S6/S7：僅 ACTIVITY_READ 的 caller 不應拿到學生/班級 FK（對齊
+        # registrations_pending F-026 慣例）；STUDENTS_READ:own_class 者
+        # 對非管轄班級的列照樣遮罩（scope-aware）
+        pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
+        return _build_session_detail_response(
+            session,
+            sess,
+            group_by=group_key,
+            mask_student_ids=not pii_visible,
+            student_pii_visible_classroom_ids=pii_allowed,
+        )
     finally:
         session.close()
 

@@ -59,12 +59,14 @@ def client(tmp_path):
     _ip_attempts.clear()
     _account_failures.clear()
 
-    # 清空 public / registrations / pos 模組的 limiter 計數，避免跨測試污染
+    # 清空 public / registrations / pos / registrations_static 模組的
+    # limiter 計數，避免跨測試污染
     from api.activity import public as public_mod
     from api.activity import registrations as reg_mod
     from api.activity import pos as pos_mod
+    from api.activity import registrations_static as reg_static_mod
 
-    for mod in (public_mod, reg_mod, pos_mod):
+    for mod in (public_mod, reg_mod, pos_mod, reg_static_mod):
         for attr in dir(mod):
             obj = getattr(mod, attr)
             if hasattr(obj, "_timestamps"):
@@ -113,7 +115,15 @@ def _login(c: TestClient, username="sec_admin"):
 _course_counter = {"n": 0}
 
 
-def _make_reg(session, *, paid_amount=0, match_status="matched", is_active=True):
+def _make_reg(
+    session,
+    *,
+    paid_amount=0,
+    match_status="matched",
+    is_active=True,
+    student_name="王小明",
+    class_name="大班",
+):
     from utils.academic import resolve_current_academic_term
 
     sy, sem = resolve_current_academic_term()
@@ -128,9 +138,9 @@ def _make_reg(session, *, paid_amount=0, match_status="matched", is_active=True)
     session.add(course)
     session.flush()
     reg = ActivityRegistration(
-        student_name="王小明",
+        student_name=student_name,
         birthday="2020-01-01",
-        class_name="大班",
+        class_name=class_name,
         paid_amount=paid_amount,
         is_active=is_active,
         match_status=match_status,
@@ -355,3 +365,297 @@ class TestExportRowLimit:
         assert _login(c).status_code == 200
         res = c.get("/api/activity/registrations/payment-report")
         assert res.status_code == 200
+
+
+# ── 6. payment-report ws1（繳費總覽）Excel 公式注入防護 ────────────────────
+
+
+class TestPaymentReportFormulaInjection:
+    """S1：ws1「繳費總覽」過去裸用 wb.active 未包 SafeWorksheet，
+    家長自填 student_name/class_name 帶公式前綴可注入財會端 Excel。"""
+
+    def _export_workbook(self, c):
+        import io
+
+        import openpyxl
+
+        res = c.get("/api/activity/registrations/payment-report")
+        assert res.status_code == 200, res.text
+        return openpyxl.load_workbook(io.BytesIO(res.content))
+
+    def test_ws1_student_name_formula_quoted(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="=2+2", class_name="+CMD()")
+            s.commit()
+
+        assert _login(c).status_code == 200
+        wb = self._export_workbook(c)
+        ws1 = wb["繳費總覽"]
+        # row 2 = 第一筆資料列；B=學生、C=班級
+        assert ws1.cell(row=2, column=2).value == "'=2+2"
+        assert ws1.cell(row=2, column=3).value == "'+CMD()"
+
+    def test_ws1_normal_name_unchanged(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="王小明")
+            s.commit()
+
+        assert _login(c).status_code == 200
+        wb = self._export_workbook(c)
+        ws1 = wb["繳費總覽"]
+        assert ws1.cell(row=2, column=2).value == "王小明"
+
+
+# ── 7. ILIKE 萬用字元跳脫（搜尋 % / _ 不再全表匹配） ───────────────────────
+
+
+def _staff_with_students_read(session, username="sec_staff"):
+    user = User(
+        username=username,
+        password_hash=hash_password("Temp123456"),
+        role="admin",
+        permission_names=[
+            "ACTIVITY_READ",
+            "ACTIVITY_WRITE",
+            "STUDENTS_READ",
+            "GUARDIANS_READ",
+        ],
+        is_active=True,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+class TestIlikeWildcardEscape:
+    """S2：raw f"%{search}%" 未跳脫 % / _，搜尋 '%' 會全表匹配
+    （registrations 列表 / pending 列表 / students/search 三處）。"""
+
+    def test_registrations_list_percent_literal(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="王小明")
+            _make_reg(s, student_name="折扣50%生")
+            s.commit()
+
+        assert _login(c).status_code == 200
+        res = c.get("/api/activity/registrations", params={"search": "%"})
+        assert res.status_code == 200, res.text
+        names = [it["student_name"] for it in res.json()["items"]]
+        assert names == ["折扣50%生"]
+
+    def test_registrations_list_underscore_literal(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="王小明")
+            _make_reg(s, student_name="A_B")
+            s.commit()
+
+        assert _login(c).status_code == 200
+        res = c.get("/api/activity/registrations", params={"search": "_"})
+        assert res.status_code == 200, res.text
+        names = [it["student_name"] for it in res.json()["items"]]
+        assert names == ["A_B"]
+
+    def test_pending_list_percent_literal(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="王小明", match_status="pending")
+            _make_reg(s, student_name="折扣50%生", match_status="pending")
+            s.commit()
+        with sf() as s:
+            for reg in s.query(ActivityRegistration).all():
+                reg.pending_review = True
+            s.commit()
+
+        assert _login(c).status_code == 200
+        res = c.get(
+            "/api/activity/registrations/pending",
+            params={"search": "%", "status": "pending"},
+        )
+        assert res.status_code == 200, res.text
+        names = [it["student_name"] for it in res.json()["items"]]
+        assert names == ["折扣50%生"]
+
+    def test_admin_search_students_percent_literal(self, client):
+        c, sf = client
+        from models.database import Student
+
+        with sf() as s:
+            _staff_with_students_read(s)
+            s.add(
+                Student(
+                    student_id="S001",
+                    name="王小明",
+                    is_active=True,
+                )
+            )
+            s.add(
+                Student(
+                    student_id="S002",
+                    name="百分%童",
+                    is_active=True,
+                )
+            )
+            s.commit()
+
+        assert _login(c, username="sec_staff").status_code == 200
+        res = c.get("/api/activity/students/search", params={"q": "%"})
+        assert res.status_code == 200, res.text
+        names = [it["name"] for it in res.json()["items"]]
+        assert names == ["百分%童"]
+
+
+# ── 8. payment-report 操作人員 / 作廢人去敏化（對齊 JSON API） ──────────────
+
+
+def _reader(session, username="sec_reader"):
+    """只有 ACTIVITY_READ（無 ACTIVITY_PAYMENT_APPROVE）的閱讀者。"""
+    user = User(
+        username=username,
+        password_hash=hash_password("Temp123456"),
+        role="admin",
+        permission_names=["ACTIVITY_READ"],
+        is_active=True,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+class TestPaymentReportOperatorMasking:
+    """S5：ws2「繳費明細」operator / voided_by 過去原文輸出；
+    JSON API（GET payments）已用 _desensitize_operator 對非簽核權限者
+    遮成首字+***，export 路徑必須對齊。"""
+
+    def _seed_payment(self, sf):
+        from datetime import datetime
+
+        with sf() as s:
+            _admin(s)
+            _reader(s)
+            reg, _ = _make_reg(s, paid_amount=1000)
+            s.flush()
+            s.add(
+                ActivityPaymentRecord(
+                    registration_id=reg.id,
+                    type="payment",
+                    amount=1000,
+                    payment_date=date.today(),
+                    payment_method="現金",
+                    operator="fee_admin",
+                    voided_at=datetime(2026, 6, 1, 10, 0),
+                    voided_by="boss_user",
+                    void_reason="重複入帳",
+                )
+            )
+            s.commit()
+
+    def _export_ws2(self, c):
+        import io
+
+        import openpyxl
+
+        res = c.get("/api/activity/registrations/payment-report")
+        assert res.status_code == 200, res.text
+        return openpyxl.load_workbook(io.BytesIO(res.content))["繳費明細"]
+
+    def test_reader_without_approve_sees_masked_operator(self, client):
+        c, sf = client
+        self._seed_payment(sf)
+        assert _login(c, username="sec_reader").status_code == 200
+        ws2 = self._export_ws2(c)
+        assert ws2.cell(row=2, column=7).value == "f***"  # operator
+        assert ws2.cell(row=2, column=10).value == "b***"  # voided_by
+
+    def test_approver_sees_full_operator(self, client):
+        c, sf = client
+        self._seed_payment(sf)
+        assert _login(c).status_code == 200  # sec_admin 持 APPROVE
+        ws2 = self._export_ws2(c)
+        assert ws2.cell(row=2, column=7).value == "fee_admin"
+        assert ws2.cell(row=2, column=10).value == "boss_user"
+
+
+# ── 9. 點名場次詳情 student_id / classroom_id 遮罩（S6） ───────────────────
+
+
+class TestSessionDetailStudentIdMasking:
+    """S6：GET /sessions/{id} 學生項過去原文輸出 student_id / classroom_id，
+    僅 ACTIVITY_READ 的 caller 也拿得到學生 FK 與班級 FK。
+    對齊 registrations_pending 慣例：缺 STUDENTS_READ 時設 None。"""
+
+    def _seed_session(self, sf):
+        from models.database import Student
+
+        with sf() as s:
+            _admin(s)  # 無 STUDENTS_READ
+            _staff_with_students_read(s)  # 有 STUDENTS_READ
+            classroom = Classroom(name="大象班", is_active=True)
+            s.add(classroom)
+            s.flush()
+            student = Student(
+                student_id="S001",
+                name="王小明",
+                is_active=True,
+                classroom_id=classroom.id,
+            )
+            s.add(student)
+            s.flush()
+            reg, course = _make_reg(s)
+            reg.student_id = student.id
+            reg.classroom_id = classroom.id
+            sess = ActivitySession(
+                course_id=course.id,
+                session_date=date.today(),
+                created_by="test",
+            )
+            s.add(sess)
+            s.commit()
+            return sess.id, student.id, classroom.id
+
+    def test_without_students_read_ids_masked(self, client):
+        c, sf = client
+        sess_id, _, _ = self._seed_session(sf)
+        assert _login(c).status_code == 200  # sec_admin 無 STUDENTS_READ
+        res = c.get(f"/api/activity/attendance/sessions/{sess_id}")
+        assert res.status_code == 200, res.text
+        student = res.json()["students"][0]
+        assert student["student_id"] is None
+        assert student["classroom_id"] is None
+        # 名冊必要欄位保留
+        assert student["student_name"] == "王小明"
+
+    def test_without_students_read_group_ids_masked(self, client):
+        c, sf = client
+        sess_id, _, _ = self._seed_session(sf)
+        assert _login(c).status_code == 200
+        res = c.get(
+            f"/api/activity/attendance/sessions/{sess_id}", params={"group_by": "classroom"}
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        for g in body["groups"]:
+            assert g["classroom_id"] is None
+            for st in g["students"]:
+                assert st["student_id"] is None
+                assert st["classroom_id"] is None
+        # 分組本身仍按真實班級進行（名稱保留）
+        assert body["groups"][0]["classroom_name"] == "大象班"
+
+    def test_with_students_read_ids_visible(self, client):
+        c, sf = client
+        sess_id, student_pk, classroom_id = self._seed_session(sf)
+        assert _login(c, username="sec_staff").status_code == 200
+        res = c.get(f"/api/activity/attendance/sessions/{sess_id}")
+        assert res.status_code == 200, res.text
+        student = res.json()["students"][0]
+        assert student["student_id"] == student_pk
+        assert student["classroom_id"] == classroom_id

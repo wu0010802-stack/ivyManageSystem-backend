@@ -45,7 +45,6 @@ from utils.errors import raise_safe_500
 from utils.finance_cache import invalidate_finance_summary_cache
 from utils.finance_guards import has_finance_approve
 from utils.permissions import Permission
-from utils.portfolio_access import can_view_student_pii
 from utils.rate_limit import create_limiter
 
 from services.activity_payment_guards import require_approve_for_refund_diff
@@ -71,6 +70,8 @@ from ._shared import (
     _invalidate_activity_dashboard_caches,
     _require_daily_close_unlocked,
     compute_daily_snapshot,
+    resolve_student_pii_scope,
+    student_pii_row_visible,
     require_refund_reason,
     require_approve_for_large_refund,
     validate_payment_date,
@@ -521,10 +522,16 @@ def outstanding_by_student(
 
         # F-028：缺 STUDENTS_READ 角色遮罩 birthday（保留 student_name / class_name
         # 為 POS 必要欄）
-        can_see_student = can_view_student_pii(current_user)
+        # S7：STUDENTS_READ:own_class 者對非管轄班級的群組照樣遮罩（group 內
+        # 任一報名屬管轄班級即視為自班學生）
+        pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
 
         result_groups = []
         for (student_name, birthday), group_regs in groups.items():
+            can_see_student = any(
+                student_pii_row_visible(pii_visible, pii_allowed, reg.classroom_id)
+                for reg in group_regs
+            )
             registrations_payload = []
             group_total = 0
             for reg in group_regs:

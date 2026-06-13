@@ -38,6 +38,7 @@ from services.activity_service import activity_service
 from services.report_cache_service import report_cache_service
 from utils.auth import require_staff_permission, JWT_SECRET_KEY
 from utils.permissions import Permission
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,67 @@ from services.activity_payment_guards import (  # noqa: E402, F401
     require_approve_for_large_refund,
     require_approve_for_cumulative_refund,
 )
+
+
+def _desensitize_operator(operator: Optional[str], viewer_has_approve: bool) -> str:
+    """對 operator / voided_by 欄位去敏化：非簽核權限者只看得到首字 + ***。
+
+    Why: 員工帳號暴露給過廣的閱讀者（ACTIVITY_READ）等同於社工輔助材料；
+    但對於能執行簽核的主管/老闆仍需看完整帳號以便對帳追責。
+
+    S5（2026-06-13）：原位於 registrations_payments.py，因 Excel 匯出
+    （registrations_static.export_payment_report）也需共用而移至此處。
+    """
+    if not operator:
+        return ""
+    if viewer_has_approve:
+        return operator
+    if operator == "system":
+        return "system"
+    # 保留首字，其餘遮蔽（例如 "fee_admin" → "f***"）
+    return operator[0] + "***"
+
+
+def resolve_student_pii_scope(db_session, current_user: dict):
+    """S7（D1）：解析 caller 對學生 PII 的可視範圍（scope-aware 版 F-026/027/028）。
+
+    背景：ACTIVITY_* 不在 SCOPE_AWARE_CODES，api/activity/ 過去只用
+    「是否持 STUDENTS_READ」（bare has_permission，對 `:own_class` 也回 True）
+    決定 PII 遮罩 → 持 STUDENTS_READ:own_class 的自訂角色經才藝端點看全校。
+
+    Returns:
+        (visible, allowed_classroom_ids)
+        - (False, None)：完全不可見（無 STUDENTS_READ）
+        - (True, None) ：全園可見（wildcard / bare / `:all`）
+        - (True, set)  ：僅管轄班級可見（`:own_class`；set 可為空 = 全遮）
+
+    判斷重用 utils.portfolio_access 既有慣例：is_unrestricted(code=) 走
+    PermissionGrant.scope，accessible_classroom_ids(code=) 以
+    employee_id ↔ Classroom 導師欄位取得管轄班級。
+    """
+    from utils.portfolio_access import (
+        accessible_classroom_ids,
+        can_view_student_pii,
+        is_unrestricted,
+    )
+
+    if not can_view_student_pii(current_user):
+        return False, None
+    code = Permission.STUDENTS_READ.value
+    if is_unrestricted(current_user, code=code):
+        return True, None
+    return True, set(accessible_classroom_ids(db_session, current_user, code=code))
+
+
+def student_pii_row_visible(visible: bool, allowed_classroom_ids, classroom_id) -> bool:
+    """resolve_student_pii_scope 結果套用到單列：own_class 者對非管轄班級
+    （含 classroom_id=None 未分班，fail-closed）照樣遮罩。"""
+    if not visible:
+        return False
+    if allowed_classroom_ids is None:
+        return True
+    return classroom_id is not None and classroom_id in allowed_classroom_ids
+
 
 # F2 第一階段：時區 helper 抽到 utils/taipei_time.py 共用（fees / activity / portal
 # 都需要同一條台灣時區邏輯）。本檔保留 re-export 維持既有 import surface。
@@ -639,12 +701,13 @@ def _build_registration_filter_query(
     if match_status:
         q = q.filter(ActivityRegistration.match_status == match_status)
     if search:
-        like = f"%{search}%"
+        # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 全表匹配（對齊 api/audit.py 慣例）
+        like = f"%{escape_like_pattern(search)}%"
         q = q.filter(
             or_(
-                ActivityRegistration.student_name.ilike(like),
-                ActivityRegistration.class_name.ilike(like),
-                ActivityRegistration.parent_phone.ilike(like),
+                ActivityRegistration.student_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                ActivityRegistration.class_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                ActivityRegistration.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR),
             )
         )
     if payment_status == "paid":
@@ -798,7 +861,9 @@ def query_valid_session_registrations(
         )
     )
     if classroom_ids_filter is not None:
-        query = query.filter(ActivityRegistration.classroom_id.in_(classroom_ids_filter))
+        query = query.filter(
+            ActivityRegistration.classroom_id.in_(classroom_ids_filter)
+        )
     return query.all()
 
 
@@ -853,12 +918,21 @@ def _build_session_detail_response(
     *,
     classroom_ids_filter: list | None = None,
     group_by: Optional[str] = None,
+    mask_student_ids: bool = False,
+    student_pii_visible_classroom_ids: set | None = None,
 ) -> dict:
     """取得場次詳情 + 出席狀態，供管理端及 Portal 共用。
 
     classroom_ids_filter=None  → 包含所有 enrolled 學生（管理端 + 開放後的 portal）
     classroom_ids_filter=[...] → 只包含指定班級的學生（Portal，FK 比對）
     group_by="classroom"       → 額外回傳 groups：按 classroom_id 分組
+    mask_student_ids=True      → 學生項與分組的 student_id / classroom_id 設 None
+                                 （S6：admin caller 缺 STUDENTS_READ 時遮罩，對齊
+                                 registrations_pending 慣例；portal caller 不傳，
+                                 維持原行為）。分組仍按真實班級進行，僅 FK 不外洩。
+    student_pii_visible_classroom_ids → 非 None 時做 per-row 遮罩：classroom_id
+                                 不在集合內的列（含未分班）一樣遮 FK
+                                 （S7：STUDENTS_READ:own_class 限管轄班級）。
 
     篩選條件：
     - RegistrationCourse.status == 'enrolled'
@@ -984,5 +1058,24 @@ def _build_session_detail_response(
         if unassigned:
             classified.append(unassigned)
         response["groups"] = classified
+
+    # S6/S7：分組完成後才遮罩（分組需要真實 classroom_id 當 key）；
+    # groups 內的 students 與頂層 students 共享同一批 dict，就地改寫兩處都生效。
+    if mask_student_ids or student_pii_visible_classroom_ids is not None:
+        allowed = student_pii_visible_classroom_ids
+
+        def _row_masked(classroom_id) -> bool:
+            if mask_student_ids:
+                return True
+            # own_class：非管轄班級（含未分班 None）照樣遮（fail-closed）
+            return classroom_id is None or classroom_id not in allowed
+
+        for s in students:
+            if _row_masked(s["classroom_id"]):
+                s["student_id"] = None
+                s["classroom_id"] = None
+        for g in response.get("groups", []):
+            if _row_masked(g["classroom_id"]):
+                g["classroom_id"] = None
 
     return response
