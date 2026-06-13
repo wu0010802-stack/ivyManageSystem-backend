@@ -9,9 +9,10 @@ from typing import List, Optional
 from urllib.parse import quote
 
 import openpyxl
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from models.database import get_session
@@ -20,6 +21,7 @@ from models.activity import (
     ActivitySession,
     ActivityAttendance,
 )
+from utils.audit import write_explicit_audit
 from utils.auth import get_current_user, require_staff_permission
 from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
@@ -171,9 +173,16 @@ def create_session(
 )
 def delete_session(
     session_id: int,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """刪除場次及所有點名記錄"""
+    """刪除場次及所有點名記錄（顯式留稽核）
+
+    硬刪場次會 CASCADE 抹除該場所有點名紀錄；AuditMiddleware 的
+    ENTITY_PATTERNS 不涵蓋 /api/activity/attendance/* 路徑，故在此
+    顯式落 audit_logs（誰、哪課、哪日、抹掉幾筆出席紀錄），對齊
+    退課路徑「同步清除 N 筆舊點名紀錄」的稽核慣例。
+    """
     session = get_session()
     try:
         sess = (
@@ -183,8 +192,42 @@ def delete_session(
         )
         if not sess:
             raise HTTPException(status_code=404, detail="找不到場次")
+
+        # 刪除前先快照稽核素材（刪後 CASCADE 就查不到了）
+        course_name = (
+            session.query(ActivityCourse.name)
+            .filter(ActivityCourse.id == sess.course_id)
+            .scalar()
+        ) or ""
+        removed_attendance = (
+            session.query(func.count(ActivityAttendance.id))
+            .filter(ActivityAttendance.session_id == session_id)
+            .scalar()
+        ) or 0
+        course_id = sess.course_id
+        session_date = sess.session_date.isoformat()
+        operator = current_user.get("username", "")
+
         session.delete(sess)
         session.commit()
+
+        write_explicit_audit(
+            request,
+            action="DELETE",
+            entity_type="activity_session",
+            entity_id=str(session_id),
+            summary=(
+                f"刪除才藝場次：「{course_name}」{session_date}"
+                f"（連帶抹除 {removed_attendance} 筆點名紀錄）"
+            ),
+            changes={
+                "course_id": course_id,
+                "course_name": course_name,
+                "session_date": session_date,
+                "removed_attendance": removed_attendance,
+                "operator": operator,
+            },
+        )
         return {"ok": True}
     finally:
         session.close()

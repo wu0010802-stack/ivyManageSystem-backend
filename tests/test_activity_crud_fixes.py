@@ -229,3 +229,88 @@ class TestSoftDeletedNameCanBeReused:
             )
             with pytest.raises(IntegrityError):
                 s.commit()
+
+
+# ────────────────────────────────────────────────────────────────── #
+# K3 — delete_session 硬刪須留稽核 log
+# ────────────────────────────────────────────────────────────────── #
+
+
+class TestDeleteSessionAudit:
+    def test_delete_session_writes_explicit_audit(self, client_factory, monkeypatch):
+        """硬刪場次 CASCADE 抹點名紀錄，必須顯式落稽核（誰/哪課/哪日/幾筆）。"""
+        from datetime import date
+        from unittest.mock import MagicMock
+
+        from models.database import (
+            ActivityAttendance,
+            ActivityRegistration,
+            ActivitySession,
+        )
+
+        client, sf = client_factory
+        _setup_admin(sf, client)
+
+        sy, sem = resolve_current_academic_term()
+        with sf() as s:
+            course = ActivityCourse(
+                name="直排輪", price=1000, school_year=sy, semester=sem
+            )
+            s.add(course)
+            s.flush()
+            sess = ActivitySession(course_id=course.id, session_date=date(2026, 6, 10))
+            s.add(sess)
+            s.flush()
+            for i in range(2):
+                reg = ActivityRegistration(
+                    student_name=f"學生{i}",
+                    birthday="2020-01-01",
+                    is_active=True,
+                    school_year=sy,
+                    semester=sem,
+                )
+                s.add(reg)
+                s.flush()
+                s.add(
+                    ActivityAttendance(
+                        session_id=sess.id,
+                        registration_id=reg.id,
+                        is_present=True,
+                    )
+                )
+            s.commit()
+            session_id = sess.id
+
+        mock_audit = MagicMock()
+        import api.activity.attendance as attendance_module
+
+        monkeypatch.setattr(attendance_module, "write_explicit_audit", mock_audit)
+
+        res = client.delete(f"/api/activity/attendance/sessions/{session_id}")
+        assert res.status_code == 200
+
+        assert mock_audit.call_count == 1
+        kwargs = mock_audit.call_args.kwargs
+        assert kwargs["action"] == "DELETE"
+        assert kwargs["entity_type"] == "activity_session"
+        assert kwargs["entity_id"] == str(session_id)
+        assert "直排輪" in kwargs["summary"]
+        assert "2026-06-10" in kwargs["summary"]
+        assert "2" in kwargs["summary"]  # 抹掉 2 筆點名紀錄
+        assert kwargs["changes"]["removed_attendance"] == 2
+        assert kwargs["changes"]["operator"] == "admin"
+
+    def test_delete_session_not_found_no_audit(self, client_factory, monkeypatch):
+        """404 路徑不落稽核。"""
+        from unittest.mock import MagicMock
+
+        client, sf = client_factory
+        _setup_admin(sf, client)
+
+        mock_audit = MagicMock()
+        import api.activity.attendance as attendance_module
+
+        monkeypatch.setattr(attendance_module, "write_explicit_audit", mock_audit)
+        res = client.delete("/api/activity/attendance/sessions/99999")
+        assert res.status_code == 404
+        assert mock_audit.call_count == 0
