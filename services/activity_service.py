@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, case
 
+from utils.advisory_lock import acquire_activity_daily_close_lock
+
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
@@ -1117,12 +1119,23 @@ class ActivityService:
         Why: 原本軟刪時 paid_amount 仍掛著，帳務上成為幽靈金額；新機制保留
         完整 payment history 供稽核，同時強制操作者在刪除前面對退費責任。
         """
+        # P1-5 / M2 鎖序協議：advisory lock 先、row lock 後（協議見 utils.advisory_lock
+        # acquire_activity_daily_close_lock docstring，與 remove_supply/withdraw 對齊）。
+        # 原本既不取 per-date advisory lock、也不對 reg 取 row lock：並發下與同日日結
+        # 簽核可同時提交 → snapshot 漏記沖帳退費（永久漏單）；與 POS checkout 並發則讀到
+        # stale paid_amount → 沖帳金額算錯且 paid_amount=0 覆蓋 checkout 的加值（lost
+        # update，付款變孤兒）。force_refund 才會寫沖帳，故鎖也只在此情境取。
+        today = datetime.now(TAIPEI_TZ).date()
+        if force_refund:
+            acquire_activity_daily_close_lock(session, today)
+
         reg = (
             session.query(ActivityRegistration)
             .filter(
                 ActivityRegistration.id == registration_id,
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not reg:
@@ -1148,10 +1161,9 @@ class ActivityService:
 
         # 若有已繳金額，寫退費沖帳紀錄（不 DELETE 舊 payment 歷史）
         if current_paid > 0:
-            # 以台灣時區取今日，避免 UTC 伺服器在近午夜台灣時間寫到錯的一天
-            today = datetime.now(TAIPEI_TZ).date()
-            # 已簽核日守衛：避免 snapshot 與 DB 失準。service 層改拋 ValueError
-            # 由 router 轉為 HTTPException（避免 service 依賴 fastapi）。
+            # today 已於方法開頭以台灣時區取得並先取 advisory lock（見上方 M2 協議）。
+            # 已簽核日守衛：advisory lock 持有下讀 close 表，避免 snapshot 與 DB 失準。
+            # service 層改拋 ValueError 由 router 轉為 HTTPException（避免 service 依賴 fastapi）。
             is_closed = (
                 session.query(ActivityPosDailyClose.close_date)
                 .filter(ActivityPosDailyClose.close_date == today)
