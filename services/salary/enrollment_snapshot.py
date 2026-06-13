@@ -48,8 +48,117 @@ def compute_live_counts(session, year: int, month: int, mode: str = MODE_MONTH_E
 
 
 def _compute_daily_weighted_counts(session, year: int, month: int):
-    """按日加權平均在籍：Σ(每日在籍數) ÷ 當月日曆天數，1 位小數（L3）。"""
-    raise NotImplementedError("daily_weighted 於 L3 實作")
+    """按日加權平均在籍：Σ(每日在籍數) ÷ 當月日曆天數，1 位小數（L3）。
+
+    邊界對齊 month_end 模式的 student_active_on_filter：
+    - 在籍區間 = [max(月初, enrollment_date), min(月底, graduation_date,
+      withdrawal_date - 1 天)]（withdrawal 當日不在籍、graduation 當日在籍）
+    - 班級歸屬依 StudentClassroomTransfer 按日分段（轉班日起屬新班），
+      語意同 classroom_student_count_map 的歷史感知。
+    """
+    from collections import defaultdict
+    from datetime import timedelta
+
+    from sqlalchemy import or_
+
+    from models.database import Student
+    from models.student_transfer import StudentClassroomTransfer
+
+    days_in_month = calendar.monthrange(year, month)[1]
+    month_start = date(year, month, 1)
+    month_end = date(year, month, days_in_month)
+
+    students = (
+        session.query(
+            Student.id,
+            Student.classroom_id,
+            Student.enrollment_date,
+            Student.graduation_date,
+            Student.withdrawal_date,
+        )
+        .filter(
+            or_(
+                Student.enrollment_date.is_(None), Student.enrollment_date <= month_end
+            ),
+            or_(
+                Student.graduation_date.is_(None),
+                Student.graduation_date >= month_start,
+            ),
+            or_(
+                Student.withdrawal_date.is_(None),
+                Student.withdrawal_date > month_start,
+            ),
+        )
+        .all()
+    )
+    if not students:
+        return {"school": 0.0, "classes": {}}
+
+    transfers_by_student: dict[int, list] = defaultdict(list)
+    rows = (
+        session.query(
+            StudentClassroomTransfer.student_id,
+            StudentClassroomTransfer.from_classroom_id,
+            StudentClassroomTransfer.to_classroom_id,
+            StudentClassroomTransfer.transferred_at,
+        )
+        .filter(StudentClassroomTransfer.student_id.in_([s.id for s in students]))
+        .order_by(
+            StudentClassroomTransfer.transferred_at.asc(),
+            StudentClassroomTransfer.id.asc(),
+        )
+        .all()
+    )
+    for r in rows:
+        transfers_by_student[r.student_id].append(r)
+
+    class_days: dict[int, int] = defaultdict(int)
+    school_days = 0
+    for s in students:
+        seg_start = max(month_start, s.enrollment_date or month_start)
+        active_end = month_end
+        if s.graduation_date:
+            active_end = min(active_end, s.graduation_date)
+        if s.withdrawal_date:
+            active_end = min(active_end, s.withdrawal_date - timedelta(days=1))
+        if seg_start > active_end:
+            continue
+        school_days += (active_end - seg_start).days + 1
+
+        # 起始班：≤ seg_start 最後一筆轉班的 to；無則更晚轉班的 from；再無則現態
+        transfers = transfers_by_student.get(s.id, [])
+        current_class = s.classroom_id
+        later_transfers = []
+        last_before = None
+        for t in transfers:
+            if t.transferred_at.date() <= seg_start:
+                last_before = t
+            else:
+                later_transfers.append(t)
+        if last_before is not None:
+            current_class = last_before.to_classroom_id
+        elif later_transfers:
+            current_class = later_transfers[0].from_classroom_id
+
+        for t in later_transfers:
+            t_date = t.transferred_at.date()
+            if t_date > active_end:
+                break
+            if current_class is not None:
+                class_days[current_class] += (t_date - seg_start).days
+            current_class = t.to_classroom_id
+            seg_start = t_date
+        if current_class is not None:
+            class_days[current_class] += (active_end - seg_start).days + 1
+
+    return {
+        "school": round(school_days / days_in_month, 1),
+        "classes": {
+            cid: round(days / days_in_month, 1)
+            for cid, days in class_days.items()
+            if days > 0
+        },
+    }
 
 
 def generate_snapshot(
@@ -57,7 +166,7 @@ def generate_snapshot(
     year: int,
     month: int,
     *,
-    mode: str = MODE_MONTH_END,
+    mode: str | None = None,
     updated_by: str | None = None,
     force: bool = False,
 ) -> dict:
@@ -69,6 +178,8 @@ def generate_snapshot(
     """
     from models.enrollment_snapshot import ClassEnrollmentSnapshot
 
+    if mode is None:
+        mode = _live_mode(session, year)
     live = compute_live_counts(session, year, month, mode)
     existing_rows = (
         session.query(ClassEnrollmentSnapshot)
@@ -170,10 +281,34 @@ def resolve_bonus_counts(session, year: int, month: int):
     snapshot = get_snapshot_counts(session, year, month)
     if snapshot is not None:
         return snapshot["school"], snapshot["classes"]
-    live = compute_live_counts(session, year, month, _live_mode(session))
+    live = compute_live_counts(session, year, month, _live_mode(session, year))
     return _num(live["school"]), {k: _num(v) for k, v in live["classes"].items()}
 
 
-def _live_mode(session) -> str:
-    """無快照時的即時計算模式（L3 接 BonusConfig.enrollment_count_mode）。"""
-    return MODE_MONTH_END
+def _live_mode(session, year: int | None = None) -> str:
+    """無快照時的即時計算模式：讀 BonusConfig.enrollment_count_mode（L3）。
+
+    優先以年度解析（config_resolver，歷史重算對齊該年度設定）；缺年度列
+    fallback 最新 active；整表空（dev/測試/全新部署）→ month_end（零漂移）。
+    """
+    from models.config import BonusConfig
+
+    if session.query(BonusConfig.id).first() is None:
+        return MODE_MONTH_END
+    row = None
+    if year is not None:
+        try:
+            from services.salary.config_resolver import resolve_config
+
+            row = resolve_config(session, BonusConfig, year, year_col="config_year")
+        except Exception:
+            row = None
+    if row is None:
+        row = (
+            session.query(BonusConfig)
+            .filter(BonusConfig.is_active.is_(True))
+            .order_by(BonusConfig.id.desc())
+            .first()
+        )
+    mode = getattr(row, "enrollment_count_mode", None) if row is not None else None
+    return mode or MODE_MONTH_END

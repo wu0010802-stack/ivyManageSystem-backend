@@ -56,6 +56,7 @@ _BONUS_FIELDS = [
     "overtime_assistant_normal",
     "overtime_assistant_baby",
     "school_wide_target",
+    "enrollment_count_mode",
     # 階段 2-B（2026-05-07）：園規常數從 hardcode 搬到 BonusConfig
     "meeting_default_hours",
     "meeting_absence_penalty",
@@ -98,6 +99,11 @@ class BonusConfigUpdate(BaseModel):
     overtime_assistant_normal: Optional[float] = Field(None, ge=0)
     overtime_assistant_baby: Optional[float] = Field(None, ge=0)
     school_wide_target: Optional[int] = Field(None, ge=0)
+    enrollment_count_mode: Optional[str] = Field(
+        None,
+        pattern="^(month_end|daily_weighted)$",
+        description="在籍人數模式：month_end=月底快照 / daily_weighted=按日加權",
+    )
     # 階段 2-B（2026-05-07）：園規常數
     # 上限：每場會議計薪不超過勞基法每日加班上限（防誤輸 99）
     meeting_default_hours: Optional[float] = Field(None, ge=0, le=12)
@@ -169,6 +175,7 @@ def get_bonus_config(
             "overtime_assistant_normal": config.overtime_assistant_normal,
             "overtime_assistant_baby": config.overtime_assistant_baby,
             "school_wide_target": config.school_wide_target,
+            "enrollment_count_mode": config.enrollment_count_mode,
             # 既有欄位（之前遺漏）
             "meeting_default_hours": config.meeting_default_hours,
             "meeting_absence_penalty": config.meeting_absence_penalty,
