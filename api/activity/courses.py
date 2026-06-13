@@ -240,7 +240,9 @@ def create_course(
         session.close()
 
 
-@router.post("/courses/copy-from-previous", status_code=201, response_model=CoursesCopyResultOut)
+@router.post(
+    "/courses/copy-from-previous", status_code=201, response_model=CoursesCopyResultOut
+)
 def copy_courses_from_previous(
     body: CopyCoursesRequest,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -299,6 +301,13 @@ def copy_courses_from_previous(
                 school_year=body.target_school_year,
                 semester=body.target_semester,
                 is_active=True,
+                # Phase 3 適齡 + 結構化時段也要帶上（與 create_course 對齊；
+                # 漏掉會讓複製出的課程失去前台不適齡/衝堂 advisory 基礎資料）
+                min_age_months=src.min_age_months,
+                max_age_months=src.max_age_months,
+                meeting_weekday=src.meeting_weekday,
+                meeting_start_time=src.meeting_start_time,
+                meeting_end_time=src.meeting_end_time,
             )
             session.add(new_course)
             session.flush()
@@ -356,8 +365,9 @@ def update_course(
             raise _not_found("課程")
 
         if body.name and body.name != course.name:
-            # 限定同學期 + is_active，與 UniqueConstraint (name, school_year, semester)
-            # 一致；跨學期同名是允許的，不該在此誤報衝突
+            # 限定同學期 + is_active，與 partial unique index
+            # (name, school_year, semester) WHERE is_active 一致；
+            # 跨學期同名是允許的，不該在此誤報衝突
             dup = (
                 session.query(ActivityCourse)
                 .filter(

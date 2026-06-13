@@ -7,6 +7,7 @@ from datetime import datetime
 from utils.taipei_time import now_taipei_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 
 from models.database import get_session, ParentInquiry
 from utils.auth import require_staff_permission
@@ -49,7 +50,14 @@ def get_inquiries(
             }
             for r in rows
         ]
-        return {"items": items, "total": total}
+        # 全量未讀數（不受 is_read 篩選與分頁影響）：前端 badge 在任何
+        # 篩選視圖下都要顯示正確的「待處理」數量
+        unread_count = (
+            session.query(func.count(ParentInquiry.id))
+            .filter(ParentInquiry.is_read.is_(False))
+            .scalar()
+        ) or 0
+        return {"items": items, "total": total, "unread_count": unread_count}
     finally:
         session.close()
 

@@ -123,6 +123,19 @@ class PublicInquiryPayload(BaseModel):
     hp: str = Field(default="", alias="_hp", max_length=200)
     ts: Optional[int] = Field(default=None, alias="_ts")
 
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, v: str) -> str:
+        """寬鬆電話驗證：inquiry 可能留市話/國際碼，不可用 _validate_tw_mobile
+        （只收 09 手機，太嚴）。僅允許數字、+、-、()、空白，且至少 7 個數字。
+        """
+        v = v.strip()
+        if not re.fullmatch(r"[0-9+\-() ]+", v):
+            raise ValueError("聯絡電話格式不正確：僅可包含數字、+、-、括號與空白")
+        if sum(ch.isdigit() for ch in v) < 7:
+            raise ValueError("聯絡電話過短：至少需 7 位數字")
+        return v
+
 
 class PublicRegistrationPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
