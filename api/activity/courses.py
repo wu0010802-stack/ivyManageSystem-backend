@@ -365,8 +365,9 @@ def update_course(
             raise _not_found("課程")
 
         if body.name and body.name != course.name:
-            # 限定同學期 + is_active，與 UniqueConstraint (name, school_year, semester)
-            # 一致；跨學期同名是允許的，不該在此誤報衝突
+            # 限定同學期 + is_active，與 partial unique index
+            # (name, school_year, semester) WHERE is_active 一致；
+            # 跨學期同名是允許的，不該在此誤報衝突
             dup = (
                 session.query(ActivityCourse)
                 .filter(

@@ -144,3 +144,88 @@ class TestCopyCoursesCarriesPhase3Fields:
             assert copied.meeting_weekday == 2
             assert copied.meeting_start_time == time(15, 30)
             assert copied.meeting_end_time == time(16, 30)
+
+
+# ────────────────────────────────────────────────────────────────── #
+# K2 — 軟刪後同學期同名重建（partial unique index WHERE is_active）
+# ────────────────────────────────────────────────────────────────── #
+
+
+class TestSoftDeletedNameCanBeReused:
+    def test_course_recreate_after_soft_delete(self, client_factory):
+        """軟刪課程後，同學期同名重建必須成功（不可撞全列 unique → 500）。"""
+        client, sf = client_factory
+        _setup_admin(sf, client)
+
+        res = client.post("/api/activity/courses", json={"name": "圍棋", "price": 1200})
+        assert res.status_code == 201
+        course_id = res.json()["id"]
+
+        res = client.delete(f"/api/activity/courses/{course_id}")
+        assert res.status_code == 200
+
+        res = client.post("/api/activity/courses", json={"name": "圍棋", "price": 1500})
+        assert res.status_code == 201, res.text
+
+        with sf() as s:
+            rows = s.query(ActivityCourse).filter(ActivityCourse.name == "圍棋").all()
+            assert len(rows) == 2
+            assert sorted(r.is_active for r in rows) == [False, True]
+
+    def test_supply_recreate_after_soft_delete(self, client_factory):
+        """軟刪用品後，同學期同名重建必須成功。"""
+        client, sf = client_factory
+        _setup_admin(sf, client)
+
+        res = client.post(
+            "/api/activity/supplies", json={"name": "畫具組", "price": 300}
+        )
+        assert res.status_code == 201
+        supply_id = res.json()["id"]
+
+        res = client.delete(f"/api/activity/supplies/{supply_id}")
+        assert res.status_code == 200
+
+        res = client.post(
+            "/api/activity/supplies", json={"name": "畫具組", "price": 350}
+        )
+        assert res.status_code == 201, res.text
+
+        with sf() as s:
+            rows = s.query(ActivitySupply).filter(ActivitySupply.name == "畫具組").all()
+            assert len(rows) == 2
+
+    def test_active_duplicate_still_rejected(self, client_factory):
+        """應用層 active 重名檢查保留：仍回 400 友善訊息。"""
+        client, sf = client_factory
+        _setup_admin(sf, client)
+
+        assert (
+            client.post(
+                "/api/activity/courses", json={"name": "直排輪", "price": 1000}
+            ).status_code
+            == 201
+        )
+        res = client.post(
+            "/api/activity/courses", json={"name": "直排輪", "price": 1000}
+        )
+        assert res.status_code == 400
+        assert "已存在" in res.json()["detail"]
+
+    def test_db_level_partial_unique_blocks_active_dup(self, client_factory):
+        """DB 層 partial unique：兩筆 is_active=True 同名同學期直插必須被擋。"""
+        from sqlalchemy.exc import IntegrityError
+
+        client, sf = client_factory
+        sy, sem = resolve_current_academic_term()
+        with sf() as s:
+            s.add(
+                ActivityCourse(name="跆拳道", price=1000, school_year=sy, semester=sem)
+            )
+            s.commit()
+        with sf() as s:
+            s.add(
+                ActivityCourse(name="跆拳道", price=1000, school_year=sy, semester=sem)
+            )
+            with pytest.raises(IntegrityError):
+                s.commit()

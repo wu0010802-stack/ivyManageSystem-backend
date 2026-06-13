@@ -69,8 +69,19 @@ class ActivityCourse(Base):
     updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
-        UniqueConstraint(
-            "name", "school_year", "semester", name="uq_activity_course_name_term"
+        # 同學期同名唯一只看 is_active=True（partial unique index）。
+        # 全列 UniqueConstraint 會讓「軟刪後同學期同名重建」撞 IntegrityError
+        # → raise_safe_500，且該名稱永久不可再用（名稱死鎖）。
+        # 應用層 create 的 active 重名檢查保留（友善 400），此 index 為 DB 兜底。
+        # migration: actuq01
+        Index(
+            "uq_activity_course_name_term",
+            "name",
+            "school_year",
+            "semester",
+            unique=True,
+            postgresql_where=text("is_active = TRUE"),
+            sqlite_where=text("is_active = 1"),
         ),
         Index("ix_activity_courses_term", "school_year", "semester"),
     )
@@ -92,8 +103,15 @@ class ActivitySupply(Base):
     updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     __table_args__ = (
-        UniqueConstraint(
-            "name", "school_year", "semester", name="uq_activity_supply_name_term"
+        # 同上（ActivityCourse）：軟刪後同名重建不可撞 unique。migration: actuq01
+        Index(
+            "uq_activity_supply_name_term",
+            "name",
+            "school_year",
+            "semester",
+            unique=True,
+            postgresql_where=text("is_active = TRUE"),
+            sqlite_where=text("is_active = 1"),
         ),
         Index("ix_activity_supplies_term", "school_year", "semester"),
     )
