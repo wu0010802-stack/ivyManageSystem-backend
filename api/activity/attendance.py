@@ -23,6 +23,7 @@ from models.activity import (
 from utils.auth import get_current_user, require_staff_permission
 from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
+from utils.portfolio_access import can_view_student_pii
 from api.activity._shared import (
     _build_session_detail_response,
     build_session_rows_with_stats,
@@ -214,7 +215,14 @@ def get_session_detail(
         if not sess:
             raise HTTPException(status_code=404, detail="找不到場次")
         group_key = "classroom" if group_by == "classroom" else None
-        return _build_session_detail_response(session, sess, group_by=group_key)
+        # S6：僅 ACTIVITY_READ 的 caller 不應拿到學生/班級 FK（對齊
+        # registrations_pending F-026 慣例：缺 STUDENTS_READ 遮罩）
+        return _build_session_detail_response(
+            session,
+            sess,
+            group_by=group_key,
+            mask_student_ids=not can_view_student_pii(current_user),
+        )
     finally:
         session.close()
 

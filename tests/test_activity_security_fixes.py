@@ -582,3 +582,80 @@ class TestPaymentReportOperatorMasking:
         ws2 = self._export_ws2(c)
         assert ws2.cell(row=2, column=7).value == "fee_admin"
         assert ws2.cell(row=2, column=10).value == "boss_user"
+
+
+# ── 9. 點名場次詳情 student_id / classroom_id 遮罩（S6） ───────────────────
+
+
+class TestSessionDetailStudentIdMasking:
+    """S6：GET /sessions/{id} 學生項過去原文輸出 student_id / classroom_id，
+    僅 ACTIVITY_READ 的 caller 也拿得到學生 FK 與班級 FK。
+    對齊 registrations_pending 慣例：缺 STUDENTS_READ 時設 None。"""
+
+    def _seed_session(self, sf):
+        from models.database import Student
+
+        with sf() as s:
+            _admin(s)  # 無 STUDENTS_READ
+            _staff_with_students_read(s)  # 有 STUDENTS_READ
+            classroom = Classroom(name="大象班", is_active=True)
+            s.add(classroom)
+            s.flush()
+            student = Student(
+                student_id="S001",
+                name="王小明",
+                is_active=True,
+                classroom_id=classroom.id,
+            )
+            s.add(student)
+            s.flush()
+            reg, course = _make_reg(s)
+            reg.student_id = student.id
+            reg.classroom_id = classroom.id
+            sess = ActivitySession(
+                course_id=course.id,
+                session_date=date.today(),
+                created_by="test",
+            )
+            s.add(sess)
+            s.commit()
+            return sess.id, student.id, classroom.id
+
+    def test_without_students_read_ids_masked(self, client):
+        c, sf = client
+        sess_id, _, _ = self._seed_session(sf)
+        assert _login(c).status_code == 200  # sec_admin 無 STUDENTS_READ
+        res = c.get(f"/api/activity/attendance/sessions/{sess_id}")
+        assert res.status_code == 200, res.text
+        student = res.json()["students"][0]
+        assert student["student_id"] is None
+        assert student["classroom_id"] is None
+        # 名冊必要欄位保留
+        assert student["student_name"] == "王小明"
+
+    def test_without_students_read_group_ids_masked(self, client):
+        c, sf = client
+        sess_id, _, _ = self._seed_session(sf)
+        assert _login(c).status_code == 200
+        res = c.get(
+            f"/api/activity/attendance/sessions/{sess_id}", params={"group_by": "classroom"}
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        for g in body["groups"]:
+            assert g["classroom_id"] is None
+            for st in g["students"]:
+                assert st["student_id"] is None
+                assert st["classroom_id"] is None
+        # 分組本身仍按真實班級進行（名稱保留）
+        assert body["groups"][0]["classroom_name"] == "大象班"
+
+    def test_with_students_read_ids_visible(self, client):
+        c, sf = client
+        sess_id, student_pk, classroom_id = self._seed_session(sf)
+        assert _login(c, username="sec_staff").status_code == 200
+        res = c.get(f"/api/activity/attendance/sessions/{sess_id}")
+        assert res.status_code == 200, res.text
+        student = res.json()["students"][0]
+        assert student["student_id"] == student_pk
+        assert student["classroom_id"] == classroom_id

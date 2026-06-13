@@ -877,12 +877,17 @@ def _build_session_detail_response(
     *,
     classroom_ids_filter: list | None = None,
     group_by: Optional[str] = None,
+    mask_student_ids: bool = False,
 ) -> dict:
     """取得場次詳情 + 出席狀態，供管理端及 Portal 共用。
 
     classroom_ids_filter=None  → 包含所有 enrolled 學生（管理端 + 開放後的 portal）
     classroom_ids_filter=[...] → 只包含指定班級的學生（Portal，FK 比對）
     group_by="classroom"       → 額外回傳 groups：按 classroom_id 分組
+    mask_student_ids=True      → 學生項與分組的 student_id / classroom_id 設 None
+                                 （S6：admin caller 缺 STUDENTS_READ 時遮罩，對齊
+                                 registrations_pending 慣例；portal caller 不傳，
+                                 維持原行為）。分組仍按真實班級進行，僅 FK 不外洩。
 
     篩選條件：
     - RegistrationCourse.status == 'enrolled'
@@ -1008,5 +1013,14 @@ def _build_session_detail_response(
         if unassigned:
             classified.append(unassigned)
         response["groups"] = classified
+
+    # S6：分組完成後才遮罩（分組需要真實 classroom_id 當 key）；
+    # groups 內的 students 與頂層 students 共享同一批 dict，就地改寫兩處都生效。
+    if mask_student_ids:
+        for s in students:
+            s["student_id"] = None
+            s["classroom_id"] = None
+        for g in response.get("groups", []):
+            g["classroom_id"] = None
 
     return response
