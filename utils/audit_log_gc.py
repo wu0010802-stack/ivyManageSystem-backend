@@ -100,7 +100,8 @@ def cleanup_audit_logs(session) -> int:
     # + 表無上限成長。PG 上於每個 batch 交易內 SET LOCAL ROLE audit_archiver（對齊
     # _write_audit_sync 的 ivy_audit_writer 模式；SET LOCAL 隨交易結束自動還原）。
     # prod 須先 CREATE ROLE audit_archiver 並 GRANT 給連線登入角色，否則 SET ROLE 失敗
-    # → 此處一次性 probe 後 fail-soft 中止本輪（避免噪音例外；DELETE 本來也會被擋）。
+    # → 此處一次性 probe 後 raise（P2：不再 fail-soft 靜默，讓外層 scheduler_iteration
+    # 計入失敗並上報 Sentry/LINE，避免 retention 永不執行卻監控全綠）。
     is_pg = False
     try:
         is_pg = session.get_bind().dialect.name == "postgresql"
@@ -112,13 +113,21 @@ def cleanup_audit_logs(session) -> int:
             session.rollback()
         except Exception as e:
             session.rollback()
+            # P2：不可靜默 return 0。SET ROLE 失敗代表 prod 漏建 audit_archiver role →
+            # audit_logs §11 retention 將永不執行、表無上限成長。若 return 0，外層
+            # scheduler_iteration 視為成功（consecutive_failures=0）→ capture_exception
+            # / LINE 告警都不觸發 → GC 靜默失效卻監控全綠。改 raise，讓 scheduler_iteration
+            # 計入 consecutive_failures，達 ALERT_THRESHOLD 後上報 Sentry + LINE 告警。
             logger.error(
-                "audit_log GC 略過本輪：SET ROLE audit_archiver 失敗（prod 須先 "
-                "CREATE ROLE audit_archiver 並 GRANT 給連線登入角色，見 auditrelax01 "
-                "migration 說明）：%s",
+                "audit_log GC 中止：SET ROLE audit_archiver 失敗（prod 須先 CREATE "
+                "ROLE audit_archiver 並 GRANT 給連線登入角色，見 auditrelax01 migration "
+                "說明）：%s",
                 e,
             )
-            return 0
+            raise RuntimeError(
+                "audit_log GC 無法執行：SET ROLE audit_archiver 失敗（prod 須先 CREATE "
+                "ROLE audit_archiver 並 GRANT 給連線登入角色）"
+            ) from e
 
     # 先取得 DB 中現有的 entity_type 清單（避免硬編一份 list 跟現實不同步）
     rows = session.execute(

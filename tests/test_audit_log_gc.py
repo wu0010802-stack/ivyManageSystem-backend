@@ -134,3 +134,24 @@ def test_mixed_entity_types(session):
 def test_empty_table_no_op(session):
     deleted = cleanup_audit_logs(session)
     assert deleted == 0
+
+
+def test_probe_failure_raises_not_silent_when_role_missing():
+    """P2：PG 上 SET LOCAL ROLE audit_archiver 失敗（prod 漏建 role）時，cleanup
+    必須 raise，讓 scheduler_iteration 計入 consecutive_failures → capture_exception
+    /LINE 告警；而非靜默 return 0（否則 audit_logs §11 retention 永不執行卻監控全綠）。
+    """
+    from unittest.mock import MagicMock
+
+    session = MagicMock()
+    session.get_bind.return_value.dialect.name = "postgresql"
+
+    def _execute(stmt, *a, **k):
+        if "SET LOCAL ROLE" in str(stmt):
+            raise Exception('role "audit_archiver" does not exist')
+        return MagicMock()
+
+    session.execute.side_effect = _execute
+
+    with pytest.raises(RuntimeError, match="audit_archiver"):
+        cleanup_audit_logs(session)
