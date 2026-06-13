@@ -226,6 +226,37 @@ class TestActiveRegistrationUniqueIndex:
             )
         assert count == 1, f"silent-success 應保留只有 1 筆，實際 {count}"
 
+    def test_public_register_different_phone_same_name_not_swallowed(self, client):
+        """P2-5：同名同生日但不同家長電話的第二個合法家庭，公開報名須真的寫入。
+
+        app 層 existing dedup 原只比 name+birthday+term，與含 parent_phone 的 DB
+        唯一索引不一致。第二個不同電話、未匹配在籍學生的家庭會走 silent-success
+        被靜默吞掉（家長看到假成功、DB 沒寫入）。修法把 parent_phone 納入 existing
+        比對後，第二筆應正常寫入。
+        """
+        c, sf = client
+        sy, sem = _seed_term()
+        with sf() as s:
+            _seed_basic(s, sy, sem)
+        r1 = c.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        )
+        assert r1.status_code == 201, r1.text
+        # 同名同生日、不同電話的第二個家庭（未匹配在籍學生）
+        r2 = c.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0922222222"),
+        )
+        assert r2.status_code == 201, r2.text
+        with sf() as s:
+            count = (
+                s.query(ActivityRegistration)
+                .filter(ActivityRegistration.is_active.is_(True))
+                .count()
+            )
+        assert count == 2, f"不同電話的合法第二筆應寫入，實際 {count}"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # M2: 學生離園自動沖帳 → log_change 軌跡
