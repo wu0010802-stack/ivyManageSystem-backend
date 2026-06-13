@@ -62,8 +62,25 @@ def session():
     engine.dispose()
 
 
-def _add_course(session, name="美術", price=1000, capacity=30) -> ActivityCourse:
-    c = ActivityCourse(name=name, price=price, capacity=capacity, allow_waitlist=True)
+TEST_TERM = {"school_year": 114, "semester": 1}
+
+
+def _add_course(
+    session,
+    name="美術",
+    price=1000,
+    capacity=30,
+    school_year=TEST_TERM["school_year"],
+    semester=TEST_TERM["semester"],
+) -> ActivityCourse:
+    c = ActivityCourse(
+        name=name,
+        price=price,
+        capacity=capacity,
+        allow_waitlist=True,
+        school_year=school_year,
+        semester=semester,
+    )
     session.add(c)
     session.flush()
     return c
@@ -1057,8 +1074,9 @@ class TestAttendanceStatsIsActiveFilter:
         svc = ActivityService()
 
         active_course = _add_course(session, name="主動課程")
+        # 停用課程與主動課程同學期，確保被排除的原因是 is_active 而非學期過濾
         inactive_course = ActivityCourse(
-            name="停用課程", price=500, capacity=10, is_active=False
+            name="停用課程", price=500, capacity=10, is_active=False, **TEST_TERM
         )
         session.add(inactive_course)
         session.flush()
@@ -1074,7 +1092,7 @@ class TestAttendanceStatsIsActiveFilter:
         _add_attendance(session, inactive_sess.id, reg.id, is_present=True)
         session.commit()
 
-        result = svc.get_attendance_stats(session)
+        result = svc.get_attendance_stats(session, **TEST_TERM)
         course_names = [c["course_name"] for c in result["by_course"]]
 
         assert "主動課程" in course_names
@@ -1087,7 +1105,7 @@ class TestAttendanceStatsIsActiveFilter:
         svc = ActivityService()
 
         inactive_course = ActivityCourse(
-            name="已停用", price=500, capacity=10, is_active=False
+            name="已停用", price=500, capacity=10, is_active=False, **TEST_TERM
         )
         session.add(inactive_course)
         session.flush()
@@ -1097,7 +1115,7 @@ class TestAttendanceStatsIsActiveFilter:
         _add_attendance(session, inactive_sess.id, reg.id, is_present=True)
         session.commit()
 
-        result = svc.get_attendance_stats(session)
+        result = svc.get_attendance_stats(session, **TEST_TERM)
         assert result["by_course"] == []
 
 

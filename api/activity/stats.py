@@ -7,6 +7,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from models.database import get_session
+from schemas.activity_admin import (
+    ActivityDashboardTableOut,
+    ActivityStatsChartsOut,
+    ActivityStatsOut,
+    ActivityStatsSummaryOut,
+)
 from utils.academic import resolve_academic_term_filters
 from utils.auth import require_staff_permission
 from utils.excel_utils import SafeWorksheet
@@ -16,43 +22,64 @@ from services.activity_service import activity_service
 router = APIRouter()
 
 
-@router.get("/stats")
+@router.get("/stats", response_model=ActivityStatsOut)
 def get_stats(
+    school_year: Optional[int] = Query(None, ge=100, le=200),
+    semester: Optional[int] = Query(None, ge=1, le=2),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得儀表板統計資料（相容舊版：summary + charts）。"""
+    """取得儀表板統計資料（相容舊版：summary + charts）。school_year/semester 不傳時使用當前學期。"""
+    resolved_year, resolved_semester = resolve_academic_term_filters(
+        school_year, semester
+    )
     session = get_session()
     try:
-        return activity_service.get_stats(session)
+        return activity_service.get_stats(
+            session, school_year=resolved_year, semester=resolved_semester
+        )
     finally:
         session.close()
 
 
-@router.get("/stats-summary")
+@router.get("/stats-summary", response_model=ActivityStatsSummaryOut)
 def get_stats_summary(
+    school_year: Optional[int] = Query(None, ge=100, le=200),
+    semester: Optional[int] = Query(None, ge=1, le=2),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得儀表板摘要統計資料。"""
+    """取得儀表板摘要統計資料。school_year/semester 不傳時使用當前學期。"""
+    resolved_year, resolved_semester = resolve_academic_term_filters(
+        school_year, semester
+    )
     session = get_session()
     try:
-        return activity_service.get_stats_summary(session)
+        return activity_service.get_stats_summary(
+            session, school_year=resolved_year, semester=resolved_semester
+        )
     finally:
         session.close()
 
 
-@router.get("/stats-charts")
+@router.get("/stats-charts", response_model=ActivityStatsChartsOut)
 def get_stats_charts(
+    school_year: Optional[int] = Query(None, ge=100, le=200),
+    semester: Optional[int] = Query(None, ge=1, le=2),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得儀表板圖表資料。"""
+    """取得儀表板圖表資料。school_year/semester 不傳時使用當前學期。"""
+    resolved_year, resolved_semester = resolve_academic_term_filters(
+        school_year, semester
+    )
     session = get_session()
     try:
-        return activity_service.get_stats_charts(session)
+        return activity_service.get_stats_charts(
+            session, school_year=resolved_year, semester=resolved_semester
+        )
     finally:
         session.close()
 
 
-@router.get("/dashboard-table")
+@router.get("/dashboard-table", response_model=ActivityDashboardTableOut)
 def get_dashboard_table(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),

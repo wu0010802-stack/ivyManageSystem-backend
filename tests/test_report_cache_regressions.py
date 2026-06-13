@@ -106,11 +106,12 @@ def test_activity_stats_are_served_from_cached_snapshot(db_session, monkeypatch)
     monkeypatch.setattr(
         service,
         "_compute_stats_summary",
-        lambda session: calls.append("compute") or {"totalRegistrations": 1},
+        lambda session, school_year, semester: calls.append("compute")
+        or {"totalRegistrations": 1},
     )
 
-    first = service.get_stats_summary(db_session)
-    second = service.get_stats_summary(db_session)
+    first = service.get_stats_summary(db_session, school_year=114, semester=1)
+    second = service.get_stats_summary(db_session, school_year=114, semester=1)
 
     assert first == second == {"totalRegistrations": 1}
     assert calls == ["compute"]
@@ -125,7 +126,10 @@ def test_student_monthly_report_uses_cached_snapshot(db_session, monkeypatch):
     monkeypatch.setattr(
         student_report_module,
         "_compute_monthly_attendance_report",
-        lambda session, classroom_id, year, month: calls.append((classroom_id, year, month)) or {"classroom_id": classroom_id, "year": year, "month": month},
+        lambda session, classroom_id, year, month: calls.append(
+            (classroom_id, year, month)
+        )
+        or {"classroom_id": classroom_id, "year": year, "month": month},
     )
 
     first = build_monthly_attendance_report(db_session, classroom.id, 2026, 3)
@@ -143,7 +147,8 @@ def test_home_student_attendance_summary_uses_cached_snapshot(db_session, monkey
     monkeypatch.setattr(
         service,
         "_compute_student_attendance_summary",
-        lambda session, today: calls.append(today) or {"date": today.isoformat(), "total_students": 10},
+        lambda session, today: calls.append(today)
+        or {"date": today.isoformat(), "total_students": 10},
     )
 
     first = service.build_student_attendance_summary(db_session, today=target_date)

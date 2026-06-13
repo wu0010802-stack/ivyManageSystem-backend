@@ -1487,3 +1487,127 @@ class ActivityClassOptionsOut(IvyBaseModel):
     """
 
     options: list[str]
+
+
+# ── 統計儀表板 stats Out schemas（api/activity/stats.py 4 個 JSON 端點）────────
+# 2026-06-13：欄位名沿用既有前端契約（totalRevenue 等 camelCase key 不可改）。
+# totalRevenue/totalUnpaid 為實收口徑：revenue = paid_amount 加總（含 partial/
+# overpaid 照實）、unpaid = max(0, 應繳總額 - paid_amount) 加總。
+
+
+class ActivityStatsSummaryOut(IvyBaseModel):
+    """GET /stats-summary（學期感知；unreadInquiries 為全域收件匣不分學期）。"""
+
+    totalRegistrations: int
+    totalEnrollments: int
+    totalWaitlist: int
+    totalSupplyOrders: int
+    todayNewRegistrations: int
+    totalRevenue: int
+    totalUnpaid: int
+    enrollmentRate: float
+    unreadInquiries: int
+
+
+class ActivityStatsDailyPointOut(IvyBaseModel):
+    """每日報名趨勢單點（date 為 YYYY-MM-DD 字串）。"""
+
+    date: str
+    count: int
+
+
+class ActivityStatsTopCourseOut(IvyBaseModel):
+    """熱門課程單筆（enrolled 報名數倒序 top 5）。"""
+
+    name: str
+    count: int
+
+
+class ActivityStatsChartsOut(IvyBaseModel):
+    """GET /stats-charts 回應。"""
+
+    daily: list[ActivityStatsDailyPointOut]
+    topCourses: list[ActivityStatsTopCourseOut]
+
+
+class ActivityAttendanceCourseStatOut(IvyBaseModel):
+    """單一課程出席率統計。"""
+
+    course_name: str
+    sessions: int
+    avg_rate: float
+
+
+class ActivityAttendanceStatsOut(IvyBaseModel):
+    """get_attendance_stats 聚合（avg_attendance_rate 為 0~1 小數）。"""
+
+    total_sessions: int
+    avg_attendance_rate: float
+    by_course: list[ActivityAttendanceCourseStatOut]
+
+
+class ActivityStatsOut(IvyBaseModel):
+    """GET /stats 相容舊版複合回應（summary + charts + 出席統計）。"""
+
+    statistics: ActivityStatsSummaryOut
+    charts: ActivityStatsChartsOut
+    attendance_stats: ActivityAttendanceStatsOut
+
+
+class ActivityDashboardCourseOut(IvyBaseModel):
+    """dashboard-table 課程欄位定義（courses dict 的 key 為 str(course id)）。"""
+
+    id: int
+    name: str
+
+
+class ActivityDashboardClassroomRowOut(IvyBaseModel):
+    """dashboard-table 班級列。courses 為 {course_id(str): 報名數}。"""
+
+    classroom_id: int
+    classroom_name: str
+    teacher_name: str
+    student_count: int
+    courses: dict[str, int]
+    total_enrollments: int
+    ratio: int
+
+
+class ActivityDashboardGradeSubtotalOut(IvyBaseModel):
+    """年級小計（bonus/points 為達標獎勵展示值）。"""
+
+    student_count: int
+    courses: dict[str, int]
+    total_enrollments: int
+    ratio: int
+    bonus: int
+    points: int
+
+
+class ActivityDashboardGradeRowOut(IvyBaseModel):
+    """dashboard-table 年級區塊。"""
+
+    grade_id: int
+    grade_name: str
+    target_percent: int
+    classrooms: list[ActivityDashboardClassroomRowOut]
+    subtotal: ActivityDashboardGradeSubtotalOut
+
+
+class ActivityDashboardGrandTotalOut(IvyBaseModel):
+    """dashboard-table 全園總計。"""
+
+    student_count: int
+    courses: dict[str, int]
+    total_enrollments: int
+    ratio: int
+
+
+class ActivityDashboardTableOut(IvyBaseModel):
+    """GET /dashboard-table 回應（含學期 echo）。"""
+
+    courses: list[ActivityDashboardCourseOut]
+    grades: list[ActivityDashboardGradeRowOut]
+    grand_total: ActivityDashboardGrandTotalOut
+    school_year: int
+    semester: int
