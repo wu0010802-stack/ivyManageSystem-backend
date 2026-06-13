@@ -51,6 +51,10 @@ REMINDER_MINUTE = settings.scheduler.medication_reminder_minute
 # 檢查週期：每 5 分鐘巡檢一次（寬容度夠又不會太頻繁）
 CHECK_INTERVAL_SECONDS = settings.scheduler.medication_reminder_check_interval
 
+# heartbeat expected interval：本 job 每日只跑一次，傳「一天」而非巡檢週期，否則
+# /health/schedulers 在跑完當日那次後即誤判 lagging → 永久 503（比照 data_quality）。
+_DAILY_INTERVAL_SEC = 24 * 60 * 60
+
 
 def _now_taipei() -> datetime:
     return datetime.now(TAIPEI_TZ)
@@ -208,7 +212,7 @@ async def medication_reminder_loop(stop_event: asyncio.Event) -> None:
             if now >= target and last_run_date != today:
                 with scheduler_iteration(
                     "medication_reminder",
-                    expected_interval_seconds=CHECK_INTERVAL_SECONDS,
+                    expected_interval_seconds=_DAILY_INTERVAL_SEC,
                 ):
                     result = run_medication_reminder(effective_date=today)
                     record_rows(

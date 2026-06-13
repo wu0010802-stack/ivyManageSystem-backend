@@ -34,6 +34,11 @@ TARGET_MINUTE = 0
 # 巡檢週期：每分鐘檢查一次是否到目標時間（精度 1 分鐘對日報來說綽綽有餘）
 CHECK_INTERVAL_SECONDS = 60
 
+# heartbeat expected interval：本 job 每日只跑一次，必須傳「一天」而非巡檢週期，
+# 否則 /health/schedulers 在跑完當日那次後數分鐘即誤判 lagging → 永久 503（比照
+# data_quality_scheduler._DAILY_INTERVAL_SEC）。
+_DAILY_INTERVAL_SEC = 24 * 60 * 60
+
 
 def should_run_reconciliation(now: datetime, last_run_date: Optional[date]) -> bool:
     """到/過每日目標時刻且當日尚未跑 → 觸發。
@@ -146,7 +151,7 @@ async def run_finance_reconciliation_scheduler(stop_event: asyncio.Event) -> Non
                 logger.warning("觸發對帳排程 date=%s", now.date().isoformat())
                 with scheduler_iteration(
                     "finance_reconciliation",
-                    expected_interval_seconds=CHECK_INTERVAL_SECONDS,
+                    expected_interval_seconds=_DAILY_INTERVAL_SEC,
                 ):
                     result = run_finance_reconciliation()
                     record_rows(

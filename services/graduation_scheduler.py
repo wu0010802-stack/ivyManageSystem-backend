@@ -196,17 +196,21 @@ async def run_auto_graduation_scheduler(stop_event: asyncio.Event) -> None:
     last_run_year: Optional[int] = None
     while not stop_event.is_set():
         try:
-            today = _today_taipei()
-            target = graduation_date_for_year(today.year)
-            if should_run_auto_graduation(today, last_run_year):
-                logger.warning(
-                    "觸發自動畢業（date=%s，畢業日=%s）",
-                    today.isoformat(),
-                    target.isoformat(),
-                )
-                with scheduler_iteration(
-                    "auto_graduation", expected_interval_seconds=CHECK_INTERVAL_SECONDS
-                ):
+            # P2：scheduler_iteration 包住「每巡檢 tick」而非只包年度執行——本 job 一年
+            # 才跑一次，若只在畢業日那次寫 heartbeat，其餘 364 天 last_success_at 不更新
+            # → lag>2×interval → /health/schedulers 永久 503。改為每 tick 寫 heartbeat
+            # （liveness），年度業務觸發條件移進 iteration 內（與 data_quality 對齊）。
+            with scheduler_iteration(
+                "auto_graduation", expected_interval_seconds=CHECK_INTERVAL_SECONDS
+            ):
+                today = _today_taipei()
+                target = graduation_date_for_year(today.year)
+                if should_run_auto_graduation(today, last_run_year):
+                    logger.warning(
+                        "觸發自動畢業（date=%s，畢業日=%s）",
+                        today.isoformat(),
+                        target.isoformat(),
+                    )
                     # effective_date 用畢業日 target（非補跑當日），讓畢業日期一致記為
                     # 7/31，且 advisory lock run_key 穩定（多 worker / 跨日補跑皆只一次）。
                     result = run_auto_graduation(effective_date=target)
