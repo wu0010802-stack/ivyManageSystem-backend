@@ -27,6 +27,7 @@ from services.salary.constants import (
 from services.salary.proration import _build_expected_workdays, _prorate_for_period
 from services.salary.utils import (
     get_bonus_distribution_month,
+    get_distribution_period_months,
     get_meeting_deduction_period_start,
 )
 from services.student_enrollment import count_students_active_on
@@ -594,6 +595,62 @@ def _calc_absence_days(
     }
 
 
+def _build_festival_period_rows(session, engine, emp, year: int, month: int):
+    """發放月（2/6/9/12）的節慶/超額獎金逐月明細。
+
+    與實付路徑（engine._compute_period_accrual_totals）同語意：
+    - 每個涵蓋月以該月設定版本（config_for_month）計算
+    - 不帶 classroom → engine 內部以該月學期反查班級（跨學期換班正確）
+    - 產假/育嬰/流產假覆蓋月跳過、金額 0（leave_bonus_skip 同一判斷）
+    非發放月回 None（呼叫端維持既有單月行為）。
+    """
+    from services.leave_bonus_skip import should_skip_bonuses_for_month
+
+    period_months = get_distribution_period_months(year, month)
+    if not period_months:
+        return None
+
+    rows = []
+    for y, m in period_months:
+        skip, _ = should_skip_bonuses_for_month(session, emp.id, y, m)
+        if skip:
+            rows.append(
+                {
+                    "year": y,
+                    "month": m,
+                    "category": "",
+                    "bonus_base": 0,
+                    "target": None,
+                    "enrollment": None,
+                    "ratio": 0,
+                    "festival_bonus": 0,
+                    "overtime_bonus": 0,
+                    "remark": "產假/育嬰/流產假月份，不計入",
+                    "skipped": True,
+                }
+            )
+            continue
+        ctx = {"session": session, "employee": emp}
+        with engine.config_for_month(session, y, m):
+            bd = engine.calculate_festival_bonus_breakdown(emp.id, y, m, _ctx=ctx)
+        rows.append(
+            {
+                "year": y,
+                "month": m,
+                "category": bd.get("category", ""),
+                "bonus_base": bd.get("bonusBase", 0),
+                "target": bd.get("targetEnrollment"),
+                "enrollment": bd.get("currentEnrollment"),
+                "ratio": bd.get("ratio", 0),
+                "festival_bonus": int(bd.get("festivalBonus") or 0),
+                "overtime_bonus": int(bd.get("overtimeBonus") or 0),
+                "remark": bd.get("remark", ""),
+                "skipped": False,
+            }
+        )
+    return rows
+
+
 def build_salary_debug_snapshot(
     session, engine, emp: Employee, year: int, month: int
 ) -> dict:
@@ -717,6 +774,14 @@ def build_salary_debug_snapshot(
         ):
             if key in festival_detail:
                 festival_detail[key] = 0
+
+    # 發放月（2/6/9/12）：節慶/超額獎金為涵蓋期間逐月累計，補逐月明細供
+    # field-breakdown 呈現「這期每個月各算了多少」。非發放月為 None。
+    festival_period_rows = (
+        _build_festival_period_rows(session, engine, emp, year, month)
+        if is_bonus_month
+        else None
+    )
 
     # 主管月紅利與職務掛鉤、不隨請假時數歸零（engine.calculate_salary line 1010-1015
     # 明確保留）。此處若再歸零，SalaryRecord.supervisor_dividend 會與明細頁不一致。
@@ -861,6 +926,7 @@ def build_salary_debug_snapshot(
         },
         "classroom_context": classroom_context,
         "festival_bonus_detail": festival_detail,
+        "festival_period_rows": festival_period_rows,
         "supervisor_dividend": round_half_up(supervisor_dividend),
         "insurance": {
             "insured_amount_raw": ins_result["insured_salary_raw"],
@@ -894,6 +960,55 @@ def build_salary_debug_snapshot(
             "net_salary": gross_salary - total_deduction,
         },
     }
+
+
+def _render_period_rows(
+    period_rows: list, record, amount: int, *, value_key: str
+) -> list:
+    """把 snapshot 的逐月明細轉成 UI rows；合計與入帳金額不符時補一列調整。
+
+    差額來源：懲處抵扣（festival 優先扣）、手動調整、發放月 40 小時假取消等
+    ——這些都作用在「總額」而非單月，逐月列無法歸因到特定月份，故以一列
+    調整項呈現，讓表格加總永遠等於入帳金額（dialog footer 的明細合計）。
+    """
+    rows = []
+    for r in period_rows:
+        rows.append(
+            {
+                "year": r["year"],
+                "month": r["month"],
+                "monthLabel": f'{r["year"]} 年 {r["month"]} 月',
+                "category": r.get("category") or "-",
+                "bonusBase": r.get("bonus_base") if not r.get("skipped") else "-",
+                "targetEnrollment": r.get("target") or "-",
+                "currentEnrollment": r.get("enrollment") or "-",
+                "ratio": (
+                    f'{((r.get("ratio") or 0) * 100):.1f}%'
+                    if not r.get("skipped")
+                    else "-"
+                ),
+                "result": int(r.get(value_key) or 0),
+                "remark": r.get("remark", ""),
+            }
+        )
+    monthly_total = sum(int(r.get(value_key) or 0) for r in period_rows)
+    diff = monthly_total - amount
+    if diff != 0:
+        rows.append(
+            {
+                "year": record.salary_year,
+                "month": record.salary_month,
+                "monthLabel": "調整",
+                "category": "-",
+                "bonusBase": "-",
+                "targetEnrollment": "-",
+                "currentEnrollment": "-",
+                "ratio": "-",
+                "result": -diff,
+                "remark": "懲處抵扣／手動調整／資格取消等總額調整（非單月歸因）",
+            }
+        )
+    return rows
 
 
 def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> dict:
@@ -1111,58 +1226,101 @@ def build_field_breakdown(record, emp: Employee, snapshot: dict, field: str) -> 
         )
     elif field == "festival_bonus":
         detail = snapshot["festival_bonus_detail"] or {}
-        data["columns"] = [
-            {"key": "name", "label": "姓名"},
-            {"key": "category", "label": "類別"},
-            {"key": "bonusBase", "label": "獎金基數"},
-            {"key": "targetEnrollment", "label": "目標人數"},
-            {"key": "currentEnrollment", "label": "在籍人數"},
-            {"key": "ratio", "label": "達成率"},
-            {"key": "result", "label": "獎金"},
-            {"key": "remark", "label": "備註"},
-        ]
-        remark = ""
-        if detail.get("forfeited_by_leave"):
-            remark = "事假/病假超過 40 小時，全數取消"
-        elif detail.get("shared_second_class"):
-            remark = "兩班平均"
-        elif not detail:
-            remark = "無帶班/無設定"
-        row = {
-            "name": emp.name,
-            "category": detail.get("category") or "其他",
-            "bonusBase": detail.get("base", 0),
-            "targetEnrollment": detail.get("target") or "-",
-            "currentEnrollment": detail.get("enrollment") or "-",
-            "ratio": f'{((detail.get("ratio") or 0) * 100):.1f}%',
-            "result": amount,
-            "remark": remark,
-        }
-        data["rows"] = [row]
-        data["note"] = "節慶獎金扣減不包含在本明細，該欄位另有獨立明細。"
+        period_rows = snapshot.get("festival_period_rows")
+        if period_rows:
+            # 發放月：涵蓋期間逐月一列，加總對帳入帳金額
+            data["columns"] = [
+                {"key": "monthLabel", "label": "月份"},
+                {"key": "bonusBase", "label": "獎金基數"},
+                {"key": "targetEnrollment", "label": "目標人數"},
+                {"key": "currentEnrollment", "label": "在籍人數"},
+                {"key": "ratio", "label": "達成率"},
+                {"key": "result", "label": "金額"},
+                {"key": "remark", "label": "備註"},
+            ]
+            data["rows"] = _render_period_rows(
+                period_rows, record, amount, value_key="festival_bonus"
+            )
+            data["note"] = (
+                f"{record.salary_month} 月為發放月：金額＝上列各月「該月設定版本"
+                "之基數 × 在籍 ÷ 目標」之合計。會議缺席扣款另計於「節慶獎金扣減」欄。"
+            )
+            if detail.get("forfeited_by_leave"):
+                data["note"] = (
+                    "發放月事假/病假超過 40 小時，獎金全數取消（逐月明細僅供參考）。"
+                    + data["note"]
+                )
+        else:
+            data["columns"] = [
+                {"key": "name", "label": "姓名"},
+                {"key": "category", "label": "類別"},
+                {"key": "bonusBase", "label": "獎金基數"},
+                {"key": "targetEnrollment", "label": "目標人數"},
+                {"key": "currentEnrollment", "label": "在籍人數"},
+                {"key": "ratio", "label": "達成率"},
+                {"key": "result", "label": "獎金"},
+                {"key": "remark", "label": "備註"},
+            ]
+            remark = ""
+            if detail.get("forfeited_by_leave"):
+                remark = "事假/病假超過 40 小時，全數取消"
+            elif detail.get("shared_second_class"):
+                remark = "兩班平均"
+            elif not detail:
+                remark = "無帶班/無設定"
+            row = {
+                "name": emp.name,
+                "category": detail.get("category") or "其他",
+                "bonusBase": detail.get("base", 0),
+                "targetEnrollment": detail.get("target") or "-",
+                "currentEnrollment": detail.get("enrollment") or "-",
+                "ratio": f'{((detail.get("ratio") or 0) * 100):.1f}%',
+                "result": amount,
+                "remark": remark,
+            }
+            data["rows"] = [row]
+            data["note"] = "節慶獎金扣減不包含在本明細，該欄位另有獨立明細。"
     elif field == "overtime_bonus":
         detail = snapshot["festival_bonus_detail"] or {}
-        data["columns"] = [
-            {"key": "grade", "label": "年級"},
-            {"key": "target", "label": "超額目標"},
-            {"key": "current", "label": "在籍人數"},
-            {"key": "overflow", "label": "超額人數"},
-            {"key": "perPerson", "label": "每人金額"},
-            {"key": "result", "label": "結果"},
-            {"key": "remark", "label": "備註"},
-        ]
-        data["rows"] = [
-            {
-                "grade": detail.get("grade") or "-",
-                "target": detail.get("overtime_target") or "-",
-                "current": detail.get("enrollment") or "-",
-                "overflow": detail.get("overtime_count") or 0,
-                "perPerson": detail.get("overtime_per_person") or 0,
-                "result": amount,
-                "remark": "與節慶獎金同月發放" if amount else "未達超額門檻或非發放月",
-            }
-        ]
-        data["note"] = "超額獎金與節慶獎金同月獨立轉帳。"
+        period_rows = snapshot.get("festival_period_rows")
+        if period_rows:
+            data["columns"] = [
+                {"key": "monthLabel", "label": "月份"},
+                {"key": "currentEnrollment", "label": "在籍人數"},
+                {"key": "result", "label": "金額"},
+                {"key": "remark", "label": "備註"},
+            ]
+            data["rows"] = _render_period_rows(
+                period_rows, record, amount, value_key="overtime_bonus"
+            )
+            data["note"] = (
+                f"{record.salary_month} 月為發放月：超額獎金與節慶獎金同期逐月累計"
+                "（每月＝超出超額目標人數 × 每人金額），發放月一併轉帳。"
+            )
+        else:
+            data["columns"] = [
+                {"key": "grade", "label": "年級"},
+                {"key": "target", "label": "超額目標"},
+                {"key": "current", "label": "在籍人數"},
+                {"key": "overflow", "label": "超額人數"},
+                {"key": "perPerson", "label": "每人金額"},
+                {"key": "result", "label": "結果"},
+                {"key": "remark", "label": "備註"},
+            ]
+            data["rows"] = [
+                {
+                    "grade": detail.get("grade") or "-",
+                    "target": detail.get("overtime_target") or "-",
+                    "current": detail.get("enrollment") or "-",
+                    "overflow": detail.get("overtime_count") or 0,
+                    "perPerson": detail.get("overtime_per_person") or 0,
+                    "result": amount,
+                    "remark": (
+                        "與節慶獎金同月發放" if amount else "未達超額門檻或非發放月"
+                    ),
+                }
+            ]
+            data["note"] = "超額獎金與節慶獎金同月獨立轉帳。"
     elif field == "overtime_pay":
         data["columns"] = [
             {"key": "date", "label": "日期"},
