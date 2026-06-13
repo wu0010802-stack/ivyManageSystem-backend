@@ -1216,6 +1216,60 @@ _APPROVAL_STATUS_VALUES = {
 }
 
 
+def _net_reconciliation_buckets(
+    *,
+    approved_paid: int,
+    approved_refund: int,
+    pending_paid: int,
+    pending_refund: int,
+    paid: int,
+) -> tuple[int, int, int]:
+    """三 bucket 軋差（含跨 bucket 退費沖銷），回傳 (approved_net, pending_net, offline_paid)。
+
+    Why（M1）：bucket 歸屬看「該筆流水自己的 payment_date 是否已簽核」，最常見退費
+    時序為「繳費日早已簽核、退費日尚未簽核」→ 舊版 `max(0, pending_paid - pending_refund)`
+    把退費 clamp 蒸發，approved_net 仍顯示原額 > reg.paid_amount，自相矛盾且
+    totals「已簽核實收」系統性高估。
+
+    協議：各 bucket 先各自軋差；某 bucket 為負（退費跨簽核日）時把負溢額沖到另一
+    bucket；兩 bucket 沖銷後仍負（退費總額超過全部 POS 流水 = 退到歷史離線收款）
+    clamp 至 0，殘額由 offline 吸收。offline_paid 語意不變：reg.paid_amount 中
+    無對應 POS 流水的歷史差額。
+
+    不變式：approved_net + pending_net + offline_paid == max(0, paid) 且全部 >= 0。
+    """
+    approved_net = approved_paid - approved_refund
+    pending_net = pending_paid - pending_refund
+
+    # 跨 bucket 沖銷：一正一負時，把負溢額沖到正的那邊
+    if approved_net < 0 < pending_net:
+        transfer = min(-approved_net, pending_net)
+        approved_net += transfer
+        pending_net -= transfer
+    elif pending_net < 0 < approved_net:
+        transfer = min(-pending_net, approved_net)
+        pending_net += transfer
+        approved_net -= transfer
+
+    # 沖銷後殘負 = 退費超過全部 POS 流水（退到離線收款），由 offline 殘額吸收
+    approved_net = max(0, approved_net)
+    pending_net = max(0, pending_net)
+
+    paid = max(0, paid)
+    # 資料不一致守衛：POS 軋差總額不可能超過權威值 paid_amount（paid_amount 由
+    # checkout / void 同步維護）。若仍超過（歷史手改 paid_amount），依序壓低
+    # pending（未簽核較不權威）再壓 approved，維持不變式。
+    excess = approved_net + pending_net - paid
+    if excess > 0:
+        cut = min(excess, pending_net)
+        pending_net -= cut
+        excess -= cut
+        approved_net -= min(excess, approved_net)
+
+    offline_paid = paid - approved_net - pending_net
+    return approved_net, pending_net, offline_paid
+
+
 @router.get("/pos/semester-reconciliation", response_model=PosSemesterReconciliationOut)
 def pos_semester_reconciliation(
     school_year: Optional[int] = Query(None, ge=100, le=200),
@@ -1353,11 +1407,16 @@ def pos_semester_reconciliation(
                 if latest_date is None or pd > latest_date:
                     latest_date = pd
 
-            approved_net = max(0, approved_paid - approved_refund)
-            pending_net = max(0, pending_paid - pending_refund)
-            # 非 POS 已繳：reg.paid_amount 未對應到任何 payment_record 的差額
-            # 常見於歷史匯入或直接寫入 paid_amount 的資料，系統無從判斷簽核狀態
-            offline_paid = max(0, paid - approved_net - pending_net)
+            # 非 POS 已繳（offline_paid）：reg.paid_amount 未對應到任何
+            # payment_record 的差額，常見於歷史匯入或直接寫入 paid_amount 的資料。
+            # 跨 bucket 退費沖銷協議見 _net_reconciliation_buckets docstring。
+            approved_net, pending_net, offline_paid = _net_reconciliation_buckets(
+                approved_paid=approved_paid,
+                approved_refund=approved_refund,
+                pending_paid=pending_paid,
+                pending_refund=pending_refund,
+                paid=paid,
+            )
 
             if paid <= 0:
                 approval = "no_payment"

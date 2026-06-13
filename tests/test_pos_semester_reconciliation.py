@@ -378,6 +378,115 @@ def test_invalid_approval_status_rejected(pos_client):
     assert res.status_code == 400
 
 
+def test_cross_bucket_refund_payment_approved_refund_pending(pos_client):
+    """M1 案例 A：繳費日已簽核 + 退費日未簽核（最常見退費時序）。
+
+    payment 1000（closed）+ refund 400（open），reg.paid_amount=600。
+    修前：pending_net = max(0, 0-400) = 0 → 退費 400 被 clamp 蒸發，
+    approved_net 仍 1000 > paid 600 自相矛盾。
+    修後：退費跨 bucket 沖銷 → approved_net=600、pending_net=0、offline=0，
+    三 bucket 加總 == paid。"""
+    client, sf = pos_client
+    d_closed = date.today() - timedelta(days=3)
+    d_open = date.today()
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="跨桶退費A", paid_amount=600, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=1000, payment_date=d_closed)
+        _add_payment(s, reg_id=reg.id, amount=400, payment_date=d_open, type_="refund")
+        _mark_closed(s, d_closed)
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert it["approved_paid_amount"] == 600
+    assert it["pending_paid_amount"] == 0
+    assert it["offline_paid_amount"] == 0
+    assert (
+        it["approved_paid_amount"]
+        + it["pending_paid_amount"]
+        + it["offline_paid_amount"]
+        == it["paid_amount"]
+        == 600
+    )
+
+
+def test_cross_bucket_refund_payment_pending_refund_approved(pos_client):
+    """M1 案例 B：繳費日未簽核 + 退費日已簽核（反向，少見但對稱）。
+
+    payment 1000（open）+ refund 400（closed），paid=600。
+    修前：approved_net = max(0, 0-400) = 0 蒸發退費 → pending_net 仍 1000。
+    修後：pending_net=600、approved_net=0、offline=0。"""
+    client, sf = pos_client
+    d_closed = date.today() - timedelta(days=3)
+    d_open = date.today()
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="跨桶退費B", paid_amount=600, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=1000, payment_date=d_open)
+        _add_payment(
+            s, reg_id=reg.id, amount=400, payment_date=d_closed, type_="refund"
+        )
+        _mark_closed(s, d_closed)
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert it["approved_paid_amount"] == 0
+    assert it["pending_paid_amount"] == 600
+    assert it["offline_paid_amount"] == 0
+    assert (
+        it["approved_paid_amount"]
+        + it["pending_paid_amount"]
+        + it["offline_paid_amount"]
+        == it["paid_amount"]
+        == 600
+    )
+
+
+def test_cross_bucket_refund_exceeds_pos_records(pos_client):
+    """M1 案例 C：退費總額超過 POS 流水（offline 沖銷邊界）。
+
+    payment 1000（closed）+ refund 1500（open），paid=500
+    （隱含 1000 為歷史離線收款，其中 500 已被退）。
+    兩 bucket 沖銷後仍負 → 殘額由 offline 吸收，全部 >= 0 且加總 == paid。"""
+    client, sf = pos_client
+    d_closed = date.today() - timedelta(days=3)
+    d_open = date.today()
+    with sf() as s:
+        _create_admin(s)
+        reg = _setup_reg(s, student_name="跨桶退費C", paid_amount=500, is_paid=False)
+        _add_payment(s, reg_id=reg.id, amount=1000, payment_date=d_closed)
+        _add_payment(s, reg_id=reg.id, amount=1500, payment_date=d_open, type_="refund")
+        _mark_closed(s, d_closed)
+        s.commit()
+        rid = reg.id
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    it = _find_item(res.json(), rid)
+    assert it["approved_paid_amount"] >= 0
+    assert it["pending_paid_amount"] >= 0
+    assert it["offline_paid_amount"] >= 0
+    assert (
+        it["approved_paid_amount"]
+        + it["pending_paid_amount"]
+        + it["offline_paid_amount"]
+        == it["paid_amount"]
+        == 500
+    )
+    assert it["approved_paid_amount"] == 0
+    assert it["pending_paid_amount"] == 0
+    assert it["offline_paid_amount"] == 500
+
+
 def test_voided_refund_excluded_from_offline_paid(pos_client):
     """Finding C / backlog ④：學期對帳 bucket 必須排除 voided 流水。
 
