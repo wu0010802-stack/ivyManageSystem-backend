@@ -993,6 +993,42 @@ def update_student(
             request.state.audit_changes = diff
         request.state.audit_entity_id = student.id
 
+        # 在籍/班籍欄位異動（L1c，spec 2026-06-13-enrollment-count-correctness）：
+        # ① 直接改 classroom_id 補寫 StudentClassroomTransfer，讓
+        #    classroom_student_count_map 的轉班歷史感知涵蓋此路徑（原僅
+        #    bulk_transfer 寫歷史）。
+        # ② 標記受影響發放月薪資 needs_recalc——日期欄位取變動前後最早值
+        #    （回溯補登 3/10 退學 → 自 6 月發放月起標記）。
+        _COUNT_DATE_FIELDS = ("enrollment_date", "graduation_date", "withdrawal_date")
+        if "classroom_id" in diff and student.classroom_id is not None:
+            from models.student_transfer import StudentClassroomTransfer
+
+            session.add(
+                StudentClassroomTransfer(
+                    student_id=student.id,
+                    from_classroom_id=old_classroom_id,
+                    to_classroom_id=student.classroom_id,
+                    transferred_at=now_taipei_naive(),
+                    transferred_by=current_user.get("user_id"),
+                )
+            )
+        _count_changed = ("classroom_id" in diff) or any(
+            f in diff for f in _COUNT_DATE_FIELDS
+        )
+        if _count_changed:
+            from services.salary.utils import mark_salary_stale_for_enrollment_event
+
+            _event_dates = [
+                v
+                for f in _COUNT_DATE_FIELDS
+                if f in diff
+                for v in (diff[f]["before"], diff[f]["after"])
+                if v is not None
+            ]
+            mark_salary_stale_for_enrollment_event(
+                session, min(_event_dates) if _event_dates else today_taipei()
+            )
+
         session.commit()
         return {"message": "學生資料更新成功", "id": student.id}
     except HTTPException:
@@ -1296,6 +1332,12 @@ def bulk_transfer_students(
                 "moved_count": moved_count,
                 "transfers": per_student_changes,
             }
+
+        # 班籍異動影響發放月節慶/超額人數 → 標記薪資需重算（L1c）
+        if moved_count:
+            from services.salary.utils import mark_salary_stale_for_enrollment_event
+
+            mark_salary_stale_for_enrollment_event(session, today_taipei())
 
         session.commit()
         logger.info(

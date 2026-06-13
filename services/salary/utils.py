@@ -260,6 +260,50 @@ def calc_daily_salary(base_salary) -> float:
     return (base_salary or 0) / MONTHLY_BASE_DAYS
 
 
+def next_distribution_month(year: int, month: int) -> tuple[int, int]:
+    """事件月的人數會進哪個發放月（get_distribution_period_months 的反向映射）。
+
+    12 月 → 次年 2 月、1 月 → 同年 2 月、2-5 月 → 6 月、6-8 月 → 9 月、
+    9-11 月 → 12 月。
+    """
+    if month == 12:
+        return year + 1, 2
+    if month == 1:
+        return year, 2
+    if 2 <= month <= 5:
+        return year, 6
+    if 6 <= month <= 8:
+        return year, 9
+    return year, 12
+
+
+def mark_salary_stale_for_enrollment_event(session, event_date) -> int:
+    """學生在籍/班籍異動後，標記受影響發放月的未封存薪資 needs_recalc（L1c）。
+
+    班級/全校在籍人數只進「發放月」（2/6/9/12）的節慶/超額累計；事件日所屬
+    發放期的發放月（含）之後所有發放月都可能用到事件日之後的人數，全部標記。
+    不分員工：人數影響該班導師/副班導/美師與走全校比例的主管/辦公室職。
+
+    已封存（is_finalized）不動，理由同 mark_salary_stale。
+
+    Returns:
+        被標記的 record 數（caller 自行 commit）。
+    """
+    from models.database import SalaryRecord
+
+    dist_year, dist_month = next_distribution_month(event_date.year, event_date.month)
+    key = dist_year * 100 + dist_month
+    return (
+        session.query(SalaryRecord)
+        .filter(
+            SalaryRecord.salary_month.in_((2, 6, 9, 12)),
+            (SalaryRecord.salary_year * 100 + SalaryRecord.salary_month) >= key,
+            SalaryRecord.is_finalized.is_(False),
+        )
+        .update({"needs_recalc": True}, synchronize_session=False)
+    )
+
+
 def mark_salary_stale(session, employee_id: int, year: int, month: int) -> bool:
     """將指定員工該月 SalaryRecord 標記為 needs_recalc=True。
 
