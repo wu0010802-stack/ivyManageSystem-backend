@@ -113,7 +113,15 @@ def _login(c: TestClient, username="sec_admin"):
 _course_counter = {"n": 0}
 
 
-def _make_reg(session, *, paid_amount=0, match_status="matched", is_active=True):
+def _make_reg(
+    session,
+    *,
+    paid_amount=0,
+    match_status="matched",
+    is_active=True,
+    student_name="王小明",
+    class_name="大班",
+):
     from utils.academic import resolve_current_academic_term
 
     sy, sem = resolve_current_academic_term()
@@ -128,9 +136,9 @@ def _make_reg(session, *, paid_amount=0, match_status="matched", is_active=True)
     session.add(course)
     session.flush()
     reg = ActivityRegistration(
-        student_name="王小明",
+        student_name=student_name,
         birthday="2020-01-01",
-        class_name="大班",
+        class_name=class_name,
         paid_amount=paid_amount,
         is_active=is_active,
         match_status=match_status,
@@ -355,3 +363,46 @@ class TestExportRowLimit:
         assert _login(c).status_code == 200
         res = c.get("/api/activity/registrations/payment-report")
         assert res.status_code == 200
+
+
+# ── 6. payment-report ws1（繳費總覽）Excel 公式注入防護 ────────────────────
+
+
+class TestPaymentReportFormulaInjection:
+    """S1：ws1「繳費總覽」過去裸用 wb.active 未包 SafeWorksheet，
+    家長自填 student_name/class_name 帶公式前綴可注入財會端 Excel。"""
+
+    def _export_workbook(self, c):
+        import io
+
+        import openpyxl
+
+        res = c.get("/api/activity/registrations/payment-report")
+        assert res.status_code == 200, res.text
+        return openpyxl.load_workbook(io.BytesIO(res.content))
+
+    def test_ws1_student_name_formula_quoted(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="=2+2", class_name="+CMD()")
+            s.commit()
+
+        assert _login(c).status_code == 200
+        wb = self._export_workbook(c)
+        ws1 = wb["繳費總覽"]
+        # row 2 = 第一筆資料列；B=學生、C=班級
+        assert ws1.cell(row=2, column=2).value == "'=2+2"
+        assert ws1.cell(row=2, column=3).value == "'+CMD()"
+
+    def test_ws1_normal_name_unchanged(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s, student_name="王小明")
+            s.commit()
+
+        assert _login(c).status_code == 200
+        wb = self._export_workbook(c)
+        ws1 = wb["繳費總覽"]
+        assert ws1.cell(row=2, column=2).value == "王小明"

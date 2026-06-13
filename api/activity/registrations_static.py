@@ -332,7 +332,10 @@ def export_payment_report(
         wb = openpyxl.Workbook()
 
         # ── 工作表一：繳費總覽 ──────────────────────────────────────────
-        ws1 = wb.active
+        # S1（2026-06-13）：家長公開報名自填 student_name/class_name 可帶
+        # `=HYPERLINK(...)` 等公式前綴，必須與 ws2 / export_registrations 一樣
+        # 包 SafeWorksheet 防 Excel 公式注入。
+        ws1 = SafeWorksheet(wb.active)
         ws1.title = "繳費總覽"
         headers1 = [
             "序號",
