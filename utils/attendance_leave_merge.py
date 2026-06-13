@@ -22,8 +22,9 @@ from utils.attendance_calc import (
 )
 
 # 預設排班（對齊 services/employee_leave_attendance_sync）
-DEFAULT_SCHEDULED_START = time(9, 0)
-DEFAULT_SCHEDULED_END = time(18, 0)
+# 員工無自訂排班時的 fallback（對齊 Employee.work_start_time/work_end_time 欄位預設）
+DEFAULT_SCHEDULED_START = time(8, 0)
+DEFAULT_SCHEDULED_END = time(17, 0)
 
 
 def merge_attendance_with_leave(att: Attendance, session: Session) -> None:
@@ -154,8 +155,17 @@ def _parse_hhmm(s: Optional[str]) -> Optional[time]:
 
 
 def _get_employee_schedule(session: Session, employee_id: int) -> tuple[time, time]:
-    """對齊 services/employee_leave_attendance_sync._get_employee_schedule。
+    """讀員工實際排班 work_start_time/work_end_time（HH:MM 字串），缺值 fallback。
 
-    日後員工 model 加排班欄，兩處同步改。
+    P1-3：原本一律回硬編 09:00/18:00，無視員工 work_end_time（預設 08:00-17:00），
+    導致部分請假日 17:00 正常下班被誤判 60 分早退 → 早退扣款灌水。改讀員工實際
+    排班，與 services/employee_leave_attendance_sync._get_employee_schedule 對齊。
     """
-    return DEFAULT_SCHEDULED_START, DEFAULT_SCHEDULED_END
+    from models.employee import Employee
+
+    emp = session.query(Employee).filter_by(id=employee_id).first()
+    start = (
+        _parse_hhmm(getattr(emp, "work_start_time", None)) or DEFAULT_SCHEDULED_START
+    )
+    end = _parse_hhmm(getattr(emp, "work_end_time", None)) or DEFAULT_SCHEDULED_END
+    return start, end

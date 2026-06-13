@@ -80,6 +80,10 @@ def _make_employee(session, *, employee_id: str, name: str) -> Employee:
         base_salary=30000,
         employee_type="regular",
         is_active=True,
+        # leave-aware 案例以 09:00-18:00 排班設計（leave 09:00-13:00、punch 09:30/18:00）；
+        # _get_employee_schedule 改讀員工實際排班後（P1-3），明確釘住排班以保留原情境。
+        work_start_time="09:00",
+        work_end_time="18:00",
     )
     session.add(emp)
     session.flush()
