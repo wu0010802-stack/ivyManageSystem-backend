@@ -352,3 +352,67 @@ class TestListSessionsPaginationValidation:
         body = res.json()
         assert body["skip"] == 0
         assert body["limit"] == 500
+
+
+# ────────────────────────────────────────────────────────────────── #
+# K5 — supplies 4 端點補 response_model（契約如實描述既有輸出）
+# ────────────────────────────────────────────────────────────────── #
+
+
+class TestSuppliesResponseModel:
+    def test_all_supply_endpoints_declare_response_model(self):
+        """4 個 supplies 端點都必須掛 response_model（OpenAPI 契約防 unknown）。"""
+        from api.activity.supplies import router
+
+        routes = {
+            (next(iter(r.methods)), r.path): r
+            for r in router.routes
+            if hasattr(r, "methods")
+        }
+        for key in [
+            ("GET", "/supplies"),
+            ("POST", "/supplies"),
+            ("PUT", "/supplies/{supply_id}"),
+            ("DELETE", "/supplies/{supply_id}"),
+        ]:
+            assert key in routes, key
+            assert routes[key].response_model is not None, key
+
+    def test_supply_crud_response_shape_unchanged(self, client_factory):
+        """掛 response_model 後既有 response shape 不可改變。"""
+        client, sf = client_factory
+        _setup_admin(sf, client)
+        sy, sem = resolve_current_academic_term()
+
+        res = client.post("/api/activity/supplies", json={"name": "圍裙", "price": 250})
+        assert res.status_code == 201
+        body = res.json()
+        assert set(body) == {"message", "id", "school_year", "semester"}
+        assert body["school_year"] == sy
+        assert body["semester"] == sem
+        supply_id = body["id"]
+
+        res = client.get("/api/activity/supplies")
+        assert res.status_code == 200
+        body = res.json()
+        assert set(body) == {
+            "supplies",
+            "total",
+            "skip",
+            "limit",
+            "school_year",
+            "semester",
+        }
+        assert body["total"] == 1
+        item = body["supplies"][0]
+        assert set(item) == {"id", "name", "price", "school_year", "semester"}
+        assert item["name"] == "圍裙"
+        assert item["price"] == 250
+
+        res = client.put(f"/api/activity/supplies/{supply_id}", json={"price": 300})
+        assert res.status_code == 200
+        assert res.json() == {"message": "用品更新成功"}
+
+        res = client.delete(f"/api/activity/supplies/{supply_id}")
+        assert res.status_code == 200
+        assert res.json() == {"message": "用品已停用"}

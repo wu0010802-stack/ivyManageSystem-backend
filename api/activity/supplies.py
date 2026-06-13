@@ -22,11 +22,17 @@ from ._shared import (
     require_approve_for_high_price,
 )
 
+from schemas.activity_admin import (
+    SupplyCreateResultOut,
+    SupplyListOut,
+)
+from schemas._common import DeleteResultOut
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/supplies")
+@router.get("/supplies", response_model=SupplyListOut)
 def get_supplies(
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=500),
@@ -66,7 +72,7 @@ def get_supplies(
         session.close()
 
 
-@router.post("/supplies", status_code=201)
+@router.post("/supplies", status_code=201, response_model=SupplyCreateResultOut)
 def create_supply(
     body: SupplyCreate,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
@@ -115,7 +121,7 @@ def create_supply(
         session.close()
 
 
-@router.put("/supplies/{supply_id}")
+@router.put("/supplies/{supply_id}", response_model=DeleteResultOut)
 def update_supply(
     supply_id: int,
     body: SupplyUpdate,
@@ -172,7 +178,7 @@ def update_supply(
         session.close()
 
 
-@router.delete("/supplies/{supply_id}")
+@router.delete("/supplies/{supply_id}", response_model=DeleteResultOut)
 def delete_supply(
     supply_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),

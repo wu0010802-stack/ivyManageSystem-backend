@@ -512,6 +512,47 @@ class CourseEnrolledOut(IvyBaseModel):
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# api/activity/supplies.py response_model（K5，2026-06-13）
+#
+# PUT / DELETE 直接重用 _common.DeleteResultOut（{message}），與 courses 同慣例。
+# ───────────────────────────────────────────────────────────────────────────
+
+
+class SupplyListItemOut(IvyBaseModel):
+    """GET /supplies 單筆。
+
+    school_year / semester 由 list 端點以 resolve 後的學期等值過濾，
+    回傳值必為 int（NULL 列不會被過濾條件選中）。
+    """
+
+    id: int
+    name: str
+    price: int
+    school_year: int
+    semester: int
+
+
+class SupplyListOut(IvyBaseModel):
+    """GET /supplies 分頁回應（含 total + 學期 echo）。"""
+
+    supplies: list[SupplyListItemOut]
+    total: int
+    skip: int
+    limit: int
+    school_year: int
+    semester: int
+
+
+class SupplyCreateResultOut(IvyBaseModel):
+    """POST /supplies 201 回應（同 CourseCreateResultOut shape）。"""
+
+    message: str
+    id: int
+    school_year: int
+    semester: int
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # Phase 3.5 — api/activity/registrations.py 9 endpoint response_model
 #
 # 重用 _common.MutationResultOut/DeleteResultOut 解三個 mutation；其餘四個自訂
