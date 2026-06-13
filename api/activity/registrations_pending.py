@@ -36,6 +36,8 @@ from ._shared import (
     _validate_tw_mobile,
     _not_found,
     now_taipei_naive,
+    resolve_student_pii_scope,
+    student_pii_row_visible,
 )
 
 from schemas.activity_admin import (
@@ -208,13 +210,16 @@ def list_pending_registrations(
             .all()
         )
         # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII 欄位
-        can_see_student = can_view_student_pii(current_user)
+        # S7：STUDENTS_READ:own_class 者對非管轄班級的列照樣遮罩（per-row）
+        pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
         can_see_guardian = can_view_guardian_pii(current_user)
         return {
             "items": [
                 _serialize_pending_item(
                     r,
-                    can_see_student_pii=can_see_student,
+                    can_see_student_pii=student_pii_row_visible(
+                        pii_visible, pii_allowed, r.classroom_id
+                    ),
                     can_see_guardian_pii=can_see_guardian,
                 )
                 for r in rows
@@ -251,9 +256,15 @@ def admin_search_students(
 
     session = get_session()
     try:
+        # S7（D1）：STUDENTS_READ:own_class 者只能搜尋管轄班級的學生，
+        # 防止「ACTIVITY_WRITE + :own_class」自訂角色拉全校學生目錄
+        _, pii_allowed = resolve_student_pii_scope(session, current_user)
+        if pii_allowed is not None and not pii_allowed:
+            return {"items": []}
+
         # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 拉全校學生目錄
         like = f"%{escape_like_pattern(q.strip())}%"
-        rows = (
+        query = (
             session.query(Student, Classroom)
             .outerjoin(Classroom, Classroom.id == Student.classroom_id)
             .filter(
@@ -267,9 +278,10 @@ def admin_search_students(
                     ),
                 ),
             )
-            .limit(limit)
-            .all()
         )
+        if pii_allowed is not None:
+            query = query.filter(Student.classroom_id.in_(pii_allowed))
+        rows = query.limit(limit).all()
         return {
             "items": [
                 {

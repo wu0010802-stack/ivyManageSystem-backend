@@ -110,6 +110,47 @@ def _desensitize_operator(operator: Optional[str], viewer_has_approve: bool) -> 
     return operator[0] + "***"
 
 
+def resolve_student_pii_scope(db_session, current_user: dict):
+    """S7（D1）：解析 caller 對學生 PII 的可視範圍（scope-aware 版 F-026/027/028）。
+
+    背景：ACTIVITY_* 不在 SCOPE_AWARE_CODES，api/activity/ 過去只用
+    「是否持 STUDENTS_READ」（bare has_permission，對 `:own_class` 也回 True）
+    決定 PII 遮罩 → 持 STUDENTS_READ:own_class 的自訂角色經才藝端點看全校。
+
+    Returns:
+        (visible, allowed_classroom_ids)
+        - (False, None)：完全不可見（無 STUDENTS_READ）
+        - (True, None) ：全園可見（wildcard / bare / `:all`）
+        - (True, set)  ：僅管轄班級可見（`:own_class`；set 可為空 = 全遮）
+
+    判斷重用 utils.portfolio_access 既有慣例：is_unrestricted(code=) 走
+    PermissionGrant.scope，accessible_classroom_ids(code=) 以
+    employee_id ↔ Classroom 導師欄位取得管轄班級。
+    """
+    from utils.portfolio_access import (
+        accessible_classroom_ids,
+        can_view_student_pii,
+        is_unrestricted,
+    )
+
+    if not can_view_student_pii(current_user):
+        return False, None
+    code = Permission.STUDENTS_READ.value
+    if is_unrestricted(current_user, code=code):
+        return True, None
+    return True, set(accessible_classroom_ids(db_session, current_user, code=code))
+
+
+def student_pii_row_visible(visible: bool, allowed_classroom_ids, classroom_id) -> bool:
+    """resolve_student_pii_scope 結果套用到單列：own_class 者對非管轄班級
+    （含 classroom_id=None 未分班，fail-closed）照樣遮罩。"""
+    if not visible:
+        return False
+    if allowed_classroom_ids is None:
+        return True
+    return classroom_id is not None and classroom_id in allowed_classroom_ids
+
+
 # F2 第一階段：時區 helper 抽到 utils/taipei_time.py 共用（fees / activity / portal
 # 都需要同一條台灣時區邏輯）。本檔保留 re-export 維持既有 import surface。
 from utils.taipei_time import (  # noqa: F401
@@ -878,6 +919,7 @@ def _build_session_detail_response(
     classroom_ids_filter: list | None = None,
     group_by: Optional[str] = None,
     mask_student_ids: bool = False,
+    student_pii_visible_classroom_ids: set | None = None,
 ) -> dict:
     """取得場次詳情 + 出席狀態，供管理端及 Portal 共用。
 
@@ -888,6 +930,9 @@ def _build_session_detail_response(
                                  （S6：admin caller 缺 STUDENTS_READ 時遮罩，對齊
                                  registrations_pending 慣例；portal caller 不傳，
                                  維持原行為）。分組仍按真實班級進行，僅 FK 不外洩。
+    student_pii_visible_classroom_ids → 非 None 時做 per-row 遮罩：classroom_id
+                                 不在集合內的列（含未分班）一樣遮 FK
+                                 （S7：STUDENTS_READ:own_class 限管轄班級）。
 
     篩選條件：
     - RegistrationCourse.status == 'enrolled'
@@ -1014,13 +1059,23 @@ def _build_session_detail_response(
             classified.append(unassigned)
         response["groups"] = classified
 
-    # S6：分組完成後才遮罩（分組需要真實 classroom_id 當 key）；
+    # S6/S7：分組完成後才遮罩（分組需要真實 classroom_id 當 key）；
     # groups 內的 students 與頂層 students 共享同一批 dict，就地改寫兩處都生效。
-    if mask_student_ids:
+    if mask_student_ids or student_pii_visible_classroom_ids is not None:
+        allowed = student_pii_visible_classroom_ids
+
+        def _row_masked(classroom_id) -> bool:
+            if mask_student_ids:
+                return True
+            # own_class：非管轄班級（含未分班 None）照樣遮（fail-closed）
+            return classroom_id is None or classroom_id not in allowed
+
         for s in students:
-            s["student_id"] = None
-            s["classroom_id"] = None
+            if _row_masked(s["classroom_id"]):
+                s["student_id"] = None
+                s["classroom_id"] = None
         for g in response.get("groups", []):
-            g["classroom_id"] = None
+            if _row_masked(g["classroom_id"]):
+                g["classroom_id"] = None
 
     return response

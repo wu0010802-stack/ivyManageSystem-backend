@@ -38,7 +38,7 @@ from services.activity_refund_query import build_refund_suggestion
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission, list_active_user_ids_with_permission
-from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
+from utils.portfolio_access import can_view_guardian_pii
 from utils.finance_guards import (
     FINANCE_APPROVAL_THRESHOLD,
     require_finance_approve,
@@ -70,6 +70,8 @@ from ._shared import (
     _attach_courses,
     _attach_supplies,
     _match_student_id,
+    resolve_student_pii_scope,
+    student_pii_row_visible,
     has_payment_approve,
     require_refund_reason,
     require_approve_for_large_refund,
@@ -366,11 +368,15 @@ def get_registrations(
             supply_amount_map = dict(_supply_amount)
 
         # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII
-        can_see_student = can_view_student_pii(current_user)
+        # S7：STUDENTS_READ:own_class 者對非管轄班級的列照樣遮罩（per-row）
+        pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
         can_see_guardian = can_view_guardian_pii(current_user)
 
         items = []
         for r in regs:
+            can_see_student = student_pii_row_visible(
+                pii_visible, pii_allowed, r.classroom_id
+            )
             paid_amount = r.paid_amount or 0
             total_amount = (course_amount_map.get(r.id, 0) or 0) + (
                 supply_amount_map.get(r.id, 0) or 0
@@ -498,7 +504,11 @@ def get_registration_detail(
         paid_amount = reg.paid_amount or 0
 
         # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII
-        can_see_student = can_view_student_pii(current_user)
+        # S7：STUDENTS_READ:own_class 者對非管轄班級的報名照樣遮罩
+        pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
+        can_see_student = student_pii_row_visible(
+            pii_visible, pii_allowed, reg.classroom_id
+        )
         can_see_guardian = can_view_guardian_pii(current_user)
         return {
             "id": reg.id,
