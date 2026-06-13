@@ -416,3 +416,47 @@ class TestSuppliesResponseModel:
         res = client.delete(f"/api/activity/supplies/{supply_id}")
         assert res.status_code == 200
         assert res.json() == {"message": "用品已停用"}
+
+
+# ────────────────────────────────────────────────────────────────── #
+# K6 — inquiry phone 寬鬆格式驗證（允許市話；非 _validate_tw_mobile）
+# ────────────────────────────────────────────────────────────────── #
+
+
+def _post_inquiry(client, phone):
+    return client.post(
+        "/api/activity/public/inquiries",
+        json={"name": "王媽媽", "phone": phone, "question": "請問課程何時開始？"},
+    )
+
+
+class TestInquiryPhoneValidation:
+    def test_mobile_accepted(self, client_factory):
+        client, sf = client_factory
+        assert _post_inquiry(client, "0912345678").status_code == 201
+
+    def test_landline_with_dashes_accepted(self, client_factory):
+        """市話格式（含區碼、-、括號、空白、+886）都要放行。"""
+        client, sf = client_factory
+        assert _post_inquiry(client, "(02) 2345-6789").status_code == 201
+
+    def test_international_prefix_accepted(self, client_factory):
+        client, sf = client_factory
+        assert _post_inquiry(client, "+886 2 2345 6789").status_code == 201
+
+    def test_alpha_rejected(self, client_factory):
+        client, sf = client_factory
+        res = _post_inquiry(client, "abc12345678")
+        assert res.status_code == 422
+
+    def test_too_few_digits_rejected(self, client_factory):
+        """數字字元少於 7 → 422。"""
+        client, sf = client_factory
+        res = _post_inquiry(client, "02-123")
+        assert res.status_code == 422
+
+    def test_error_message_in_chinese(self, client_factory):
+        client, sf = client_factory
+        res = _post_inquiry(client, "電話：0912")
+        assert res.status_code == 422
+        assert "電話" in str(res.json())
