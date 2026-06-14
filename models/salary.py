@@ -27,7 +27,14 @@ from models.types import Money
 
 
 class InsuranceTable(Base):
-    """勞健保級距表"""
+    """勞健保級距表。
+
+    ⚠ DEPRECATED（系統設計審查 2026-06-14 驗證 api/services/utils 0 runtime caller）：
+    現役保險設定走 config.py 的 InsuranceRate / InsuranceBracket（period-aware，
+    config_year + version）。本表為被取代的舊世代（year-only、無版本），命名與
+    InsuranceRate 極易混淆。保留僅避免 import 爆 / 歷史資料；下個維護窗口可評估
+    drop table（須先匯出 prod 資料存查）。**勿新增讀寫**。
+    """
 
     __tablename__ = "insurance_tables"
 
@@ -55,7 +62,12 @@ class InsuranceTable(Base):
 
 
 class DeductionRule(Base):
-    """扣款規則表"""
+    """扣款規則表。
+
+    ⚠ DEPRECATED（系統設計審查 2026-06-14 驗證 0 runtime caller）：現役遲到 / 曠職
+    等扣款邏輯走 salary engine + config.AttendancePolicy，本表無人讀寫。保留僅避免
+    import 爆；下個維護窗口可評估 drop。**勿新增讀寫**。
+    """
 
     __tablename__ = "deduction_rules"
 
@@ -75,7 +87,14 @@ class DeductionRule(Base):
 
 
 class BonusSetting(Base):
-    """獎金設定表"""
+    """獎金設定表。
+
+    ⚠ DEPRECATED（系統設計審查 2026-06-14 驗證 0 runtime caller）：現役獎金設定走
+    config.py 的 BonusConfig（period-aware，10+ callers）。本表為被取代的舊世代
+    （setting_year + setting_month、無版本），命名與 BonusConfig 極易混淆、歷次
+    bug hunt 反覆得排除。保留僅避免 import 爆 / 歷史資料；下個維護窗口可評估 drop
+    （須先匯出 prod 資料）。**勿新增讀寫**。
+    """
 
     __tablename__ = "bonus_settings"
 
@@ -99,7 +118,12 @@ class BonusSetting(Base):
 
 
 class ClassBonusSetting(Base):
-    """班級獎金設定表"""
+    """班級獎金設定表。
+
+    ⚠ DEPRECATED（系統設計審查 2026-06-14 驗證 0 runtime caller）：班級在籍 / 獎金
+    人數現走 ClassEnrollmentSnapshot + GradeTarget。本表無人讀寫。保留僅避免 import
+    爆；下個維護窗口可評估 drop。**勿新增讀寫**。
+    """
 
     __tablename__ = "class_bonus_settings"
 
@@ -148,7 +172,12 @@ class BonusType(Base):
 
 
 class SalaryItem(Base):
-    """薪資明細項目表"""
+    """薪資明細項目表。
+
+    ⚠ DEPRECATED（系統設計審查 2026-06-14 驗證 0 runtime caller）：薪資明細現走
+    SalaryRecord 各金額欄 + SalarySnapshot 快照 + salary_field_breakdown。本表無人
+    讀寫。保留僅避免 import 爆；下個維護窗口可評估 drop。**勿新增讀寫**。
+    """
 
     __tablename__ = "salary_items"
 
