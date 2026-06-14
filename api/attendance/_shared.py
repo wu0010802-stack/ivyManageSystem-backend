@@ -44,3 +44,40 @@ class AttendanceRecordUpdate(BaseModel):
     date: str
     punch_in: Optional[str] = None
     punch_out: Optional[str] = None
+
+
+# ============ Pure helpers ============
+
+
+def compute_shift_based_attendance(
+    dt_in_full, dt_out_full, shift_start_dt, shift_end_dt
+):
+    """以排班基準計算 (is_late, is_early_leave, late_minutes, early_leave_minutes, status)。
+
+    C15：排班教師的 is_late/is_early_leave 走排班 shift 基準，遲到/早退分鐘也必須同基準
+    （而非 parser 預設 08:00/17:00 基準），否則旗標與扣款分鐘脫鉤造成少扣/多扣。
+    旗標與分鐘在此單一函式同源計算，供 legacy 匯入路徑回填 detail。
+
+    參數皆為 datetime（跨夜班的 shift_end_dt / punch_out 已是次日）。
+    """
+    is_late = dt_in_full > shift_start_dt
+    late_minutes = (
+        max(0, int((dt_in_full - shift_start_dt).total_seconds() / 60))
+        if is_late
+        else 0
+    )
+    is_early_leave = dt_out_full < shift_end_dt
+    early_leave_minutes = (
+        max(0, int((shift_end_dt - dt_out_full).total_seconds() / 60))
+        if is_early_leave
+        else 0
+    )
+    if is_late and is_early_leave:
+        status = "late+early_leave"
+    elif is_late:
+        status = "late"
+    elif is_early_leave:
+        status = "early_leave"
+    else:
+        status = "normal"
+    return is_late, is_early_leave, late_minutes, early_leave_minutes, status

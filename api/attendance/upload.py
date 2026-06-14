@@ -29,7 +29,7 @@ from utils.file_upload import read_upload_with_size_check, validate_file_signatu
 from utils.errors import raise_safe_500
 from utils.storage import get_storage_path
 from services.salary.utils import lock_and_premark_stale
-from ._shared import AttendanceUploadRequest
+from ._shared import AttendanceUploadRequest, compute_shift_based_attendance
 from .records import _assert_upload_months_not_finalized
 
 logger = logging.getLogger(__name__)
@@ -704,30 +704,23 @@ async def upload_attendance(
                                 if shift_end_dt <= shift_start_dt:
                                     shift_end_dt += timedelta(days=1)
 
-                                is_late = dt_in_full > shift_start_dt
-                                late_minutes = (
-                                    max(
-                                        0,
-                                        int(
-                                            (
-                                                dt_in_full - shift_start_dt
-                                            ).total_seconds()
-                                            / 60
-                                        ),
-                                    )
-                                    if is_late
-                                    else 0
+                                (
+                                    is_late,
+                                    is_early_leave,
+                                    late_minutes,
+                                    early_leave_minutes,
+                                    status,
+                                ) = compute_shift_based_attendance(
+                                    dt_in_full,
+                                    dt_out_full,
+                                    shift_start_dt,
+                                    shift_end_dt,
                                 )
-                                is_early_leave = dt_out_full < shift_end_dt
-
-                                if is_late and is_early_leave:
-                                    status = "late+early_leave"
-                                elif is_late:
-                                    status = "late"
-                                elif is_early_leave:
-                                    status = "early_leave"
-                                else:
-                                    status = "normal"
+                                # C15：分鐘數與旗標同走排班基準，回填 detail 供下方寫入，
+                                # 不再沿用 parser 預設 08:00/17:00 基準的 detail 值，避免
+                                # 旗標與扣款分鐘脫鉤造成少扣/多扣。
+                                detail["late_minutes"] = late_minutes
+                                detail["early_minutes"] = early_leave_minutes
 
                         # R4-4（業主 2026-06-06 決策：遲到照扣）：同新格式，移除 legacy
                         # 匯入路徑「工時滿額即清零遲到/早退」的 reset。三條寫入路徑一致。
