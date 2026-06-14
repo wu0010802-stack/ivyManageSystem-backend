@@ -855,3 +855,131 @@ class TestAdminApprovalWorkflow:
 
         res = client.post(f"/api/activity/registrations/{reg1_id}/restore")
         assert res.status_code == 400
+
+    def test_rematch_acquires_lock_on_identity_change(
+        self, pending_client, monkeypatch
+    ):
+        """C6：rematch 改 name/birthday 時須對「修改後身分」取 advisory lock，序列化
+        同學生同學期的並發改身分（與 restore P2-3 對齊）。SQLite lock no-op，本測試聚焦
+        wiring（確實呼叫且帶修改後身分）。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        reg_id = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        ).json()["id"]
+        _login(client)
+
+        calls = []
+        from utils import advisory_lock as advisory_lock_mod
+
+        real_fn = advisory_lock_mod.acquire_activity_registration_lock
+
+        def spy(session, **kw):
+            calls.append(kw)
+            return real_fn(session, **kw)
+
+        monkeypatch.setattr(
+            advisory_lock_mod, "acquire_activity_registration_lock", spy
+        )
+        from api.activity import registrations_pending as rp_mod
+
+        monkeypatch.setattr(rp_mod, "acquire_activity_registration_lock", spy)
+
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/rematch",
+            json={"name": "改名小明", "birthday": "2019-03-03"},
+        )
+        assert res.status_code == 200, res.text
+        assert calls, "rematch 改身分時應取 advisory lock"
+        assert calls[0]["student_name"] == "改名小明"
+        assert calls[0]["birthday"] == "2019-03-03"
+
+    def test_force_accept_acquires_lock_on_identity_change(
+        self, pending_client, monkeypatch
+    ):
+        """C6：force-accept 改 name/birthday 時須對「修改後身分」取 advisory lock。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        reg_id = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        ).json()["id"]
+        _login(client)
+
+        calls = []
+        from utils import advisory_lock as advisory_lock_mod
+
+        real_fn = advisory_lock_mod.acquire_activity_registration_lock
+
+        def spy(session, **kw):
+            calls.append(kw)
+            return real_fn(session, **kw)
+
+        monkeypatch.setattr(
+            advisory_lock_mod, "acquire_activity_registration_lock", spy
+        )
+        from api.activity import registrations_pending as rp_mod
+
+        monkeypatch.setattr(rp_mod, "acquire_activity_registration_lock", spy)
+
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/force-accept",
+            json={"name": "強收小明", "birthday": "2018-07-07"},
+        )
+        assert res.status_code == 200, res.text
+        assert calls, "force-accept 改身分時應取 advisory lock"
+        assert calls[0]["student_name"] == "強收小明"
+        assert calls[0]["birthday"] == "2018-07-07"
+
+    def test_rematch_integrityerror_returns_409(self, pending_client, monkeypatch):
+        """C7：rematch 撞唯一鍵（IntegrityError）應回乾淨 409 而非 raise_safe_500 的 500
+        （與 restore 對齊）。SQLite 無 partial unique index，以 patch 觸發 IntegrityError。"""
+        from sqlalchemy.exc import IntegrityError
+
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        reg_id = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        ).json()["id"]
+        _login(client)
+
+        from api.activity import _shared as shared_mod
+
+        def boom(*a, **k):
+            raise IntegrityError("dup", None, Exception("dup"))
+
+        monkeypatch.setattr(shared_mod, "_match_student_with_parent_phone", boom)
+
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/rematch",
+            json={"name": "改名小明", "birthday": "2019-03-03"},
+        )
+        assert res.status_code == 409, res.text
+
+    def test_force_accept_integrityerror_returns_409(self, pending_client, monkeypatch):
+        """C7：force-accept 撞唯一鍵（IntegrityError）應回乾淨 409。"""
+        from sqlalchemy.exc import IntegrityError
+
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)
+        reg_id = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(phone="0911111111"),
+        ).json()["id"]
+        _login(client)
+
+        from api.activity import registrations_pending as rp_mod
+
+        def boom(*a, **k):
+            raise IntegrityError("dup", None, Exception("dup"))
+
+        monkeypatch.setattr(rp_mod, "now_taipei_naive", boom)
+
+        res = client.post(f"/api/activity/registrations/{reg_id}/force-accept")
+        assert res.status_code == 409, res.text

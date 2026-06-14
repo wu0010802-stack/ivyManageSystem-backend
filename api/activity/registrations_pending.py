@@ -499,6 +499,17 @@ def rematch_registration(
         if field_changed and (
             new_name != reg.student_name or new_birthday != reg.birthday
         ):
+            # C6：以「修改後身分」取 advisory lock 序列化同學生同學期的並發改身分，否則
+            # 兩筆不同 reg 同時改成同一身分，各自 dup SELECT 看不到對方未 commit 的身分
+            # 翻轉 → 雙雙通過 → 兩筆有效報名（partial unique 鍵含 phone，phone 不同/NULL
+            # 故不攔）。與 restore（P2-3）對齊。SQLite no-op。
+            acquire_activity_registration_lock(
+                session,
+                student_name=new_name,
+                birthday=new_birthday,
+                school_year=reg.school_year,
+                semester=reg.semester,
+            )
             dup = (
                 session.query(ActivityRegistration)
                 .filter(
@@ -568,6 +579,12 @@ def rematch_registration(
     except HTTPException:
         session.rollback()
         raise
+    except IntegrityError:
+        # C7：advisory lock 已序列化同身分並發，此處為極窄並發窗口下仍撞 DB partial
+        # unique index（同 phone）的兜底，回乾淨 409 而非 raise_safe_500 的 500
+        # （與 restore 對齊）。
+        session.rollback()
+        raise HTTPException(status_code=409, detail="本學期已有同一學生的有效報名")
     except Exception as e:
         session.rollback()
         logger.error("重新比對失敗：%s", e)
@@ -622,6 +639,15 @@ def force_accept_registration(
         if field_changed and (
             new_name != reg.student_name or new_birthday != reg.birthday
         ):
+            # C6：以「修改後身分」取 advisory lock 序列化同學生同學期的並發改身分
+            # （與 rematch / restore P2-3 對齊）。SQLite no-op。
+            acquire_activity_registration_lock(
+                session,
+                student_name=new_name,
+                birthday=new_birthday,
+                school_year=reg.school_year,
+                semester=reg.semester,
+            )
             dup = (
                 session.query(ActivityRegistration)
                 .filter(
@@ -671,6 +697,11 @@ def force_accept_registration(
     except HTTPException:
         session.rollback()
         raise
+    except IntegrityError:
+        # C7：與 rematch / restore 對齊——極窄並發窗口下撞 DB partial unique index
+        # 的兜底，回乾淨 409 而非 raise_safe_500 的 500。
+        session.rollback()
+        raise HTTPException(status_code=409, detail="本學期已有同一學生的有效報名")
     except Exception as e:
         session.rollback()
         logger.error("強行收件失敗：%s", e)
