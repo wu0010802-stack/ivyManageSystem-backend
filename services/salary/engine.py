@@ -2955,6 +2955,40 @@ class SalaryEngine:
             "special_bonus": rec.special_bonus or 0,
         }
 
+    def _bonus_total_with_manual_overrides(
+        self, session, employee_id: int, year: int, month: int, breakdown
+    ):
+        """C9：二代健保補充保費基底用「覆寫感知」的獎金總額計算。
+
+        manual_overrides 內的 BONUS_FIELDS_FOR_YTD 欄位用 record 持久化覆寫值，其餘用
+        breakdown 重算值。否則 HR 手動覆寫 festival/overtime/supervisor_dividend 後，
+        breakdown 仍是引擎重算值（record 覆寫值僅在 _fill_salary_record 保留），補充保費
+        基底會用非覆寫值計算而失準。無 record 或無相關覆寫時回 None（caller 退回原
+        breakdown 基底，行為位元不變）。
+        """
+        from models.database import SalaryRecord
+        from services.salary.supplementary_premium import BONUS_FIELDS_FOR_YTD
+
+        rec = (
+            session.query(SalaryRecord)
+            .filter(
+                SalaryRecord.employee_id == employee_id,
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month,
+            )
+            .first()
+        )
+        overrides = set(rec.manual_overrides or []) if rec is not None else set()
+        if not overrides & set(BONUS_FIELDS_FOR_YTD):
+            return None
+        total = 0.0
+        for field in BONUS_FIELDS_FOR_YTD:
+            if field in overrides:
+                total += float(getattr(rec, field) or 0)
+            else:
+                total += float(getattr(breakdown, field) or 0)
+        return total
+
     def _finalize_breakdown(
         self,
         session,
@@ -3015,6 +3049,11 @@ class SalaryEngine:
             apply_bonus_supplementary_to_breakdown,
         )
 
+        # C9：補充保費基底用覆寫感知總額（manual_overrides 內 5 個獎金欄位用 record
+        # 持久化覆寫值）。無覆寫時回 None → 函式退回原 breakdown 基底，行為不變。
+        bonus_total_override = self._bonus_total_with_manual_overrides(
+            session, emp.id, year, month, breakdown
+        )
         apply_bonus_supplementary_to_breakdown(
             session,
             emp_dict,
@@ -3024,6 +3063,7 @@ class SalaryEngine:
             self.insurance_service,
             emp.id,
             ytd_before=ytd_before,
+            breakdown_bonus_total_override=bonus_total_override,
         )
 
         breakdown.absent_count = absent_count

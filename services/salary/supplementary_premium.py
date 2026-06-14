@@ -190,6 +190,7 @@ def apply_bonus_supplementary_to_breakdown(
     insurance_service,
     employee_pk: int,
     ytd_before: float | None = None,
+    breakdown_bonus_total_override: float | None = None,
 ) -> int:
     """計算獎金補充保費並 mutates breakdown 四個欄位：
     health_insurance / supplementary_health_employee / total_deduction / net_salary。
@@ -211,13 +212,18 @@ def apply_bonus_supplementary_to_breakdown(
     if health_insured_salary <= 0 or rate <= 0:
         return 0
 
-    breakdown_bonus_total = (
-        float(breakdown.festival_bonus or 0)
-        + float(breakdown.overtime_bonus or 0)
-        + float(breakdown.performance_bonus or 0)
-        + float(breakdown.special_bonus or 0)
-        + float(breakdown.supervisor_dividend or 0)
-    )
+    if breakdown_bonus_total_override is not None:
+        # C9：caller 已算好「覆寫感知」的獎金基底（manual_overrides 內欄位用 record
+        # 持久化覆寫值），直接採用，避免基底用引擎重算值而非人工覆寫值致補充保費失準。
+        breakdown_bonus_total = float(breakdown_bonus_total_override)
+    else:
+        breakdown_bonus_total = (
+            float(breakdown.festival_bonus or 0)
+            + float(breakdown.overtime_bonus or 0)
+            + float(breakdown.performance_bonus or 0)
+            + float(breakdown.special_bonus or 0)
+            + float(breakdown.supervisor_dividend or 0)
+        )
 
     fee = calculate_bonus_supplementary_fee(
         session,

@@ -629,3 +629,119 @@ class TestHealthInsuredSalaryCap:
             emp_dict, self._OverCapBracketInsuranceService()
         )
         assert resolved == 219500.0
+
+
+class TestC9OverrideAwareSupplementaryBasis:
+    """C9：補充保費基底須用 manual_overrides 的持久化覆寫值，而非引擎重算值。
+
+    HR 手動覆寫 festival/overtime/supervisor_dividend 後，引擎重算時 breakdown 的這些
+    欄位仍是重算值（record 覆寫值只在 _fill_salary_record 保留），補充保費基底若用
+    breakdown 值 → 封存前的權威補充保費仍以非覆寫值計算。
+    """
+
+    class _FakeInsuranceService:
+        supplementary_health_rate = 0.0211
+
+        def get_bracket(self, raw):
+            return {"amount": raw}
+
+    def _emp_dict(self):
+        return {
+            "employee_type": "regular",
+            "base_salary": 30000,
+            "insurance_salary": 30000,
+            "health_insured_salary": None,
+        }
+
+    def _bd(self, **over):
+        bd = SalaryBreakdown(
+            employee_name="T",
+            employee_id="E001",
+            year=2026,
+            month=6,
+            base_salary=30000,
+            gross_salary=230000,
+            health_insurance=458,
+            total_deduction=2000,
+        )
+        bd.festival_bonus = 0
+        bd.overtime_bonus = 0
+        bd.performance_bonus = 0
+        bd.special_bonus = 0
+        bd.supervisor_dividend = 0
+        for k, v in over.items():
+            setattr(bd, k, v)
+        return bd
+
+    def test_override_total_used_for_basis(self, test_db_session):
+        # breakdown 重算 festival=10000（< threshold 不扣），但覆寫總額 200000 應據此扣。
+        bd = self._bd(festival_bonus=10000)
+        fee = apply_bonus_supplementary_to_breakdown(
+            test_db_session,
+            self._emp_dict(),
+            bd,
+            2026,
+            6,
+            self._FakeInsuranceService(),
+            EMP_ID,
+            breakdown_bonus_total_override=200000,
+        )
+        # threshold=120000, ytd_after=200000 → excess=80000 → 1688
+        assert fee == round(80000 * 0.0211)
+
+    def test_no_override_uses_breakdown_total(self, test_db_session):
+        # 不傳 override → 用 breakdown.festival 10000 < threshold → 0（行為不變）。
+        bd = self._bd(festival_bonus=10000)
+        fee = apply_bonus_supplementary_to_breakdown(
+            test_db_session,
+            self._emp_dict(),
+            bd,
+            2026,
+            6,
+            self._FakeInsuranceService(),
+            EMP_ID,
+        )
+        assert fee == 0
+
+    def test_engine_bonus_total_uses_record_for_overridden_field(self, test_db_session):
+        from services.salary_engine import SalaryEngine
+
+        rec = SalaryRecord(
+            employee_id=EMP_ID,
+            salary_year=2026,
+            salary_month=6,
+            festival_bonus=50000,
+            overtime_bonus=0,
+            performance_bonus=0,
+            special_bonus=0,
+            supervisor_dividend=0,
+            manual_overrides=["festival_bonus"],
+        )
+        test_db_session.add(rec)
+        test_db_session.flush()
+        bd = self._bd(festival_bonus=10000, overtime_bonus=3000)  # 重算值 ≠ 覆寫 50000
+        engine = SalaryEngine(load_from_db=False)
+        total = engine._bonus_total_with_manual_overrides(
+            test_db_session, EMP_ID, 2026, 6, bd
+        )
+        # festival 用 record 覆寫 50000 + overtime 用 breakdown 3000 = 53000
+        assert total == 53000
+
+    def test_engine_bonus_total_none_when_no_override(self, test_db_session):
+        from services.salary_engine import SalaryEngine
+
+        rec = SalaryRecord(
+            employee_id=EMP_ID,
+            salary_year=2026,
+            salary_month=6,
+            festival_bonus=50000,
+            manual_overrides=[],
+        )
+        test_db_session.add(rec)
+        test_db_session.flush()
+        bd = self._bd(festival_bonus=10000)
+        engine = SalaryEngine(load_from_db=False)
+        total = engine._bonus_total_with_manual_overrides(
+            test_db_session, EMP_ID, 2026, 6, bd
+        )
+        assert total is None
