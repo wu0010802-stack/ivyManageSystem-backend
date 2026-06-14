@@ -647,12 +647,34 @@ def import_year_end_to_db(
         settlements_count += 1
 
     # special_bonus_items upsert + 更新 settlement.special_bonus_total / total_amount
+    #
+    # C1：special_bonus_total 以 DB「全量」SpecialBonusItem 重算（見下方 sync 迴圈），
+    #     不可用「本次 Excel 子集」覆寫，否則會 clobber 掉 auto_derive/manual 既有獎金
+    #     而少發（與 canonical _recompute_settlement_special_total 口徑一致）。
+    # C2：FINALIZED settlement 視為轉帳名冊不可變承諾（與上方主迴圈一致），其員工的
+    #     特別獎金 upsert 與總額同步一律跳過，避免事後重匯 Excel 改寫已核定金額。
     special_count = 0
-    employee_special_totals: dict[int, Decimal] = {}
+    affected_emp_ids: set[int] = set()
     for sb in parsed.special_bonuses:
         emp_id = employee_resolver(sb.name)
         if emp_id is None:
             skipped.append(sb.name)
+            continue
+        settlement = (
+            session.query(YearEndSettlement)
+            .filter_by(year_end_cycle_id=cycle.id, employee_id=emp_id)
+            .one_or_none()
+        )
+        if (
+            settlement is not None
+            and settlement.status == YearEndSettlementStatus.FINALIZED
+        ):
+            logger.warning(
+                "year_end import skip special_bonus for FINALIZED settlement: "
+                "cycle=%d emp=%d",
+                cycle.id,
+                emp_id,
+            )
             continue
         existing = (
             session.query(SpecialBonusItem)
@@ -679,22 +701,31 @@ def import_year_end_to_db(
         else:
             existing.amount = sb.amount
             existing.calc_meta = sb.calc_meta
-        employee_special_totals[emp_id] = (
-            employee_special_totals.get(emp_id, Decimal("0")) + sb.amount
-        )
+        affected_emp_ids.add(emp_id)
         special_count += 1
 
     session.flush()
-    # 把 special_bonus_total 同步到 settlements
-    for emp_id, total in employee_special_totals.items():
+    # 把 special_bonus_total 同步到 settlements：以 DB 內「全部」SpecialBonusItem 重算
+    # （C1，避免本次 Excel 子集覆寫），並跳過 FINALIZED（C2，不可變承諾）。
+    for emp_id in affected_emp_ids:
         settlement = (
             session.query(YearEndSettlement)
             .filter_by(year_end_cycle_id=cycle.id, employee_id=emp_id)
             .one_or_none()
         )
-        if settlement is not None:
-            settlement.special_bonus_total = total
-            settlement.total_amount = settlement.payable_amount + total
+        if settlement is None or settlement.status == YearEndSettlementStatus.FINALIZED:
+            continue
+        full_special_total = sum(
+            (
+                row.amount
+                for row in session.query(SpecialBonusItem.amount)
+                .filter_by(year_end_cycle_id=cycle.id, employee_id=emp_id)
+                .all()
+            ),
+            Decimal("0"),
+        )
+        settlement.special_bonus_total = full_special_total
+        settlement.total_amount = settlement.payable_amount + full_special_total
 
     session.flush()
     return YearEndImportResult(

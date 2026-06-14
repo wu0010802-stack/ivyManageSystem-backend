@@ -272,6 +272,148 @@ def test_excel_io_update_path_skips_finalized_settlement(test_db_session):
     assert settlement.base_salary == Decimal("30000")
 
 
+def test_excel_io_sync_loop_preserves_existing_special_bonus_when_emp_in_excel(
+    test_db_session,
+):
+    """C1 回歸：員工同時有 DB 既有特別獎金（auto_derive/manual 寫入、本次 Excel 未列出）
+    與本次 Excel 列出的特別獎金時，import 同步 special_bonus_total 必須以 DB 全量
+    SpecialBonusItem 重算，而非只用本次 Excel 子集，否則 total_amount 會少發既有獎金。"""
+    from services.year_end.excel_io import (
+        ParsedSettlementRow,
+        ParsedSpecialBonus,
+        ParsedYearEndExcel,
+        import_year_end_to_db,
+    )
+
+    session = test_db_session
+    cycle = _make_cycle(session)
+    EMP_ID = 21
+    # DB 既有（本次 Excel 未列出）：模擬 auto_derive 寫入的獎金，period_label 與 Excel 不同
+    session.add(
+        SpecialBonusItem(
+            year_end_cycle_id=cycle.id,
+            employee_id=EMP_ID,
+            bonus_type=SpecialBonusType.CUSTOM,
+            period_label="課後獎勵-既有",
+            amount=Decimal("3000"),
+        )
+    )
+    session.commit()
+
+    parsed = ParsedYearEndExcel(
+        academic_year=114,
+        settlements=[
+            ParsedSettlementRow(
+                excel_row=1,
+                name="王測試",
+                base_salary=Decimal("30000"),
+                festival_total=Decimal("0"),
+                avg_performance_rate=Decimal("90"),
+                gross_amount=Decimal("30000"),
+                org_achievement_rate=Decimal("100"),
+                subtotal=Decimal("30000"),
+                total_in_year=Decimal("12"),
+                payable=Decimal("30000"),
+            ),
+        ],
+        special_bonuses=[
+            ParsedSpecialBonus(
+                name="王測試",
+                bonus_type=SpecialBonusType.CUSTOM,
+                period_label="節慶差額-本次",
+                amount=Decimal("1000"),
+            ),
+        ],
+        class_targets=[],
+    )
+    import_year_end_to_db(
+        parsed,
+        session,
+        employee_resolver=lambda name: EMP_ID if name == "王測試" else None,
+        cycle_dates=(date(2025, 1, 1), date(2025, 12, 31), date(2026, 1, 15)),
+        org_achievement_rate_first=Decimal("100"),
+        org_achievement_rate_second=Decimal("100"),
+    )
+    session.commit()
+
+    settlement = (
+        session.query(YearEndSettlement)
+        .filter_by(year_end_cycle_id=cycle.id, employee_id=EMP_ID)
+        .one()
+    )
+    # DB 全量 = 3000(既有) + 1000(本次) = 4000，而非只有本次子集 1000
+    assert settlement.special_bonus_total == Decimal("4000")
+    assert settlement.total_amount == settlement.payable_amount + Decimal("4000")
+
+
+def test_excel_io_sync_loop_does_not_mutate_finalized_total(test_db_session):
+    """C2 回歸：FINALIZED settlement 的 total_amount 為轉帳名冊不可變承諾，即使該員
+    出現在重匯 Excel 的 special_bonuses，import 同步迴圈也不得改寫其金額。"""
+    from services.year_end.excel_io import (
+        ParsedSettlementRow,
+        ParsedSpecialBonus,
+        ParsedYearEndExcel,
+        import_year_end_to_db,
+    )
+
+    session = test_db_session
+    cycle = _make_cycle(session)
+    EMP_ID = 22
+    s = _make_settlement(
+        session,
+        cycle.id,
+        employee_id=EMP_ID,
+        status=YearEndSettlementStatus.FINALIZED,
+        payable=Decimal("28000"),
+    )
+    s.total_amount = Decimal("28000")
+    session.commit()
+
+    parsed = ParsedYearEndExcel(
+        academic_year=114,
+        settlements=[
+            ParsedSettlementRow(
+                excel_row=1,
+                name="王測試",
+                base_salary=Decimal("30000"),
+                festival_total=Decimal("0"),
+                avg_performance_rate=Decimal("90"),
+                gross_amount=Decimal("30000"),
+                org_achievement_rate=Decimal("100"),
+                subtotal=Decimal("30000"),
+                total_in_year=Decimal("12"),
+                payable=Decimal("30000"),
+            ),
+        ],
+        special_bonuses=[
+            ParsedSpecialBonus(
+                name="王測試",
+                bonus_type=SpecialBonusType.CUSTOM,
+                period_label="紅包",
+                amount=Decimal("5000"),
+            ),
+        ],
+        class_targets=[],
+    )
+    import_year_end_to_db(
+        parsed,
+        session,
+        employee_resolver=lambda name: EMP_ID if name == "王測試" else None,
+        cycle_dates=(date(2025, 1, 1), date(2025, 12, 31), date(2026, 1, 15)),
+        org_achievement_rate_first=Decimal("100"),
+        org_achievement_rate_second=Decimal("100"),
+    )
+    session.commit()
+
+    settlement = (
+        session.query(YearEndSettlement)
+        .filter_by(year_end_cycle_id=cycle.id, employee_id=EMP_ID)
+        .one()
+    )
+    assert settlement.total_amount == Decimal("28000")
+    assert settlement.special_bonus_total == Decimal("0")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # P1-7: SalarySnapshot partial unique
 # ─────────────────────────────────────────────────────────────────────────────
