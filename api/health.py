@@ -13,7 +13,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from schemas._base import IvyBaseModel
@@ -137,7 +137,7 @@ def liveness():
 
 
 @router.get("/ready")
-async def readiness(deep: bool = Query(False)):
+async def readiness(request: Request, deep: bool = Query(False)):
     """Readiness probe.
 
     Shallow（無 query）— 既有 shape，不更動：
@@ -200,6 +200,13 @@ async def readiness(deep: bool = Query(False)):
         "status": "ok" if overall_ok else "degraded",
         "latency_ms": elapsed_ms,
         "components": components,
+        # 家長端 RLS 就緒狀態（資訊欄位，刻意不放進 components、不參與 overall_ok：
+        # 家長端 RLS 降級不應拖垮整個後端 readiness 害 admin/staff 一起被斷流量；
+        # 系統設計審查 2026-06-14, top#7）。值由 app_lifespan 啟動探測寫入 app.state。
+        "parent_portal": {
+            "rls_ready": bool(getattr(request.app.state, "parent_rls_ok", False)),
+            "detail": getattr(request.app.state, "parent_rls_detail", "unknown"),
+        },
     }
     return JSONResponse(
         status_code=200 if overall_ok else 503,
