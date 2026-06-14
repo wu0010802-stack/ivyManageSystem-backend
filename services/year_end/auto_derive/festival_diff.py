@@ -94,10 +94,7 @@ from models.year_end import (
     YearEndCycle,
 )
 from services.salary.engine import SalaryEngine
-from services.student_enrollment import (
-    classroom_student_count_map,
-    count_students_active_on,
-)
+from services.salary.enrollment_snapshot import resolve_bonus_counts
 from services.year_end.enrollment_rates import count_enrolled_on
 from services.year_end.settlement_builder import (
     _semester_month_ends,
@@ -305,12 +302,15 @@ def _build_meeting_absent_cache(
 
     此查詢與 payroll 自身用的 MeetingRecord 查詢逐字一致，注入後「已發」仍忠實。
 
-    人數 ctx（school_active / classroom_count_map）自 NP1-1（2026-06-12）起也在
-    derive_festival_diff 內 per-month 預載——但**一律用 engine 自己的**
-    `count_students_active_on` / `classroom_student_count_map`
-    （services/student_enrollment.py），屬同函式同參數的等值 memoize，「已發」
-    永遠忠實鏡像 payroll 當下的人數語意。**絕不可**把 count_enrolled_on 注入
-    ctx——已發必須跟著 payroll 走，不跟年終人數函式。
+    人數 ctx（school_active / classroom_count_map）在 derive_festival_diff 內
+    per-month 預載——自 P1-9（2026-06-13）起一律走 payroll 同源的
+    `resolve_bonus_counts`（services/salary/enrollment_snapshot.py：有 HR 確認/手調
+    快照讀快照、無快照依 BonusConfig.enrollment_count_mode 即時計算，含 L3
+    daily_weighted）。「已發」永遠忠實鏡像 payroll **實際發放**所用人數。**絕不可**
+    改注入 count_enrolled_on（年終「應領」人數函式，含 withdrawal_date > d）——已發
+    必須跟著 payroll 走。（歷史註：P1-9 前曾注入 count_students_active_on，僅等於
+    resolve_bonus_counts 的「無快照 + month_end」分支，該月有快照手調或啟用
+    daily_weighted 時與 payroll 實發脫節 → true-up 失真，已修。）
 
     歷史註：2026-06-13 L1a 前 payroll filter 不含 withdrawal_date，與「應領」的
     `count_enrolled_on`（含 withdrawal_date > d）人數定義刻意不同，withdrawal
@@ -413,23 +413,21 @@ def derive_festival_diff(
     # count_students_active_on 算（見 _build_meeting_absent_cache docstring）。
     meeting_absent_cache = _build_meeting_absent_cache(db, month_ends)
 
-    # ── NP1-1 N+1 收斂（2026-06-12）──
-    # 以下全部是「同函式、同參數」的等值 memoize / 迴圈外批次預載，cache 生命週期
-    # 僅限本次 derive，不替換任何人數定義：已發仍走 engine 的 count_students_active_on
-    # 體系（不含 withdrawal）、應領仍走 count_enrolled_on（含 withdrawal），true-up
-    # 的人數校正成分不變（見 _build_meeting_absent_cache docstring 的兩套定義說明）。
-    # ① 已發側 per-month 人數：engine 自己的函式先算好注入 ctx——school_active_students
-    #    對齊 engine.py:2040-2043 的 ctx 短路；classroom_count_map 與 bulk payroll
-    #    _build_period_monthly_context 的 cls_count_map 同一手法（同 filter 的 GROUP BY）。
-    _school_active_by_month: dict[tuple[int, int], int] = {}
-    _cls_count_by_month: dict[tuple[int, int], dict[int, int]] = {}
+    # ① 已發側 per-month 人數：必須鏡像 payroll 實際發放所用的人數來源（P1-9）。
+    #    payroll 自 L2（2026-06-13 在籍人數三層方案）起改走 resolve_bonus_counts——
+    #    有 HR 確認/手調快照讀快照、無快照依 BonusConfig.enrollment_count_mode 即時計算
+    #    （支援 L3 daily_weighted）。原本注入 count_students_active_on 只等於「無快照 +
+    #    month_end」分支，會短路掉 engine.py:2045 的 resolve_bonus_counts → 「已發」≠
+    #    payroll 實發 → FESTIVAL_DIFF true-up（應領−已發）失真。改走 resolve_bonus_counts
+    #    與 payroll 同源；無快照 + month_end 模式時與原值等值（零漂移），僅在該月有快照
+    #    手調或啟用 daily_weighted 時忠實反映實發人數。school_active_students 對齊
+    #    engine.py:2045 的 ctx 短路；classroom_count_map 注入下游 _build_classroom_context。
+    _school_active_by_month: dict[tuple[int, int], object] = {}
+    _cls_count_by_month: dict[tuple[int, int], dict[int, object]] = {}
     for _me in month_ends:
-        _school_active_by_month[(_me.year, _me.month)] = count_students_active_on(
-            db, _me
-        )
-        _cls_count_by_month[(_me.year, _me.month)] = classroom_student_count_map(
-            db, _me
-        )
+        _school, _cls_map = resolve_bonus_counts(db, _me.year, _me.month)
+        _school_active_by_month[(_me.year, _me.month)] = _school
+        _cls_count_by_month[(_me.year, _me.month)] = _cls_map
     # ② 已發側班級反查 memo：per (emp, term)，由上方 all_active_classrooms 在記憶體內
     #    解析（_resolve_classroom_for_emp 逐字鏡像 engine._resolve_classroom_for_employee
     #    _in_term，含 cross-term fallback）；注入 ctx["classroom"] 取代 engine 逐員工
@@ -536,11 +534,11 @@ def derive_festival_diff(
             y, m = month_end.year, month_end.month
 
             # ── 已發_m：payroll 逐月 accrual（per-class + 封頂 + 學期反查）──
-            # school_active_students / classroom_count_map：用 engine 自己的
-            # count_students_active_on 體系（payroll 真實人數，不含 withdrawal）per-month
-            # 預載注入（NP1-1，等值 memoize），與「應領」的 count_enrolled_on 人數定義
-            # 仍刻意不同 → 差額含「人數校正 true-up」不變。**絕不可**改注入
-            # count_enrolled_on（會消掉 true-up 的人數校正成分）。
+            # school_active_students / classroom_count_map：走 payroll 同源的
+            # resolve_bonus_counts（含快照/daily_weighted 感知，P1-9）per-month 預載注入，
+            # 忠實鏡像 payroll 實發人數；與「應領」的 count_enrolled_on 人數定義仍刻意
+            # 不同 → 差額含「人數校正 true-up」不變。**絕不可**改注入 count_enrolled_on
+            # （會消掉 true-up 的人數校正成分）。
             # "classroom"：per (emp, term) memo（與 engine
             # _resolve_classroom_for_employee_in_month 同 term 解析 + 同班級反查邏輯）。
             _term_key = resolve_current_academic_term(date(y, m, 1))

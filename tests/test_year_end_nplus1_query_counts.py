@@ -250,10 +250,14 @@ def test_np1_1_festival_diff_query_count_bounded(seed):
     db.commit()
 
     assert report.written == 10, report.warnings
-    assert counter.count <= 80, (
-        f"derive_festival_diff 發出 {counter.count} 條 SELECT（上限 80；修補後本 seed"
-        f" 實測 71 = 42 students[6月×(school_active+cls_count)+6月×5組 enrolled]"
-        f" + 6 meeting + ~9 bonus_configs + 常數，修補前 309）；"
+    # 上限 110：P1-9 起「已發」人數改走 resolve_bonus_counts（與 payroll 同源、
+    # 含快照/daily_weighted 感知），每月多一次 snapshot + BonusConfig mode 查詢，
+    # 本 seed 由 71 升至 96。此為「每月」固定成本（與員工數無關），N+1 守衛的核心
+    # （catch per-employee 級 309 條回歸）仍有效。
+    assert counter.count <= 110, (
+        f"derive_festival_diff 發出 {counter.count} 條 SELECT（上限 110；P1-9 後本 seed"
+        f" 實測 ~96 = 每月 resolve_bonus_counts（snapshot+mode+live）+ 6月×5組 enrolled"
+        f" + 6 meeting + bonus_configs + 常數，修補前 309）；"
         f"疑似 per-employee/per-month N+1 回歸。\n{_breakdown(counter)}"
     )
 
@@ -339,8 +343,8 @@ def test_np1_3_attendance_deductions_batch_query_count_bounded(seed):
         assert d.calc_meta["missing_punch_count"] == 2
     for emp in employees[6:]:
         d = result[emp.id]
-        assert d.late == d.personal_leave == d.sick_leave == d.meeting == Decimal(
-            "0.00"
+        assert (
+            d.late == d.personal_leave == d.sick_leave == d.meeting == Decimal("0.00")
         )
 
     assert counter.count <= 12, (

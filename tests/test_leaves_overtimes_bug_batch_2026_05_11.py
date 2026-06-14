@@ -867,6 +867,81 @@ class TestP1_4_5LeaveOvertimeCrossOverlap:
         ), f"leave 與既有 OT 同日重疊應 400/409；實際 {res.status_code} body={res.json()}"
         assert "加班" in res.json().get("detail", "")
 
+    def test_update_leave_to_day_with_approved_overtime_blocked(self, app_client):
+        """P1-2：把假單 update 到一個已有 approved OT 的日子應被擋（update 原本繞過跨類守衛）。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "D010", "員工十")
+            _admin(session)
+            # B 日（07-14 週二）已有 approved 全日 OT
+            _approved_overtime(
+                session,
+                emp.id,
+                overtime_date=date(2026, 7, 14),
+                start_time="08:00",
+                end_time="17:00",
+                hours=8.0,
+            )
+            # A 日（07-13 週一）一筆 pending 全日假
+            lv = _pending_leave(session, emp.id, start=date(2026, 7, 13))
+            session.commit()
+            lv_id = lv.id
+
+        assert _login(client).status_code == 200
+
+        res = client.put(
+            f"/api/leaves/{lv_id}",
+            json={"start_date": "2026-07-14", "end_date": "2026-07-14"},
+        )
+        assert res.status_code in (
+            400,
+            409,
+        ), f"假單 update 到有 OT 的日子應 400/409；實際 {res.status_code} body={res.json()}"
+        assert "加班" in res.json().get("detail", "")
+
+    def test_update_overtime_to_day_with_approved_leave_blocked(self, app_client):
+        """P1-2：把加班 update 到一個已有 approved 假的日子應被擋（update 原本繞過跨類守衛）。"""
+        client, session_factory, mp = app_client
+        with session_factory() as session:
+            emp = _emp(session, "D011", "員工十一")
+            _admin(session)
+            # B 日（07-15 週三）已有 approved 全日假
+            lv = LeaveRecord(
+                employee_id=emp.id,
+                leave_type="personal",
+                start_date=date(2026, 7, 15),
+                end_date=date(2026, 7, 15),
+                leave_hours=8.0,
+                status="approved",
+                is_deductible=True,
+                deduction_ratio=1.0,
+            )
+            session.add(lv)
+            # A 日（07-16 週四）一筆 pending OT
+            ot = _approved_overtime(
+                session,
+                emp.id,
+                overtime_date=date(2026, 7, 16),
+                start_time="18:00",
+                end_time="20:00",
+                hours=2.0,
+                status="pending",
+            )
+            session.commit()
+            ot_id = ot.id
+
+        assert _login(client).status_code == 200
+
+        res = client.put(
+            f"/api/overtimes/{ot_id}",
+            json={"overtime_date": "2026-07-15"},
+        )
+        assert res.status_code in (
+            400,
+            409,
+        ), f"加班 update 到有假的日子應 400/409；實際 {res.status_code} body={res.json()}"
+        assert "請假" in res.json().get("detail", "")
+
     def test_import_leaves_blocks_duplicate_pending_same_day(self, app_client):
         """import 兩筆同員工同日 leave，第二筆應 failed（avoid duplicate pending）"""
         client, session_factory, mp = app_client

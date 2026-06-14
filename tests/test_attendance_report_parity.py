@@ -60,6 +60,10 @@ def emp(db_session):
         name="測試員工",
         base_salary=40000,
         is_active=True,
+        # 本檔 parity 案例以 09:00-18:00 排班設計（punch_in=09:00 視為準時、半天假
+        # 09:00-13:00）；_get_employee_schedule 改讀員工實際排班後（P1-3），明確釘住排班。
+        work_start_time="09:00",
+        work_end_time="18:00",
     )
     db_session.add(employee)
     db_session.commit()

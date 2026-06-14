@@ -238,3 +238,52 @@ def compute_early_leave_minutes_with_leave(
         effective_end_m = sched_m
 
     return max(0, effective_end_m - punch_m)
+
+
+def compute_shift_aware_status(
+    punch_in_dt: Optional[datetime],
+    punch_out_dt: Optional[datetime],
+    shift_start_dt: datetime,
+    shift_end_dt: datetime,
+) -> tuple[bool, int, bool, int, str]:
+    """以班別起迄 datetime 計算 late/early/status，與「兩筆打卡齊全」脫鉤（P1-4）。
+
+    late 只需 punch_in、early 只需 punch_out，皆以班別時間為基準；缺的一側回 missing。
+    shift_start_dt/shift_end_dt 已含跨夜處理（caller 在 shift_end<=shift_start 時 +1 日）。
+
+    原本 Excel 匯入只在兩筆打卡都在時才套用班別時間（api/attendance/upload.py），
+    晚班教師（如 13:00-22:00）漏打一筆卡 → 落回預設 08:00/17:00 算出數百分鐘假遲到/
+    假早退。本函式讓有打卡的一側一律以班別基準計算。
+
+    回傳 (is_late, late_minutes, is_early_leave, early_leave_minutes, status)。
+    status 格式與 upload 既有預設路徑一致（late / early_leave / late+early_leave /
+    normal，再依缺卡補 missing / +missing_in / +missing_out）。
+    """
+    is_late = bool(punch_in_dt is not None and punch_in_dt > shift_start_dt)
+    late_minutes = (
+        max(0, int((punch_in_dt - shift_start_dt).total_seconds() / 60))
+        if is_late
+        else 0
+    )
+    is_early_leave = bool(punch_out_dt is not None and punch_out_dt < shift_end_dt)
+    early_leave_minutes = (
+        max(0, int((shift_end_dt - punch_out_dt).total_seconds() / 60))
+        if is_early_leave
+        else 0
+    )
+
+    if is_late and is_early_leave:
+        status = "late+early_leave"
+    elif is_late:
+        status = "late"
+    elif is_early_leave:
+        status = "early_leave"
+    else:
+        status = "normal"
+
+    if punch_in_dt is None:
+        status = "missing" if status == "normal" else status + "+missing_in"
+    if punch_out_dt is None:
+        status = "missing" if status == "normal" else status + "+missing_out"
+
+    return is_late, late_minutes, is_early_leave, early_leave_minutes, status

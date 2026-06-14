@@ -394,9 +394,7 @@ def _assert_hours_within_span(
     end_min = int(end_time[:2]) * 60 + int(end_time[3:5])
     span_hours = (end_min - start_min) / 60
     if hours > span_hours + 1e-6:
-        raise ValueError(
-            f"加班時數（{hours}）不可超過起迄時段差（{span_hours} 小時）"
-        )
+        raise ValueError(f"加班時數（{hours}）不可超過起迄時段差（{span_hours} 小時）")
 
 
 class OvertimeCreate(BaseModel):
@@ -484,9 +482,7 @@ class BatchOvertimeCreate(BaseModel):
             if self.start_time >= self.end_time:
                 raise ValueError("start_time 必須早於 end_time（不支援跨日加班）")
             for _emp in self.employees:
-                _assert_hours_within_span(
-                    _emp.hours, self.start_time, self.end_time
-                )
+                _assert_hours_within_span(_emp.hours, self.start_time, self.end_time)
         return self
 
 
@@ -1009,6 +1005,18 @@ def update_overtime(
                     f"（ID: {overlap.id}，{overlap.overtime_date} {st}～{et}），請調整時段"
                 ),
             )
+
+        # P1-2：跨類重疊檢查——與 create_overtime 對齊。update 原本只查 OT↔OT
+        # overlap，可把加班移到已有 approved/pending 假的日子，繞過 2026-05-11
+        # P1-5 跨類守衛 → 雙重給付。helper 查的是 LeaveRecord，被改的 OT 不在
+        # 該表故無自我衝突、無需 exclude。
+        _check_employee_has_conflicting_leave(
+            session,
+            ot.employee_id,
+            check_date,
+            new_start_dt,
+            new_end_dt,
+        )
 
         # 修改後的時數驗證月上限（排除自己）
         new_hours_val = data.hours if data.hours is not None else ot.hours

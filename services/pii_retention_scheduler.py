@@ -104,7 +104,10 @@ def _run_pii_retention_gc(session=None) -> None:
               AND s.terminal_entered_at IS NOT NULL
               AND s.terminal_entered_at < :cutoff
               AND g.pii_redacted_at IS NULL
-              AND g.deleted_at IS NULL
+              -- P2：不可加 g.deleted_at IS NULL。軟刪除的 Guardian（監護權變更/離婚/
+              -- 誤建修正）反而最該抹 PII——否則離開系統的家長個資（手機/Email/LINE
+              -- user_id/監護說明）永久殘留 guardians 表（個資法 §11 破口）。
+              -- pii_redacted_at IS NULL 已確保 idempotency（已抹的不再抹）。
             ORDER BY g.id
             LIMIT :limit
             {lock_clause}

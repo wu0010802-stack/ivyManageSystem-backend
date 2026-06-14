@@ -24,6 +24,7 @@ from utils.auth import require_staff_permission
 from utils.attendance_guards import assert_no_self_in_batch
 from utils.cache_layer import get_cache
 from utils.attendance_leave_merge import merge_attendance_with_leave
+from utils.attendance_calc import compute_shift_aware_status
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.errors import raise_safe_500
@@ -434,7 +435,12 @@ async def upload_attendance(
                         ) and shift_key in shift_schedule_map:
                             shift_data = shift_schedule_map[shift_key]
 
-                        if shift_data and punch_in_time and punch_out_time:
+                        # P1-4：班別 late/early 計算與「兩筆打卡齊全」脫鉤。原本要求
+                        # punch_in 與 punch_out 都在才套班別時間，晚班教師（如 13:00-22:00）
+                        # 漏打一筆卡 → 落回上方依預設 08:00/17:00 算出的數百分鐘假遲到/假早退。
+                        # 改為有打卡的一側一律以班別基準算（compute_shift_aware_status），
+                        # 缺的一側維持 missing 旗標。
+                        if shift_data:
                             shift_start = datetime.strptime(
                                 shift_data["work_start"], "%H:%M"
                             ).time()
@@ -450,38 +456,17 @@ async def upload_attendance(
                             if shift_end_dt <= shift_start_dt:
                                 shift_end_dt += timedelta(days=1)
 
-                            is_late = punch_in_time > shift_start_dt
-                            late_minutes = (
-                                max(
-                                    0,
-                                    int(
-                                        (punch_in_time - shift_start_dt).total_seconds()
-                                        / 60
-                                    ),
-                                )
-                                if is_late
-                                else 0
-                            )
-                            is_early_leave = punch_out_time < shift_end_dt
-
-                            if is_late and is_early_leave:
-                                status = "late+early_leave"
-                            elif is_late:
-                                status = "late"
-                            elif is_early_leave:
-                                status = "early_leave"
-                            else:
-                                status = "normal"
-                            early_leave_minutes = (
-                                max(
-                                    0,
-                                    int(
-                                        (shift_end_dt - punch_out_time).total_seconds()
-                                        / 60
-                                    ),
-                                )
-                                if is_early_leave
-                                else 0
+                            (
+                                is_late,
+                                late_minutes,
+                                is_early_leave,
+                                early_leave_minutes,
+                                status,
+                            ) = compute_shift_aware_status(
+                                punch_in_time,
+                                punch_out_time,
+                                shift_start_dt,
+                                shift_end_dt,
                             )
 
                         # R4-4（業主 2026-06-06 決策：遲到照扣）：移除「無排班員工當日

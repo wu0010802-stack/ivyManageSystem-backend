@@ -645,3 +645,55 @@ def test_new_hire_early_months_gated_no_windfall(seed):
         assert Decimal(mrow["diff"]) == Decimal("1000.00")
         assert mrow["enrolled"] == 18
         assert mrow["target"] == 9
+
+
+def test_paid_uses_resolve_bonus_counts_snapshot(seed):
+    """P1-9：已發人數必須鏡像 payroll 的 resolve_bonus_counts（含 HR 確認/手調快照），
+
+    而非原始 count_students_active_on。payroll 自 L2 起改走 resolve_bonus_counts
+    （有快照讀快照）；festival_diff 原本注入 count_students_active_on → 短路掉
+    resolve_bonus_counts → 「已發」≠ payroll 實發 → true-up 失真。
+
+    seed 班上實際 20 生；對涵蓋月份加一張全校快照 school=30（模擬 HR 手調），
+    主管「已發」應反映快照 30：round(3500×30/160)=656/月，而非 live 20 的 438。
+    """
+    from models.enrollment_snapshot import ClassEnrollmentSnapshot
+
+    db, cycle = seed["db"], seed["cycle"]
+
+    # 對整個學年（2025-08 ~ 2026-07）加全校快照 school=30 + 班級快照 20（班級維持不變，
+    # 隔離出「全校人數」單一變因 → 只動主管/辦公室的已發）。
+    for y, m in [(2025, mm) for mm in range(8, 13)] + [(2026, mm) for mm in range(1, 8)]:
+        db.add(
+            ClassEnrollmentSnapshot(
+                snapshot_year=y,
+                snapshot_month=m,
+                classroom_id=None,
+                student_count=Decimal("30"),
+                is_confirmed=True,
+            )
+        )
+        db.add(
+            ClassEnrollmentSnapshot(
+                snapshot_year=y,
+                snapshot_month=m,
+                classroom_id=seed["cls"].id,
+                student_count=Decimal("20"),
+                is_confirmed=True,
+            )
+        )
+    db.commit()
+
+    fd.derive_festival_diff(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
+    item = _item_for(items, seed["emp_dir"].id)
+    assert item is not None, "主管應有 FESTIVAL_DIFF 筆"
+    for mrow in item.calc_meta["months"]:
+        # 已發鏡像快照 school=30：round(3500×30/160)=656（修補前用 live 20 → 438）
+        assert Decimal(mrow["paid"]) == Decimal(
+            "656.00"
+        ), f"已發應反映快照人數 30，實際 paid={mrow['paid']}"
+        # 應領不受快照影響（走 count_enrolled_on=20）：3500×20/40=1750
+        assert Decimal(mrow["due"]) == Decimal("1750.00")

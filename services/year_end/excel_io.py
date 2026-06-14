@@ -706,7 +706,10 @@ def import_year_end_to_db(
 
     session.flush()
     # 把 special_bonus_total 同步到 settlements：以 DB 內「全部」SpecialBonusItem 重算
-    # （C1，避免本次 Excel 子集覆寫），並跳過 FINALIZED（C2，不可變承諾）。
+    # （C1 / P1-8：避免本次 Excel 子集覆寫——先 derive 的 auto item 如 FESTIVAL_DIFF /
+    # 才藝鼓勵 / 學期紅利，period_label 不同故 upsert 不會刪，與本次 Excel 列共存；用
+    # 子集覆寫會把這些既有項目靜默踢出 total_amount 實際匯款額 → 年終轉帳短算），並
+    # 跳過 FINALIZED（C2，轉帳名冊不可變承諾，補住此第二迴圈原會覆寫已核定金額的漏洞）。
     for emp_id in affected_emp_ids:
         settlement = (
             session.query(YearEndSettlement)

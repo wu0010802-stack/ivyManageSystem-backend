@@ -325,3 +325,55 @@ class TestRegistrationTimeSettingsValidation:
         s = RegistrationTimeSettings(is_open=False)
         assert s.open_at is None
         assert s.close_at is None
+
+
+# ------------------------------------------------------------------ #
+# P1-5 - delete_registration force_refund 自動沖帳的 daily-close 鎖協議
+# ------------------------------------------------------------------ #
+
+
+class TestDeleteRegistrationDailyCloseLock:
+    """force_refund 自動沖帳退費必須取 per-date daily-close advisory lock（M2 協議），
+    並對 reg 取 row lock，避免並發日結 snapshot 漏記退費 + lost update（P1-5）。
+    與 api/activity/registrations_items.remove_supply 對齊。"""
+
+    def test_force_refund_acquires_daily_close_lock(self, session, svc, monkeypatch):
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _zi
+        import services.activity_service as activity_service_module
+        from models.activity import ActivityPaymentRecord
+
+        course = _add_course(session)
+        reg = _add_reg(session)
+        _enroll(session, reg.id, course.id, status="enrolled")
+        reg.paid_amount = 1000
+        reg.is_paid = True
+        session.flush()
+
+        calls = []
+        monkeypatch.setattr(
+            activity_service_module,
+            "acquire_activity_daily_close_lock",
+            lambda sess, close_date: calls.append(close_date),
+        )
+
+        svc.delete_registration(
+            session,
+            reg.id,
+            "admin",
+            force_refund=True,
+            refund_reason="退費測試原因充足字數",
+        )
+        session.flush()
+
+        today = _dt.now(_zi("Asia/Taipei")).date()
+        assert calls == [today], f"force_refund 應取 today 的 daily-close lock，實際 {calls}"
+
+        refunds = (
+            session.query(ActivityPaymentRecord)
+            .filter_by(registration_id=reg.id, type="refund")
+            .all()
+        )
+        assert len(refunds) == 1
+        assert reg.paid_amount == 0
+        assert reg.is_active is False

@@ -35,6 +35,10 @@ def sample_employee(db_session):
         name="測試員工",
         base_salary=36000,
         is_active=True,
+        # 本檔多數 partial-leave 案例以 09:00-18:00 排班設計（leave 09:00-13:00 涵蓋上班起點）；
+        # _get_employee_schedule 改讀員工實際排班後，明確釘住排班以保留原情境（P1-3）。
+        work_start_time="09:00",
+        work_end_time="18:00",
     )
     db_session.add(emp)
     db_session.commit()
@@ -130,6 +134,46 @@ class TestMergeAttendanceWithLeave:
         assert att.late_minutes == 0
         # 因 late=0,status 退回 NORMAL
         assert att.status == AttendanceStatus.NORMAL.value
+
+    def test_m8_partial_leave_respects_employee_schedule(self, db_session):
+        """P1-3: 員工實際排班 08:00-17:00，上午請假、17:00 正常下班 → early_leave=0。
+
+        修補前 _get_employee_schedule 一律回硬編 18:00（無視員工 work_end_time），
+        17:00 下班被誤判 60 分早退 → 早退扣款灌水。
+        """
+        from models.employee import Employee
+
+        emp = Employee(
+            employee_id="T080",
+            name="八點班員工",
+            base_salary=36000,
+            is_active=True,
+            work_start_time="08:00",
+            work_end_time="17:00",
+        )
+        db_session.add(emp)
+        db_session.commit()
+
+        # 上午部分請假 08:00-12:00（4h），下午正常上班、17:00 下班
+        lv = _make_leave(
+            db_session,
+            emp.id,
+            leave_hours=4.0,
+            start_time="08:00",
+            end_time="12:00",
+        )
+        att = Attendance(
+            employee_id=emp.id,
+            attendance_date=date(2026, 5, 22),
+            status=AttendanceStatus.NORMAL.value,
+            punch_in_time=datetime.combine(date(2026, 5, 22), time(12, 0)),
+            punch_out_time=datetime.combine(date(2026, 5, 22), time(17, 0)),
+        )
+        merge_attendance_with_leave(att, db_session)
+        assert att.leave_record_id == lv.id
+        # 17:00 下班 == 員工排班下班時間 → 不該早退
+        assert att.early_leave_minutes == 0
+        assert att.late_minutes == 0
 
     def test_m5_partial_leave_no_punch(self, db_session, sample_employee):
         """M-5: 部分 leave + 無打卡 → status=ABSENT"""
