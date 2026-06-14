@@ -28,7 +28,8 @@ CI（`.github/workflows/ci.yml`）：push/PR to main 自動跑 PostgreSQL servic
 加新 router 或修改既有架構時，下列規則必須遵守：
 
 - **服務注入**：`SalaryEngine`、`InsuranceService`、`LineService` 為 `main.py` 啟動時建立的 singleton。需要這些服務的 router 必須透過 `init_*_services()` 注入，**不可** 直接 import。
-- **DB session**：新程式優先用 `session_scope()`（context manager，自動 commit/rollback/close）；`get_session()` 僅在需要手動管理時使用。
+- **DB session**：新程式優先用 `session_scope()`（context manager，自動 commit/rollback/close）；`get_session()` 僅在需要手動管理時使用。FastAPI `Depends(...)` 注入 session **一律用 `get_session_dep`**（generator，request 結束自動 close），用 `get_session` 會洩漏連線；`tests/test_no_bare_get_session_dep.py` 守此規則。
+- **資料存取分層**：**不採 repository 層**。資料存取直接寫在 service / router 內的 ORM query（80+ router 皆此慣例）。曾有半套 `repositories/`（僅 employee/student、無任何 runtime caller）已於 2026-06-14 刪除，勿重建。
 - **權限守衛**：所有路由必須有 `require_permission(Permission.XXX)`。`Permission` 定義在 `utils/permissions.py`，自 2026-05-21（`permtxt01`）起為 `str Enum`（`Permission.EMPLOYEES_READ.value == "EMPLOYEES_READ"`），**非** IntFlag 位元遮罩——無 64-bit 上限、無 BigInt 需求。檔內 `LEGACY_PERMISSION_BITS`（含 `1 << N`）僅供 alembic backfill，runtime 不參考。
 - **Schema 異動**：使用 Alembic（`alembic/versions/`），啟動時自動 `alembic upgrade heads`。
 - **啟動邏輯**：seed / migration 放 `startup/`，**不要** 放回 `main.py`。
