@@ -379,9 +379,9 @@ def ack_audit(
     summary="高風險 audit 事件列表（紅點用）",
 )
 def get_high_risk_audits(
-    days: int = 7,
+    days: int = Query(7, ge=1, le=90),
     unack_only: bool = True,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=500),
     current_user: dict = Depends(require_staff_permission(Permission.AUDIT_LOGS)),
 ):
     """列出時間窗內高風險 audit 事件，含 unack_count 供前端紅點顯示。"""
