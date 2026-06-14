@@ -141,3 +141,42 @@ class TestThreadSafety:
             t.join()
         # 4 thread × 5 fail = 20 failure attempts；threshold=10 → state open
         assert b.state == "open"
+
+
+class TestSupabaseBreakerTripsOnHttpx:
+    """系統設計審查 2026-06-14：supabase-py 走 httpx，故 _HTTP_TRANSIENT_EXC
+    必須涵蓋 httpx 傳輸層例外，否則 SUPABASE_BREAKER 對真實故障永不跳閘。"""
+
+    @pytest.mark.parametrize(
+        "exc_factory",
+        [
+            lambda: __import__("httpx").ConnectError("conn refused"),
+            lambda: __import__("httpx").ReadTimeout("read timeout"),
+            lambda: __import__("httpx").ConnectTimeout("connect timeout"),
+            lambda: __import__("httpx").PoolTimeout("pool exhausted"),
+        ],
+    )
+    def test_httpx_transport_errors_trip_breaker(self, exc_factory):
+        from utils.circuit_breaker import (
+            CircuitBreaker,
+            BreakerOpenError,
+            _HTTP_TRANSIENT_EXC,
+        )
+
+        b = CircuitBreaker(
+            "supa",
+            failure_threshold=3,
+            recovery_seconds=60,
+            trip_on=_HTTP_TRANSIENT_EXC,
+        )
+        for _ in range(3):
+            with pytest.raises((Exception,)):
+                b.call(lambda: (_ for _ in ()).throw(exc_factory()))
+        assert b.state == "open", "httpx 傳輸層例外應計入 failure 並使 breaker 跳閘"
+
+    def test_supabase_breaker_singleton_includes_httpx(self):
+        import httpx
+        from utils.circuit_breaker import SUPABASE_BREAKER
+
+        # SUPABASE_BREAKER 的 trip_on 必須認得 httpx.TransportError 子類
+        assert isinstance(httpx.ConnectError("x"), SUPABASE_BREAKER._trip_on)
