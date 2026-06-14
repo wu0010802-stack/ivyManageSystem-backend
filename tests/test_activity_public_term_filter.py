@@ -179,3 +179,67 @@ def test_public_availability_only_current_term_no_name_collision(term_client):
     assert (
         availability["陶藝"] == 10
     ), f"剩餘名額應為當學期容量 10（非前學年 5），實得 {availability['陶藝']}"
+
+
+def _seed_two_terms_with_videos(session):
+    """當前學期 + 前一學年各放 active 且帶 video_url 的課程，且故意同名。"""
+    cur_sy, cur_sem = resolve_current_academic_term()
+    prev_sy = cur_sy - 1
+    session.add(
+        ActivityCourse(
+            name="陶藝",
+            price=2400,
+            capacity=10,
+            school_year=cur_sy,
+            semester=cur_sem,
+            is_active=True,
+            video_url="https://v/cur-taoyi",
+        )
+    )
+    session.add(
+        ActivityCourse(
+            name="陶藝",
+            price=2400,
+            capacity=5,
+            school_year=prev_sy,
+            semester=cur_sem,
+            is_active=True,
+            video_url="https://v/prev-taoyi",
+        )
+    )
+    session.add(
+        ActivityCourse(
+            name="舊課",
+            price=999,
+            capacity=8,
+            school_year=prev_sy,
+            semester=cur_sem,
+            is_active=True,
+            video_url="https://v/prev-old",
+        )
+    )
+    session.commit()
+
+
+def test_public_course_videos_only_current_term(term_client):
+    """C8：/public/course-videos 只回當學期課程影片。
+
+    跨學期同名（陶藝 當學期 / 前學年）以 course.name 當 dict key 會碰撞、後寫者覆蓋；
+    且未濾學期會把非當學期課程影片（舊課）一併外洩。修正後只含當學期且不覆寫。
+    """
+    client, sf = term_client
+    session = sf()
+    try:
+        _seed_two_terms_with_videos(session)
+    finally:
+        session.close()
+
+    res = client.get("/api/activity/public/course-videos")
+    assert res.status_code == 200
+    payload = res.json()
+    assert set(payload.keys()) == {
+        "陶藝"
+    }, f"應只含當學期課名，實得 {sorted(payload.keys())}"
+    assert (
+        payload["陶藝"] == "https://v/cur-taoyi"
+    ), f"應為當學期影片，疑被前學年同名覆寫，實得 {payload['陶藝']}"

@@ -372,10 +372,15 @@ def get_public_course_videos(request: Request, response: Response):
     """前台：取得課程介紹影片 URL"""
     session = get_session()
     try:
+        # C8：只回當學期課程影片。否則跨學期同名課（含「複製上學期」遺留）以 course.name
+        # 當 dict key 互相覆寫，且非當學期影片外洩到當學期報名頁（與 /public/courses 對齊）。
+        sy, sem = resolve_academic_term_filters(None, None, session)
         courses = (
             session.query(ActivityCourse)
             .filter(
                 ActivityCourse.is_active.is_(True),
+                ActivityCourse.school_year == sy,
+                ActivityCourse.semester == sem,
                 ActivityCourse.video_url.isnot(None),
                 ActivityCourse.video_url != "",
             )
