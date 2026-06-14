@@ -316,6 +316,44 @@ def test_detect_alembic_state_classifies_three_modes(monkeypatch, tmp_path):
     assert migrations_module._detect_alembic_state() == "versioned"
 
 
+def test_migrate_school_year_to_roc_skips_missing_fee_tables(monkeypatch, tmp_path):
+    """回歸：period 費用表缺席（歷史改名/移除，例如已不存在的 fee_items）時，
+
+    不可連帶 rollback 班級學年度轉換。修補前 loop 第一個 fee_items 一拋
+    UndefinedTable，整個交易（含 Classroom 更新）被 rollback，ROC 轉換靜默失效。
+    本測試只建 classrooms 表（不建任何 fee 表），驗證班級仍成功轉成民國年。
+
+    用檔案型 SQLite（非 :memory:）確保 seed / migrate / check 三個 session
+    看到同一個 DB，避免 in-memory 連線各自獨立導致誤判。
+    """
+    from sqlalchemy.orm import sessionmaker
+    from startup import migrations as migrations_module
+    from models.classroom import Classroom
+
+    db_path = tmp_path / "roc_test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    Classroom.__table__.create(engine)
+    Session = sessionmaker(bind=engine)
+
+    seed = Session()
+    seed.add(Classroom(name="測試班", school_year=2026, semester=1))
+    seed.commit()
+    seed.close()
+
+    monkeypatch.setattr(migrations_module, "get_session", lambda: Session())
+
+    migrations_module.migrate_school_year_to_roc()
+
+    check = Session()
+    try:
+        row = check.query(Classroom).one()
+        assert (
+            row.school_year == 115
+        ), "2026 西元應轉成民國 115（缺 fee 表不得連帶 rollback）"
+    finally:
+        check.close()
+
+
 def test_startup_event_only_runs_bootstrap(monkeypatch):
     import main
 
