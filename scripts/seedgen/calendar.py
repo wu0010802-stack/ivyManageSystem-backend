@@ -74,6 +74,21 @@ def current_month(today: date) -> tuple[int, int]:
     return (today.year, today.month)
 
 
+def current_term(today: date) -> tuple[int, int]:
+    """回傳 `today` 所在的 (school_year 民國, semester)。
+
+    規則對齊 app ``utils.academic.resolve_current_academic_term``:
+    上學期 8/1–隔年 1/31(semester 1)、下學期 2/1–7/31(semester 2)。
+    term-container(班級/才藝課程/報名)以此 tag,才會出現在 app 的「當前學期」過濾。
+    """
+    y, m = today.year, today.month
+    if m >= 8:
+        return (y - 1911, 1)
+    if m == 1:
+        return (y - 1912, 1)
+    return (y - 1912, 2)  # 2..7 月 = 下學期
+
+
 def workdays(year: int, month: int, upto: date | None = None) -> list[date]:
     """回傳該月所有工作日(排除週六日)。
 

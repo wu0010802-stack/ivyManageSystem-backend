@@ -52,14 +52,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--year",
         type=int,
-        default=114,
-        help="民國學年(預設 114 → 2025-08-01 ~ 2026-07-31)。",
+        default=None,
+        help="民國學年。預設由 --today 所屬學年自動推導(real today 多落 114/115)。",
     )
     parser.add_argument(
         "--today",
         type=str,
-        default="2026-02-16",
-        help="模擬「今天」(ISO 日期),決定封存/進行中/未來月份。",
+        default=None,
+        help=(
+            "模擬「今天」(ISO 日期),決定封存/進行中/未來月份。"
+            "預設=真實當天,使 app 的『當前學期/今日』視圖與 seed 資料對齊。"
+        ),
     )
     parser.add_argument(
         "--scale",
@@ -121,10 +124,21 @@ def _selected_modules(only: tuple[str, ...]) -> list[str]:
 
 
 def _config_from_args(args: argparse.Namespace) -> SeedConfig:
-    """把解析後參數組成 frozen SeedConfig。"""
+    """把解析後參數組成 frozen SeedConfig。
+
+    --today 預設=真實當天(讓 app 的『今日/當前學期』視圖與 seed 資料對齊);
+    --year 預設=該 today 所屬民國學年(由 current_term 推導),避免 today 與
+    academic_year 跨學年不一致導致班級/課程被當前學期過濾濾掉。
+    """
+    from datetime import date as _date
+
+    from .calendar import current_term
+
+    today = _date.fromisoformat(args.today) if args.today else _date.today()
+    year = args.year if args.year is not None else current_term(today)[0]
     return SeedConfig(
-        academic_year=args.year,
-        today=date.fromisoformat(args.today),
+        academic_year=year,
+        today=today,
         scale=args.scale,
         rng_seed=args.rng_seed,
         wipe=args.wipe,

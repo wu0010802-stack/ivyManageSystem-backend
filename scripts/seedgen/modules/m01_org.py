@@ -165,10 +165,12 @@ def _make_classroom(ctx: SeedContext, faker: Faker, idx: int, grade, homeroom_em
     from models.classroom import Classroom
 
     name = f"{getattr(grade, 'name', '班')}{idx + 1}班"
+    # 以「當前學期」tag 班級,才會出現在 app current_only 過濾(否則班級列表全空)。
+    term_year, term_sem = ctx.current_term()
     classroom = Classroom(
         name=name,
-        school_year=ctx.config.academic_year,
-        semester=1,
+        school_year=term_year,
+        semester=term_sem,
         grade_id=getattr(grade, "id", None),
         capacity=30,
         head_teacher_id=homeroom_emp.id if homeroom_emp is not None else None,

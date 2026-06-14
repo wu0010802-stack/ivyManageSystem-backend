@@ -299,7 +299,8 @@ def _seed_activity_config(ctx: SeedContext) -> tuple[int, int, int]:
         ActivitySupply,
     )
 
-    roc_year = _academic_year_to_roc(ctx)
+    # 才藝課程/用品以「當前學期」tag(對齊 app current-term 過濾,否則公開報名/列表空)。
+    roc_year, term_sem = ctx.current_term()
     # (name, price, sessions, capacity, weekday, start, end, min_age_m, max_age_m)
     courses: list[tuple[str, int, int, int, int, time, time, int, int]] = [
         ("美術創作", 2400, 12, 20, 0, time(16, 0), time(17, 0), 36, 72),
@@ -318,7 +319,7 @@ def _seed_activity_config(ctx: SeedContext) -> tuple[int, int, int]:
                 allow_waitlist=True,
                 is_active=True,
                 school_year=roc_year,
-                semester=1,
+                semester=term_sem,
                 min_age_months=min_m,
                 max_age_months=max_m,
                 meeting_weekday=wd,
@@ -339,7 +340,7 @@ def _seed_activity_config(ctx: SeedContext) -> tuple[int, int, int]:
                 price=price,
                 is_active=True,
                 school_year=roc_year,
-                semester=1,
+                semester=term_sem,
             )
         )
 

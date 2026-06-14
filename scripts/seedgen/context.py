@@ -15,7 +15,7 @@ import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .calendar import closed_months, current_month
+from .calendar import closed_months, current_month, current_term
 from .config import SeedConfig
 
 if TYPE_CHECKING:  # pragma: no cover - 僅供型別檢查,避免 runtime import 業務 model
@@ -68,3 +68,10 @@ class SeedContext:
     def current_month(self) -> tuple[int, int]:
         """委派 calendar:回傳 today 所在的 (year, month)。"""
         return current_month(self.config.today)
+
+    def current_term(self) -> tuple[int, int]:
+        """委派 calendar:回傳 today 所在的 (school_year 民國, semester)。
+
+        term-container(班級/才藝課程/報名)以此 tag,才會落在 app「當前學期」過濾內。
+        """
+        return current_term(self.config.today)

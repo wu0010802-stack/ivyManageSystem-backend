@@ -141,7 +141,8 @@ def _make_registration(
     created_at: datetime,
 ) -> ActivityRegistration:
     """由在籍學生建立一筆報名(自動匹配成功 → student_id/classroom_id 反填)。"""
-    roc_year = ctx.config.academic_year
+    # 報名以「當前學期」tag,才會落在 app current-term 過濾(公開報名/名單)。
+    roc_year, term_sem = ctx.current_term()
     birthday = getattr(student, "birthday", None)
     birthday_str = birthday.isoformat() if isinstance(birthday, date) else None
     phone = _parent_phone(student)
@@ -154,7 +155,7 @@ def _make_registration(
         paid_amount=0,
         is_active=True,
         school_year=roc_year,
-        semester=1,
+        semester=term_sem,
         student_id=getattr(student, "id", None),
         parent_phone=phone,
         classroom_id=getattr(student, "classroom_id", None),
