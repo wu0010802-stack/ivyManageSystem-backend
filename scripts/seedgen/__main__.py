@@ -95,6 +95,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help="只跑指定模組,逗號分隔(如 m00,m01)。空則全跑。",
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="只驗證現有 DB(summary + 一致性檢查),不 wipe、不 seed。",
+    )
     return parser
 
 
@@ -171,7 +176,25 @@ def main(argv: list[str] | None = None) -> int:
             rng=random.Random(cfg.rng_seed),
         )
 
+        # --verify:只驗證現有 DB,不 wipe 不 seed。
+        if args.verify:
+            verify.summary(session)
+            problems = verify.check_consistency(session)
+            if problems:
+                print("=== ✗ 一致性問題 ===")
+                for p in problems:
+                    print(f"  ✗ {p}")
+            else:
+                print("=== ✓ 一致性檢查全數通過 ===")
+            return 1 if problems else 0
+
         targets = wipe.tables_to_wipe()
+        # 本工具只支援「wipe 後重灌」(模組假設全新空表,否則 enrollment_seq 等
+        # 唯一鍵會碰撞);故 seed 僅在 --wipe --yes 同時成立時執行。
+        # 例外:指定 --only 時(debug 單模組補跑)允許不 wipe 直接 seed 選定模組,
+        # 供整合除錯(模組僅在 seed() 結束才 commit,中途失敗 rollback,重跑安全)。
+        do_seed = (cfg.wipe and cfg.confirm) or bool(cfg.only)
+
         if cfg.wipe:
             print(f"[wipe] 將清除 {len(targets)} 張表:")
             for name in targets:
@@ -181,14 +204,19 @@ def main(argv: list[str] | None = None) -> int:
                 session.commit()
                 print("[wipe] 已清除並重置序列。")
             else:
-                print("[wipe] dry-run(未帶 --yes):不執行清除。")
+                print("[wipe] dry-run(未帶 --yes):不清除、不 seed。")
         else:
-            print(f"[dry-run] 未帶 --wipe;若清除將涉及 {len(targets)} 張表。")
+            print(
+                f"[plan-only] 未帶 --wipe;若清除將涉及 {len(targets)} 張表。"
+                "不 seed(本工具僅支援 wipe 後重灌,請用 --wipe --yes)。"
+            )
 
-        print(f"[run] 將依序執行模組:{', '.join(module_names)}")
-        _run_modules(ctx, module_names)
-
-        verify.summary(session)
+        if do_seed:
+            print(f"[run] 依序執行模組:{', '.join(module_names)}")
+            _run_modules(ctx, module_names)
+            verify.summary(session)
+        else:
+            print("[plan-only] 未執行 seed(需 --wipe --yes)。")
 
     return 0
 

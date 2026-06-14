@@ -54,6 +54,67 @@ def _hourly_rate(emp) -> float:
     return base / 30.0 / 8.0
 
 
+def _annual_hours_for_tenure(hire_date, ref_date) -> float:
+    """勞基法§38 特休時數(年資 → 天數 × 8h)。hire_date 缺則給 56h(7 天)。"""
+    if not hire_date:
+        return 56.0
+    years = (ref_date - hire_date).days / 365.25
+    if years < 0.5:
+        return 0.0
+    if years < 1:
+        return 24.0  # 3 天
+    if years < 2:
+        return 56.0  # 7 天
+    if years < 3:
+        return 80.0  # 10 天
+    if years < 5:
+        return 112.0  # 14 天
+    if years < 10:
+        return 120.0  # 15 天
+    # 10 年以上:15 天起每年 +1,上限 30 天。
+    days = min(30, 15 + int(years - 9))
+    return float(days * 8)
+
+
+def _seed_leave_quotas(ctx: SeedContext) -> int:
+    """為每位正職員工建年度請假額度。
+
+    annual 依年資(§38)、sick 240h(30 天半薪病假)、personal 112h(14 天事假);
+    menstrual 96h 僅女性。每員工每假別一筆,對應本學年(school_year)。
+    才藝時薪(hourly)兼職不建特休額度。
+    唯一鍵 uq_leave_quotas_employee_school_year_type=(employee_id, school_year,
+    leave_type),故同員工同假別只建一筆。
+    """
+    from models.leave import LeaveQuota
+
+    session = ctx.session
+    today = ctx.config.today
+    n = 0
+    for emp in ctx.employees:
+        if getattr(emp, "employee_type", None) == "hourly":
+            continue
+        is_female = (getattr(emp, "gender", "") or "") in {"F", "female", "女"}
+        quotas = {
+            "annual": _annual_hours_for_tenure(getattr(emp, "hire_date", None), today),
+            "sick": 240.0,
+            "personal": 112.0,
+        }
+        if is_female:
+            quotas["menstrual"] = 96.0
+        for lt, hours in quotas.items():
+            session.add(
+                LeaveQuota(
+                    employee_id=emp.id,
+                    year=today.year,
+                    school_year=ctx.config.academic_year,
+                    leave_type=lt,
+                    total_hours=hours,
+                )
+            )
+            n += 1
+    return n
+
+
 def seed(ctx: SeedContext) -> None:
     """建立請假/加班/補打卡記錄。"""
     from models.leave import LeaveRecord
@@ -65,6 +126,9 @@ def seed(ctx: SeedContext) -> None:
     if not employees or session is None:
         # 無員工(stub 階段 m01 尚未實作或單測)→ 不產生,保持冪等。
         return
+
+    # 年度請假額度(每員工 setup,非逐月交易;請假頁餘額計算需要)。
+    quota_n = _seed_leave_quotas(ctx)
 
     today = ctx.config.today
     months = list(ctx.closed_months())
@@ -208,6 +272,7 @@ def seed(ctx: SeedContext) -> None:
                 )
                 punch_n += 1
 
+    ctx.log("leave_quotas", quota_n)
     ctx.log("leave_records", leave_n)
     ctx.log("overtime_records", overtime_n)
     ctx.log("punch_correction_requests", punch_n)

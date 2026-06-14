@@ -115,7 +115,11 @@ def _seed_insurance(ctx: SeedContext) -> tuple[int, int]:
         ctx.session.add(InsuranceBracket(**row))
 
     rate_rows = ref.insurance_rates()
+    # uq_insurance_rates_active:只能一筆 is_active=True。最新年度為 active,
+    # 歷史年度 is_active=False(period-aware resolver 靠 rate_year 查,不靠 active)。
+    latest_year = max(_config_years())
     for row in rate_rows:
+        row = {**row, "is_active": row.get("rate_year") == latest_year}
         ctx.session.add(InsuranceRate(**row))
 
     return len(bracket_rows), len(rate_rows)
@@ -146,6 +150,8 @@ def _seed_attendance_policies(ctx: SeedContext) -> int:
     from models.config import AttendancePolicy
 
     n = 0
+    # uq_attendance_policies_active:只能一筆 is_active=True;僅最新年度為 active。
+    latest_year = max(_config_years())
     for year in _config_years():
         ctx.session.add(
             AttendancePolicy(
@@ -155,7 +161,7 @@ def _seed_attendance_policies(ctx: SeedContext) -> int:
                 default_work_start="08:00",
                 default_work_end="17:00",
                 festival_bonus_months=3,
-                is_active=True,
+                is_active=(year == latest_year),
                 effective_date=date(year, 1, 1),
             )
         )
@@ -172,6 +178,8 @@ def _seed_bonus_configs_and_targets(ctx: SeedContext) -> tuple[int, int]:
     from models.config import BonusConfig, GradeTarget
 
     school_target = ctx.config.scale_profile["students"]
+    # uq_bonus_configs_active:只能一筆 is_active=True;僅最新年度為 active。
+    latest_year = max(_config_years())
     bonus_n = 0
     target_n = 0
     for year in _config_years():
@@ -181,7 +189,7 @@ def _seed_bonus_configs_and_targets(ctx: SeedContext) -> tuple[int, int]:
             changed_by="seedgen",
             school_wide_target=school_target,
             enrollment_count_mode="month_end",
-            is_active=True,
+            is_active=(year == latest_year),
         )
         ctx.session.add(bc)
         ctx.session.flush()  # 取 bc.id 供 grade_target FK
