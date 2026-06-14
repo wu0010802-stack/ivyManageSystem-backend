@@ -571,6 +571,68 @@ def test_manual_patch_excess_idempotent(client_with_db):
     ), f"預期 amount=2000，got {items[0].amount}"
 
 
+def test_manual_patch_excess_dedups_with_imported_label(client_with_db):
+    """C5 回歸：Excel 匯入已寫入 EXCESS_ENROLLMENT（period_label 含學期 "114上"）後，
+    HR 再用 grid manual_patch 微調超額獎金，必須 upsert 同一筆而非因 period_label 不同
+    （manual 舊用 "114"）而並存兩筆，造成超額獎金被 build_settlements 重複加總。"""
+    client, sf = client_with_db
+    _seed_users(sf)
+    cycle_id, emp_id = _seed_cycle_and_employee(sf)
+    _login(client)
+    _build(client, cycle_id)
+
+    # 模擬 Excel 匯入先寫入 EXCESS（period_label 含學期，金額 6000）
+    with sf() as s:
+        s.add(
+            SpecialBonusItem(
+                year_end_cycle_id=cycle_id,
+                employee_id=emp_id,
+                bonus_type=SpecialBonusType.EXCESS_ENROLLMENT,
+                period_label="114上",
+                amount=Decimal("6000"),
+            )
+        )
+        s.commit()
+
+    res = client.get(f"/api/year_end/cycles/{cycle_id}/settlements")
+    settlement_id = res.json()[0]["id"]
+
+    # HR 在 grid 用 manual_patch 微調超額為 6000（同一筆，不應再新增）
+    r = client.patch(
+        f"/api/year_end/settlements/{settlement_id}/manual",
+        json={"excess_amount": "6000"},
+    )
+    assert r.status_code == 200, r.text
+
+    with sf() as s:
+        excess_items = (
+            s.query(SpecialBonusItem)
+            .filter_by(
+                year_end_cycle_id=cycle_id,
+                employee_id=emp_id,
+                bonus_type=SpecialBonusType.EXCESS_ENROLLMENT,
+            )
+            .all()
+        )
+        all_items = (
+            s.query(SpecialBonusItem)
+            .filter_by(year_end_cycle_id=cycle_id, employee_id=emp_id)
+            .all()
+        )
+        settlement = s.get(YearEndSettlement, settlement_id)
+        special_total = settlement.special_bonus_total
+    # 核心 C5 不變量：超額獎金只一筆、金額 6000（不因 period_label 不同並存兩筆）
+    assert (
+        len(excess_items) == 1
+    ), f"預期 1 筆 EXCESS_ENROLLMENT（去重），got {len(excess_items)}"
+    assert excess_items[0].amount == Decimal("6000")
+    # 通用反重複計算：settlement.special_bonus_total 必須等於全部特別獎金 amount 之和
+    items_sum = sum((it.amount for it in all_items), Decimal("0"))
+    assert (
+        special_total == items_sum
+    ), f"special_bonus_total={special_total} 與實際 items 和={items_sum} 不符（疑重複計算）"
+
+
 def test_manual_patch_accounting_signed_409(client_with_db):
     """ACCOUNTING_SIGNED settlement → PATCH manual → 409（已簽核請先退回）。"""
     client, sf = client_with_db

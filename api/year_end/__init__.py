@@ -915,14 +915,15 @@ def manual_patch_settlement(
 
     if payload.excess_amount is not None:
         # upsert SpecialBonusItem(EXCESS_ENROLLMENT)
-        period_label = str(cycle.academic_year)
+        # C5：超額獎金每位員工每年僅一筆。以 (cycle, emp, bonus_type) 去重（忽略
+        # period_label），避免與 Excel 匯入用的 period_label（"114上"）不同鍵而並存
+        # 兩筆，被 build_settlements 重複加總；新建時採與匯入一致的學期標籤。
         existing_excess = (
             session.query(SpecialBonusItem)
             .filter_by(
                 year_end_cycle_id=cycle.id,
                 employee_id=settlement.employee_id,
                 bonus_type=SpecialBonusType.EXCESS_ENROLLMENT,
-                period_label=period_label,
             )
             .first()
         )
@@ -932,7 +933,7 @@ def manual_patch_settlement(
                     year_end_cycle_id=cycle.id,
                     employee_id=settlement.employee_id,
                     bonus_type=SpecialBonusType.EXCESS_ENROLLMENT,
-                    period_label=period_label,
+                    period_label=f"{cycle.academic_year}上",
                     amount=payload.excess_amount,
                     created_by=current_user.get("user_id"),
                 )
