@@ -58,6 +58,71 @@ def _parse_if_match(header_value: Optional[str]) -> Optional[int]:
         return None
 
 
+def _recompute_record_current_supplementary(session, record, insurance_service):
+    """C13：以引擎相同純函式重算 record 當月獎金補充保費，並把差額併回
+    health_insurance_employee（informational column supplementary_health_employee 同步）。
+
+    Why: manual_adjust 改 BONUS_FIELDS_FOR_YTD 後只標 stale、只重算 total/net，當月補充
+    保費未即時重算 → 到下次引擎重算之間 total_deduction/net 暫時失準。重用
+    _resolve_health_insured_salary + calculate_bonus_supplementary_fee（與
+    engine._finalize_breakdown 同一份計算，零 drift）即時重算；record 的 5 個獎金欄位即
+    覆寫感知當前值。insurance_service 為 None 或計算失敗時優雅跳過，沿用 mark stale +
+    finalize gate 收斂（不影響封存時的權威值正確性）。
+    """
+    if insurance_service is None:
+        return
+    try:
+        from models.database import Employee
+        from services.salary.supplementary_premium import (
+            BONUS_FIELDS_FOR_YTD,
+            DEFAULT_SUPPLEMENTARY_PREMIUM_RATE,
+            _resolve_health_insured_salary,
+            calculate_bonus_supplementary_fee,
+        )
+
+        emp = session.get(Employee, record.employee_id)
+        if emp is None:
+            return
+        emp_dict = {
+            "employee_type": getattr(emp, "employee_type", None) or "regular",
+            "base_salary": emp.base_salary or 0,
+            "insurance_salary": getattr(emp, "insurance_salary_level", None),
+            "hourly_rate": getattr(emp, "hourly_rate", 0) or 0,
+            "health_insured_salary": None,
+        }
+        health_insured_salary = _resolve_health_insured_salary(
+            emp_dict, insurance_service
+        )
+        rate_setting = getattr(insurance_service, "supplementary_health_rate", None)
+        rate = (
+            DEFAULT_SUPPLEMENTARY_PREMIUM_RATE
+            if rate_setting is None
+            else float(rate_setting)
+        )
+        bonus_total = sum(float(getattr(record, f) or 0) for f in BONUS_FIELDS_FOR_YTD)
+        new_fee = calculate_bonus_supplementary_fee(
+            session,
+            record.employee_id,
+            record.salary_year,
+            record.salary_month,
+            breakdown_bonus_total=bonus_total,
+            health_insured_salary=health_insured_salary,
+            rate=rate,
+        )
+        old_fee = float(record.supplementary_health_employee or 0)
+        if new_fee == old_fee:
+            return
+        record.health_insurance_employee = round_half_up(
+            float(record.health_insurance_employee or 0) + (new_fee - old_fee)
+        )
+        record.supplementary_health_employee = new_fee
+    except Exception:
+        logger.warning(
+            "manual_adjust 當月補充保費即時重算失敗（沿用 stale+gate 收斂）",
+            exc_info=True,
+        )
+
+
 # 單筆欄位合理上限：從舊版 10,000,000 降為 500,000 — 涵蓋幼稚園業界合法月薪/一次性
 # 獎金上限（含 outlier），超過視為誤植或舞弊嘗試。
 # Why: 單欄位上限 1000 萬 × 可同時調多欄位 = 單次可偷數千萬。降至 50 萬可有效壓縮
@@ -268,6 +333,18 @@ def manual_adjust_salary(
         # _fill_salary_record 會跳過清單內的欄位,避免覆寫人工調整。
         existing_overrides = set(record.manual_overrides or [])
         record.manual_overrides = sorted(existing_overrides | set(modified_fields))
+
+        # C13：改到 YTD 累計獎金欄位時，當月補充保費同步即時重算（不只標 stale，見下方），
+        # 避免本端點只重算 total/net 而當月補充保費失準的暫時窗口。須在 _recalculate 前
+        # 執行，使調整後的 health_insurance_employee 併入 total_deduction。
+        from services.salary.supplementary_premium import (
+            BONUS_FIELDS_FOR_YTD as _BONUS_YTD_FIELDS,
+        )
+
+        if set(modified_fields) & set(_BONUS_YTD_FIELDS):
+            from . import _insurance_service
+
+            _recompute_record_current_supplementary(session, record, _insurance_service)
 
         _recalculate_salary_record_totals(record)
 
