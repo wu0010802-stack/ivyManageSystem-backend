@@ -198,6 +198,39 @@ def test_checkout_guard_acquires_lock_for_payment_date(lock_client, monkeypatch)
     assert target in calls
 
 
+def test_unlock_daily_close_acquires_lock(lock_client, monkeypatch):
+    """解鎖端：unlock_daily_close 必須對目標日取同一把 advisory lock（P2-1）。
+
+    否則並發兩次 DELETE 同一 close_date 各自讀到同一 row → 各 insert 一筆
+    history / cancelled ApprovalLog / 通知，第二筆 DELETE 匹配 0 列仍 commit
+    （SQLAlchemy 預設只 warning），稽核軌跡與解鎖事件儀表板筆數被灌水。
+    """
+    client, sf = lock_client
+    target = date.today() - timedelta(days=1)
+    with sf() as s:
+        _create_admin(s, permission_names=APPROVE_PERMS)
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res_close = client.post(
+        f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
+    )
+    assert res_close.status_code == 201, res_close.text
+
+    # 簽核完成後才開始 spy，隔離出 unlock 自己的取鎖
+    calls = _spy_lock(monkeypatch)
+    res = client.request(
+        "DELETE",
+        f"/api/activity/pos/daily-close/{target.isoformat()}",
+        json={
+            "reason": "管理員緊急override解鎖測試，原因說明需要足夠長度以通過驗證守衛",
+            "is_admin_override": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert target in calls
+
+
 # ── 4. 行為回歸：簽核後該日交易被擋 ──────────────────────────────────────
 
 

@@ -659,9 +659,15 @@ class ActivityService:
         """取得課後才藝儀表板統計表格（含依班級與年級的小計與達成率）"""
         from models.classroom import ClassGrade
 
+        # P2-7：courses 表頭須與 enrollment_map 同學期過濾，否則切學期時他學期
+        # active 課程混入表頭（每格 enrollment 查無 key 全為 0），Excel 匯出同樣污染。
         courses = (
             session.query(ActivityCourse)
-            .filter(ActivityCourse.is_active.is_(True))
+            .filter(
+                ActivityCourse.is_active.is_(True),
+                ActivityCourse.school_year == school_year,
+                ActivityCourse.semester == semester,
+            )
             .order_by(ActivityCourse.id)
             .all()
         )

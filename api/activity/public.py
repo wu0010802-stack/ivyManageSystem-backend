@@ -571,11 +571,16 @@ def public_register(
         is_matched_for_dup_check = bool(matched_student_id and matched_classroom_id)
 
         # 重複報名防護（同學期內同學生不可重複）
+        # P2-5：dedup 鍵須含 parent_phone，與 DB partial unique index
+        # uq_activity_regs_student_term_active 的 (name,birthday,sy,sem,parent_phone)
+        # 對齊。否則同名同生日但不同家長電話的第二個合法家庭會被誤判重複而 raise/
+        # 靜默吞掉（未匹配身分者走 silent-success → 假成功、DB 沒寫入）。
         existing = (
             session.query(ActivityRegistration)
             .filter(
                 ActivityRegistration.student_name == body.name,
                 ActivityRegistration.birthday == body.birthday,
+                ActivityRegistration.parent_phone == body.parent_phone,
                 ActivityRegistration.is_active.is_(True),
                 ActivityRegistration.school_year == sy,
                 ActivityRegistration.semester == sem,

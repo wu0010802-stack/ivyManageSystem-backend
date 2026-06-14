@@ -481,6 +481,66 @@ class TestPublicRegisterAutoLinksStudent:
         r2 = client.post("/api/activity/registrations", json=payload)
         assert r2.status_code == 400
 
+    def test_admin_create_acquires_registration_lock(self, term_client, monkeypatch):
+        """P2-2：admin_create_registration 須對報名身分取 advisory lock。
+
+        去重是 check-then-insert 無行鎖，且 DB unique index 因 admin 列
+        parent_phone=NULL 不攔重複；advisory lock 序列化同學生同學期的並發建立。
+        SQLite 下 lock 為 no-op，本測試聚焦 wiring（端點確實呼叫且帶正確身分）。
+        """
+        client, sf = term_client
+        sy, sem = _current_term()
+        with sf() as s:
+            _admin(s)
+            s.add(
+                Classroom(name="海豚班", is_active=True, school_year=sy, semester=sem)
+            )
+            s.add(
+                ActivityCourse(
+                    name="圍棋",
+                    price=1200,
+                    school_year=sy,
+                    semester=sem,
+                    is_active=True,
+                )
+            )
+            s.commit()
+        assert _login(client).status_code == 200
+
+        calls = []
+        from utils import advisory_lock as advisory_lock_mod
+
+        real_fn = advisory_lock_mod.acquire_activity_registration_lock
+
+        def spy(session, **kw):
+            calls.append(kw)
+            return real_fn(session, **kw)
+
+        monkeypatch.setattr(
+            advisory_lock_mod, "acquire_activity_registration_lock", spy
+        )
+        from api.activity import registrations as reg_mod
+
+        monkeypatch.setattr(reg_mod, "acquire_activity_registration_lock", spy)
+
+        res = client.post(
+            "/api/activity/registrations",
+            json={
+                "name": "王小明",
+                "birthday": "2020-01-01",
+                "class": "海豚班",
+                "courses": [{"name": "圍棋", "price": ""}],
+                "supplies": [],
+            },
+        )
+        assert res.status_code == 201, res.text
+        assert any(
+            c.get("student_name") == "王小明"
+            and c.get("school_year") == sy
+            and c.get("semester") == sem
+            for c in calls
+        ), f"admin create 應對報名身分取鎖，實際 calls={calls}"
+
     def test_admin_create_requires_write_permission(self, term_client):
         """只有 ACTIVITY_READ 權限者不能呼叫新增。"""
         client, sf = term_client

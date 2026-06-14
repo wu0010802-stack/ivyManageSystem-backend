@@ -332,7 +332,10 @@ def export_payment_report(
             )
             for pr in payment_records:
                 payment_map[pr.registration_id].append(pr)
-                if pr.payment_date:
+                # P2-4：最後繳費日只取有效繳費，排除已作廢(voided)與退費(refund)
+                # 紀錄；對齊「已繳金額」(reg.paid_amount) 重算口徑，避免作廢/退費
+                # 日期被誤當成最後實際收款日。
+                if pr.payment_date and pr.voided_at is None and pr.type == "payment":
                     date_str = pr.payment_date.isoformat()
                     existing = last_payment_date_map.get(pr.registration_id, "")
                     if date_str > existing:

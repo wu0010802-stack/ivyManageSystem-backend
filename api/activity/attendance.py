@@ -384,8 +384,13 @@ def batch_update_attendance(
 
         operator = current_user.get("username")
 
+        # P2-6：同一 registration_id 在 body 出現多次時去重保留最後一筆，避免對
+        # 「本場次尚無紀錄」的同一 reg 兩次 session.add 撞 unique 約束
+        # （uq_activity_attendance_session_reg）→ IntegrityError 500、整批點名漏存。
+        records = list({item.registration_id: item for item in body.records}.values())
+
         # 批次查詢現有記錄，避免 N+1
-        req_reg_ids = [item.registration_id for item in body.records]
+        req_reg_ids = [item.registration_id for item in records]
         existing_map = {
             a.registration_id: a
             for a in session.query(ActivityAttendance)
@@ -414,7 +419,7 @@ def batch_update_attendance(
                 skipped,
             )
 
-        for item in body.records:
+        for item in records:
             if item.registration_id not in valid_reg_ids:
                 continue
             existing = existing_map.get(item.registration_id)
@@ -437,9 +442,7 @@ def batch_update_attendance(
                 session.add(att)
 
         session.commit()
-        applied = sum(
-            1 for item in body.records if item.registration_id in valid_reg_ids
-        )
+        applied = sum(1 for item in records if item.registration_id in valid_reg_ids)
         return {"ok": True, "updated": applied, "skipped": len(skipped)}
     finally:
         session.close()

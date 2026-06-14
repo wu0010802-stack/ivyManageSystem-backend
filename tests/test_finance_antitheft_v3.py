@@ -164,7 +164,11 @@ class TestUnfinalizeSalaryGuard:
             _make_user(
                 s,
                 username="hr_admin",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 role="admin",
             )
             s.commit()
@@ -180,7 +184,11 @@ class TestUnfinalizeSalaryGuard:
             _make_user(
                 s,
                 username="hr_admin",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 role="admin",
             )
             s.commit()
@@ -221,7 +229,11 @@ class TestUnfinalizeSalaryGuard:
             _make_user(
                 s,
                 username="hr_admin",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 role="admin",
             )
             s.commit()
@@ -290,7 +302,11 @@ class TestUpdatePaymentMarkPaidGuard:
             _make_user(
                 s,
                 username="act_admin",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 role="admin",
             )
             s.commit()
@@ -312,7 +328,11 @@ class TestUpdatePaymentMarkPaidGuard:
             _make_user(
                 s,
                 username="act_admin",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 role="admin",
             )
             s.commit()
@@ -359,7 +379,11 @@ class TestUpdatePaymentMarkPaidGuard:
             _make_user(
                 s,
                 username="act_admin",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 role="admin",
             )
             s.commit()
@@ -395,7 +419,11 @@ class TestActivityItemPriceGuard:
             _make_user(
                 s,
                 username="act_admin",
-                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "ACTIVITY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 role="admin",
             )
             s.commit()
@@ -705,6 +733,74 @@ class TestPaymentReportVoidedHandling:
         assert voided_rows[0][6] == "s***"  # 操作人員（去敏化）
         assert voided_rows[0][11] == "重複輸入收據"  # 作廢原因
 
+    def test_last_payment_date_excludes_voided_and_refund(self, v3_client):
+        """P2-4：繳費總覽「最後繳費日」只取有效 payment，排除 voided 與 refund 紀錄。
+
+        對齊「已繳金額」(reg.paid_amount) 的口徑——後者已重算排除 voided/refund。
+        若 map 取所有紀錄字典序最大日期，作廢日(04-05)或退費日(04-10)會被誤當最後繳費日。
+        """
+        import io
+        from openpyxl import load_workbook
+
+        client, sf = v3_client
+        with sf() as s:
+            reg_id = _seed_unpaid_registration(s, course_price=500)
+            # 有效繳費 04-01（唯一真正的最後繳費日）
+            s.add(
+                ActivityPaymentRecord(
+                    registration_id=reg_id,
+                    type="payment",
+                    amount=300,
+                    payment_date=date(2026, 4, 1),
+                    payment_method="現金",
+                    operator="staff_a",
+                )
+            )
+            # 已作廢繳費 04-05（日期較晚，不應成為最後繳費日）
+            s.add(
+                ActivityPaymentRecord(
+                    registration_id=reg_id,
+                    type="payment",
+                    amount=200,
+                    payment_date=date(2026, 4, 5),
+                    payment_method="現金",
+                    operator="staff_b",
+                    voided_at=datetime(2026, 4, 6, 9, 0),
+                    voided_by="admin",
+                    void_reason="作廢",
+                )
+            )
+            # 退費 04-10（日期最晚，不應成為最後繳費日）
+            s.add(
+                ActivityPaymentRecord(
+                    registration_id=reg_id,
+                    type="refund",
+                    amount=100,
+                    payment_date=date(2026, 4, 10),
+                    payment_method="現金",
+                    operator="staff_a",
+                )
+            )
+            _make_user(
+                s,
+                username="act_admin_lpd",
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
+                role="admin",
+            )
+            s.commit()
+
+        assert _login(client, "act_admin_lpd").status_code == 200
+        res = client.get("/api/activity/registrations/payment-report")
+        assert res.status_code == 200
+        wb = load_workbook(io.BytesIO(res.content))
+        ws = wb["繳費總覽"]
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows[0][8] == "最後繳費日"
+        data_rows = [r for r in rows[1:] if r[1]]  # 學生欄非空
+        assert len(data_rows) == 1
+        # 排除 voided(04-05) 與 refund(04-10)，只取有效 payment 04-01
+        assert data_rows[0][8] == "2026-04-01"
+
 
 # ══════════════════════════════════════════════════════════════════════
 # #3 學生離園 paid_amount > 0 須具金流簽核
@@ -790,7 +886,11 @@ class TestStudentDeactivateRefundGuard:
             _make_user(
                 s,
                 username="stu_admin",
-                permission_names=["STUDENTS_READ", "STUDENTS_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "STUDENTS_READ",
+                    "STUDENTS_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
                 role="admin",
             )
             s.commit()

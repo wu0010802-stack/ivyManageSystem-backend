@@ -21,7 +21,11 @@ from models.activity import (
 )
 from utils.auth import get_current_user
 from ._shared import _get_employee
-from api.activity._shared import _build_session_detail_response, build_session_rows_with_stats, query_valid_session_registrations
+from api.activity._shared import (
+    _build_session_detail_response,
+    build_session_rows_with_stats,
+    query_valid_session_registrations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +170,6 @@ class PortalBatchAttendanceUpdate(BaseModel):
     records: List[PortalAttendanceRecordItem] = Field(..., min_length=1, max_length=500)
 
 
-
 @router.get("/activity/attendance/sessions")
 def portal_list_sessions(
     course_id: Optional[int] = None,
@@ -254,7 +257,9 @@ def portal_batch_update_attendance(
             raise HTTPException(status_code=404, detail="找不到場次")
 
         operator = current_user.get("username")
-        req_reg_ids = [item.registration_id for item in body.records]
+        # P2-6：同 admin 端，去重保留最後一筆避免重複 registration_id 撞 unique 約束 500。
+        records = list({item.registration_id: item for item in body.records}.values())
+        req_reg_ids = [item.registration_id for item in records]
 
         existing_map = {
             a.registration_id: a
@@ -281,7 +286,7 @@ def portal_batch_update_attendance(
                 skipped,
             )
 
-        for item in body.records:
+        for item in records:
             if item.registration_id not in valid_reg_ids:
                 continue
             existing = existing_map.get(item.registration_id)
@@ -303,9 +308,7 @@ def portal_batch_update_attendance(
                 session.add(att)
 
         session.commit()
-        applied = sum(
-            1 for item in body.records if item.registration_id in valid_reg_ids
-        )
+        applied = sum(1 for item in records if item.registration_id in valid_reg_ids)
         return {"ok": True, "updated": applied, "skipped": len(skipped)}
     finally:
         session.close()

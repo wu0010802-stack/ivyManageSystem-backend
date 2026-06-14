@@ -19,12 +19,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     get_session,
     ActivityRegistration,
 )
 from services.activity_service import activity_service
+from utils.advisory_lock import acquire_activity_registration_lock
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -696,6 +698,7 @@ def restore_registration(
         reg = (
             session.query(ActivityRegistration)
             .filter(ActivityRegistration.id == registration_id)
+            .with_for_update()
             .first()
         )
         if not reg:
@@ -704,6 +707,19 @@ def restore_registration(
             raise HTTPException(
                 status_code=400, detail="此筆報名非已拒絕狀態，無法復原"
             )
+
+        # P2-3：以報名身分取 advisory lock 序列化同學生同學期的並發 restore。否則
+        # 兩筆同學生同學期、phone 不同的已拒絕報名同時 restore，dup 檢查（純 SELECT）
+        # 各自看不到對方未 commit 的 is_active 翻轉 → 雙雙通過 → 兩筆有效報名（DB
+        # partial unique index 鍵含 phone、phone 不同故不攔）。取鎖後第二筆的 dup
+        # 檢查必看到第一筆已 commit 的 active → 400。SQLite 測試 no-op。
+        acquire_activity_registration_lock(
+            session,
+            student_name=reg.student_name,
+            birthday=reg.birthday,
+            school_year=reg.school_year,
+            semester=reg.semester,
+        )
 
         # 若本學期已有同姓名/生日的有效報名，擋下避免唯一性衝突
         dup = (
@@ -786,6 +802,13 @@ def restore_registration(
     except HTTPException:
         session.rollback()
         raise
+    except IntegrityError:
+        # P2-3：advisory lock 已序列化同身分 restore，此處為極窄並發窗口下仍撞 DB
+        # partial unique index（同 phone）的兜底，回乾淨 409 而非 raise_safe_500 的 500。
+        session.rollback()
+        raise HTTPException(
+            status_code=409, detail="本學期已有同一學生的有效報名，無法復原此筆"
+        )
     except Exception as e:
         session.rollback()
         logger.error("還原報名失敗：%s", e)
