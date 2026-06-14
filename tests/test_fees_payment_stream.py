@@ -252,10 +252,12 @@ class TestPartialStatusStillCountsAsRevenue:
             rec_id = rec.id
 
         assert _login(client).status_code == 200
+        # 90 天回補窗時間炸彈：用相對日期（上月 10 日）而非寫死 2026-03-15
+        pay_date = (date.today().replace(day=1) - timedelta(days=1)).replace(day=10)
         res = client.put(
             f"/api/fees/records/{rec_id}/pay",
             json={
-                "payment_date": "2026-03-15",
+                "payment_date": pay_date.isoformat(),
                 "amount_paid": 500,
                 "payment_method": "現金",
             },
@@ -265,8 +267,10 @@ class TestPartialStatusStillCountsAsRevenue:
         with sf() as s:
             rec = s.query(StudentFeeRecord).get(rec_id)
             assert rec.status == "partial"
-            revenue = svc.get_tuition_revenue_by_month(s, 2026)
-        assert revenue.get(3) == 500, f"partial 現金應入帳 500，實得 {revenue}"
+            revenue = svc.get_tuition_revenue_by_month(s, pay_date.year)
+        assert (
+            revenue.get(pay_date.month) == 500
+        ), f"partial 現金應入帳 500，實得 {revenue}"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -287,7 +291,10 @@ class TestPayFeeRecordIdempotency:
         assert _login(client).status_code == 200
 
         body = {
-            "payment_date": "2026-03-15",
+            # 90 天回補窗時間炸彈：用相對日期（上月 10 日）
+            "payment_date": (date.today().replace(day=1) - timedelta(days=1))
+            .replace(day=10)
+            .isoformat(),
             "amount_paid": 400,
             "payment_method": "現金",
             "idempotency_key": "fee-pay-k-001",
@@ -329,10 +336,13 @@ class TestPayFeeRecordIdempotency:
 
         assert _login(client).status_code == 200
 
+        # 90 天回補窗時間炸彈：用相對日期（上月 10/11 日）而非寫死 2026-03-15/16
+        d1 = (date.today().replace(day=1) - timedelta(days=1)).replace(day=10)
+        d2 = d1.replace(day=11)
         r1 = client.put(
             f"/api/fees/records/{rec1_id}/pay",
             json={
-                "payment_date": "2026-03-15",
+                "payment_date": d1.isoformat(),
                 "amount_paid": 300,
                 "payment_method": "現金",
                 "idempotency_key": "cross-rec-key",
@@ -344,7 +354,7 @@ class TestPayFeeRecordIdempotency:
         r2 = client.put(
             f"/api/fees/records/{rec2_id}/pay",
             json={
-                "payment_date": "2026-03-16",
+                "payment_date": d2.isoformat(),
                 "amount_paid": 300,
                 "payment_method": "現金",
                 "idempotency_key": "cross-rec-key",
