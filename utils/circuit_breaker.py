@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Callable, Literal, TypeVar
 
+import httpx as _httpx
 import requests as _requests
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,11 @@ _HTTP_TRANSIENT_EXC = (
     _requests.exceptions.ConnectionError,
     _requests.exceptions.Timeout,
     _requests.exceptions.ChunkedEncodingError,
+    # supabase-py（物件儲存）底層走 httpx，網路故障拋的是 httpx 例外而非
+    # requests；缺這條會讓 SUPABASE_BREAKER 對 Supabase 真實故障永不跳閘、
+    # /health 恆報 closed（系統設計審查 2026-06-14）。TransportError 涵蓋
+    # ConnectError / ReadTimeout / ConnectTimeout / PoolTimeout / NetworkError。
+    _httpx.TransportError,
     ConnectionError,
     TimeoutError,
 )

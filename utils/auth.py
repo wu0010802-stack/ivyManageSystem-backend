@@ -8,6 +8,7 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
+import anyio
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
 
@@ -460,6 +461,39 @@ def decode_token_for_audit(token: str | None) -> dict | None:
         return None
 
 
+def _resolve_user_auth_fields(
+    user_id: int, token_version: int, request_path: str
+) -> tuple[bool, str]:
+    """同步 DB 區塊：依 user_id 查 User、驗證帳號狀態與 token_version。
+
+    由 get_current_user 經 anyio.to_thread.run_sync 在 threadpool 執行，使這段
+    同步 psycopg2 查詢不阻塞 event loop。回傳 (must_change_password, username)；
+    帳號停用 / token 失效 / 需改密碼時 raise HTTPException（會原樣透過 run_sync
+    向外傳遞）。系統設計審查 2026-06-14。
+    """
+    from models.database import get_session, User
+
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="使用者已停用或不存在")
+        if token_version != (user.token_version or 0):
+            raise HTTPException(
+                status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）"
+            )
+        if (
+            user.must_change_password
+            and request_path not in _PASSWORD_CHANGE_ALLOWED_PATHS
+        ):
+            raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
+        # JWT 原本不含 username；補進 payload，讓全站稽核欄位（operator /
+        # reviewed_by 等）能真正記錄到是誰操作，而不是長期為空字串
+        return bool(user.must_change_password), user.username
+    finally:
+        session.close()
+
+
 async def get_current_user(request: Request):
     """FastAPI dependency: extract and verify JWT from httpOnly Cookie or Authorization header.
 
@@ -492,28 +526,17 @@ async def get_current_user(request: Request):
     if user_id is None:
         return payload
 
-    from models.database import get_session, User
-
-    session = get_session()
-    try:
-        user = session.query(User).filter(User.id == user_id).first()
-        if not user or not user.is_active:
-            raise HTTPException(status_code=401, detail="使用者已停用或不存在")
-        if payload.get("token_version", 0) != (user.token_version or 0):
-            raise HTTPException(
-                status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）"
-            )
-        if (
-            user.must_change_password
-            and request.url.path not in _PASSWORD_CHANGE_ALLOWED_PATHS
-        ):
-            raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
-        payload["must_change_password"] = bool(user.must_change_password)
-        # JWT 原本不含 username；補進 payload，讓全站稽核欄位（operator / reviewed_by 等）
-        # 能真正記錄到是誰操作，而不是長期為空字串
-        payload["username"] = user.username
-    finally:
-        session.close()
+    # 同步 psycopg2 查詢移出 event loop：get_current_user 是 async dependency，
+    # 690+ 端點每請求都經此查 User；若在 loop 上直接跑同步 DB 會阻塞所有
+    # WebSocket 投遞與其他請求的認證。改丟 threadpool（系統設計審查 2026-06-14）。
+    must_change_password, username = await anyio.to_thread.run_sync(
+        _resolve_user_auth_fields,
+        user_id,
+        payload.get("token_version", 0),
+        request.url.path,
+    )
+    payload["must_change_password"] = must_change_password
+    payload["username"] = username
     return payload
 
 

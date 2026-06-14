@@ -262,3 +262,62 @@ class TestStaffRefreshTokenGC:
         assert sched.gc_staff_refresh_tokens() == 2
         remaining = {t.token_hash for t in staff_session.query(StaffRefreshToken).all()}
         assert remaining == {"m_active"}
+
+
+# ── _gc_report_snapshots：報表快照表 1 天 retention（只增不減快取表防膨脹）─────
+
+
+def _add_report_snapshot(session, *, cache_key, expires_at):
+    from models.report_cache import ReportSnapshot
+
+    session.add(
+        ReportSnapshot(
+            cache_key=cache_key,
+            category="finance",
+            payload="{}",
+            expires_at=expires_at,
+        )
+    )
+    session.commit()
+
+
+class TestReportSnapshotGC:
+    def test_long_expired_is_deleted(self, session):
+        _add_report_snapshot(
+            session,
+            cache_key="k_old",
+            expires_at=now_taipei_naive() - timedelta(days=10),
+        )
+        deleted = sched._gc_report_snapshots(session)
+        session.commit()
+        from models.report_cache import ReportSnapshot
+
+        assert deleted == 1
+        assert session.query(ReportSnapshot).count() == 0
+
+    def test_recently_expired_within_retention_is_kept(self, session):
+        # 過期但未逾 1 天 retention → 保留（避免剛失效即被刪）
+        _add_report_snapshot(
+            session,
+            cache_key="k_grace",
+            expires_at=now_taipei_naive() - timedelta(hours=2),
+        )
+        deleted = sched._gc_report_snapshots(session)
+        session.commit()
+        from models.report_cache import ReportSnapshot
+
+        assert deleted == 0
+        assert session.query(ReportSnapshot).count() == 1
+
+    def test_not_yet_expired_is_kept(self, session):
+        _add_report_snapshot(
+            session,
+            cache_key="k_fresh",
+            expires_at=now_taipei_naive() + timedelta(hours=1),
+        )
+        deleted = sched._gc_report_snapshots(session)
+        session.commit()
+        from models.report_cache import ReportSnapshot
+
+        assert deleted == 0
+        assert session.query(ReportSnapshot).count() == 1

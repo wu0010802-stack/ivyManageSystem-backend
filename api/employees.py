@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from utils.taipei_time import today_taipei
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from utils.errors import raise_safe_500
 from utils.etag import etag_response
 from utils.exceptions import BusinessError
@@ -275,8 +275,8 @@ class OffboardRequest(BaseModel):
 def get_employees(
     request: Request,
     response: Response,
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
     search: Optional[str] = None,
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):

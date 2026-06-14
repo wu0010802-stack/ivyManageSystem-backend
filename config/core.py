@@ -24,13 +24,27 @@ class CoreSettings(BaseSettings):
     admin_init_username: str | None = None
     admin_init_password: str | None = Field(default=None, repr=False)
 
-    # 連線池參數（5 base + 5 overflow = 10/pod 對 Supabase Session Mode 安全）
-    db_pool_size: int = Field(default=5, validation_alias="DB_POOL_SIZE")
+    # 連線池參數（10 base + 10 overflow = 20/pod）。
+    # 原為 5+5=10 對 Supabase Session Mode（硬上限 15 clients）保守設定；prod 已遷
+    # Zeabur PostgreSQL，該上限不再適用，~1472 個同步路由共搶 10 條會在並發 >10 時
+    # 排隊逾 pool_timeout 後 500。單 worker 下 20 條對 PG（預設 max_connections=100）
+    # 安全。⚠ 調更大前須確認 Zeabur PG 實際 max_connections（部分託管 PG / pgbouncer
+    # 預設僅 25-50），可經 env DB_POOL_SIZE / DB_POOL_MAX_OVERFLOW 覆寫
+    # （系統設計審查 2026-06-14，top#2）。
+    db_pool_size: int = Field(default=10, validation_alias="DB_POOL_SIZE")
     db_pool_max_overflow: int = Field(
-        default=5, validation_alias="DB_POOL_MAX_OVERFLOW"
+        default=10, validation_alias="DB_POOL_MAX_OVERFLOW"
     )
     db_pool_timeout: int = Field(default=15, validation_alias="DB_POOL_TIMEOUT")
     db_pool_recycle: int = Field(default=1800, validation_alias="DB_POOL_RECYCLE")
+    # AnyIO threadpool token 數對齊：同步 def 路由跑在此 threadpool，每個多半需一條
+    # DB 連線。把 token 上限對齊到「pool 容量 + headroom」，避免 threadpool 准入遠超
+    # pool 能服務的量（否則並發 > pool 時請求搶到 thread 卻卡在 pool checkout 逾時
+    # 500）。實際 token = db_pool_size + db_pool_max_overflow + headroom；headroom 給
+    # 排程器 / WS / 純 CPU 工作留餘裕。設 0 = 沿用 anyio 預設（不調整）。
+    thread_pool_headroom: int = Field(
+        default=8, validation_alias="THREAD_POOL_HEADROOM"
+    )
 
     @property
     def is_production(self) -> bool:

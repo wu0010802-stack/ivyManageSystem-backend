@@ -39,6 +39,12 @@ _STAFF_REFRESH_GC_INTERVAL_SEC = 24 * 60 * 60
 # 招生地址 cache 90d retention（個資法 §19）— 每 24h 跑一次
 _RECRUITMENT_GEOCODE_CACHE_GC_INTERVAL_SEC = 24 * 60 * 60
 _RECRUITMENT_GEOCODE_CACHE_RETENTION_DAYS = 90
+# 報表快照表 GC：每日跑一次，刪除 expires_at 過期逾 1 天的 ReportSnapshot。
+# report_snapshots 是只增不減的快取表（每個 year/month/classroom 組合一列、
+# payload 為整包 JSON），原本無任何 GC、expires_at 索引建好卻沒人用
+# （系統設計審查 2026-06-14，快取維度 quick win）。
+_REPORT_SNAPSHOT_GC_INTERVAL_SEC = 24 * 60 * 60
+_REPORT_SNAPSHOT_RETENTION_DAYS = 1
 
 
 def scheduler_enabled() -> bool:
@@ -55,25 +61,32 @@ async def run_security_gc_scheduler(stop_event: asyncio.Event) -> None:
     last_audit_gc = 0.0
     last_staff_refresh_gc = 0.0
     last_geocode_gc = 0.0
+    last_report_snapshot_gc = 0.0
     logger.info("security_gc_scheduler started")
     try:
         while not stop_event.is_set():
             now = asyncio.get_event_loop().time()
+            # 各 GC 的同步 psycopg2 批次工作一律經 asyncio.to_thread 丟 threadpool，
+            # 不在 event loop 上跑——否則整表掃描 / DELETE 期間會凍結所有 WebSocket
+            # 投遞與請求認證（系統設計審查 2026-06-14，併發維度）。
             if now - last_rate_gc >= _RATE_LIMIT_GC_INTERVAL_SEC:
-                _run_rate_limit_gc()
+                await asyncio.to_thread(_run_rate_limit_gc)
                 last_rate_gc = now
             if now - last_jwt_gc >= _JWT_BLOCKLIST_GC_INTERVAL_SEC:
-                _run_jwt_blocklist_gc()
+                await asyncio.to_thread(_run_jwt_blocklist_gc)
                 last_jwt_gc = now
             if now - last_audit_gc >= _AUDIT_LOG_GC_INTERVAL_SEC:
-                _run_audit_log_gc()
+                await asyncio.to_thread(_run_audit_log_gc)
                 last_audit_gc = now
             if now - last_staff_refresh_gc >= _STAFF_REFRESH_GC_INTERVAL_SEC:
-                _run_staff_refresh_gc()
+                await asyncio.to_thread(_run_staff_refresh_gc)
                 last_staff_refresh_gc = now
             if now - last_geocode_gc >= _RECRUITMENT_GEOCODE_CACHE_GC_INTERVAL_SEC:
-                _run_recruitment_geocode_cache_gc()
+                await asyncio.to_thread(_run_recruitment_geocode_cache_gc)
                 last_geocode_gc = now
+            if now - last_report_snapshot_gc >= _REPORT_SNAPSHOT_GC_INTERVAL_SEC:
+                await asyncio.to_thread(_run_report_snapshot_gc)
+                last_report_snapshot_gc = now
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
@@ -249,4 +262,48 @@ def _run_recruitment_geocode_cache_gc() -> None:
                         "recruitment_geocode_cache GC: 已刪除 %s 列 (retention=%sd)",
                         deleted,
                         _RECRUITMENT_GEOCODE_CACHE_RETENTION_DAYS,
+                    )
+
+
+def _gc_report_snapshots(session) -> int:
+    """純函式：刪除 expires_at 已過期逾 retention 天數的 ReportSnapshot row。
+
+    report_snapshots 為只增不減的快取表，原本無 GC。保留「已過期但未逾 retention」
+    的列，避免剛失效即被刪。expires_at 為 naive DateTime（寫入端用 now_taipei_naive），
+    故 cutoff 也用 now_taipei_naive 對齊。回傳刪除 row 數。
+    """
+    from datetime import timedelta
+
+    from models.report_cache import ReportSnapshot
+
+    cutoff = now_taipei_naive() - timedelta(days=_REPORT_SNAPSHOT_RETENTION_DAYS)
+    deleted = (
+        session.query(ReportSnapshot)
+        .filter(ReportSnapshot.expires_at < cutoff)
+        .delete(synchronize_session=False)
+    )
+    return int(deleted or 0)
+
+
+def _run_report_snapshot_gc() -> None:
+    """Scheduler 包裝：advisory lock + observability。"""
+    with scheduler_iteration(
+        "security_report_snapshot_gc",
+        expected_interval_seconds=_REPORT_SNAPSHOT_GC_INTERVAL_SEC,
+    ):
+        with session_scope() as lock_session:
+            with try_scheduler_lock(
+                lock_session,
+                scheduler_name="security_report_snapshot_gc",
+                run_key=str(int(time.time() // _REPORT_SNAPSHOT_GC_INTERVAL_SEC)),
+            ) as acquired:
+                if not acquired:
+                    return
+                with session_scope() as session:
+                    deleted = _gc_report_snapshots(session)
+                    record_rows("security_report_snapshot_gc", deleted)
+                    logger.info(
+                        "report_snapshots GC: 已刪除 %s 列 (retention=%sd)",
+                        deleted,
+                        _REPORT_SNAPSHOT_RETENTION_DAYS,
                     )

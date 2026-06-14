@@ -295,9 +295,59 @@ async def _activity_waitlist_sweeper():
             logger.exception("候補過期掃描失敗（忽略本次）")
 
 
+def _probe_parent_rls_ready() -> tuple[bool, str]:
+    """探測家長端 RLS 是否就緒（系統設計審查 2026-06-14, top#7）。
+
+    多數 parent_portal router 硬依賴 get_parent_db（缺配置即 fail-loud raise）；
+    若 PARENT_DB_* 未設或 parlsr migration 未套，家長 LIFF 入口會 latent 全 500。
+    啟動時主動探測，把「上線後一個個 500」變成「上線時 log 就看得到」。
+    回傳 (ok, detail)；結果另存於 app.state 供 /health 反映。
+    prod 缺配置 → log CRITICAL；dev 未配置屬正常 → 只記 INFO。
+    """
+    from models.parent_db import get_parent_engine
+
+    is_prod = settings.core.is_production
+    try:
+        engine = get_parent_engine()
+    except Exception as e:  # pragma: no cover - 配置異常
+        detail = f"get_parent_engine 例外: {e}"
+        if is_prod:
+            logger.critical("家長端 RLS 未就緒：%s", detail)
+        return False, detail
+
+    if engine is None:
+        detail = "PARENT_DB_USER/PASSWORD 未設定（家長端 API 將全部 500）"
+        if is_prod:
+            logger.critical("家長端 RLS 未就緒：%s", detail)
+        else:
+            logger.info("家長端 RLS 未配置（dev 預期）")
+        return False, detail
+
+    try:
+        from sqlalchemy import text
+
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT relrowsecurity FROM pg_class WHERE relname = 'guardians'")
+            ).first()
+        if row is not None and bool(row[0]):
+            logger.info("家長端 RLS 自檢通過（guardians 已 ENABLE RLS）")
+            return True, "ok"
+        detail = "guardians 表未 ENABLE RLS（parlsr migration 未套？）"
+        logger.critical("家長端 RLS 未就緒：%s", detail)
+        return False, detail
+    except Exception as e:
+        # SQLite dev 無 pg_class → 落此分支；僅 prod 視為問題
+        detail = f"RLS 探測查詢失敗: {e}"
+        if is_prod:
+            logger.critical("家長端 RLS 探測失敗：%s", detail)
+        return False, detail
+
+
 @asynccontextmanager
 async def app_lifespan(app_instance: FastAPI):
     import asyncio
+    import anyio
 
     # 註冊主 event loop，供 sync def 路由（thread pool）內呼叫 WS 廣播時使用。
     # contact_book_service.publish_entry 等位點透過 run_coroutine_threadsafe 投回主 loop，
@@ -316,6 +366,33 @@ async def app_lifespan(app_instance: FastAPI):
     logger.info("notification dispatch hooks installed")
 
     on_startup()
+
+    # ── 併發配置自檢 + AnyIO threadpool 對齊（系統設計審查 2026-06-14, top#2）──
+    # 同步 def 路由跑在 AnyIO threadpool，每個多半需一條 DB 連線。把 token 上限對齊
+    # 到「pool 容量 + headroom」，避免 threadpool 准入遠超 pool 能服務的量（否則並發
+    # > pool 時請求搶到 thread 卻卡在 pool checkout 逾時 500）。
+    _pool_capacity = settings.core.db_pool_size + settings.core.db_pool_max_overflow
+    _limiter = anyio.to_thread.current_default_thread_limiter()
+    if settings.core.thread_pool_headroom > 0:
+        _limiter.total_tokens = _pool_capacity + settings.core.thread_pool_headroom
+    logger.info(
+        "concurrency: db_pool=%d+%d threadpool_tokens=%d cache_backend=%s",
+        settings.core.db_pool_size,
+        settings.core.db_pool_max_overflow,
+        int(_limiter.total_tokens),
+        settings.cache.backend,
+    )
+    if settings.cache.backend == "memory":
+        logger.warning(
+            "cache backend = in-process memory：本服務假設【單 uvicorn worker】部署。"
+            "多 worker 會造成各 worker 快取分裂 + 失效無法跨 worker 廣播（consent/config "
+            "讀到不一致值）。若要開 --workers N 須先把 CACHE_BACKEND 切到 redis。"
+        )
+
+    # ── 家長端 RLS 上線自檢（系統設計審查 2026-06-14, top#7）──
+    app_instance.state.parent_rls_ok, app_instance.state.parent_rls_detail = (
+        _probe_parent_rls_ready()
+    )
 
     # PDF worker：啟動時若啟用 recovery，把上次 crash 留下的 'generating' 孤兒
     # 報告標 failed（避免 admin 看到永久 generating）。多 worker 部署只在 leader 開。
