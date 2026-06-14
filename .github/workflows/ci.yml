@@ -162,6 +162,10 @@ jobs:
           # → 改指向 service container 的 test:test。fixture 會用此連線 CREATE ROLE
           # rls_spike_parent_login / rls_spike_admin_login（spike 自己的隔離角色，不是 ivy_parent_login）。
           RLS_SPIKE_ADMIN_URL: postgresql://test:test@localhost:5432/ivymanagement_test
+          # PG-native dialect 回歸測試（test_pg_dialect_regressions.py）：守 SQLite
+          # 測試照不到的 PG 分支（如 permission_names ARRAY contains 的 cast 修補）。
+          # 用交易回滾、非破壞性，故可共用同一 test DB（系統設計審查 2026-06-14）。
+          PG_TEST_URL: postgresql://test:test@localhost:5432/ivymanagement_test
         # T9: 加 coverage gate（pyproject.toml [tool.coverage.run] 已設定 source）。
         # 起步門檻 60%：給既有覆蓋率不至於立即 fail，未來逐步提升。
         # --cov-fail-under 用 ratchet 風格：每次提升只能升不能降。
