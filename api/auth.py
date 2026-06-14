@@ -1202,6 +1202,14 @@ def end_impersonate(request: Request):
                 status_code=403, detail="無效的管理員 Token（角色非 admin）"
             )
 
+        # C14：校驗 admin_token 的 token_version 與 DB 一致，否則密碼變更/重設/撤帳
+        # bump token_version（全域作廢）後，舊 admin_token cookie 仍可換發新 admin token
+        # 繞過作廢。與 refresh 路徑（驗 token_version）對齊；payload 缺欄位視為 0。
+        if payload.get("token_version", 0) != (user.token_version or 0):
+            raise HTTPException(
+                status_code=401, detail="管理員 Token 已失效，請重新登入"
+            )
+
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
         permission_names = resolve_user_permissions(user)
 
