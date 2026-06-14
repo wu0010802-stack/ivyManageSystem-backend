@@ -760,8 +760,11 @@ def export_year_end_transfer_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
+    from utils.excel_utils import SafeWorksheet
+
     wb = Workbook()
-    ws = wb.active
+    # C11：戶名/姓名為使用者可控，改用 SafeWorksheet 防 Excel 公式注入（與 transfer_roster 對齊）
+    ws = SafeWorksheet(wb.active)
     ws.title = "年終轉帳名冊"
 
     ws.cell(row=1, column=2, value=school_name).font = Font(bold=True, size=14)
@@ -808,8 +811,11 @@ def export_year_end_summary_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
 
+    from utils.excel_utils import SafeWorksheet
+
     wb = Workbook()
-    ws = wb.active
+    # C11：姓名為使用者可控，改用 SafeWorksheet 防 Excel 公式注入
+    ws = SafeWorksheet(wb.active)
     ws.title = "年終獎金總表"
 
     ws.cell(row=1, column=1, value=f"{academic_year}年度年終分紅獎金").font = Font(
