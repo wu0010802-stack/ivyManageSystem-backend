@@ -157,7 +157,7 @@ def _assert_can_manage_user(
     # delete / is_active 等不帶 permissions 的操作，間接管理其實沒權限管的對象後
     # 透過接管密碼登入該帳號取得超額權限（提權鏈）。
     if target_user is not None and target_user.id != caller_id:
-        target_perms = resolve_user_permissions(target_user)
+        target_perms = resolve_user_permissions(target_user, session)
         target_set = set(target_perms)
         # caller 有 wildcard → 任何 target 都可管；否則檢查 target 是否 ⊆ caller
         # （target 也有 wildcard 但 caller 沒 → reject，因為 "*" ∉ caller_set）
@@ -482,7 +482,7 @@ def impersonate_user(
             raise HTTPException(status_code=403, detail="無法冒充已離職員工")
 
         # 5. 產生該使用者的 token
-        permission_names = resolve_user_permissions(target_user)
+        permission_names = resolve_user_permissions(target_user, session)
         target_token = create_access_token(
             {
                 "user_id": target_user.id,
@@ -636,7 +636,7 @@ def login(data: LoginRequest, request: Request):
         session.commit()
 
         # permission_names: ["*"] 表示全部權限；None 時套用角色預設
-        permission_names = resolve_user_permissions(user)
+        permission_names = resolve_user_permissions(user, session)
 
         token = create_access_token(
             {
@@ -786,7 +786,7 @@ def refresh_token(request: Request):
                 if _user.employee_id
                 else None
             )
-            _perm = resolve_user_permissions(_user)
+            _perm = resolve_user_permissions(_user, _session)
             _new_access = create_access_token(
                 {
                     "user_id": _user.id,
@@ -921,7 +921,7 @@ def refresh_token(request: Request):
             )
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permission_names = resolve_user_permissions(user)
+        permission_names = resolve_user_permissions(user, session)
 
         # S2: 把舊 token 的 original_iat 帶進新 token，讓 absolute lifetime
         # 從首次登入算起，而非從本次 refresh 算起。
@@ -1211,7 +1211,7 @@ def end_impersonate(request: Request):
             )
 
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permission_names = resolve_user_permissions(user)
+        permission_names = resolve_user_permissions(user, session)
 
         # 為管理員簽發新的 access token（避免使用可能已接近過期的舊 token）
         new_token = create_access_token(
@@ -1264,7 +1264,7 @@ def get_me(current_user: dict = Depends(get_current_user)):
         if not user:
             raise HTTPException(status_code=404, detail=USER_NOT_FOUND)
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permission_names = resolve_user_permissions(user)
+        permission_names = resolve_user_permissions(user, session)
         return {
             "id": user.id,
             "username": user.username,
@@ -1356,7 +1356,7 @@ def change_password(
 
         # 為當事人發新 token（同步新 token_version + must_change_password=False），
         # 避免「改完密碼立刻被踢」。其他 session 的舊 token 仍會在下次 refresh 被拒。
-        permission_names = resolve_user_permissions(user)
+        permission_names = resolve_user_permissions(user, session)
         emp = (
             session.query(Employee).filter(Employee.id == user.employee_id).first()
             if user.employee_id
@@ -1410,7 +1410,7 @@ def list_users(
                 "username": u.username,
                 "role": u.role,
                 "role_label": ROLE_LABELS.get(u.role, u.role),
-                "permission_names": resolve_user_permissions(u),
+                "permission_names": resolve_user_permissions(u, session),
                 "is_active": u.is_active,
                 "employee_id": u.employee_id,
                 "employee_name": emp.name if emp else "",
