@@ -8,7 +8,7 @@ GET /portal/me/payout-history     — 員工自己的 unused_leave_payout_log（
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from models.database import get_session
+from models.database import get_session_dep
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from models.unused_leave_payout_log import UnusedLeavePayoutLog
 from utils.auth import get_current_user
@@ -50,7 +50,7 @@ def _query_payout_logs(session: Session, employee_id: int) -> list:
 
 @router.get("/me/comp-leave-grants")
 def list_my_comp_leave_grants(
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_session_dep),
     current_user: dict = Depends(get_current_user),
 ):
     """員工自助入口：補休 grant ledger 全狀態明細（active / expired / revoked）。
@@ -98,7 +98,7 @@ def list_my_comp_leave_grants(
 
 @router.get("/me/payout-history")
 def list_my_payout_history(
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_session_dep),
     current_user: dict = Depends(get_current_user),
 ):
     """員工自助入口：未休假折算工資兌現紀錄（含 source_type）。

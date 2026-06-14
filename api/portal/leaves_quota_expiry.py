@@ -15,7 +15,7 @@ from utils.taipei_time import today_taipei
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from models.database import get_session
+from models.database import get_session_dep
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from models.employee import Employee
 from utils.auth import get_current_user
@@ -77,7 +77,7 @@ def _compute_next_anniversary(hire_date: Optional[date], today: date) -> Optiona
 
 @router.get("/me/leave-quota-expiry")
 def get_my_leave_quota_expiry(
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_session_dep),
     current_user: dict = Depends(get_current_user),
 ):
     """員工自助入口：補休結餘 + 最早到期 grant + 下個週年 + 預計結算月。
