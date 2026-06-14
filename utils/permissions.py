@@ -696,15 +696,33 @@ def validate_permission_names(names: List[str]) -> List[str]:
     return invalid
 
 
-def resolve_user_permissions(user) -> List[str]:
+def resolve_user_permissions(user, session=None) -> List[str]:
     """從 User 物件取出最終權限清單。
 
-    - permission_names is None → 套用 role 預設模板
     - permission_names 為 list → 原樣回傳（已 override role 預設）
+    - permission_names is None → 套用 role 預設模板：
+        * 有傳 session 且 DB roles 表有 seed 該 role（非空）→ 以 **DB 為單一事實
+          來源**。
+        * 否則（無 session / DB 未 seed / role 不存在）→ fallback in-code
+          ``ROLE_TEMPLATES``（保底不 lockout、向下相容）。
+
+    Why（系統設計審查 2026-06-14, top#5）：原本 NULL-perm 帳號一律走 in-code
+    ``ROLE_TEMPLATES``，與 DB 角色 scope 漂移時會【靜默提權】——只改 DB roles 的
+    scope（例如把某 scope-aware code 從 ``:all`` 收成 ``:own_class``）而忘了同步
+    in-code 模板，這批 seed/遺留/未明確設權限的帳號 runtime 完全感知不到變更，方向
+    還是「放寬」（2026-06-04 滲透測試 #2 教師被提權成全園 scope 即此）。改為「有
+    session 時以 DB 為準」消除此漂移；roles 表查詢只 SELECT 不寫，空表回 None 走
+    fallback（不丟例外、不中止交易、不 lockout）。
     """
-    if user.permission_names is None:
-        return list(ROLE_TEMPLATES.get(user.role, []))
-    return list(user.permission_names)
+    if user.permission_names is not None:
+        return list(user.permission_names)
+    if session is not None:
+        from models.permission_models import Role
+
+        role = session.query(Role).filter_by(code=user.role).first()
+        if role is not None and role.permissions:
+            return list(role.permissions)
+    return list(ROLE_TEMPLATES.get(user.role, []))
 
 
 def get_permission_list(user_perms: List[str] | None) -> List[str]:
