@@ -881,6 +881,13 @@ def update_leave(
         if not leave:
             raise HTTPException(status_code=404, detail=LEAVE_RECORD_NOT_FOUND)
 
+        # ── 自我編輯防護（與 delete_leave / approve_leave 自我核准守衛對齊）──────────
+        # 防止持 LEAVES_WRITE 的 supervisor/hr/principal 自編本人已核准的扣薪假單，
+        # 觸發退審→sync.revert 刪 Attendance→薪資重算撤銷扣款＝替自己加薪，
+        # 繞過 approve/delete 既有的自我核准守衛（C3）。
+        if is_self_approval(current_user, leave.employee_id):
+            raise HTTPException(status_code=403, detail="不可修改您本人的請假單")
+
         # 在 setattr 套用新日期前，捕捉原始狀態（同時供 audit_changes 留下完整 before）
         was_approved = leave.status == ApprovalStatus.APPROVED.value
         orig_month = (leave.start_date.year, leave.start_date.month)
