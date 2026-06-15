@@ -292,6 +292,10 @@ def _upsert_special_bonus_item(
         existing.updated_at = now_utc
 
 
+class PayoutNotFinalizedError(Exception):
+    """考核 summary 未 FINALIZED 即嘗試產生年終 payout（防跳過三簽發放考核年終）。"""
+
+
 def generate_payouts(
     db: Session,
     payout_year: int,
@@ -311,6 +315,20 @@ def generate_payouts(
 
     target_academic_year = civil_year_to_target_academic_year(payout_year)
     rows = preview_payout(db, payout_year)
+
+    # P2-4（2026-06-15 運作探測）硬閘：任何存在的 summary 未 FINALIZED 即拒絕產生
+    # payout——防跳過三簽（會計簽核）發放考核年終獎金。在任何寫入前觸發，確保零落地。
+    not_finalized = [
+        r.employee_id
+        for r in rows
+        if "earlier_summary_not_finalized" in r.warnings
+        or "later_summary_not_finalized" in r.warnings
+    ]
+    if not_finalized:
+        raise PayoutNotFinalizedError(
+            f"{len(not_finalized)} 名員工的考核 summary 尚未 FINALIZED，"
+            "不可產生年終考核獎金 payout；請先完成三簽"
+        )
 
     # upsert YearEndCycle（最小 shell；start/end/bonus_calc_date 依學年算出）
     # 學年 N（民國）= 西元 N+1911 年 8 月 ～ N+1912 年 7 月
@@ -373,9 +391,18 @@ def generate_payouts(
             appraisal_cycle_id = (
                 earlier_cycle.id if partition == "earlier" else later_cycle.id
             )
+            # summary_status 須反映真實狀態（不可對任何存在的 summary 硬寫 FINALIZED
+            # 謊報稽核）。上游硬閘已確保 present⟹FINALIZED，此處仍誠實推導以防未來鬆綁。
+            partition_not_finalized = (
+                f"{partition}_summary_not_finalized" in row.warnings
+            )
             calc_meta = {
                 "cycle_not_finalized": not cycle_finalized,
-                "summary_status": "FINALIZED" if summary_id else "MISSING",
+                "summary_status": (
+                    "MISSING"
+                    if not summary_id
+                    else ("NOT_FINALIZED" if partition_not_finalized else "FINALIZED")
+                ),
                 "snapshot_at": datetime.now(tz=timezone.utc).isoformat(),
                 "partition": partition,
                 "appraisal_cycle_id": appraisal_cycle_id,

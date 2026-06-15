@@ -369,6 +369,32 @@ def update_cycle(
     if payload.enrollment_actual is not None:
         cycle.enrollment_actual = payload.enrollment_actual
     if payload.status is not None:
+        # 封存前置守衛（2026-06-15 運作探測 P2-4）：切 CLOSED 前，非排除 participant
+        # 的 summary 必須皆 FINALIZED。否則三簽端點（要求 cycle.status==OPEN）會在
+        # CLOSED 後全部 400 → summary 卡死永遠到不了 FINALIZED；且 _cycle_is_finalized
+        # 把 CLOSED 當已定案 → 年終 payout 照發＝跳過會計簽核。允許 CLOSED→OPEN 解救。
+        if payload.status == CycleStatus.CLOSED and cycle.status != CycleStatus.CLOSED:
+            unfinalized = (
+                session.query(func.count(AppraisalSummary.id))
+                .join(
+                    AppraisalParticipant,
+                    AppraisalSummary.participant_id == AppraisalParticipant.id,
+                )
+                .filter(
+                    AppraisalParticipant.cycle_id == cycle_id,
+                    AppraisalParticipant.is_excluded.is_(False),
+                    AppraisalSummary.status != SummaryStatus.FINALIZED,
+                )
+                .scalar()
+            )
+            if unfinalized:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"尚有 {unfinalized} 筆 summary 未 FINALIZED，不可封存（CLOSED）"
+                        "週期；請先完成三簽或排除該 participant"
+                    ),
+                )
         cycle.status = payload.status
     session.commit()
     session.refresh(cycle)

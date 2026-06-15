@@ -608,3 +608,87 @@ def test_generate_payouts_does_not_touch_january(
 
     test_db_session.refresh(sr)
     assert sr.needs_recalc is False, "1 月薪資不被標 stale（B3 已移除）"
+
+
+# === P2-4（2026-06-15 運作探測）：payout 硬閘 + calc_meta 誠實 ===
+
+
+def test_generate_payouts_blocks_when_summary_not_finalized(
+    test_db_session, two_appraisal_cycles, sample_active_employee
+):
+    """有 summary 未 FINALIZED 時 generate_payouts 須拒絕（防跳過三簽發放考核年終）。
+
+    舊行為：generate_payouts 不檢查 summary 狀態，照 amount 寫 payout，且
+    calc_meta.summary_status 對任何存在的 summary 硬寫 'FINALIZED' 謊報稽核。
+    """
+    from services.year_end.appraisal_sync import PayoutNotFinalizedError
+
+    earlier, later = two_appraisal_cycles
+    emp = sample_active_employee
+    p1 = AppraisalParticipant(
+        cycle_id=earlier.id,
+        employee_id=emp.id,
+        role_group=RoleGroup.HEAD_TEACHER,
+        hire_months_in_cycle=Decimal("6"),
+    )
+    p2 = AppraisalParticipant(
+        cycle_id=later.id,
+        employee_id=emp.id,
+        role_group=RoleGroup.HEAD_TEACHER,
+        hire_months_in_cycle=Decimal("6"),
+    )
+    test_db_session.add_all([p1, p2])
+    test_db_session.flush()
+    test_db_session.add_all(
+        [
+            AppraisalSummary(
+                participant_id=p1.id,
+                cycle_id=earlier.id,
+                base_score=Decimal("100"),
+                total_score=Decimal("80"),
+                grade=Grade.GOOD,
+                bonus_amount=Decimal("6400"),
+                status=SummaryStatus.SUPERVISOR_SIGNED,  # 未走完三簽
+            ),
+            AppraisalSummary(
+                participant_id=p2.id,
+                cycle_id=later.id,
+                base_score=Decimal("100"),
+                total_score=Decimal("90"),
+                grade=Grade.OUTSTANDING,
+                bonus_amount=Decimal("7200"),
+                status=SummaryStatus.FINALIZED,
+            ),
+        ]
+    )
+    test_db_session.flush()
+
+    with pytest.raises(PayoutNotFinalizedError):
+        generate_payouts(
+            test_db_session,
+            payout_year=2026,
+            included_inactive_employee_ids=set(),
+            generated_by=1,
+        )
+    # 硬閘在寫入前觸發，不可有任何 payout 落地
+    items = test_db_session.scalars(select(SpecialBonusItem)).all()
+    assert items == []
+
+
+def test_generate_payouts_calc_meta_summary_status_truthful(
+    test_db_session, setup_summaries_for_both_employees
+):
+    """全 FINALIZED 成功產生時，calc_meta.summary_status 須反映真實（present→FINALIZED）。"""
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+    items = test_db_session.scalars(select(SpecialBonusItem)).all()
+    assert items
+    for it in items:
+        if it.source_ref and it.source_ref != "appraisal_summary:none":
+            assert it.calc_meta["summary_status"] == "FINALIZED"
+        else:
+            assert it.calc_meta["summary_status"] == "MISSING"

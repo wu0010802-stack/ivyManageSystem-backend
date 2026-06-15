@@ -17,6 +17,7 @@ from schemas.year_end import (
     PayoutPreviewRow,
 )
 from services.year_end.appraisal_sync import (
+    PayoutNotFinalizedError,
     civil_year_to_target_academic_year,
     generate_payouts,
     preview_payout,
@@ -56,12 +57,18 @@ def post_generate(
         require_staff_permission(Permission.APPRAISAL_FINALIZE)
     ),
 ):
-    result = generate_payouts(
-        session,
-        payout_year=body.year,
-        included_inactive_employee_ids=set(body.included_inactive_employee_ids),
-        generated_by=current_user.get("user_id", 0),
-    )
+    try:
+        result = generate_payouts(
+            session,
+            payout_year=body.year,
+            included_inactive_employee_ids=set(body.included_inactive_employee_ids),
+            generated_by=current_user.get("user_id", 0),
+        )
+    except PayoutNotFinalizedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     session.commit()
     return PayoutGenerateResult(**vars(result))
 

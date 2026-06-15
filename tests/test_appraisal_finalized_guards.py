@@ -72,7 +72,13 @@ def client_with_db(tmp_path):
     engine.dispose()
 
 
-APPRAISAL_ALL = ["APPRAISAL_READ", "APPRAISAL_EVENT_WRITE", "APPRAISAL_REVIEW", "APPRAISAL_ACCOUNTING", "APPRAISAL_FINALIZE"]
+APPRAISAL_ALL = [
+    "APPRAISAL_READ",
+    "APPRAISAL_EVENT_WRITE",
+    "APPRAISAL_REVIEW",
+    "APPRAISAL_ACCOUNTING",
+    "APPRAISAL_FINALIZE",
+]
 
 
 def _login(client, username="admin", password="TempPass123"):
@@ -176,6 +182,58 @@ class TestUpdateCycleFinalizedGuard:
             f"/api/appraisal/cycles/{cycle_id}",
             json={"base_score": 90.0},
         )
+        assert res.status_code == 200, res.text
+
+    # === CLOSE 前置守衛（2026-06-15 運作探測 P2-4）===
+    # 三簽端點(sign_supervisor/accounting/finalize)皆要求 cycle.status==OPEN，
+    # 若在 summary 未走完三簽即切 CLOSED → 三簽全 400 → summary 卡死永遠到不了
+    # FINALIZED；且 _cycle_is_finalized 把 CLOSED 當已定案 → 年終 payout 照發＝
+    # 跳過會計簽核。封存前須確認非排除 participant 的 summary 皆 FINALIZED。
+    def _add_summary(self, sf, cycle_id, participant_id, status):
+        with sf() as s:
+            s.add(
+                AppraisalSummary(
+                    participant_id=participant_id,
+                    cycle_id=cycle_id,
+                    base_score=Decimal("70"),
+                    event_score_sum=Decimal("0"),
+                    total_score=Decimal("70"),
+                    grade=Grade.PASS,
+                    bonus_amount=Decimal("5000"),
+                    status=status,
+                    version=1,
+                )
+            )
+            s.commit()
+
+    def test_close_blocked_when_summary_not_finalized(self, client_with_db):
+        client, sf = client_with_db
+        cycle_id, pid = _seed_basic_cycle(sf, cycle_status=CycleStatus.LOCKED)
+        self._add_summary(sf, cycle_id, pid, SummaryStatus.SUPERVISOR_SIGNED)
+        _login(client)
+        res = client.patch(
+            f"/api/appraisal/cycles/{cycle_id}", json={"status": "CLOSED"}
+        )
+        assert res.status_code == 400, res.text
+        assert "FINALIZED" in res.json()["detail"]
+
+    def test_close_allowed_when_all_summaries_finalized(self, client_with_db):
+        client, sf = client_with_db
+        cycle_id, pid = _seed_basic_cycle(sf, cycle_status=CycleStatus.LOCKED)
+        self._add_summary(sf, cycle_id, pid, SummaryStatus.FINALIZED)
+        _login(client)
+        res = client.patch(
+            f"/api/appraisal/cycles/{cycle_id}", json={"status": "CLOSED"}
+        )
+        assert res.status_code == 200, res.text
+
+    def test_reopen_closed_cycle_allowed_to_rescue_deadlock(self, client_with_db):
+        """允許 CLOSED→OPEN 解救死狀態（不檢查 summary）。"""
+        client, sf = client_with_db
+        cycle_id, pid = _seed_basic_cycle(sf, cycle_status=CycleStatus.CLOSED)
+        self._add_summary(sf, cycle_id, pid, SummaryStatus.SUPERVISOR_SIGNED)
+        _login(client)
+        res = client.patch(f"/api/appraisal/cycles/{cycle_id}", json={"status": "OPEN"})
         assert res.status_code == 200, res.text
 
 
