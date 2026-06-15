@@ -18,8 +18,15 @@ Why:
 USER manual ops:
     upgrade 後需手動建 Postgres role：
       CREATE ROLE audit_archiver NOLOGIN;
-      GRANT DELETE ON audit_logs TO audit_archiver;
+      GRANT SELECT, DELETE ON audit_logs TO audit_archiver;
+      -- 非 superuser 連線登入角色還需 membership 才能 SET ROLE：
+      GRANT audit_archiver TO <連線登入角色>;   -- 例：ivy_admin_login
     （日後 cold storage script 用 SET ROLE audit_archiver; ... RESET ROLE; pattern）
+
+    為何也要 SELECT（原本只寫 DELETE）：retention GC（utils/audit_log_gc.cleanup_audit_logs）
+    的刪除是 `DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs ...)`，
+    子查詢與 SELECT DISTINCT entity_type 都需要對 audit_logs 的 SELECT；只給 DELETE
+    會在子查詢上 permission denied。
 
 Refs:
     - 第五輪 P0 audit #1（trigger 阻塞合規修補）
