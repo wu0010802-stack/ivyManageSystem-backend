@@ -32,7 +32,7 @@ from utils.auth import require_staff_permission, get_current_user
 from utils.permissions import Permission
 from utils.portfolio_access import is_unrestricted
 
-router = APIRouter(prefix="/funnel", tags=["recruitment-funnel"])
+router = APIRouter(prefix="/api/recruitment/funnel", tags=["recruitment-funnel"])
 
 
 def _build_funnel_card(visit, student, grade_name_map):
