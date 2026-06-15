@@ -156,6 +156,35 @@ def _pick_special_ed_students(ctx: SeedContext) -> list:
     return chosen
 
 
+def _iep_jsonb_fields(created_d: date, semester: int) -> dict:
+    """IEP jsonb 欄位（短期目標/團隊/會議日期）。
+
+    shape 須對齊 API 契約（api/gov_moe/iep.py IepBase）：short_term_goals /
+    iep_team_members = List[dict]、meeting_dates = dict。寫成 list[str]/list 會使
+    GET/匯出 IEP 端點對 seed 資料全 500（2026-06-15 運作探測 P2-5）。
+    """
+    return {
+        "short_term_goals": [
+            {
+                "domain": "語言溝通",
+                "goal": "能主動表達基本需求",
+                "criterion": "10 次中 8 次達成",
+            },
+            {
+                "domain": "社會互動",
+                "goal": "能與同儕進行簡單互動",
+                "criterion": "連續 2 週每日達成",
+            },
+        ],
+        "iep_team_members": [
+            {"role": "班級導師", "name": "班導"},
+            {"role": "特教巡迴輔導教師", "name": "巡輔老師"},
+            {"role": "家長", "name": "家長代表"},
+        ],
+        "meeting_dates": {"initial": created_d.isoformat()},
+    }
+
+
 def _seed_iep_and_docs(ctx: SeedContext, special_students: list) -> None:
     """每位特教幼生:兩學期 IEP + 1~2 份身障文件。"""
     session = ctx.session
@@ -194,6 +223,7 @@ def _seed_iep_and_docs(ctx: SeedContext, special_students: list) -> None:
                 approved_id = None
             if created_d > ctx.config.today:
                 created_d = ctx.config.today
+            iep_jsonb = _iep_jsonb_fields(created_d, semester)
             iep = StudentIEPRecord(
                 student_id=student.id,
                 school_year=greg_year,  # 西元學年(模型語意)
@@ -201,16 +231,13 @@ def _seed_iep_and_docs(ctx: SeedContext, special_students: list) -> None:
                 status=status,
                 current_status="目前發展狀況評估(seedgen 測試資料)。",
                 long_term_goals="提升語言表達與社會互動能力。",
-                short_term_goals=[
-                    "能主動表達基本需求",
-                    "能與同儕進行簡單互動",
-                ],
+                short_term_goals=iep_jsonb["short_term_goals"],
                 mid_term_evaluation=(
                     "期中已達部分短期目標。" if semester == 1 else None
                 ),
                 final_evaluation=("期末整體達成度良好。" if semester == 1 else None),
-                iep_team_members=["班導師", "特教巡迴老師", "家長"],
-                meeting_dates=[created_d.isoformat()],
+                iep_team_members=iep_jsonb["iep_team_members"],
+                meeting_dates=iep_jsonb["meeting_dates"],
                 created_by_employee_id=creator_id,
                 approved_by_employee_id=approved_id,
                 created_at=_naive_dt(created_d, hour=10),
