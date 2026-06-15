@@ -616,11 +616,15 @@ def import_year_end_to_db(
             )
             session.add(settlement)
         else:
-            # FINALIZED settlement 視為轉帳名冊金額不可變承諾，已 finalize 的
-            # 不允許 import 覆寫；跳過更新但仍記入 settlements_count 以保留稽核脈絡。
-            if settlement.status == YearEndSettlementStatus.FINALIZED:
+            # 已簽核（SUPERVISOR_SIGNED / ACCOUNTING_SIGNED）與已核定（FINALIZED）的
+            # settlement 一律視為金額不可變承諾：簽章一旦產生，重匯 Excel 不得改寫其金額
+            # （否則簽名仍在、底下金額被靜默替換）。僅 DRAFT 允許 import 覆寫，與 canonical
+            # build_settlements / manual_patch 的 status != DRAFT 守衛對齊。跳過更新但仍
+            # 記入 settlements_count 以保留稽核脈絡。
+            if settlement.status != YearEndSettlementStatus.DRAFT:
                 logger.warning(
-                    "year_end import skip FINALIZED settlement: cycle=%d emp=%d",
+                    "year_end import skip non-DRAFT settlement (%s): cycle=%d emp=%d",
+                    settlement.status.value,
                     cycle.id,
                     emp_id,
                 )
@@ -644,6 +648,22 @@ def import_year_end_to_db(
             settlement.proration_rate = proration
             settlement.payable_amount = s.payable
             settlement.remark = s.remark
+            # update 分支同步重算 total_amount（對稱 INSERT 分支）：payable 變動但該員工
+            # 不在本次「年終獎金總表」特別獎金 sheet 時，下方 affected_emp_ids 迴圈不會
+            # 重算，total_amount 會停在舊值 → 轉帳名冊以錯誤金額匯款（少發/多發）。此處以
+            # DB 既有 special total 即時重算；若該員工同時在本次特別獎金 sheet，下方迴圈會
+            # 以 upsert 後全量再覆蓋（冪等）。
+            existing_special_total = sum(
+                (
+                    row.amount
+                    for row in session.query(SpecialBonusItem.amount)
+                    .filter_by(year_end_cycle_id=cycle.id, employee_id=emp_id)
+                    .all()
+                ),
+                Decimal("0"),
+            )
+            settlement.special_bonus_total = existing_special_total
+            settlement.total_amount = s.payable + existing_special_total
         settlements_count += 1
 
     # special_bonus_items upsert + 更新 settlement.special_bonus_total / total_amount
@@ -651,8 +671,9 @@ def import_year_end_to_db(
     # C1：special_bonus_total 以 DB「全量」SpecialBonusItem 重算（見下方 sync 迴圈），
     #     不可用「本次 Excel 子集」覆寫，否則會 clobber 掉 auto_derive/manual 既有獎金
     #     而少發（與 canonical _recompute_settlement_special_total 口徑一致）。
-    # C2：FINALIZED settlement 視為轉帳名冊不可變承諾（與上方主迴圈一致），其員工的
-    #     特別獎金 upsert 與總額同步一律跳過，避免事後重匯 Excel 改寫已核定金額。
+    # C2：非 DRAFT（已簽核 SUPERVISOR/ACCOUNTING_SIGNED 或已核定 FINALIZED）的 settlement
+    #     視為轉帳名冊不可變承諾（與上方主迴圈一致），其員工的特別獎金 upsert 與總額同步
+    #     一律跳過，避免事後重匯 Excel 改寫已簽核/已核定金額（簽章不變、金額被換）。
     special_count = 0
     affected_emp_ids: set[int] = set()
     for sb in parsed.special_bonuses:
@@ -667,11 +688,12 @@ def import_year_end_to_db(
         )
         if (
             settlement is not None
-            and settlement.status == YearEndSettlementStatus.FINALIZED
+            and settlement.status != YearEndSettlementStatus.DRAFT
         ):
             logger.warning(
-                "year_end import skip special_bonus for FINALIZED settlement: "
+                "year_end import skip special_bonus for non-DRAFT settlement (%s): "
                 "cycle=%d emp=%d",
+                settlement.status.value,
                 cycle.id,
                 emp_id,
             )
@@ -709,14 +731,15 @@ def import_year_end_to_db(
     # （C1 / P1-8：避免本次 Excel 子集覆寫——先 derive 的 auto item 如 FESTIVAL_DIFF /
     # 才藝鼓勵 / 學期紅利，period_label 不同故 upsert 不會刪，與本次 Excel 列共存；用
     # 子集覆寫會把這些既有項目靜默踢出 total_amount 實際匯款額 → 年終轉帳短算），並
-    # 跳過 FINALIZED（C2，轉帳名冊不可變承諾，補住此第二迴圈原會覆寫已核定金額的漏洞）。
+    # 跳過非 DRAFT（C2，已簽核/已核定為轉帳名冊不可變承諾，補住此第二迴圈原會覆寫
+    # 已簽核/已核定金額的漏洞）。
     for emp_id in affected_emp_ids:
         settlement = (
             session.query(YearEndSettlement)
             .filter_by(year_end_cycle_id=cycle.id, employee_id=emp_id)
             .one_or_none()
         )
-        if settlement is None or settlement.status == YearEndSettlementStatus.FINALIZED:
+        if settlement is None or settlement.status != YearEndSettlementStatus.DRAFT:
             continue
         full_special_total = sum(
             (
