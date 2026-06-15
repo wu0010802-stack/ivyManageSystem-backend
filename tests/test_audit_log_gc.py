@@ -155,3 +155,75 @@ def test_probe_failure_raises_not_silent_when_role_missing():
 
     with pytest.raises(RuntimeError, match="audit_archiver"):
         cleanup_audit_logs(session)
+
+
+# ── run_audit_log_gc_once 的回傳契約（-> int，不可回 None）──
+
+
+def test_run_once_returns_int_zero_when_cleanup_raises(monkeypatch):
+    """回歸：cleanup_audit_logs raise（prod 漏建 audit_archiver role）時，
+    run_audit_log_gc_once 必須回 int 0 而非 None。
+
+    根因：原本 `return deleted` 寫在 `with scheduler_iteration(...)` 區塊內，
+    內層 raise 被 scheduler_iteration by-design 吞掉後，該 return 從未執行 →
+    函式 fall-through 回 None（雖簽名標 -> int）。caller 端 `if deleted > 0`
+    就會炸 `TypeError: '>' not supported between NoneType and int`。
+    """
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    import models.base as models_base
+    import utils.audit_log_gc as gc
+    from utils import scheduler_observability
+
+    scheduler_observability.reset_for_tests()
+
+    @contextmanager
+    def _fake_scope():
+        yield MagicMock()
+
+    @contextmanager
+    def _fake_lock(*args, **kwargs):
+        yield True  # 已搶到 advisory lock
+
+    def _raise_role_missing(_session):
+        raise RuntimeError("audit_log GC 無法執行：SET ROLE audit_archiver 失敗")
+
+    monkeypatch.setattr(models_base, "session_scope", _fake_scope)
+    monkeypatch.setattr(gc, "try_scheduler_lock", _fake_lock)
+    monkeypatch.setattr(gc, "cleanup_audit_logs", _raise_role_missing)
+
+    result = gc.run_audit_log_gc_once(session_factory=None)
+
+    assert result == 0
+    assert isinstance(result, int)
+    scheduler_observability.reset_for_tests()
+
+
+def test_run_once_returns_zero_when_lock_not_acquired(monkeypatch):
+    """另一 worker 已持鎖時回 0（不執行刪除），確保改動後此路徑仍回 int。"""
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    import models.base as models_base
+    import utils.audit_log_gc as gc
+    from utils import scheduler_observability
+
+    scheduler_observability.reset_for_tests()
+
+    @contextmanager
+    def _fake_scope():
+        yield MagicMock()
+
+    @contextmanager
+    def _fake_lock(*args, **kwargs):
+        yield False  # 沒搶到鎖
+
+    monkeypatch.setattr(models_base, "session_scope", _fake_scope)
+    monkeypatch.setattr(gc, "try_scheduler_lock", _fake_lock)
+
+    result = gc.run_audit_log_gc_once(session_factory=None)
+
+    assert result == 0
+    assert isinstance(result, int)
+    scheduler_observability.reset_for_tests()

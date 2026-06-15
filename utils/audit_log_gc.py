@@ -184,6 +184,11 @@ def run_audit_log_gc_once(session_factory) -> int:
     """
     from models.base import session_scope
 
+    # 回傳必為 int：cleanup 內 raise（prod 漏建 audit_archiver role）會被
+    # scheduler_iteration by-design 吞掉，故 `return deleted` 不可寫在該 with
+    # 區塊內——否則例外被吞後 fall-through 回 None，caller 端 `if deleted > 0`
+    # 會炸 TypeError 並用誤導的 ERROR 蓋掉真正原因。預設 0，在區塊外 return。
+    deleted = 0
     with scheduler_iteration("security_audit_log_gc"):
         with session_scope() as lock_session:
             with try_scheduler_lock(
@@ -191,10 +196,8 @@ def run_audit_log_gc_once(session_factory) -> int:
                 scheduler_name="security_audit_log_gc",
                 run_key=str(int(time.time() // 86400)),  # 日 bucket
             ) as acquired:
-                if not acquired:
-                    return 0
-
-                with session_scope() as work_session:
-                    deleted = cleanup_audit_logs(work_session)
-                    record_rows("security_audit_log_gc", int(deleted))
-                    return deleted
+                if acquired:
+                    with session_scope() as work_session:
+                        deleted = cleanup_audit_logs(work_session)
+                        record_rows("security_audit_log_gc", int(deleted))
+    return deleted
