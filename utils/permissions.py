@@ -1000,3 +1000,47 @@ def list_active_user_ids_with_permission(session, perm: str) -> list[int]:
         .all()
     )
     return [r[0] for r in rows]
+
+
+def find_permission_definition_drift(db_codes) -> Dict[str, List[str]]:
+    """偵測 in-code Permission enum 與 DB permission_definitions 的漂移（純函式）。
+
+    - ``missing_in_db``：enum 有、DB 沒有 → 功能對非 wildcard admin 鎖死、admin UI
+      無法授權（典型成因：新增 Permission 後未補 backfill migration，如
+      rolesdb01 seed 早於後續 6 碼新增）。
+    - ``missing_label``：enum 有、PERMISSION_LABELS 沒有 → seed/UI 缺標籤。
+
+    Args:
+        db_codes: DB permission_definitions 既有的 code 集合（呼叫端查 DB 後傳入，
+            保持本函式無 I/O 易測）。
+    """
+    db = set(db_codes)
+    enum_codes = {p.value for p in Permission}
+    return {
+        "missing_in_db": sorted(enum_codes - db),
+        "missing_label": sorted(enum_codes - set(PERMISSION_LABELS)),
+    }
+
+
+def check_permission_definition_drift(session) -> List[str]:
+    """查 DB 後比對 enum，回傳 DB 缺漏的權限碼（startup 用，順帶 logging.WARNING）。
+
+    僅讀取與記錄，不修改 DB（修補走 backfill migration）。DB 尚未建表（早期環境）
+    時回空清單不阻擋啟動。
+    """
+    from sqlalchemy import text
+
+    try:
+        rows = session.execute(text("SELECT code FROM permission_definitions")).all()
+    except Exception:  # 表不存在 / 連線問題 → 不阻擋啟動
+        return []
+    drift = find_permission_definition_drift({r[0] for r in rows})
+    missing = drift["missing_in_db"]
+    if missing:
+        _logger.warning(
+            "permission_definitions 與 Permission enum 漂移：DB 缺 %d 碼 %s；"
+            "請跑 backfill migration（非 wildcard admin 會對這些功能 403、admin UI 無法授權）",
+            len(missing),
+            missing,
+        )
+    return missing

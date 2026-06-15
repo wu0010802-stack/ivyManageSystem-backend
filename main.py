@@ -394,6 +394,21 @@ async def app_lifespan(app_instance: FastAPI):
         _probe_parent_rls_ready()
     )
 
+    # ── 權限定義漂移自檢（2026-06-15 運作探測 P2-2）──
+    # Permission enum 與 DB permission_definitions 不符（新增權限後未補 backfill
+    # migration）會使非 wildcard admin 對該功能 403、admin UI 無法授權；僅 WARNING。
+    try:
+        from models.database import get_session
+        from utils.permissions import check_permission_definition_drift
+
+        _drift_session = get_session()
+        try:
+            check_permission_definition_drift(_drift_session)
+        finally:
+            _drift_session.close()
+    except Exception as e:
+        logger.warning("權限定義漂移自檢失敗: %s", e)
+
     # PDF worker：啟動時若啟用 recovery，把上次 crash 留下的 'generating' 孤兒
     # 報告標 failed（避免 admin 看到永久 generating）。多 worker 部署只在 leader 開。
     if settings.scheduler.pdf_worker_recovery_enabled:
