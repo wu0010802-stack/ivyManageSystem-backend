@@ -308,6 +308,11 @@ ROLE_TEMPLATES: Dict[str, List[str]] = {
         Permission.DISMISSAL_CALLS_WRITE.value + ":own_class",
         Permission.PORTFOLIO_READ.value + ":own_class",
         Permission.PORTFOLIO_WRITE.value + ":own_class",
+        # portal 事件紀錄/學期評量走 require_permission(STUDENTS_READ/WRITE)；須 :own_class
+        # （bare 會 resolve 成 :all → 對 NULL-perm 教師提權全園）。端點皆 own_class
+        # self-filter，主管理端點走 require_staff_permission 對 teacher 一律 403。
+        Permission.STUDENTS_READ.value + ":own_class",
+        Permission.STUDENTS_WRITE.value + ":own_class",
         Permission.STUDENTS_HEALTH_READ.value + ":own_class",
         Permission.STUDENTS_MEDICATION_ADMINISTER.value + ":own_class",
         Permission.STUDENTS_SPECIAL_NEEDS_READ.value + ":own_class",
