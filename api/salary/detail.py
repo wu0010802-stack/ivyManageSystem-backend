@@ -28,6 +28,7 @@ from services.salary_field_breakdown import (
 from utils.auth import require_staff_permission
 from utils.cache_layer import get_cache
 from utils.error_messages import SALARY_RECORD_NOT_FOUND
+from utils.http_headers import content_disposition
 from schemas.salary_detail import (
     SalaryDetailAuditLogOut,
     SalaryDetailBreakdownOut,
@@ -356,5 +357,5 @@ def export_salary_slip(
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+            headers={"Content-Disposition": content_disposition(filename)},
         )

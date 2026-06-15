@@ -24,6 +24,7 @@ from models.activity import (
 from utils.audit import write_explicit_audit
 from utils.auth import get_current_user, require_staff_permission
 from utils.excel_utils import SafeWorksheet
+from utils.http_headers import content_disposition
 from utils.permissions import Permission
 from api.activity._shared import (
     _build_session_detail_response,
@@ -320,7 +321,7 @@ def export_session_attendance(
         return StreamingResponse(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+            headers={"Content-Disposition": content_disposition(filename)},
         )
     finally:
         session.close()
