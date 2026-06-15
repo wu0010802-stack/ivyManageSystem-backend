@@ -42,6 +42,7 @@ from models.appraisal import (
     RoleGroup,
     Semester,
 )
+from utils.excel_utils import SafeWorksheet
 
 logger = logging.getLogger(__name__)
 
@@ -530,7 +531,7 @@ def export_half_year_xlsx(
     from openpyxl.styles import Alignment, Font
 
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     sem_label = "上" if semester == Semester.FIRST else "下"
     ws.title = f"常春藤{academic_year}{sem_label}"
 
@@ -624,7 +625,7 @@ def export_transfer_roster_xlsx(
     from openpyxl.styles import Alignment, Font
 
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = "轉帳名冊"
 
     ws.cell(row=1, column=2, value=school_name).font = Font(bold=True, size=14)
