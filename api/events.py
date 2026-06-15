@@ -371,13 +371,22 @@ async def import_holidays(
     """
     content = await read_upload_with_size_check(file)
     validate_file_signature(content, ".xlsx")
+    # SEC-006：nrows 上限避免超大 xlsx（ZIP 可壓縮繞過 size cap）全載入。此 parse 在
+    # async def 內同步執行，未設上限時超大檔會阻塞事件迴圈凍結全服務（認證後 DoS）。
+    from utils.excel_io import MAX_IMPORT_ROWS
+
     try:
-        df = pd.read_excel(BytesIO(content))
+        df = pd.read_excel(BytesIO(content), nrows=MAX_IMPORT_ROWS + 1)
     except Exception:
         logger.warning("考勤事件 Excel 解析失敗", exc_info=True)
         raise HTTPException(
             status_code=400,
             detail="無法解析 Excel 檔案，請確認檔案格式正確且未損壞",
+        )
+    if len(df) > MAX_IMPORT_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"匯入列數超過上限 {MAX_IMPORT_ROWS}，請分批匯入",
         )
 
     # 預掃描:收集所有可解析日期所屬的 (year, month) 集合,供封存檢查與 stale 標記
