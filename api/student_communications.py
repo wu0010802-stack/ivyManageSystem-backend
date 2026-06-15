@@ -162,6 +162,15 @@ def list_communications(
                 .filter(Student.classroom_id == classroom_id)
                 .all()
             ]
+            # SEC-003：終態（畢業/退學/轉出）轉換刻意不清 classroom_id，學生仍「在」班。
+            # 對班級範圍 caller 限縮到其終態感知 scope（student_ids_in_scope 已排除終態
+            # 學生），與 student_id / else 分支一致；管理角色回 None 即不限制（仍可查歷史）。
+            scope = student_ids_in_scope(session, current_user)
+            if scope is not None:
+                scope_set = set(scope)
+                student_ids_in_class = [
+                    sid for sid in student_ids_in_class if sid in scope_set
+                ]
             if student_ids_in_class:
                 q = q.filter(
                     ParentCommunicationLog.student_id.in_(student_ids_in_class)
