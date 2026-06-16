@@ -816,6 +816,8 @@ def delete_registration(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session)
+        # 刪報名自動沖帳可能寫 refund，需一併失效 finance-summary / monthly-pnl 快取
+        _invalidate_finance_summary_cache()
         logger.warning(
             "課後才藝報名已刪除：id=%s operator=%s force_refund=%s",
             registration_id,

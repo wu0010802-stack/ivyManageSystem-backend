@@ -87,6 +87,34 @@ def client_admin(_backend):
 
 
 @pytest.fixture
+def client_fees_writer(_backend):
+    """具 FEES_WRITE 但無 ACTIVITY_PAYMENT_APPROVE（金流簽核）的 hr 帳號。
+
+    role=hr → is_unrestricted=True（跳過班級 scope 檢查，隔離出 finance-approve 守衛）；
+    permission_names 顯式給定（非 NULL）→ login 不走 ROLE_TEMPLATES，確保不含簽核權。
+    """
+    with _backend["session_factory"]() as s:
+        u = User(
+            username="adj_hr",
+            password_hash=hash_password("Temp123456"),
+            role="hr",
+            permission_names=["FEES_READ", "FEES_WRITE"],
+            is_active=True,
+        )
+        s.add(u)
+        s.commit()
+
+    client = TestClient(_backend["app"])
+    r = client.post(
+        "/api/auth/login",
+        json={"username": "adj_hr", "password": "Temp123456"},
+    )
+    assert r.status_code == 200, r.text
+    yield client
+    client.close()
+
+
+@pytest.fixture
 def student_a(session):
     grade = ClassGrade(name="大班", sort_order=3, is_active=True)
     session.add(grade)
@@ -118,7 +146,7 @@ def _payload(student_id, **overrides):
         "period": "114-2",
         "adjustment_type": "sibling_discount",
         "amount": 1300,
-        "reason": "兄姊就讀",
+        "reason": "兄姊同園就讀",
     }
     base.update(overrides)
     return base
@@ -189,12 +217,12 @@ def test_update_adjustment(client_admin, student_a):
     adj_id = create.json()["id"]
     r = client_admin.put(
         f"/api/fees/adjustments/{adj_id}",
-        json={"amount": 2000, "reason": "更新後"},
+        json={"amount": 2000, "reason": "金額更新原因"},
     )
     assert r.status_code == 200
     body = r.json()
     assert body["amount"] == 2000
-    assert body["reason"] == "更新後"
+    assert body["reason"] == "金額更新原因"
     # 未變動欄位保留
     assert body["adjustment_type"] == "sibling_discount"
 
@@ -217,6 +245,75 @@ def test_delete_adjustment(client_admin, student_a):
 def test_delete_nonexistent_404(client_admin):
     r = client_admin.delete("/api/fees/adjustments/99999")
     assert r.status_code == 404
+
+
+def test_create_empty_reason_rejected(client_admin, student_a):
+    """折抵必須填寫原因（A 錢守衛 require_adjustment_reason）。"""
+    r = client_admin.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, reason="")
+    )
+    assert r.status_code == 400, r.text
+
+
+def test_create_short_reason_rejected(client_admin, student_a):
+    """敷衍原因（< 5 字）一樣擋。"""
+    r = client_admin.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, reason="短")
+    )
+    assert r.status_code == 400, r.text
+
+
+def test_create_large_amount_requires_finance_approve(client_fees_writer, student_a):
+    """無金流簽核權者建立大額折抵（> NT$1000）→ 403。"""
+    r = client_fees_writer.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, amount=2000)
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_create_small_amount_allowed_for_writer(client_fees_writer, student_a):
+    """小額（≤ 閾值）+ 有原因 → 一般 FEES_WRITE 即可，不被過度阻擋。"""
+    r = client_fees_writer.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, amount=500)
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_create_cumulative_crosses_threshold_requires_approve(
+    client_fees_writer, student_a
+):
+    """同學生同學期累積跨閾值（600 + 600 > 1000）→ 第二筆需簽核，防拆筆繞過。"""
+    r1 = client_fees_writer.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, amount=600)
+    )
+    assert r1.status_code == 200, r1.text
+    r2 = client_fees_writer.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, amount=600)
+    )
+    assert r2.status_code == 403, r2.text
+
+
+def test_update_to_large_amount_requires_finance_approve(
+    client_admin, client_fees_writer, student_a
+):
+    """admin 建小額後，無簽核權者改成大額 → 403（update 也守）。"""
+    create = client_admin.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, amount=500)
+    )
+    adj_id = create.json()["id"]
+    r = client_fees_writer.put(
+        f"/api/fees/adjustments/{adj_id}",
+        json={"amount": 5000, "reason": "調整原因說明"},
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_update_short_reason_rejected(client_admin, student_a):
+    """update 若提供原因，一樣須 ≥ 5 字。"""
+    create = client_admin.post("/api/fees/adjustments", json=_payload(student_a.id))
+    adj_id = create.json()["id"]
+    r = client_admin.put(f"/api/fees/adjustments/{adj_id}", json={"reason": "短"})
+    assert r.status_code == 400, r.text
 
 
 def test_same_student_period_type_multiple_allowed(client_admin, student_a):

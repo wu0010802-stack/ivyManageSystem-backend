@@ -44,6 +44,7 @@ from ._shared import (
     _compute_is_paid,
     _derive_payment_status,
     _invalidate_activity_dashboard_caches,
+    _invalidate_finance_summary_cache,
     _lock_registration,
     _require_daily_close_unlocked,
     require_refund_reason,
@@ -391,6 +392,8 @@ def remove_registration_supply(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session)
+        # 自動沖帳可能寫 refund，需一併失效 finance-summary / monthly-pnl 快取
+        _invalidate_finance_summary_cache()
         final_paid = reg.paid_amount or 0
         return {
             "message": f"已移除用品「{supply_name}」",
@@ -572,6 +575,8 @@ def withdraw_course(
         )
         session.commit()
         _invalidate_activity_dashboard_caches(session)
+        # 自動沖帳可能寫 refund，需一併失效 finance-summary / monthly-pnl 快取
+        _invalidate_finance_summary_cache()
         final_paid = reg.paid_amount or 0
         # URL 尾段為 course_id，覆寫為 registration_id 以便依報名 ID 彙整稽核事件
         request.state.audit_entity_id = str(registration_id)
