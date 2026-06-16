@@ -340,6 +340,37 @@ def match_registration(
         if not student:
             raise HTTPException(status_code=400, detail="找不到啟用中的學生")
 
+        # F3：擋「同學生同學期兩筆有效報名」。其餘 4 條寫入路徑（公開 register /
+        # 家長 register / rematch / restore）皆已守此不變量，唯獨 match 漏掉，會讓
+        # 同 student_id 同學期長出第二筆 active reg → 對帳/統計/POS 人頭混亂。
+        # dedup 鍵用 student_id（本 bug 前提正是「姓名打錯需人工 match、卻解析到同
+        # student_id」，rematch 那套 name+birthday 鍵抓不到）；advisory lock 以「目標
+        # 學生身分 + 學期」序列化並發 match（DB partial unique 鍵不含 student_id、攔不住
+        # 並發），SQLite no-op。
+        acquire_activity_registration_lock(
+            session,
+            student_name=student.name,
+            birthday=(student.birthday.isoformat() if student.birthday else ""),
+            school_year=reg.school_year,
+            semester=reg.semester,
+        )
+        dup = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.id != reg.id,
+                ActivityRegistration.student_id == student.id,
+                ActivityRegistration.school_year == reg.school_year,
+                ActivityRegistration.semester == reg.semester,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .first()
+        )
+        if dup:
+            raise HTTPException(
+                status_code=400,
+                detail="該學生本學期已有一筆有效報名，無法重複匹配；請改用既有報名編輯",
+            )
+
         classroom = None
         if student.classroom_id:
             classroom = (

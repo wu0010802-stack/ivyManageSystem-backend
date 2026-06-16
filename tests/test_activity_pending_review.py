@@ -432,6 +432,62 @@ class TestAdminApprovalWorkflow:
             assert reg.reviewed_at is not None
             assert reg.class_name == "大象班"
 
+    def test_match_rejects_when_student_already_has_active_reg_in_term(
+        self, pending_client
+    ):
+        # F3：後台人工 match 若目標學生本學期已有「另一筆」有效報名，應 400 擋下，
+        # 避免同學生同學期兩筆 active reg（對帳/統計/POS 人頭混亂）。其餘 4 條寫入
+        # 路徑（公開/家長/rematch/restore）皆已守此不變量，match 是唯一漏網。
+        from utils.academic import resolve_current_academic_term
+
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s)  # admin + 班級 + 課程 + 學生王小明
+            sy, sem = resolve_current_academic_term()
+            student = s.query(Student).filter_by(name="王小明").one()
+            # 王小明本學期已有一筆有效報名（例如先前自助報名 / 自動配對建立）
+            s.add(
+                ActivityRegistration(
+                    student_name="王小明",
+                    birthday="2020-05-10",
+                    parent_phone="0912345678",
+                    school_year=sy,
+                    semester=sem,
+                    student_id=student.id,
+                    is_active=True,
+                    pending_review=False,
+                    match_status="manual",
+                )
+            )
+            s.commit()
+            student_id = student.id
+
+        # 另一筆名字打錯（王小銘 ≠ 王小明）→ 進 pending、student_id=NULL
+        r_reg = client.post(
+            "/api/activity/public/register",
+            json=_public_register_payload(name="王小銘"),
+        )
+        assert r_reg.status_code == 201
+
+        _login(client)
+        pending_list = client.get("/api/activity/registrations/pending").json()
+        reg_id = pending_list["items"][0]["id"]
+
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/match",
+            json={"student_id": student_id},
+        )
+        assert res.status_code == 400
+
+        # 確認沒有真的綁定（pending reg 仍待審、未長出第二筆有效報名）
+        with sf() as s:
+            actives = (
+                s.query(ActivityRegistration)
+                .filter_by(student_id=student_id, is_active=True)
+                .count()
+            )
+            assert actives == 1
+
     def test_reject_api_soft_deletes_and_marks_rejected(self, pending_client):
         client, sf = pending_client
         with sf() as s:
