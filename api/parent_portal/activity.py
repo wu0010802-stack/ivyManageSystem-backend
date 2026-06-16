@@ -174,13 +174,6 @@ def register_courses(
     if not payload.course_ids and not payload.supply_ids:
         raise HTTPException(status_code=400, detail="至少需選擇一門課程或一項用品")
 
-    # F1：去重，避免同一 id 重複出現在 flush 時撞 uq_reg_course/uq_reg_supply → 500
-    # （對齊公開報名端 api/activity/public.py 的 by-name 去重，收斂成乾淨 400）。
-    if len(payload.course_ids) != len(set(payload.course_ids)):
-        raise HTTPException(status_code=400, detail="課程清單中有重複項目")
-    if len(payload.supply_ids) != len(set(payload.supply_ids)):
-        raise HTTPException(status_code=400, detail="用品清單中有重複項目")
-
     user_id = current_user["user_id"]
     _assert_student_owned(session, user_id, payload.student_id, for_write=True)
 

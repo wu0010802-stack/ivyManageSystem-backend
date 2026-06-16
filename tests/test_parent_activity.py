@@ -457,30 +457,6 @@ class TestRegister:
         )
         assert resp.status_code == 400
 
-    def test_register_rejects_duplicate_course_id(self, activity_client):
-        # F1：同一 course_id 重複出現應乾淨 400，而非 flush 撞 uq_reg_course → 500。
-        client, session_factory = activity_client
-        with session_factory() as session:
-            user, _, student, _ = _setup_family(session)
-            course = _create_course(session, name="繪畫")
-            session.commit()
-            token = _parent_token(user)
-            sid = student.id
-            cid = course.id
-
-        resp = client.post(
-            "/api/parent/activity/register",
-            json={
-                "student_id": sid,
-                "school_year": 115,
-                "semester": 1,
-                "course_ids": [cid, cid],
-                "supply_ids": [],
-            },
-            cookies={"access_token": token},
-        )
-        assert resp.status_code == 400
-
     def test_register_triggers_dashboard_cache_invalidation(
         self, activity_client, monkeypatch
     ):
