@@ -48,10 +48,14 @@ class Attendance(Base):
     punch_out_time = Column(DateTime, comment="下班打卡時間")
 
     status = Column(
-        String(20),
+        # 開放複合值域：utils/attendance_calc.py、services/attendance_parser.py、
+        # api/attendance/upload.py 以 '+' 串接多個旗標，最長如
+        # 'late+early_leave+missing_punch_out'（34 字），超過舊 VARCHAR(20) 上限會在
+        # PostgreSQL 上 value too long 寫入失敗，故放寬為 String(40)（見 migration attstatlen01）。
+        String(40),
         nullable=False,
         default=AttendanceStatus.NORMAL.value,
-        comment="考勤狀態",
+        comment="考勤狀態（開放複合值域，'+' 串接，最長 34 字）",
     )
     is_late = Column(Boolean, default=False, comment="是否遲到")
     is_early_leave = Column(Boolean, default=False, comment="是否早退")
