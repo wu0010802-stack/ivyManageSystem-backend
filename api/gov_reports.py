@@ -569,7 +569,15 @@ def export_health_insurance(
                 and (sr.health_insurance_employee or 0) > 0
                 and (sr.health_insurance_employer or 0) > 0
             ):
-                health_emp = round_half_up(sr.health_insurance_employee or 0)
+                # 名冊「員工自付(一般保費)」欄只報投保級距 base：
+                # SalaryRecord.health_insurance_employee 是當月實扣健保總額（已併入
+                # 二代健保補充保費），須扣回補充保費才是乾淨的一般保費。
+                # assumption：季扣眷屬額外保費是否計入名冊欄位語意待業主確認，
+                # 本次先僅扣除二代補充保費。
+                health_emp = round_half_up(
+                    (sr.health_insurance_employee or 0)
+                    - (sr.supplementary_health_employee or 0)
+                )
                 health_er = round_half_up(sr.health_insurance_employer or 0)
                 calc = _ins_calc(emp)
                 insured_amt = (

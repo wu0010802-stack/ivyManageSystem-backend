@@ -9,11 +9,14 @@
   5. 健保、勞退、扣繳端點 smoke test
 """
 
+from io import BytesIO
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
-
+from openpyxl import load_workbook
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 直接測試純函式 _estimate_withholding
@@ -59,8 +62,10 @@ class TestEstimateWithholding:
 # Smoke tests：端點在空資料庫回傳 200
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _make_test_app():
     from api.gov_reports import router, init_gov_report_services
+
     ins_svc = MagicMock()
     ins_svc.calculate.return_value = MagicMock(
         employee_share=300,
@@ -97,19 +102,25 @@ def gov_client():
         mock_sess.__exit__ = MagicMock(return_value=False)
         # employees query returns empty list
         mock_sess.query.return_value.filter.return_value.all.return_value = []
-        mock_sess.query.return_value.filter.return_value.filter.return_value.all.return_value = []
+        mock_sess.query.return_value.filter.return_value.filter.return_value.all.return_value = (
+            []
+        )
         mock_gs.return_value = mock_sess
         yield TestClient(app, raise_server_exceptions=False)
 
 
 class TestGovReportEndpoints:
     def test_labor_insurance_xlsx(self, gov_client):
-        resp = gov_client.get("/api/gov-reports/labor-insurance?year=2026&month=3&fmt=xlsx")
+        resp = gov_client.get(
+            "/api/gov-reports/labor-insurance?year=2026&month=3&fmt=xlsx"
+        )
         assert resp.status_code == 200
         assert "spreadsheet" in resp.headers.get("content-type", "")
 
     def test_labor_insurance_txt(self, gov_client):
-        resp = gov_client.get("/api/gov-reports/labor-insurance?year=2026&month=3&fmt=txt")
+        resp = gov_client.get(
+            "/api/gov-reports/labor-insurance?year=2026&month=3&fmt=txt"
+        )
         assert resp.status_code == 200
         assert resp.headers.get("content-type", "").startswith("text/plain")
 
@@ -127,3 +138,109 @@ class TestGovReportEndpoints:
         resp = gov_client.get("/api/gov-reports/withholding?year=2026")
         assert resp.status_code == 200
         assert "spreadsheet" in resp.headers.get("content-type", "")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bug #4：健保名冊「員工自付(一般保費)」欄須扣除二代健保補充保費
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _read_health_emp_cell(content: bytes):
+    """讀回健保名冊 xlsx 第一筆資料列的「員工自付(30%)」欄（F4）。
+
+    版面：row1 標題 / row2 投保單位 / row3 表頭 / row4 起為資料。
+    員工自付為第 6 欄（F）。
+    """
+    wb = load_workbook(BytesIO(content))
+    ws = wb.active
+    return ws.cell(row=4, column=6).value
+
+
+class TestHealthInsuranceExcludesSupplementaryPremium:
+    """record 路徑：health_insurance_employee 含二代補充保費，
+    名冊一般保費欄須報乾淨 base（= 實扣健保 − 補充保費）。"""
+
+    def _build_app_with_record(self, supplementary: float):
+        from api import gov_reports
+        from api.gov_reports import router, init_gov_report_services
+
+        init_gov_report_services(MagicMock())
+
+        app = FastAPI()
+        from utils.auth import get_current_user
+
+        async def _mock_user():
+            return {
+                "id": 1,
+                "username": "test",
+                "role": "admin",
+                "permission_names": ["*"],
+            }
+
+        # 覆蓋限流依賴為 no-op，避免與同檔其他匯出 smoke test 共用 IP key 觸發 429
+        app.dependency_overrides[get_current_user] = _mock_user
+        app.dependency_overrides[gov_reports._rate_limit] = lambda: None
+        app.include_router(router)
+
+        emp = SimpleNamespace(
+            id=1,
+            name="王小明",
+            id_number="A123456789",
+            birthday=None,
+            dependents=0,
+            hire_date=None,
+            resign_date=None,
+        )
+        # 當月實扣健保 1000，其中 150 為二代補充保費 → 名冊應報 850
+        sr = SimpleNamespace(
+            health_insurance_employee=1000,
+            health_insurance_employer=2000,
+            supplementary_health_employee=supplementary,
+        )
+        return app, emp, sr
+
+    def test_record_path_excludes_supplementary(self):
+        app, emp, sr = self._build_app_with_record(supplementary=150)
+
+        with (
+            patch("api.gov_reports.get_session", MagicMock()),
+            patch("api.gov_reports._active_employees", return_value=[emp]),
+            patch("api.gov_reports._assert_salary_period_finalized", return_value=None),
+            patch("api.gov_reports._salary_map", return_value={emp.id: sr}),
+            patch("api.gov_reports._resolve_insured", return_value=30000),
+            patch(
+                "api.gov_reports._ins_calc",
+                return_value=SimpleNamespace(
+                    health_insured_amount=30000, insured_amount=30000
+                ),
+            ),
+        ):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.get("/api/gov-reports/health-insurance?year=2026&month=3")
+
+        assert resp.status_code == 200, resp.text
+        # 1000（實扣，含補充保費）− 150（補充保費）= 850（乾淨一般保費）
+        assert _read_health_emp_cell(resp.content) == 850
+
+    def test_record_path_zero_supplementary_unchanged(self):
+        """無補充保費時，名冊金額不變（= 實扣健保）。"""
+        app, emp, sr = self._build_app_with_record(supplementary=0)
+
+        with (
+            patch("api.gov_reports.get_session", MagicMock()),
+            patch("api.gov_reports._active_employees", return_value=[emp]),
+            patch("api.gov_reports._assert_salary_period_finalized", return_value=None),
+            patch("api.gov_reports._salary_map", return_value={emp.id: sr}),
+            patch("api.gov_reports._resolve_insured", return_value=30000),
+            patch(
+                "api.gov_reports._ins_calc",
+                return_value=SimpleNamespace(
+                    health_insured_amount=30000, insured_amount=30000
+                ),
+            ),
+        ):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.get("/api/gov-reports/health-insurance?year=2026&month=3")
+
+        assert resp.status_code == 200, resp.text
+        assert _read_health_emp_cell(resp.content) == 1000
