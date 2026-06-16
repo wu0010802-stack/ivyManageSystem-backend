@@ -353,6 +353,7 @@ def create_my_leave(
             data.start_date.year,
             data.leave_hours,
             bool(getattr(data, "is_hospitalized", False)),
+            target_date=data.start_date,
         )
 
         effective_ratio = LEAVE_DEDUCTION_RULES[data.leave_type]

@@ -463,6 +463,7 @@ def _check_compensatory_quota(
     leave_hours: float,
     exclude_id: int = None,
     include_pending: bool = True,
+    target_date: "date | None" = None,
 ) -> None:
     """補休配額專用檢查（學年優先讀）。
 
@@ -472,8 +473,13 @@ def _check_compensatory_quota(
     與 _check_quota 的差異:LeaveQuota 不存在時視為 total_hours=0(從未累積過任何補休),
     任何申請小時都會超限。_check_quota 在 quota is None 時略過(假設配額未初始化),
     對補休是錯誤策略。
+
+    target_date（Bug #15 修補，2026-06-16）：配額列年度的解析基準，應傳入假單
+      start_date，使配額列年度與用量年度（year）一致；未傳則 fallback 到今天。
     """
-    quota = _resolve_quota_row(session, employee_id, "compensatory")
+    quota = _resolve_quota_row(
+        session, employee_id, "compensatory", target_date=target_date
+    )
     total = float(quota.total_hours) if quota else 0.0
 
     approved = _get_approved_hours_in_year(
@@ -516,6 +522,7 @@ def _check_quota(
     leave_hours: float,
     exclude_id: int = None,
     include_pending: bool = True,
+    target_date: "date | None" = None,
 ) -> None:
     """
     針對有年度配額的假別（QUOTA_LEAVE_TYPES）檢查剩餘配額，
@@ -527,12 +534,19 @@ def _check_quota(
     include_pending=False（用於核准動作）：
       僅計算已核准時數，確保主管核准時也不超出年度配額。
     若該員工尚未初始化配額（LeaveQuota 無記錄）則略過，不強制攔截。
+
+    target_date（Bug #15 修補，2026-06-16）：配額列年度的解析基準，應傳入假單
+      start_date。原本 _resolve_quota_row 預設讀「今天」的學年，卻按假單年度
+      (year) 加總用量，跨學年邊界會「拿 A 學年的額度比對 B 學年的用量」誤判。
+      傳入假單日期後配額列年度與用量年度一致。未傳則 fallback 到今天（向後相容）。
     """
     if leave_type not in QUOTA_LEAVE_TYPES:
         return
 
-    # 學年優先 + 西元年 fallback（過渡期相容）
-    quota = _resolve_quota_row(session, employee_id, leave_type)
+    # 學年優先 + 西元年 fallback（過渡期相容）；配額列年度對齊假單日期（Bug #15）
+    quota = _resolve_quota_row(
+        session, employee_id, leave_type, target_date=target_date
+    )
 
     if quota is None:
         return  # 配額未初始化，略過檢查

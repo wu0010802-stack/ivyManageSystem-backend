@@ -125,9 +125,14 @@ def _guard_leave_quota(
     is_hospitalized: bool,
     exclude_id: int = None,
     include_pending: bool = True,
+    target_date=None,
 ) -> None:
     """sick 走勞工請假規則第 4 條雙配額；compensatory 走補休專用配額（quota 不存在=0）；
-    其他假別走 _check_quota 單一配額。"""
+    其他假別走 _check_quota 單一配額。
+
+    target_date（Bug #15 修補，2026-06-16）：假單 start_date，下傳給配額檢查讓
+      配額列年度與用量年度（year）對齊，避免跨學年邊界誤判。未傳時各 quota 檢查
+      內部 fallback 到今天（向後相容）。"""
     if leave_type == "sick":
         from datetime import date as _date  # local re-import safe
 
@@ -148,6 +153,7 @@ def _guard_leave_quota(
             leave_hours,
             exclude_id=exclude_id,
             include_pending=include_pending,
+            target_date=target_date,
         )
     else:
         _check_quota(
@@ -158,6 +164,7 @@ def _guard_leave_quota(
             leave_hours,
             include_pending=include_pending,
             exclude_id=exclude_id,
+            target_date=target_date,
         )
 
 
@@ -792,6 +799,7 @@ def create_leave(
             data.start_date.year,
             data.leave_hours,
             bool(data.is_hospitalized),
+            target_date=data.start_date,
         )
 
         # 優先使用 API 傳入的覆蓋值；未提供則依假別預設規則
@@ -991,6 +999,7 @@ def update_leave(
             new_hours,
             new_is_hosp,
             exclude_id=leave_id,
+            target_date=new_start,
         )
 
         # 封存月薪保護：同時檢查原始月份與更新後月份
@@ -1522,6 +1531,7 @@ def approve_leave(
                 bool(leave.is_hospitalized),
                 exclude_id=leave_id,
                 include_pending=True,
+                target_date=leave.start_date,
             )
 
         # ── 封存月薪保護（commit 前）────────────────────────────────────────
@@ -1932,6 +1942,7 @@ def batch_approve_leaves(
                             bool(leave.is_hospitalized),
                             exclude_id=leave_id,
                             include_pending=True,
+                            target_date=leave.start_date,
                         )
                         # 重疊核准硬擋：批次無 force_overlap 旗標，一律拒絕。
                         # 借助 SQLAlchemy autoflush，前一輪已 set status='approved'
@@ -2529,6 +2540,7 @@ def _import_leaves_sync(content: bytes) -> dict:
                         emp.id,
                         start_date.year,
                         leave_hours,
+                        target_date=start_date,
                     )
                 else:
                     _check_quota(
@@ -2537,6 +2549,7 @@ def _import_leaves_sync(content: bytes) -> dict:
                         leave_type,
                         start_date.year,
                         leave_hours,
+                        target_date=start_date,
                     )
 
                 effective_ratio = LEAVE_DEDUCTION_RULES[leave_type]
