@@ -374,6 +374,7 @@ class TestMonthlyPnLAggregator:
                     pension_employer=1800,
                     net_salary=35000,
                     total_deduction=7000,
+                    is_finalized=True,
                 )
             )
             s.commit()
@@ -512,6 +513,7 @@ class TestMonthlyPnLAggregator:
                         pension_employer=1800,
                         net_salary=25000,
                         total_deduction=5000,
+                        is_finalized=True,
                     ),
                     VendorPayment(
                         payment_date=date(2026, 5, 15),
@@ -683,6 +685,7 @@ class TestMonthlyPnLAggregator:
                         labor_insurance_employer=2500,
                         net_salary=30000,
                         total_deduction=12000,
+                        is_finalized=True,
                     ),
                     SalaryRecord(
                         employee_id=hr_emp.id,
@@ -695,6 +698,7 @@ class TestMonthlyPnLAggregator:
                         labor_insurance_employer=800,
                         net_salary=14000,
                         total_deduction=1000,
+                        is_finalized=True,
                     ),
                 ]
             )

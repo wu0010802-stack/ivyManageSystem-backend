@@ -353,6 +353,100 @@ def test_process_happy_path(integrated_client):
         assert float(reloaded_sr.unused_leave_payout) == 25200.0
 
 
+def test_process_does_not_modify_finalized_salary(integrated_client):
+    """離職 prefill 不可寫入已封存薪資（SPEC-001 §4.1：封存後禁止任何修改）。
+
+    離職當月 SalaryRecord 已封存時，prefill_leave_payout step 應 skip
+    （reason=salary_record_finalized），不覆寫 unused_leave_payout、不寫
+    UnusedLeavePayoutLog；離職流程其餘 step 仍照常完成。
+    """
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+
+    client, sf = integrated_client
+    username, password = _seed_admin_user(sf, username="proc_admin_fz")
+    login_res = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
+    assert login_res.status_code == 200, login_res.text
+
+    with sf() as session:
+        global _counter
+        _counter += 1
+        emp = Employee(
+            employee_id=f"OBF{_counter:04d}",
+            name=f"離職員工{_counter}",
+            hire_date=date(2020, 1, 1),
+            is_active=True,
+            base_salary=54000,
+        )
+        session.add(emp)
+        session.commit()
+        emp_id = emp.id
+
+    with sf() as session:
+        _counter += 1
+        session.add(
+            User(
+                employee_id=emp_id,
+                username=f"teacher_{_counter}",
+                password_hash=hash_password("pass"),
+                role="teacher",
+                is_active=True,
+                must_change_password=False,
+                token_version=1,
+            )
+        )
+        session.commit()
+
+    with sf() as session:
+        session.add(
+            LeaveQuota(
+                employee_id=emp_id,
+                year=2026,
+                leave_type="annual",
+                total_hours=112,
+            )
+        )
+        session.commit()
+
+    # 離職當月 salary record 已封存（鎖定）
+    with sf() as session:
+        sr = SalaryRecord(
+            employee_id=emp_id,
+            salary_year=2026,
+            salary_month=5,
+            is_finalized=True,
+            finalized_by="acct",
+        )
+        session.add(sr)
+        session.commit()
+        sr_id = sr.id
+
+    response = client.post(
+        f"/api/offboarding/{emp_id}/process",
+        json={"resign_date": "2026-05-20", "resign_reason": "個人因素"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["is_active"] is False
+
+    # prefill step 被 skip，理由為薪資已封存
+    prefill = next(s for s in body["steps"] if s["step"] == "prefill_leave_payout")
+    assert prefill["status"] == "skipped", prefill
+    assert prefill["payload"]["reason"] == "salary_record_finalized", prefill
+
+    with sf() as session:
+        reloaded = session.query(SalaryRecord).filter_by(id=sr_id).first()
+        # 已封存薪資的 unused_leave_payout 不被覆寫，封存旗標不被動到
+        assert float(reloaded.unused_leave_payout or 0) == 0.0
+        assert reloaded.is_finalized is True
+        # 不對封存月份留 payout 證據鏈
+        log_count = (
+            session.query(UnusedLeavePayoutLog).filter_by(employee_id=emp_id).count()
+        )
+        assert log_count == 0
+
+
 def test_process_already_offboarded_returns_409(integrated_client):
     """第二次呼叫 process → 409 ALREADY_OFFBOARDED。"""
     client, sf = integrated_client

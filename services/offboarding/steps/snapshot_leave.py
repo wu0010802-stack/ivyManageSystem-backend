@@ -4,6 +4,7 @@
 失敗條件：daily_wage 缺失或 0 → 422 LEAVE_BALANCE_NOT_FOUND（折現無法計算）。
 """
 
+import logging
 from datetime import datetime
 from utils.taipei_time import now_taipei_naive
 
@@ -14,6 +15,8 @@ from models.offboarding import EmployeeOffboardingRecord
 from services.offboarding.orchestrator import OffboardingError, StepResult
 from utils.leave_quota_helpers import get_annual_leave_balance
 from utils.rounding import round_half_up
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_daily_wage(emp: Employee) -> float | None:
@@ -114,6 +117,25 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
             "status": "skipped",
             "completed_at": now_taipei_naive(),
             "payload": {"reason": "salary_record_not_yet_created"},
+            "error": None,
+        }
+
+    # SPEC-001 §4.1：封存後禁止任何修改。離職當月薪資已封存時不可直接覆寫
+    # unused_leave_payout（後段 _mark_employee_salary_stale 也排除封存、保護不到），
+    # 改 skip 並留 warning；未休假代金須由 HR 解封後處理或於另月發放。
+    if target.is_finalized:
+        logger.warning(
+            "離職 prefill 跳過：員工 %s 離職當月（%s-%s）薪資已封存，"
+            "unused_leave_payout 不覆寫，需 HR 解封後處理或另月發放未休假代金。",
+            record.employee_id,
+            target.salary_year,
+            target.salary_month,
+        )
+        return {
+            "step": "prefill_leave_payout",
+            "status": "skipped",
+            "completed_at": now_taipei_naive(),
+            "payload": {"reason": "salary_record_finalized"},
             "error": None,
         }
 

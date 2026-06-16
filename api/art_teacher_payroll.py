@@ -18,12 +18,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import joinedload
 
 from models.base import session_scope
-from models.database import ArtTeacherPayrollEntry, Employee
+from models.database import ArtTeacherPayrollEntry, Employee, SalaryRecord
 from services.art_teacher_payroll import (
     generate_art_teacher_roster_xlsx,
     recompute_entry_amounts,
 )
 from services.finance.salary_access import has_full_salary_view
+from services.salary.finalize_guard import assert_months_not_finalized
+from services.salary.utils import mark_salary_stale
 from utils.auth import require_staff_permission
 from utils.excel_utils import SafeWorksheet
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
@@ -154,6 +156,13 @@ def create_entry(
                 detail=f"員工 {emp.name} 非時薪制（employee_type 須為 hourly）",
             )
 
+        # 鐘點明細是薪資引擎 hourly_total 來源（engine.py），封存後禁改、未封存改動標 stale。
+        assert_months_not_finalized(
+            session,
+            employee_id=payload.employee_id,
+            months={(payload.salary_year, payload.salary_month)},
+        )
+
         entry = ArtTeacherPayrollEntry(
             employee_id=payload.employee_id,
             salary_year=payload.salary_year,
@@ -171,6 +180,9 @@ def create_entry(
         recompute_entry_amounts(entry)
         session.add(entry)
         session.flush()
+        mark_salary_stale(
+            session, payload.employee_id, payload.salary_year, payload.salary_month
+        )
         entry.employee = emp
         result = _to_out(entry).model_dump()
         session.commit()
@@ -194,12 +206,22 @@ def update_entry(
         if not entry:
             raise HTTPException(status_code=404, detail="明細不存在")
 
+        # 封存後禁改該月來源；未封存改動標 stale（entry 年月不可變，EntryUpdate 無此欄）。
+        assert_months_not_finalized(
+            session,
+            employee_id=entry.employee_id,
+            months={(entry.salary_year, entry.salary_month)},
+        )
+
         update_data = payload.model_dump(exclude_unset=True)
         for field, value in update_data.items():
             setattr(entry, field, value)
         recompute_entry_amounts(entry)
         entry.updated_by = current_user.get("username")
         session.flush()
+        mark_salary_stale(
+            session, entry.employee_id, entry.salary_year, entry.salary_month
+        )
         result = _to_out(entry).model_dump()
         session.commit()
         return result
@@ -219,7 +241,13 @@ def delete_entry(
         )
         if not entry:
             raise HTTPException(status_code=404, detail="明細不存在")
+
+        # 刪除也是改動來源：封存後禁刪，未封存則標 stale（先取年月再刪）。
+        emp_id, yr, mo = entry.employee_id, entry.salary_year, entry.salary_month
+        assert_months_not_finalized(session, employee_id=emp_id, months={(yr, mo)})
         session.delete(entry)
+        session.flush()
+        mark_salary_stale(session, emp_id, yr, mo)
         session.commit()
         return {"deleted": True, "id": entry_id}
 
@@ -355,7 +383,43 @@ async def batch_import(
         emp_by_name = {e.name: e for e in employees}
         emp_by_id = {str(e.employee_id): e for e in employees}
 
+        # 月層封存守衛：批次匯入（尤其 replace_existing 為月寬刪除）會整體改動
+        # 該月才藝薪資來源；若該月已有任一 hourly 員工薪資封存即拒絕（避免明細與
+        # 已鎖定薪資紀錄/轉帳清冊/財報對不起來）。
+        finalized_exists = (
+            session.query(SalaryRecord.id)
+            .join(Employee, Employee.id == SalaryRecord.employee_id)
+            .filter(
+                SalaryRecord.salary_year == year,
+                SalaryRecord.salary_month == month,
+                SalaryRecord.is_finalized == True,  # noqa: E712
+                Employee.employee_type == "hourly",
+            )
+            .first()
+        )
+        if finalized_exists:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{year} 年 {month} 月已有才藝老師薪資封存，無法批次匯入。"
+                    "請先至薪資管理頁面解除封存後再操作。"
+                ),
+            )
+
+        # 受影響員工：匯入成功的列 + replace_existing 被刪除的舊 entries 員工，
+        # 結束後全部標 needs_recalc，讓 finalize 完整性檢查擋下未重算的草稿。
+        affected_emp_ids: set[int] = set()
+
         if replace_existing:
+            affected_emp_ids.update(
+                r[0]
+                for r in session.query(ArtTeacherPayrollEntry.employee_id)
+                .filter(
+                    ArtTeacherPayrollEntry.salary_year == year,
+                    ArtTeacherPayrollEntry.salary_month == month,
+                )
+                .distinct()
+            )
             session.query(ArtTeacherPayrollEntry).filter(
                 ArtTeacherPayrollEntry.salary_year == year,
                 ArtTeacherPayrollEntry.salary_month == month,
@@ -411,10 +475,15 @@ async def batch_import(
                 )
                 recompute_entry_amounts(entry)
                 session.add(entry)
+                affected_emp_ids.add(emp.id)
                 results["imported"] += 1
             except Exception as e:
                 results["skipped"] += 1
                 results["errors"].append({"row": row_num, "message": str(e)})
+
+        session.flush()
+        for emp_id in affected_emp_ids:
+            mark_salary_stale(session, emp_id, year, month)
 
         session.commit()
 
