@@ -35,6 +35,7 @@ from models.activity import (
 from models.database import Classroom
 from api.activity._shared import (
     _derive_payment_status,
+    _compute_is_paid,
     _batch_calc_total_amounts,
     _check_registration_open,
     _attach_courses,
@@ -151,13 +152,33 @@ class TestDerivePaymentStatus:
     def test_overpaid_when_paid_exceeds_total(self):
         assert _derive_payment_status(1200, 1000) == "overpaid"
 
-    def test_paid_when_both_zero(self):
-        """total=0 且 paid=0 應視為已繳費（無需繳費）"""
-        assert _derive_payment_status(0, 0) == "paid"
+    def test_no_fee_when_both_zero(self):
+        """total=0 且 paid=0 → 無金額需繳，回中性狀態 no_fee（非 paid）。
+
+        Why: _derive_payment_status 必須與 is_paid（_compute_is_paid）口徑一致——
+        badge 顯示『已繳費』的列必須能被 payment_status=paid（走 is_paid）篩到，
+        否則全候補/0 元報名會 badge 說已繳費但篩選撈不到自己（業主裁定 B 口徑：
+        0 元不算結清）。
+        """
+        assert _derive_payment_status(0, 0) == "no_fee"
 
     def test_overpaid_when_total_zero_but_paid_nonzero(self):
         """total=0 但 paid>0，視為超繳（退費後仍有餘額）"""
         assert _derive_payment_status(100, 0) == "overpaid"
+
+    def test_paid_status_implies_is_paid_contract(self):
+        """契約不變量：_derive_payment_status=='paid' ⟹ _compute_is_paid 為 True。
+
+        防止兩函式再次漂移，造成『badge 已繳費但 payment_status=paid 篩選撈不到』。
+        """
+        cases = [(0, 0), (0, 1000), (500, 1000), (1000, 1000), (1200, 1000), (100, 0)]
+        for paid, total in cases:
+            if _derive_payment_status(paid, total) == "paid":
+                assert _compute_is_paid(paid, total) is True, (paid, total)
+
+    def test_compute_is_paid_zero_total_is_false(self):
+        """應繳為 0 一律視為未結清（與 no_fee 口徑一致，pin 住兩端口徑）"""
+        assert _compute_is_paid(0, 0) is False
 
 
 # ────────────────────────────────────────────────────────────────── #
@@ -372,6 +393,44 @@ class TestRegistrationList:
         )
         assert q.count() == 1
         assert q.first().student_name == "部分繳費"
+
+    def test_payment_status_no_fee_filter(self, session):
+        """payment_status=no_fee 篩選：total=0 且 paid=0（全候補 / 0 元報名）。
+
+        透過 _build_registration_filter_query，與 _derive_payment_status 的
+        no_fee 口徑對齊；只應撈到無 enrolled 課程且未繳的列。
+        """
+        from api.activity._shared import _build_registration_filter_query
+
+        course = _add_course(session, price=1000)
+        reg_no_fee = _add_reg(session, "全候補")
+        _enroll(session, reg_no_fee.id, course.id, price=1000, status="waitlist")
+        reg_paid = _add_reg(session, "已繳清")
+        _enroll(session, reg_paid.id, course.id, price=1000)
+        reg_paid.paid_amount = 1000
+        reg_paid.is_paid = True
+        reg_unpaid = _add_reg(session, "未繳費")
+        _enroll(session, reg_unpaid.id, course.id, price=1000)
+        session.commit()
+
+        q = _build_registration_filter_query(session, payment_status="no_fee")
+        names = [r.student_name for r in q.all()]
+        assert names == ["全候補"]
+
+    def test_payment_status_unpaid_excludes_no_fee(self, session):
+        """payment_status=unpaid 只含真正欠款（total>0 且 paid=0），排除 no_fee 列。"""
+        from api.activity._shared import _build_registration_filter_query
+
+        course = _add_course(session, price=1000)
+        reg_no_fee = _add_reg(session, "全候補")
+        _enroll(session, reg_no_fee.id, course.id, price=1000, status="waitlist")
+        reg_unpaid = _add_reg(session, "未繳費")
+        _enroll(session, reg_unpaid.id, course.id, price=1000)
+        session.commit()
+
+        q = _build_registration_filter_query(session, payment_status="unpaid")
+        names = [r.student_name for r in q.all()]
+        assert names == ["未繳費"]
 
     def test_total_count_correct(self, session):
         """total 回傳正確筆數"""

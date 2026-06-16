@@ -371,6 +371,7 @@ def export_payment_report(
             "partial": "部分繳費",
             "unpaid": "未繳費",
             "overpaid": "超額繳費",
+            "no_fee": "免繳",
         }
         for idx, reg in enumerate(regs, start=1):
             total = total_amount_map.get(reg.id, 0)

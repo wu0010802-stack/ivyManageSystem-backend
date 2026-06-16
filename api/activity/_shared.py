@@ -619,9 +619,15 @@ def _calc_total_amount(session, registration_id: int) -> int:
 
 
 def _derive_payment_status(paid_amount: int, total_amount: int) -> str:
-    """根據已繳金額衍生四態狀態字串（unpaid / partial / paid / overpaid）"""
+    """根據已繳金額衍生狀態字串（no_fee / unpaid / partial / paid / overpaid）。
+
+    口徑（業主裁定 B，2026-06-16）：應繳為 0 一律「不算結清」。total=0 且
+    paid=0 回中性狀態 `no_fee`（免繳，例：全候補報名 / 0 元課程），**不是** paid，
+    以對齊 is_paid（_compute_is_paid，total<=0 一律 False）。否則 badge 會顯示
+    『已繳費』但 payment_status=paid（走 is_paid）篩選撈不到自己。
+    """
     if total_amount == 0:
-        return "paid" if paid_amount == 0 else "overpaid"
+        return "no_fee" if paid_amount == 0 else "overpaid"
     if paid_amount > total_amount:
         return "overpaid"
     if paid_amount == total_amount:
@@ -717,9 +723,8 @@ def _build_registration_filter_query(
             ActivityRegistration.paid_amount > 0,
             ActivityRegistration.is_paid.is_(False),
         )
-    elif payment_status == "unpaid":
-        q = q.filter(ActivityRegistration.paid_amount == 0)
-    elif payment_status == "overpaid":
+    elif payment_status in ("unpaid", "overpaid", "no_fee"):
+        # 這三態都需 total（enrolled 課程 + 用品）做判定，與 _derive_payment_status 對齊
         course_total_sq = (
             sa_select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
             .where(
@@ -733,10 +738,25 @@ def _build_registration_filter_query(
             .where(RegistrationSupply.registration_id == ActivityRegistration.id)
             .scalar_subquery()
         )
-        q = q.filter(
-            ActivityRegistration.paid_amount > course_total_sq + supply_total_sq,
-            ActivityRegistration.paid_amount > 0,
-        )
+        total_sq = course_total_sq + supply_total_sq
+        if payment_status == "unpaid":
+            # 真正欠款：應繳 > 0 但一毛未繳。total=0 的免繳列改走 no_fee，
+            # 不再被 unpaid 撈到（否則 badge 顯示『免繳』卻出現在『未繳費』篩選）。
+            q = q.filter(
+                ActivityRegistration.paid_amount == 0,
+                total_sq > 0,
+            )
+        elif payment_status == "no_fee":
+            # 免繳：應繳為 0 且未繳（全候補 / 0 元課程），對齊 _derive 的 no_fee。
+            q = q.filter(
+                ActivityRegistration.paid_amount == 0,
+                total_sq == 0,
+            )
+        else:  # overpaid
+            q = q.filter(
+                ActivityRegistration.paid_amount > total_sq,
+                ActivityRegistration.paid_amount > 0,
+            )
     if course_id is not None:
         q = q.join(
             RegistrationCourse,

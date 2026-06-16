@@ -1308,9 +1308,9 @@ def pos_semester_reconciliation(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     classroom_name: Optional[str] = Query(None, max_length=50),
-    payment_status: Optional[Literal["paid", "partial", "unpaid", "overpaid"]] = Query(
-        None
-    ),
+    payment_status: Optional[
+        Literal["paid", "partial", "unpaid", "overpaid", "no_fee"]
+    ] = Query(None),
     approval_status: Optional[str] = Query(
         None,
         description="fully_approved / partially_approved / pending_approval / no_payment",
