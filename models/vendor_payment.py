@@ -68,7 +68,7 @@ class VendorPayment(Base):
     created_by = relationship("Employee", foreign_keys=[created_by_id], lazy="joined")
 
     __table_args__ = (
-        CheckConstraint("amount >= 0", name="ck_vendor_payments_amount_nonneg"),
+        CheckConstraint("amount > 0", name="ck_vendor_payments_amount_pos"),
         CheckConstraint(
             "payment_method IN ('cash','bank_transfer','check','linepay','other')",
             name="ck_vendor_payments_method",

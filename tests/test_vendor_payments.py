@@ -4,6 +4,7 @@ import base64
 import io
 import os
 import sys
+from datetime import date, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -124,7 +125,9 @@ def _login(client: TestClient, username: str, password: str = "TempPass123"):
 
 def _payment_payload(**overrides) -> dict:
     base = {
-        "payment_date": "2026-05-15",
+        # 相對 today（台灣時區）以避免 payment_date 守衛（禁未來日、回補 90 天）
+        # 隨時間流逝把寫死日期推出視窗造成時間炸彈。
+        "payment_date": date.today().isoformat(),
         "vendor_name": "好棒棒清潔用品行",
         "amount": "1200.00",
         "payment_method": "cash",
@@ -200,10 +203,10 @@ class TestVendorPaymentCRUD:
         assert res.status_code == 200
         assert res.headers["content-type"].startswith("image/")
 
-        # 刪除
+        # 已簽收不可刪除（與 update 守衛對稱，保留簽名佐證與財報支出）
         res = client.delete(f"/api/vendor-payments/{pid}")
-        assert res.status_code == 200
-        assert client.get(f"/api/vendor-payments/{pid}").status_code == 404
+        assert res.status_code == 409, res.text
+        assert client.get(f"/api/vendor-payments/{pid}").status_code == 200
 
     def test_cannot_update_after_signed(self, client_with_db):
         """P2-E：已簽收的廠商付款不可再被編輯（金額等簽名佐證須不可竄改）。"""
@@ -261,6 +264,46 @@ class TestVendorPaymentCRUD:
         assert res.status_code == 403
 
 
+class TestVendorPaymentDeleteGuard:
+    """P1：已簽收付款不可硬刪，否則已發生支出會從財報消失、簽名佐證遺失。"""
+
+    def _admin_client(self, client_with_db, username):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session,
+                username,
+                ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
+            )
+        _login(client, username)
+        return client
+
+    def test_can_delete_pending(self, client_with_db):
+        client = self._admin_client(client_with_db, "vp_del_pending")
+        res = client.post("/api/vendor-payments", json=_payment_payload())
+        pid = res.json()["id"]
+        # pending 可刪
+        res = client.delete(f"/api/vendor-payments/{pid}")
+        assert res.status_code == 200, res.text
+        assert client.get(f"/api/vendor-payments/{pid}").status_code == 404
+
+    def test_cannot_delete_after_signed(self, client_with_db):
+        client = self._admin_client(client_with_db, "vp_del_signed")
+        res = client.post("/api/vendor-payments", json=_payment_payload())
+        pid = res.json()["id"]
+        res = client.post(
+            f"/api/vendor-payments/{pid}/sign",
+            json={"signature_kind": "drawn", "signature_data": _png_data_url()},
+        )
+        assert res.status_code == 200, res.text
+        # 簽收後刪除須被拒（409），原始 row 與支出保留
+        res = client.delete(f"/api/vendor-payments/{pid}")
+        assert res.status_code == 409, res.text
+        body = client.get(f"/api/vendor-payments/{pid}")
+        assert body.status_code == 200
+        assert body.json()["status"] == "signed"
+
+
 class TestVendorPaymentValidation:
     def test_amount_must_be_non_negative(self, client_with_db):
         client, session_factory = client_with_db
@@ -290,6 +333,86 @@ class TestVendorPaymentValidation:
             "/api/vendor-payments",
             json=_payment_payload(payment_method="bitcoin"),
         )
+        assert res.status_code == 422
+
+    def test_amount_zero_rejected(self, client_with_db):
+        """P3：金額須大於 0，0 元會產生稽核雜訊。"""
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session, "vp_zero", ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"]
+            )
+        _login(client, "vp_zero")
+        res = client.post(
+            "/api/vendor-payments",
+            json=_payment_payload(amount="0"),
+        )
+        assert res.status_code == 422
+
+    def test_amount_zero_rejected_on_update(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session, "vp_zero_u", ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"]
+            )
+        _login(client, "vp_zero_u")
+        pid = client.post("/api/vendor-payments", json=_payment_payload()).json()["id"]
+        res = client.put(f"/api/vendor-payments/{pid}", json={"amount": "0"})
+        assert res.status_code == 422
+
+    def test_rejects_future_payment_date(self, client_with_db):
+        """P1/P2：付款日不可填未來日，否則可把支出搬到尚未到來的月份。"""
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session, "vp_future", ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"]
+            )
+        _login(client, "vp_future")
+        future = (date.today() + timedelta(days=1)).isoformat()
+        res = client.post(
+            "/api/vendor-payments",
+            json=_payment_payload(payment_date=future),
+        )
+        assert res.status_code == 422
+
+    def test_rejects_payment_date_older_than_90_days(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session, "vp_old", ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"]
+            )
+        _login(client, "vp_old")
+        too_old = (date.today() - timedelta(days=91)).isoformat()
+        res = client.post(
+            "/api/vendor-payments",
+            json=_payment_payload(payment_date=too_old),
+        )
+        assert res.status_code == 422
+
+    def test_accepts_payment_date_within_window(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session, "vp_edge", ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"]
+            )
+        _login(client, "vp_edge")
+        within = (date.today() - timedelta(days=89)).isoformat()
+        res = client.post(
+            "/api/vendor-payments",
+            json=_payment_payload(payment_date=within),
+        )
+        assert res.status_code == 201, res.text
+
+    def test_update_rejects_future_payment_date(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            _make_user(
+                session, "vp_upd_fut", ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"]
+            )
+        _login(client, "vp_upd_fut")
+        pid = client.post("/api/vendor-payments", json=_payment_payload()).json()["id"]
+        future = (date.today() + timedelta(days=5)).isoformat()
+        res = client.put(f"/api/vendor-payments/{pid}", json={"payment_date": future})
         assert res.status_code == 422
 
 
@@ -336,32 +459,42 @@ class TestVendorPaymentSummary:
             )
         _login(client, "vp_sum")
 
-        # 三筆 5 月、一筆 4 月（用來驗 range 篩選會排除）
+        # 相對日期：三筆「上月」、一筆「上上月」（驗 range 篩選會排除上上月那筆）。
+        # 全部落在 payment_date 守衛 90 天回補視窗內，避免寫死日期造成時間炸彈。
+        today = date.today()
+        last_month_end = today.replace(day=1) - timedelta(days=1)  # 上月最後一天
+        lm = last_month_end.replace(day=1)  # 上月一日
+        prev_month_end = lm - timedelta(days=1)  # 上上月最後一天
         ids = []
-        for amt, day in [
-            ("1000", "2026-05-01"),
-            ("2500", "2026-05-10"),
-            ("4000", "2026-05-20"),
+        for amt, d in [
+            ("1000", lm.replace(day=1)),
+            ("2500", lm.replace(day=10)),
+            ("4000", lm.replace(day=20)),
         ]:
             res = client.post(
                 "/api/vendor-payments",
-                json=_payment_payload(amount=amt, payment_date=day),
+                json=_payment_payload(amount=amt, payment_date=d.isoformat()),
             )
             ids.append(res.json()["id"])
         client.post(
             "/api/vendor-payments",
-            json=_payment_payload(amount="9999", payment_date="2026-04-15"),
+            json=_payment_payload(
+                amount="9999", payment_date=prev_month_end.replace(day=15).isoformat()
+            ),
         )
-        # 簽掉其中一筆 5 月（2500）
+        # 簽掉其中一筆上月（2500）
         client.post(
             f"/api/vendor-payments/{ids[1]}/sign",
             json={"signature_kind": "drawn", "signature_data": _png_data_url()},
         )
 
-        # 5 月區間彙總：總 3 筆 7500，待簽 2 筆 5000，已簽 1 筆 2500
+        # 上月區間彙總：總 3 筆 7500，待簽 2 筆 5000，已簽 1 筆 2500
         res = client.get(
             "/api/vendor-payments/summary",
-            params={"start_date": "2026-05-01", "end_date": "2026-05-31"},
+            params={
+                "start_date": lm.isoformat(),
+                "end_date": last_month_end.isoformat(),
+            },
         )
         assert res.status_code == 200, res.text
         body = res.json()

@@ -13,7 +13,7 @@ import binascii
 import logging
 import os
 from datetime import date, datetime
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, validate_payment_date
 from decimal import Decimal
 from typing import Literal, Optional
 
@@ -49,6 +49,9 @@ router = APIRouter(prefix="/api", tags=["vendor-payments"])
 
 # ─── 常數 ────────────────────────────────────────────────────────────────
 PAYMENT_METHODS = ("cash", "bank_transfer", "check", "linepay", "other")
+# 付款日回補上限：廠商請款常延遲入帳，比照學費放寬到 90 天（活動端為 30）。
+# 與 utils.taipei_time.validate_payment_date 共用守衛（禁未來日 + 回補上限）。
+PAYMENT_DATE_BACK_LIMIT_DAYS = 90
 ATTACHMENT_ALLOWED_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 MAX_ATTACHMENTS_PER_PAYMENT = 5
 SIGNATURE_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
@@ -59,11 +62,17 @@ SIGNATURE_ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 class VendorPaymentBase(BaseModel):
     payment_date: date
     vendor_name: str = Field(..., min_length=1, max_length=120)
-    amount: Decimal = Field(..., ge=0, max_digits=12, decimal_places=2)
+    amount: Decimal = Field(..., gt=0, max_digits=12, decimal_places=2)
     payment_method: Literal["cash", "bank_transfer", "check", "linepay", "other"]
     description: Optional[str] = Field(None, max_length=255)
     invoice_number: Optional[str] = Field(None, max_length=60)
     notes: Optional[str] = None
+
+    @field_validator("payment_date")
+    @classmethod
+    def guard_payment_date(cls, v: date) -> date:
+        # 共用金流日期守衛：禁未來日、限制回補 90 天，避免把支出搬到錯誤月份。
+        return validate_payment_date(v, back_limit_days=PAYMENT_DATE_BACK_LIMIT_DAYS)
 
     @field_validator("vendor_name", mode="before")
     @classmethod
@@ -86,13 +95,20 @@ class VendorPaymentCreate(VendorPaymentBase):
 class VendorPaymentUpdate(BaseModel):
     payment_date: Optional[date] = None
     vendor_name: Optional[str] = Field(None, min_length=1, max_length=120)
-    amount: Optional[Decimal] = Field(None, ge=0, max_digits=12, decimal_places=2)
+    amount: Optional[Decimal] = Field(None, gt=0, max_digits=12, decimal_places=2)
     payment_method: Optional[
         Literal["cash", "bank_transfer", "check", "linepay", "other"]
     ] = None
     description: Optional[str] = Field(None, max_length=255)
     invoice_number: Optional[str] = Field(None, max_length=60)
     notes: Optional[str] = None
+
+    @field_validator("payment_date")
+    @classmethod
+    def guard_payment_date(cls, v):
+        if v is None:
+            return v
+        return validate_payment_date(v, back_limit_days=PAYMENT_DATE_BACK_LIMIT_DAYS)
 
     @field_validator("vendor_name", mode="before")
     @classmethod
@@ -416,6 +432,15 @@ def delete_vendor_payment(
     session = get_session()
     try:
         row = _load_payment(session, payment_id)
+        # P1：已簽收的紀錄不可硬刪——財報（finance_report_service）直接從
+        # VendorPayment rows 聚合支出，硬刪會讓已發生、有簽名佐證的支出從
+        # finance-summary / monthly-pnl 永久消失。與 update 守衛對稱（pending 才能改/刪）。
+        # 如需沖銷已簽收款，請另開沖銷筆或交財務人工處理。
+        if row.status != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail="已簽收的廠商付款不可刪除（如需更正請沖銷或聯繫財務）",
+            )
         # 同時把附件 / 簽名檔案從 storage 刪掉
         storage = get_portfolio_storage()
         keys = []
