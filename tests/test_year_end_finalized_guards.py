@@ -293,3 +293,58 @@ class TestAddSpecialBonusFinalizedGuard:
             # special_bonus_total 應為 5000，total_amount 應為 payable(50000) + 5000 = 55000
             assert settlement.special_bonus_total == Decimal("5000")
             assert settlement.total_amount == Decimal("55000")
+
+    def test_duplicate_add_upserts_instead_of_500(self, client_with_db):
+        """#8（2026-06-16）：重複 (cycle, emp, bonus_type, period_label) 改為 upsert。
+
+        威脅：對既有 (cycle, emp, bonus_type, period_label) 盲目 INSERT 會撞
+        uq_special_bonus_item → IntegrityError 500 並中止交易。改為先查既有列：
+        存在則更新 amount，否則新增（比照 _recompute / Excel 匯入路徑）。
+        """
+        client, sf = client_with_db
+        cycle_id, emp_id = _seed_cycle_with_settlement(
+            sf, YearEndSettlementStatus.DRAFT
+        )
+        _login(client)
+        body = {
+            "employee_id": emp_id,
+            "bonus_type": SpecialBonusType.TEACHING_EXTRA.value,
+            "amount": 5000,
+            "period_label": "2025下",
+        }
+        # 第一次新增
+        res1 = client.post(
+            f"/api/year_end/cycles/{cycle_id}/special_bonuses", json=body
+        )
+        assert res1.status_code == 200, res1.text
+
+        # 第二次同鍵但金額不同 → 應 upsert（200），不可 500
+        res2 = client.post(
+            f"/api/year_end/cycles/{cycle_id}/special_bonuses",
+            json={**body, "amount": 8000},
+        )
+        assert res2.status_code == 200, res2.text
+
+        with sf() as s:
+            items = (
+                s.query(SpecialBonusItem)
+                .filter_by(
+                    year_end_cycle_id=cycle_id,
+                    employee_id=emp_id,
+                    bonus_type=SpecialBonusType.TEACHING_EXTRA,
+                    period_label="2025下",
+                )
+                .all()
+            )
+            # 仍只有一筆（沒重複插入）
+            assert len(items) == 1
+            # amount 被更新為最新值
+            assert items[0].amount == Decimal("8000")
+            settlement = (
+                s.query(YearEndSettlement)
+                .filter_by(year_end_cycle_id=cycle_id, employee_id=emp_id)
+                .one()
+            )
+            # total 反映 upsert 後的最新金額（payable 50000 + 8000）
+            assert settlement.special_bonus_total == Decimal("8000")
+            assert settlement.total_amount == Decimal("58000")

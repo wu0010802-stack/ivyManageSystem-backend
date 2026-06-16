@@ -472,12 +472,34 @@ def add_special_bonus(
                 "不允許新增 special_bonus（會改變 total_amount）；已簽核請先退回 DRAFT"
             ),
         )
-    item = SpecialBonusItem(
-        year_end_cycle_id=cycle_id,
-        **payload.model_dump(),
-        created_by=current_user.get("user_id"),
+    # #8（2026-06-16）：對重複 (cycle, emp, bonus_type, period_label) 改為 upsert。
+    # 原本盲目 INSERT 會撞 uq_special_bonus_item → IntegrityError 500 並中止交易。
+    # 比照 _recompute / Excel 匯入路徑：存在則更新欄位，否則新增。
+    fields = payload.model_dump()
+    existing = (
+        session.query(SpecialBonusItem)
+        .filter_by(
+            year_end_cycle_id=cycle_id,
+            employee_id=payload.employee_id,
+            bonus_type=payload.bonus_type,
+            period_label=payload.period_label,
+        )
+        .first()
     )
-    session.add(item)
+    if existing is None:
+        item = SpecialBonusItem(
+            year_end_cycle_id=cycle_id,
+            **fields,
+            created_by=current_user.get("user_id"),
+        )
+        session.add(item)
+    else:
+        # 更新可變欄位（金額/班級/calc_meta/source_ref）；不動 created_by。
+        item = existing
+        item.amount = payload.amount
+        item.classroom_id = payload.classroom_id
+        item.calc_meta = payload.calc_meta
+        item.source_ref = payload.source_ref
     session.flush()
     # 重算對應 settlement.special_bonus_total
     _recompute_settlement_special_total(session, cycle_id, payload.employee_id)
