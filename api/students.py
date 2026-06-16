@@ -1077,6 +1077,14 @@ async def delete_student(
             audit=False,
         )
 
+        # #19：終態離校改變班級/全校在籍人數 → 標記受影響發放月（節慶/超額累計）
+        # 未封存薪資需重算（比照 services.student_lifecycle.transition()）。set_lifecycle_status
+        # util 不負責此事，故直接呼叫端必須補上，否則人數漂移、薪資沿用舊在籍數。
+        # 軟刪無明確離校日，以今日（台北）為事件日。
+        from services.salary.utils import mark_salary_stale_for_enrollment_event
+
+        mark_salary_stale_for_enrollment_event(session, today_taipei())
+
         # 同步：刪除學生時軟刪該生當學期才藝報名
         from api.activity._shared import sync_registrations_on_student_deactivate
 
@@ -1161,6 +1169,13 @@ async def graduate_student(
             audit=False,
             reason=item.reason,
         )
+
+        # #19：畢業/轉出/退學改變班級/全校在籍人數 → 標記受影響發放月（節慶/超額
+        # 累計）未封存薪資需重算（比照 services.student_lifecycle.transition()）。
+        # set_lifecycle_status util 不負責此事，直接呼叫端必須補上；事件日用離園日。
+        from services.salary.utils import mark_salary_stale_for_enrollment_event
+
+        mark_salary_stale_for_enrollment_event(session, graduation_date)
 
         # 自動寫入異動紀錄（畢業/退學/轉出）
         from models.student_log import StudentChangeLog
