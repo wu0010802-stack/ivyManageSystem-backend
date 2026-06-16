@@ -193,7 +193,10 @@ def post_transition(
             reason=payload.reason,
         )
     except RecruitmentFunnelError as e:
-        status = 409 if e.code == "STAGE_ALREADY" else 400
+        # STAGE_ALREADY / CONVERT_CONFLICT 屬資源狀態衝突 → 409；其餘業務錯誤 → 400。
+        # CONVERT_CONFLICT 來自 deposited→enrolled 並發轉換 race（Bug #20），
+        # 經 _do_convert 把底層 RecruitmentConversionError 包裝後傳出。
+        status = 409 if e.code in ("STAGE_ALREADY", "CONVERT_CONFLICT") else 400
         raise HTTPException(status, detail={"code": e.code, "message": str(e)})
 
     return TransitionOut(

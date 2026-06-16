@@ -193,7 +193,10 @@ def _do_toggle_deposit(session, visit, *, to_stage: Stage, actor_user_id):
 
 def _do_convert(session, visit, *, classroom_id, actor_user_id):
     """deposited → enrolled：呼叫 convert_recruitment_to_student（會寫 event log + ChangeLog）。"""
-    from services.recruitment_conversion import convert_recruitment_to_student
+    from services.recruitment_conversion import (
+        convert_recruitment_to_student,
+        RecruitmentConversionError,
+    )
     from models.recruitment import RecruitmentEventLog
 
     if classroom_id is None:
@@ -201,13 +204,20 @@ def _do_convert(session, visit, *, classroom_id, actor_user_id):
             "已預繳→已報到 需要 classroom_id",
             code="CONVERT_NEED_CLASSROOM",
         )
-    result = convert_recruitment_to_student(
-        session,
-        recruitment_visit_id=visit.id,
-        student_id_code=None,  # 走自動產號路徑
-        classroom_id=classroom_id,
-        recorded_by=actor_user_id,
-    )
+    try:
+        result = convert_recruitment_to_student(
+            session,
+            recruitment_visit_id=visit.id,
+            student_id_code=None,  # 走自動產號路徑
+            classroom_id=classroom_id,
+            recorded_by=actor_user_id,
+        )
+    except RecruitmentConversionError as exc:
+        # Bug #20：deposited→enrolled 並發 race（既有/並發報名已先建立 Student）時，
+        # convert 會拋 RecruitmentConversionError。此處包成 RecruitmentFunnelError
+        # 讓 API try 區塊能 catch（否則冒泡成 500）。CONVERT_CONFLICT 由 API 映射為
+        # 409（衝突），其餘 funnel 業務錯誤維持 400。
+        raise RecruitmentFunnelError(str(exc), code="CONVERT_CONFLICT") from exc
     # convert 內部已寫 funnel event log（converted）— 撈出 id
     last_log = (
         session.query(RecruitmentEventLog)
