@@ -102,12 +102,15 @@ def get_target_enrollment(
 
     targets = target_map[grade_name]
 
+    # `.get(key, 0)` 只在 key 不存在時回 default；若 grade_targets 該欄為 NULL
+    # （map 值為 None）會回傳 None，導致下游 `target > 0` 拋 TypeError 被吞掉、
+    # 該年級老師節慶/超額獎金靜默歸 0（bug #14）。此處 `or 0` 正規化 None→0。
     if is_shared_assistant:
-        return targets.get("shared_assistant", 0)
+        return targets.get("shared_assistant", 0) or 0
     elif has_assistant:
-        return targets.get("2_teachers", 0)
+        return targets.get("2_teachers", 0) or 0
     else:
-        return targets.get("1_teacher", 0)
+        return targets.get("1_teacher", 0) or 0
 
 
 def get_supervisor_dividend(
@@ -188,12 +191,15 @@ def get_overtime_target(
 
     targets = target_map[grade_name]
 
+    # 同 get_target_enrollment：grade_targets overtime_* 欄為 NULL 時，map 值為
+    # None，`.get` 會回 None，使 `current_enrollment - overtime_target` 拋
+    # TypeError（bug #14）。`or 0` 正規化 None→0。
     if is_shared_assistant:
-        return targets.get("shared_assistant", 0)
+        return targets.get("shared_assistant", 0) or 0
     elif has_assistant:
-        return targets.get("2_teachers", 0)
+        return targets.get("2_teachers", 0) or 0
     else:
-        return targets.get("1_teacher", 0)
+        return targets.get("1_teacher", 0) or 0
 
 
 def get_overtime_per_person(role: str, grade_name: str, per_person_map: dict) -> float:
