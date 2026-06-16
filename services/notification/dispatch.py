@@ -247,6 +247,22 @@ def _pref_enabled(session, user_id, event_type: str, channel: str) -> bool:
         return False
 
 
+def _check_line_push_consent(line_user_id: str) -> bool:
+    """轉呼 services.line_service 的跨境 consent gate（家長須 explicit opt-in）。
+
+    bug #26：consent 被拒時 line_service._push_to_user 只是「靜默回 False、不 raise」，
+    在 dispatch_delivery_strict() 區塊內也不會拋 LineDeliveryError → _fan_out 會把
+    這次 LINE push 誤記為 channels_succeeded，稽核軌跡無法區分「真的送達」與
+    「因未同意而 skip」。故在 _fan_out call adapter 前先以本函式過濾，consent 被拒
+    者改記 channels_failed(error=consent_denied)、不計入 succeeded、不真的送出。
+
+    抽成模組層薄包裝以便測試 monkeypatch（lazy import 避免循環依賴）。
+    """
+    from services.line_service import _check_line_push_consent as _impl
+
+    return _impl(line_user_id)
+
+
 def _resolve_line_user_id(session, user_id) -> str | None:
     """User.id → User.line_user_id（active + line_follow_confirmed 才回）。
 
@@ -289,7 +305,9 @@ def _fan_out(evt: PendingEvent) -> None:
         # Phase 2 (P1 resilience)：matrix 含 line/ws/in_app 任一就寫 log row，
         # is_inbox_visible 由 in_app 決定（解開 inbox UX 與 retry audit 耦合）。
         log_id: int | None = None
-        _has_durable_channel = any(ch in evt.channels for ch in ("in_app", "line", "ws"))
+        _has_durable_channel = any(
+            ch in evt.channels for ch in ("in_app", "line", "ws")
+        )
         if _has_durable_channel and evt.recipient_user_id is not None:
             log_row = NotificationLog(
                 recipient_user_id=evt.recipient_user_id,
@@ -341,6 +359,18 @@ def _fan_out(evt: PendingEvent) -> None:
                     if line_user_id is None:
                         failed.append({"channel": "line", "error": "unreachable_user"})
                         continue
+                    # bug #26：consent 被拒不可誤記送達。在送出前先過 consent gate；
+                    # 被拒者記 consent_denied（與真實 LINE 失敗 type(exc).__name__ 區分）、
+                    # 不計入 succeeded、不真的呼叫 adapter（line_service 內部本也會 skip
+                    # 但僅靜默回 False，dispatch 端無從得知）。
+                    if not _check_line_push_consent(line_user_id):
+                        logger.info(
+                            "LINE consent denied，skip 並記 consent_denied event=%s user=%s",
+                            evt.event_type,
+                            evt.recipient_user_id,
+                        )
+                        failed.append({"channel": "line", "error": "consent_denied"})
+                        continue
                     line_evt = _dc_replace(evt, recipient_user_id=line_user_id)
                 try:
                     _get_line_adapter().send(line_evt, rendered, log_id=log_id or 0)
@@ -356,10 +386,17 @@ def _fan_out(evt: PendingEvent) -> None:
                     # Phase 2 (P1 resilience)：schedule retry（用 log_session，
                     # 業務 tx rollback 不會留 phantom retry，因 log_row 寫在獨立 log_session）
                     if log_id is not None:
-                        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                        from datetime import (
+                            datetime as _dt,
+                            timedelta as _td,
+                            timezone as _tz,
+                        )
+
                         _retry_row = log_session.query(NotificationLog).get(log_id)
                         if _retry_row is not None:
-                            _retry_row.line_next_retry_at = _dt.now(_tz.utc) + _td(seconds=30)
+                            _retry_row.line_next_retry_at = _dt.now(_tz.utc) + _td(
+                                seconds=30
+                            )
                 continue
             # ws or others
             adapter = _get_ws_adapter()

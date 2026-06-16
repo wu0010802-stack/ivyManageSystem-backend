@@ -167,6 +167,96 @@ def test_fan_out_preference_disabled_skips_line(test_db_session):
     assert "line" not in row.channels_attempted
 
 
+def test_fan_out_consent_denied_not_marked_succeeded(test_db_session):
+    """bug #26 回歸：consent 被拒的家長 LINE 推播不可記為 channels_succeeded。
+
+    家長未 opt-in 跨境 consent 時，LINE 不應送出，且稽核軌跡須能與「真的送達」
+    區分——不計入 channels_succeeded，改記 channels_failed（error=consent_denied），
+    且不真的呼叫 LINE adapter.send。
+    """
+    from datetime import datetime
+    from models.database import NotificationLog, User
+
+    user = User(
+        username="parent_no_consent",
+        password_hash="x",
+        role="parent",
+        line_user_id="UnoConsent",
+        line_follow_confirmed_at=datetime.now(),
+        is_active=True,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()
+    recipient_id = user.id
+
+    mock_la = MagicMock()
+    with (
+        patch("services.notification.dispatch._get_line_adapter", return_value=mock_la),
+        patch(
+            "services.notification.dispatch._check_line_push_consent",
+            return_value=False,
+        ),
+    ):
+        dispatch._fan_out(
+            _pevt(
+                "parent.announcement",
+                ("line",),
+                recipient_user_id=recipient_id,
+                context={"title": "x", "preview": "y", "announcement_id": 1},
+            )
+        )
+
+    # consent 被拒 → 不真的送 LINE
+    mock_la.send.assert_not_called()
+
+    row = test_db_session.query(NotificationLog).first()
+    assert row is not None
+    assert "line" not in row.channels_succeeded, "consent 被拒不可誤記送達"
+    assert any(
+        f.get("channel") == "line" and f.get("error") == "consent_denied"
+        for f in row.channels_failed
+    ), "consent 被拒須記為 consent_denied（與真實 LINE 失敗可區分）"
+
+
+def test_fan_out_consent_granted_still_sends(test_db_session):
+    """consent 通過時維持原行為：LINE adapter 正常被呼叫並記 succeeded。"""
+    from datetime import datetime
+    from models.database import NotificationLog, User
+
+    user = User(
+        username="parent_consent",
+        password_hash="x",
+        role="parent",
+        line_user_id="UwithConsent",
+        line_follow_confirmed_at=datetime.now(),
+        is_active=True,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()
+    recipient_id = user.id
+
+    mock_la = MagicMock()
+    with (
+        patch("services.notification.dispatch._get_line_adapter", return_value=mock_la),
+        patch(
+            "services.notification.dispatch._check_line_push_consent",
+            return_value=True,
+        ),
+    ):
+        dispatch._fan_out(
+            _pevt(
+                "parent.announcement",
+                ("line",),
+                recipient_user_id=recipient_id,
+                context={"title": "x", "preview": "y", "announcement_id": 1},
+            )
+        )
+
+    mock_la.send.assert_called_once()
+    row = test_db_session.query(NotificationLog).first()
+    assert "line" in row.channels_succeeded
+
+
 class TestPhase2LineRetry:
     """Phase 2 P1 resilience：log row 寫所有 line/ws 事件 + LINE 失敗 schedule retry."""
 
@@ -191,20 +281,35 @@ class TestPhase2LineRetry:
         sent = []
         monkeypatch.setattr(
             "services.notification.dispatch._get_line_adapter",
-            lambda: type("A", (), {"send": lambda self, evt, r, log_id: sent.append(evt.event_type)})(),
+            lambda: type(
+                "A",
+                (),
+                {"send": lambda self, evt, r, log_id: sent.append(evt.event_type)},
+            )(),
         )
 
         dispatch.enqueue(
             session=test_db_session,
             event_type="parent.fee_due",
             recipient_user_id=user.id,
-            context={"student_name": "X", "item_name": "T", "amount": 100, "due_date": "2026-06-01"},
+            context={
+                "student_name": "X",
+                "item_name": "T",
+                "amount": 100,
+                "due_date": "2026-06-01",
+            },
         )
         test_db_session.commit()
 
-        rows = test_db_session.query(NotificationLog).filter_by(event_type="parent.fee_due").all()
+        rows = (
+            test_db_session.query(NotificationLog)
+            .filter_by(event_type="parent.fee_due")
+            .all()
+        )
         assert len(rows) == 1, "parent.fee_due 須寫 log row（即使無 in_app）"
-        assert rows[0].is_inbox_visible is False, "LINE-only 事件 is_inbox_visible 須 False"
+        assert (
+            rows[0].is_inbox_visible is False
+        ), "LINE-only 事件 is_inbox_visible 須 False"
 
     def test_in_app_event_is_inbox_visible_true(self, test_db_session, monkeypatch):
         from services.notification import dispatch
@@ -223,11 +328,21 @@ class TestPhase2LineRetry:
             session=test_db_session,
             event_type="leave.submitted",
             recipient_user_id=user.id,
-            context={"submitter_name": "X", "leave_type": "事假", "start": "2026-06-01", "end": "2026-06-01", "leave_hours": 4},
+            context={
+                "submitter_name": "X",
+                "leave_type": "事假",
+                "start": "2026-06-01",
+                "end": "2026-06-01",
+                "leave_hours": 4,
+            },
         )
         test_db_session.commit()
 
-        row = test_db_session.query(NotificationLog).filter_by(event_type="leave.submitted").first()
+        row = (
+            test_db_session.query(NotificationLog)
+            .filter_by(event_type="leave.submitted")
+            .first()
+        )
         assert row is not None
         assert row.is_inbox_visible is True
 
@@ -250,22 +365,35 @@ class TestPhase2LineRetry:
         class Boom:
             def send(self, evt, r, log_id):
                 raise ConnectionError("LINE down")
+
         monkeypatch.setattr(
-            "services.notification.dispatch._get_line_adapter", lambda: Boom(),
+            "services.notification.dispatch._get_line_adapter",
+            lambda: Boom(),
         )
 
         dispatch.enqueue(
             session=test_db_session,
             event_type="parent.fee_due",
             recipient_user_id=user.id,
-            context={"student_name": "X", "item_name": "T", "amount": 100, "due_date": "2026-06-01"},
+            context={
+                "student_name": "X",
+                "item_name": "T",
+                "amount": 100,
+                "due_date": "2026-06-01",
+            },
         )
         test_db_session.commit()
 
-        row = test_db_session.query(NotificationLog).filter_by(event_type="parent.fee_due").first()
+        row = (
+            test_db_session.query(NotificationLog)
+            .filter_by(event_type="parent.fee_due")
+            .first()
+        )
         assert row is not None
         assert row.line_next_retry_at is not None, "LINE 失敗須 schedule retry"
-        assert row.line_retry_count == 0, "首次失敗 count 仍 0（scheduler tick 才會 +1）"
+        assert (
+            row.line_retry_count == 0
+        ), "首次失敗 count 仍 0（scheduler tick 才會 +1）"
         assert any(f.get("channel") == "line" for f in row.channels_failed)
 
     def test_business_rollback_no_retry_phantom(self, test_db_session, monkeypatch):
@@ -281,9 +409,20 @@ class TestPhase2LineRetry:
             session=test_db_session,
             event_type="parent.fee_due",
             recipient_user_id=user.id,
-            context={"student_name": "X", "item_name": "T", "amount": 100, "due_date": "2026-06-01"},
+            context={
+                "student_name": "X",
+                "item_name": "T",
+                "amount": 100,
+                "due_date": "2026-06-01",
+            },
         )
         test_db_session.rollback()  # 業務 tx 滾回
 
-        rows = test_db_session.query(NotificationLog).filter_by(event_type="parent.fee_due").all()
-        assert rows == [], "業務 rollback 不應留 NotificationLog（log_session 也未 commit）"
+        rows = (
+            test_db_session.query(NotificationLog)
+            .filter_by(event_type="parent.fee_due")
+            .all()
+        )
+        assert (
+            rows == []
+        ), "業務 rollback 不應留 NotificationLog（log_session 也未 commit）"
