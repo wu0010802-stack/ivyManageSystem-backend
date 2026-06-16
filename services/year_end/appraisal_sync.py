@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from models.appraisal import (
@@ -259,6 +259,43 @@ def _frozen_settlement_employee_ids(db: Session, year_end_cycle_id: int) -> set[
     return set(rows)
 
 
+def _recompute_draft_settlement_total(
+    db: Session, year_end_cycle_id: int, employee_id: int
+) -> None:
+    """generate/void 改動 SpecialBonusItem 後，同步重算對應 DRAFT settlement 的
+    special_bonus_total / total_amount（#1，2026-06-16）。
+
+    口徑：special_bonus_total = SUM(該員工該 cycle 全部 SpecialBonusItem.amount)；
+    total_amount = payable_amount + special_bonus_total（比照 api/year_end
+    `_recompute_settlement_special_total` 與 settlement_builder step6）。
+
+    只動 DRAFT settlement：
+    - settlement 不存在 → no-op（建立 settlement 時會主動回算既有 special bonus）。
+    - 非 DRAFT（已簽核/核定）→ 不動。凍結員工的明細在 generate/void 已被跳過
+      （見 _frozen_settlement_employee_ids），total_amount 沿用定案值，不得重算
+      （否則簽章還在卻改了轉帳金額）。
+    """
+    settlement = db.scalar(
+        select(YearEndSettlement).where(
+            YearEndSettlement.year_end_cycle_id == year_end_cycle_id,
+            YearEndSettlement.employee_id == employee_id,
+        )
+    )
+    if settlement is None:
+        return
+    if settlement.status != YearEndSettlementStatus.DRAFT:
+        return
+    total_sum = db.scalar(
+        select(func.coalesce(func.sum(SpecialBonusItem.amount), 0)).where(
+            SpecialBonusItem.year_end_cycle_id == year_end_cycle_id,
+            SpecialBonusItem.employee_id == employee_id,
+        )
+    )
+    total_sum = Decimal(str(total_sum))
+    settlement.special_bonus_total = total_sum
+    settlement.total_amount = settlement.payable_amount + total_sum
+
+
 @dataclass
 class GenerateResult:
     cycle_id: int
@@ -415,6 +452,11 @@ def generate_payouts(
                 summary_status = "NOT_FINALIZED"
             else:
                 summary_status = "FINALIZED"
+            # #9 + #10（2026-06-16）fail-safe：只有 FINALIZED 的考核 summary 金額才得
+            # 流入可轉帳金額。MISSING / NOT_FINALIZED（DRAFT 等未定案）一律視為 0，
+            # 避免未定案績效被計入年終轉帳。與 year_end excel_io 既有 fail-safe 風格一致
+            # （不硬性 422 阻擋整個端點）；缺漏/未定案僅記 warning + 寫 0。
+            payout_amount = amount if summary_status == "FINALIZED" else Decimal(0)
             calc_meta = {
                 "cycle_not_finalized": not cycle_finalized,
                 "summary_status": summary_status,
@@ -428,18 +470,18 @@ def generate_payouts(
                 employee_id=row.employee_id,
                 bonus_type=bonus_type,
                 period_label=period_label,
-                amount=amount,
+                amount=payout_amount,
                 source_ref=source_ref,
                 calc_meta=calc_meta,
                 created_by=generated_by,
             )
             written_count += 1
+            total += payout_amount
 
         # P3：把 preview 偵測到的 warning（summary 未核定、單 cycle 參與等）帶出，
         # 不再回傳寫死的空 list。
         warnings_acc.extend(row.warnings)
         affected_emp_ids.add(row.employee_id)
-        total += row.earlier_amount + row.later_amount
 
     # 決策⑥B（2026-06-02）後考核獎金走 year_end settlement 表外發放，
     # 不進月薪資、不進二代健保補充保費累計（CLAUDE.md §10/§11），
@@ -452,6 +494,13 @@ def generate_payouts(
             skipped_frozen,
             cycle.id,
         )
+
+    # #1（2026-06-16）：對受影響（非凍結）員工同步重算 DRAFT settlement 的
+    # special_bonus_total / total_amount，避免轉帳名冊（讀 settlement.total_amount）
+    # 與明細條（即時 aggregate SpecialBonusItem）漂移。凍結員工已被跳過、不在
+    # affected_emp_ids，且 _recompute_draft_settlement_total 對非 DRAFT no-op。
+    for emp_id in affected_emp_ids:
+        _recompute_draft_settlement_total(db, cycle.id, emp_id)
 
     db.flush()
     return GenerateResult(
@@ -494,8 +543,14 @@ def void_payouts(db: Session, payout_year: int, voided_by: int) -> int:
     deletable = [item for item in items if item.employee_id not in frozen_emp_ids]
     skipped_frozen = len(items) - len(deletable)
     deleted = len(deletable)
+    affected_emp_ids = {item.employee_id for item in deletable}
     for item in deletable:
         db.delete(item)
+    db.flush()
+    # #1（2026-06-16）：刪除後同步重算受影響（非凍結）員工的 DRAFT settlement total，
+    # 讓 settlement.total_amount 回到不含已刪 APPRAISAL_HALF 的金額（避免名冊殘留舊值）。
+    for emp_id in affected_emp_ids:
+        _recompute_draft_settlement_total(db, cycle.id, emp_id)
     db.flush()
     logger.info(
         "void_payouts: deleted %d APPRAISAL_HALF_BONUS items for academic_year=%s "
