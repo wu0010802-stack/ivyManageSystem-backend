@@ -23,6 +23,7 @@ import models.base as base_module
 from api.parent_portal import parent_router as parent_portal_router
 from models.database import Base, Classroom, Guardian, Student, User
 from models.fees import (
+    StudentFeeAdjustment,
     StudentFeePayment,
     StudentFeeRecord,
     StudentFeeRefund,
@@ -187,6 +188,59 @@ class TestSummary:
         assert totals["outstanding"] == 12000
         assert totals["overdue"] == 10000
         assert totals["due_soon"] == 2000
+
+    def test_summary_adjustment_scoped_per_period(self, fees_client):
+        """折抵須按 (student, period) 套用：114-2 的折抵不可先扣掉 114-1 的逾期欠款。
+
+        後台 summary 已 scope（test_fees.TestFeeSummaryAdjustmentScope），
+        家長端原本只按 student_id 加總折抵再 overdue-first 扣，會低估逾期金額。
+        """
+        client, session_factory = fees_client
+        today = date.today()
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            # 114-1：已逾期 10000
+            _create_fee_record(
+                session,
+                student,
+                fee_item_name="上學期學費",
+                amount_due=10000,
+                amount_paid=0,
+                period="114-1",
+                due_date=today - timedelta(days=2),
+            )
+            # 114-2：未逾期 10000（due 落在 due_soon 視窗之外）
+            _create_fee_record(
+                session,
+                student,
+                fee_item_name="下學期學費",
+                amount_due=10000,
+                amount_paid=0,
+                period="114-2",
+                due_date=today + timedelta(days=60),
+            )
+            # 114-2 折抵 10000：只應抵 114-2，不可碰 114-1 逾期
+            session.add(
+                StudentFeeAdjustment(
+                    student_id=student.id,
+                    period="114-2",
+                    adjustment_type="prepayment",
+                    amount=10000,
+                    reason="下學期預繳",
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get("/api/parent/fees/summary", cookies={"access_token": token})
+        assert resp.status_code == 200
+        totals = resp.json()["totals"]
+        # 114-1 逾期不可被 114-2 折抵吃掉
+        assert totals["overdue"] == 10000
+        # 114-2 全額折抵後僅剩 114-1 未繳
+        assert totals["outstanding"] == 10000
+        assert totals["due_soon"] == 0
+        assert totals["adjustment"] == 10000
 
 
 class TestRecords:
