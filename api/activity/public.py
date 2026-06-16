@@ -957,10 +957,25 @@ def public_update_registration(
             for ci in body.courses
             if courses_by_name[ci.name].id not in existing_course_ids
         ]
-        # supplies 無候補排序疑慮，維持全刪重建
-        session.query(RegistrationSupply).filter(
-            RegistrationSupply.registration_id == reg.id
-        ).delete()
+        # Finding #16：用品比照課程改 diff，不再全刪重建。
+        # 全刪重建會以「當前 DB 價」重新 price_snapshot，破壞報名當下的差異化保價，
+        # 靜默改寫已報名應繳總額（用品調價後修改報名 → 已繳金額可能瞬間變成超繳觸 409）。
+        # 改 diff：保留未變更用品原列與原 price_snapshot，只刪移除的、稍後只 add 新增的。
+        desired_supply_ids = {supplies_by_name[si.name].id for si in body.supplies}
+        existing_rs = (
+            session.query(RegistrationSupply)
+            .filter(RegistrationSupply.registration_id == reg.id)
+            .all()
+        )
+        existing_supply_ids = {rs.supply_id for rs in existing_rs}
+        for rs in existing_rs:
+            if rs.supply_id not in desired_supply_ids:
+                session.delete(rs)
+        new_supply_items = [
+            si
+            for si in body.supplies
+            if supplies_by_name[si.name].id not in existing_supply_ids
+        ]
         session.flush()
 
         reg.class_name = classroom_name_to_store
@@ -1047,7 +1062,8 @@ def public_update_registration(
         _attach_courses(
             session, reg.id, new_course_items, courses_by_name, upd_enrolled_map
         )
-        _attach_supplies(session, reg.id, body.supplies, supplies_by_name)
+        # #16：只 attach 新增用品（未變更的已保留原列與原 price_snapshot，移除的已刪）。
+        _attach_supplies(session, reg.id, new_supply_items, supplies_by_name)
 
         # 對於原本佔容量、這次修改後此 reg 已不再占的課程，逐一觸發候補遞補
         session.flush()

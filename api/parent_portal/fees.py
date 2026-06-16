@@ -54,67 +54,81 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
     today = today_taipei()
     soon = today + timedelta(days=_DUE_SOON_DAYS)
     by_student: dict[int, dict] = defaultdict(_empty_totals)
+    # #12：折抵須 scope 至「實際納入彙總的 (student_id, period)」並只抵減同期 outstanding，
+    # 否則一筆已繳清學期的折抵會跨期移轉去抵其他學期未繳，低報 outstanding。
+    # 故先按 (student_id, period) 累計各期 outstanding/overdue/due_soon，套用該期折抵後
+    # 再 roll-up 到 student / totals（比照 staff 端 compute_fee_summary 的同口徑）。
+    by_period: dict[tuple[int, str], dict] = defaultdict(_empty_totals)
+    record_period_keys: set[tuple[int, str]] = set()
 
     total_due = 0
     total_paid = 0
-    total_outstanding = 0
-    total_overdue = 0
-    total_due_soon = 0
     outstanding_count = 0
 
     for r in records:
         outstanding = max(0, (r.amount_due or 0) - (r.amount_paid or 0))
-        entry = by_student[r.student_id]
-        entry["amount_due"] += r.amount_due or 0
-        entry["amount_paid"] += r.amount_paid or 0
-        entry["outstanding"] += outstanding
+        key = (r.student_id, r.period)
+        record_period_keys.add(key)
+        pentry = by_period[key]
+        pentry["amount_due"] += r.amount_due or 0
+        pentry["amount_paid"] += r.amount_paid or 0
+        pentry["outstanding"] += outstanding
         if outstanding > 0:
             outstanding_count += 1
             if r.due_date is not None:
                 if r.due_date < today:
-                    entry["overdue"] += outstanding
-                    total_overdue += outstanding
+                    pentry["overdue"] += outstanding
                 elif r.due_date <= soon:
-                    entry["due_soon"] += outstanding
-                    total_due_soon += outstanding
+                    pentry["due_soon"] += outstanding
         total_due += r.amount_due or 0
         total_paid += r.amount_paid or 0
-        total_outstanding += outstanding
 
-    # 折抵聚合：按 student 加總 adjustment.amount，從 outstanding / overdue / due_soon
-    # 依優先順序扣抵；amount_due 同步減（保留 amount_paid 流水不動）。
-    # 折抵未綁定特定 record，故以 student 為粒度匯算後分配。
+    # 折抵聚合：scope 至 in-scope 的 (student_id, period)，按期加總後只抵減「同期」buckets。
+    # adjustment.amount 同步減該期 amount_due（保留 amount_paid 流水不動）。
     adj_rows = (
         session.query(
             StudentFeeAdjustment.student_id,
+            StudentFeeAdjustment.period,
             func.coalesce(func.sum(StudentFeeAdjustment.amount), 0),
         )
         .filter(StudentFeeAdjustment.student_id.in_(student_ids))
-        .group_by(StudentFeeAdjustment.student_id)
+        .group_by(StudentFeeAdjustment.student_id, StudentFeeAdjustment.period)
         .all()
     )
     total_adjustment = 0
-    for sid, adj_total in adj_rows:
+    for sid, period, adj_total in adj_rows:
         adj = int(adj_total or 0)
         if adj <= 0:
             continue
-        entry = by_student[sid]
-        entry["adjustment"] = entry.get("adjustment", 0) + adj
+        key = (sid, period)
+        # 折抵所屬學期未納入本次彙總（無對應 record）→ 不參與抵減，避免憑空移轉。
+        if key not in record_period_keys:
+            continue
+        pentry = by_period[key]
+        pentry["adjustment"] = pentry.get("adjustment", 0) + adj
         remaining = adj
         for k in ("overdue", "due_soon"):
-            take = min(entry[k], remaining)
-            entry[k] -= take
+            take = min(pentry[k], remaining)
+            pentry[k] -= take
             remaining -= take
-            if k == "overdue":
-                total_overdue -= take
-            else:
-                total_due_soon -= take
-        take = min(entry["outstanding"], remaining)
-        entry["outstanding"] -= take
-        total_outstanding -= take
-        # outstanding_count 不調整：仍代表「有 record 未繳清」筆數，與折抵後總額分開呈現
-        entry["amount_due"] = max(0, entry["amount_due"] - adj)
+        take = min(pentry["outstanding"], remaining)
+        pentry["outstanding"] -= take
+        pentry["amount_due"] = max(0, pentry["amount_due"] - adj)
         total_adjustment += adj
+
+    # roll-up：把 (student_id, period) 折抵後結果彙總回 student 與 totals。
+    total_outstanding = 0
+    total_overdue = 0
+    total_due_soon = 0
+    for (sid, _period), pentry in by_period.items():
+        entry = by_student[sid]
+        for k in ("amount_due", "amount_paid", "outstanding", "overdue", "due_soon"):
+            entry[k] += pentry[k]
+        entry["adjustment"] = entry.get("adjustment", 0) + pentry.get("adjustment", 0)
+        total_outstanding += pentry["outstanding"]
+        total_overdue += pentry["overdue"]
+        total_due_soon += pentry["due_soon"]
+    # outstanding_count 不調整：仍代表「有 record 未繳清」筆數，與折抵後總額分開呈現
     total_due = max(0, total_due - total_adjustment)
 
     return {
