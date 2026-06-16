@@ -629,3 +629,67 @@ def test_line_service_has_final_reminder_method():
     from services.line_service import LineService
 
     assert hasattr(LineService, "_notify_activity_waitlist_final_reminder")
+
+
+# ------------------------------------------------------------------ #
+# N. 候補/待確認轉正後重算 is_paid（修付款狀態錯位）
+# ------------------------------------------------------------------ #
+
+
+class TestPromotionRecomputesIsPaid:
+    """候補/待確認轉 enrolled 會讓 total 增加（_calc_total_amount 只計 enrolled），
+    必須同步重算 is_paid。否則原本付清的報名轉正後仍停在 is_paid=True，被
+    payment_status=paid 篩選誤收為已繳、催繳清單漏列。"""
+
+    def _setup(self, session, pending_status):
+        # 課 A：已 enrolled 且付清；課 B：待轉正（waitlist 或 promoted_pending）
+        course_a = _add_course(session, name="A", capacity=10)
+        course_b = _add_course(session, name="B", capacity=10)
+        reg = _add_reg(session, "付清家長")
+        _enroll(session, reg.id, course_a.id, status="enrolled")  # price_snapshot 1000
+        rc_b = _enroll(session, reg.id, course_b.id, status=pending_status)
+        # 模擬「只就 enrolled 的課 A 付清」：total=1000、paid=1000 → is_paid=True
+        reg.paid_amount = 1000
+        reg.is_paid = True
+        session.flush()
+        return reg, course_b, rc_b
+
+    def test_confirm_promotion_recomputes_is_paid_to_false(self, session, svc):
+        reg, course_b, rc_b = self._setup(session, "promoted_pending")
+        assert reg.is_paid is True  # 前提：轉正前已繳清
+
+        svc.confirm_waitlist_promotion(session, reg.id, course_b.id)
+        session.flush()
+
+        assert rc_b.status == "enrolled"
+        # total 變 2000、paid 仍 1000 → 應重算為未繳清
+        assert reg.is_paid is False
+
+    def test_admin_promote_recomputes_is_paid_to_false(self, session, svc):
+        reg, course_b, rc_b = self._setup(session, "waitlist")
+        assert reg.is_paid is True
+
+        svc.promote_waitlist(session, reg.id, course_b.id)
+        session.flush()
+
+        assert rc_b.status == "enrolled"
+        assert reg.is_paid is False
+
+    def test_promotion_keeps_is_paid_true_when_paid_covers_new_total(
+        self, session, svc
+    ):
+        """轉正後 paid 仍 >= 新 total，is_paid 維持 True（守衛：不過度翻 False）。"""
+        course_a = _add_course(session, name="A", capacity=10)
+        course_b = _add_course(session, name="B", capacity=10)
+        reg = _add_reg(session, "預繳家長")
+        _enroll(session, reg.id, course_a.id, status="enrolled")
+        rc_b = _enroll(session, reg.id, course_b.id, status="waitlist")
+        reg.paid_amount = 2000  # 已預繳兩堂課
+        reg.is_paid = True
+        session.flush()
+
+        svc.promote_waitlist(session, reg.id, course_b.id)
+        session.flush()
+
+        assert rc_b.status == "enrolled"
+        assert reg.is_paid is True
