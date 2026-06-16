@@ -18,7 +18,7 @@ from config import settings
 from fastapi import APIRouter, Depends, HTTPException, Request
 from utils.errors import raise_safe_500
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from models.database import get_session, User, Employee
 from models.staff_refresh_token import StaffRefreshToken
@@ -66,8 +66,25 @@ from utils.permissions import (
     resolve_user_permissions,
     validate_permission_names,
     ROLE_LABELS,
+    ROLE_TEMPLATES,
     WILDCARD,
 )
+
+# 已知核心角色白名單（對齊 ROLE_TEMPLATES / DB roles 表 seed 的 7 個 is_core 角色）。
+# create/update user 的 role 欄位只接受此集合，未知字串一律 422——避免寫入任意角色
+# 字串繞過以角色字串為準的安全閘（如 has_permission 對 role=='teacher' 短路、
+# _assert_can_manage_user 對 'admin' 的判定）。bh-misc #29。
+KNOWN_ROLE_CODES = frozenset(ROLE_TEMPLATES.keys())
+
+
+def _validate_role_code(value: Optional[str]) -> Optional[str]:
+    """共用 role 白名單驗證：None 放行（不改角色）；未知值 raise → Pydantic 422。"""
+    if value is None:
+        return value
+    if value not in KNOWN_ROLE_CODES:
+        raise ValueError(f"未知角色 '{value}'，僅允許：{sorted(KNOWN_ROLE_CODES)}")
+    return value
+
 
 logger = logging.getLogger(__name__)
 
@@ -385,11 +402,23 @@ class CreateUserRequest(BaseModel):
     role: str = "teacher"
     permission_names: Optional[List[str]] = None  # None 表示使用角色預設權限
 
+    @field_validator("role")
+    @classmethod
+    def _check_role(cls, v: str) -> str:
+        # 未知角色字串一律 422（白名單對齊 KNOWN_ROLE_CODES）。bh-misc #29。
+        return _validate_role_code(v)
+
 
 class UpdateUserRequest(BaseModel):
     role: Optional[str] = None
     permission_names: Optional[List[str]] = None
     is_active: Optional[bool] = None
+
+    @field_validator("role")
+    @classmethod
+    def _check_role(cls, v: Optional[str]) -> Optional[str]:
+        # None=不改角色放行；其餘須在白名單內，否則 422。bh-misc #29。
+        return _validate_role_code(v)
 
 
 class ResetPasswordRequest(BaseModel):
