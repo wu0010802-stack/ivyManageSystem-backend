@@ -22,7 +22,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "permbf01"
-down_revision: Union[str, None] = "enrdwt01"
+down_revision: Union[str, None] = "attstatlen01"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
