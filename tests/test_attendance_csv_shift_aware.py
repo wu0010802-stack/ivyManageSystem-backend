@@ -30,6 +30,11 @@ from utils.auth import hash_password
 @pytest.fixture
 def client(tmp_path):
     """建立隔離的 SQLite 測試 app（shift-aware CSV 用）。"""
+    from utils.cache_layer import reset_cache_for_testing
+
+    # 重置 cache singleton，防止前一個測試把空 ShiftType dict 快取住
+    reset_cache_for_testing()
+
     engine = create_engine(
         f"sqlite:///{tmp_path / 'shift_aware_csv.sqlite'}",
         connect_args={"check_same_thread": False},
@@ -49,6 +54,9 @@ def client(tmp_path):
     _account_failures.clear()
     base_module._engine, base_module._SessionFactory = old_e, old_s
     engine.dispose()
+
+    # 收尾重置 cache，防止把 ShiftType dict 污染後續測試
+    reset_cache_for_testing()
 
 
 def _seed(sf):
