@@ -1543,3 +1543,47 @@ class TestActivityRefundInvalidatesFinanceCache:
         )
         assert res.status_code == 200, res.text
         assert called, "移除用品自動沖帳後未使 finance-summary 快取失效"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# #N — 後台重複追加同一用品應回 409（不撞 unique key 變裸 500）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestAddDuplicateSupplyConflict:
+    """registration_supplies 有 (registration_id, supply_id) 唯一鍵；add_registration_supply
+    未先查存在就 insert，重複追加會撞 IntegrityError → 裸 500。應比照 add_registration_course
+    先擋並回明確 4xx。"""
+
+    def test_add_duplicate_supply_returns_409(self, fee_client):
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, course_price=500, paid_amount=0, is_paid=False)
+            from utils.academic import resolve_current_academic_term
+
+            sy, sem = resolve_current_academic_term()
+            supply = ActivitySupply(
+                name="重複材料", price=300, school_year=sy, semester=sem
+            )
+            s.add(supply)
+            s.commit()
+            reg_id = reg.id
+            supply_id = supply.id
+
+        assert _login(client).status_code == 200
+
+        # 第一次追加成功
+        res1 = client.post(
+            f"/api/activity/registrations/{reg_id}/supplies",
+            json={"supply_id": supply_id},
+        )
+        assert res1.status_code == 201, res1.text
+
+        # 第二次重複 → 409（而非 500），帶可讀 detail
+        res2 = client.post(
+            f"/api/activity/registrations/{reg_id}/supplies",
+            json={"supply_id": supply_id},
+        )
+        assert res2.status_code == 409, res2.text
+        assert "已含該用品" in res2.json().get("detail", "")

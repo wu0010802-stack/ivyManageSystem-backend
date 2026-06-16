@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -46,6 +46,13 @@ class RegisterPayload(BaseModel):
     semester: int = Field(..., ge=1, le=2)
     course_ids: list[int] = Field(default_factory=list)
     supply_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("course_ids", "supply_ids")
+    @classmethod
+    def _dedupe_ids(cls, v: list[int]) -> list[int]:
+        # 去重保序：payload 內重複 id 逐筆 insert 會撞 (registration_id, course/supply_id)
+        # 唯一鍵 → 裸 500；官方前端不會送重複，但 malformed/直打 API 的 caller 會。
+        return list(dict.fromkeys(v))
 
 
 @router.get("/courses")

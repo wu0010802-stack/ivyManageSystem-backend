@@ -552,3 +552,34 @@ class TestConfirmPromotion:
             cookies={"access_token": token_a},
         )
         assert resp.status_code == 403
+
+
+class TestRegisterPayloadDedupesIds:
+    """LIFF 報名 payload 內重複 course_ids / supply_ids 在逐筆 insert 時會撞
+    (registration_id, course_id/supply_id) 唯一鍵 → 裸 500。schema 層去重保序擋住。"""
+
+    def test_dedupes_course_and_supply_ids_preserving_order(self):
+        from api.parent_portal.activity import RegisterPayload
+
+        p = RegisterPayload(
+            student_id=1,
+            school_year=114,
+            semester=1,
+            course_ids=[5, 5, 3, 5],
+            supply_ids=[2, 2],
+        )
+        assert p.course_ids == [5, 3]  # 去重且保序
+        assert p.supply_ids == [2]
+
+    def test_no_dedup_needed_keeps_input(self):
+        from api.parent_portal.activity import RegisterPayload
+
+        p = RegisterPayload(
+            student_id=1,
+            school_year=114,
+            semester=1,
+            course_ids=[7, 8],
+            supply_ids=[],
+        )
+        assert p.course_ids == [7, 8]
+        assert p.supply_ids == []

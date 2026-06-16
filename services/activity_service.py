@@ -734,6 +734,23 @@ class ActivityService:
     # 候補升正式
     # ------------------------------------------------------------------ #
 
+    def _recompute_is_paid(self, session, registration_id: int) -> None:
+        """重算報名的 is_paid（衍生欄位）。候補/待確認轉 enrolled 會讓 total 增加
+        （_calc_total_amount 只計 enrolled），不重算就會停在舊的 is_paid=True，被
+        payment_status=paid 篩選誤收為已繳。重用 api 層 canonical helper 避免口徑
+        漂移；function-level import 規避 _shared ↔ activity_service 的循環 import。"""
+        from api.activity._shared import _calc_total_amount, _compute_is_paid
+
+        reg = (
+            session.query(ActivityRegistration)
+            .filter(ActivityRegistration.id == registration_id)
+            .first()
+        )
+        if reg is None:
+            return
+        total = _calc_total_amount(session, registration_id)
+        reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total)
+
     def promote_waitlist(
         self, session, registration_id: int, course_id: int
     ) -> tuple[str, str]:
@@ -785,6 +802,8 @@ class ActivityService:
         rc.confirm_deadline = None
         rc.reminder_sent_at = None
         rc.final_reminder_sent_at = None
+        # 轉正讓 total 增加，重算 is_paid 避免付款狀態停在舊值
+        self._recompute_is_paid(session, registration_id)
         return (student_name or str(registration_id), course.name)
 
     # ------------------------------------------------------------------ #
@@ -833,6 +852,8 @@ class ActivityService:
         rc.status = "enrolled"
         rc.confirm_deadline = None
         rc.reminder_sent_at = None
+        # 轉正讓 total 增加，重算 is_paid 避免付款狀態停在舊值
+        self._recompute_is_paid(session, registration_id)
         return (student_name or str(registration_id), course.name)
 
     def decline_waitlist_promotion(

@@ -210,6 +210,19 @@ def add_registration_supply(
         if supply.school_year != reg.school_year or supply.semester != reg.semester:
             raise HTTPException(status_code=400, detail="用品學期與報名學期不一致")
 
+        # 不允許重複追加同一用品（registration_supplies 有 (registration_id, supply_id)
+        # 唯一鍵；不先擋會撞 IntegrityError → 裸 500 並洩漏 SQL）。比照 add_registration_course。
+        exists = (
+            session.query(RegistrationSupply)
+            .filter(
+                RegistrationSupply.registration_id == registration_id,
+                RegistrationSupply.supply_id == supply.id,
+            )
+            .first()
+        )
+        if exists:
+            raise HTTPException(status_code=409, detail="此報名已含該用品")
+
         paid_amount = reg.paid_amount or 0
         before_total = _calc_total_amount(session, registration_id)
 
