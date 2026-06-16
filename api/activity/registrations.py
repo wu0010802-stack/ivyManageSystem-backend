@@ -62,6 +62,7 @@ from ._shared import (
     _compute_is_paid,
     _calc_total_amount,
     _invalidate_activity_dashboard_caches,
+    _invalidate_after_registration_mutation,
     _invalidate_finance_summary_cache,
     _batch_calc_total_amounts,
     _build_registration_filter_query,
@@ -666,7 +667,7 @@ def update_registration_basic(
                 current_user.get("username", ""),
             )
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         return {"message": "基本資料更新成功", "changed": len(diffs)}
     except HTTPException:
         session.rollback()
@@ -749,7 +750,7 @@ def sweep_expired_waitlist_promotions(
     try:
         result = activity_service.sweep_expired_pending_promotions(session)
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         logger.info(
             "手動觸發候補過期掃描：operator=%s expired=%s reminded=%s final_reminded=%s",
             current_user.get("username", ""),

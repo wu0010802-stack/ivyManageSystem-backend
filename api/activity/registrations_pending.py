@@ -34,7 +34,7 @@ from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
 from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 from ._shared import (
-    _invalidate_activity_dashboard_caches,
+    _invalidate_after_registration_mutation,
     _validate_tw_mobile,
     _not_found,
     now_taipei_naive,
@@ -388,7 +388,7 @@ def match_registration(
         reg.reviewed_by = current_user.get("username")
         reg.reviewed_at = now_taipei_naive()
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         logger.info(
             "後台手動匹配報名：reg_id=%s → student_id=%s by %s",
             reg.id,
@@ -461,7 +461,7 @@ def reject_registration(
             reg.reviewed_by or "",
         )
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         logger.warning(
             "後台拒絕報名：reg_id=%s by %s reason=%s",
             reg.id,
@@ -587,7 +587,7 @@ def rematch_registration(
                 matched = True
 
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         logger.info(
             "後台重新比對：reg_id=%s matched=%s fields_edited=%s by %s",
             reg.id,
@@ -711,7 +711,7 @@ def force_accept_registration(
         elif not prefix:
             reg.remark = note
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         logger.warning(
             "後台強行收件報名：reg_id=%s by %s field_changed=%s",
             reg.id,
@@ -854,7 +854,7 @@ def restore_registration(
         note = f"[已還原 by {current_user.get('username')}]"
         reg.remark = (prefix + "\n" + note).strip() if prefix else note
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         logger.info(
             "後台還原拒絕報名：reg_id=%s by %s",
             reg.id,

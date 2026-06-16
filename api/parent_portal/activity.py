@@ -298,6 +298,8 @@ def register_courses(
 
     session.flush()
     session.refresh(reg)
+    # F4：家長端報名改變 enrolled 集合 → 清 dashboard 快取（原本家長端完全不清）。
+    activity_service.invalidate_dashboard_caches(session)
     return _registration_summary(session, reg)
 
 
@@ -363,7 +365,8 @@ def confirm_promotion(
         "parent",
     )
     session.flush()
-    # rc.id 取得需重查；多數呼叫端只看 status:ok 故不必回傳。
+    # F4：轉正改變 enrolled 集合 → 清 dashboard 快取。
+    activity_service.invalidate_dashboard_caches(session)
     return {"status": "ok"}
 
 

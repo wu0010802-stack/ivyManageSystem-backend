@@ -476,6 +476,19 @@ def _invalidate_activity_dashboard_caches(
     activity_service.invalidate_dashboard_caches(session)
 
 
+def _invalidate_after_registration_mutation(session) -> None:
+    """報名生命週期 mutation（報名/配對/重配/拒絕/還原/轉正/改基本資料）後清整組
+    activity 儀表板快取（含 dashboard_table 招生達成率），而非只清 summary（F4）。
+
+    Why: dashboard_table（_query_classroom_stats）統計各班 enrolled 課程數與達成率，
+    任何改變 enrolled 集合或班級歸屬的 mutation 都會讓它過時；原本這些站點只清 summary，
+    dashboard_table 幾乎只能等 TTL(1800s) 自然過期 → 最長陳舊 30 分鐘。純付款/提問
+    mutation 不影響 enrolled 數，維持 summary_only。invalidate 一律在 commit 之後呼叫
+    （report_cache_service 用獨立 cache_session，活動 session rollback 不影響它）。
+    """
+    activity_service.invalidate_dashboard_caches(session)
+
+
 def _public_etag_response(request: Request, response: Response, payload):
     """為公開端點套上 ETag + no-cache 行為。
 

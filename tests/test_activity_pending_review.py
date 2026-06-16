@@ -488,6 +488,47 @@ class TestAdminApprovalWorkflow:
             )
             assert actives == 1
 
+    def test_public_register_invalidates_dashboard_table_cache(self, pending_client):
+        # F4：報名生命週期 mutation 須清 dashboard_table（招生達成率儀表板）快取，
+        # 否則統計最長陳舊 1800 秒。原本只清 summary、dashboard_table 幾乎不被清。
+        from datetime import timedelta
+        from models.database import ReportSnapshot
+        from utils.taipei_time import now_taipei_naive
+
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s, with_student=False)  # admin + 班級 + 課程
+            now = now_taipei_naive()
+            s.add(
+                ReportSnapshot(
+                    cache_key="activity_dashboard_table:seed",
+                    category="activity_dashboard_table",
+                    payload="{}",
+                    computed_at=now,
+                    expires_at=now + timedelta(seconds=1800),
+                )
+            )
+            s.commit()
+            assert (
+                s.query(ReportSnapshot)
+                .filter(ReportSnapshot.category == "activity_dashboard_table")
+                .count()
+                == 1
+            )
+
+        r = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        assert r.status_code == 201
+
+        with sf() as s:
+            assert (
+                s.query(ReportSnapshot)
+                .filter(ReportSnapshot.category == "activity_dashboard_table")
+                .count()
+                == 0
+            )
+
     def test_reject_api_soft_deletes_and_marks_rejected(self, pending_client):
         client, sf = pending_client
         with sf() as s:

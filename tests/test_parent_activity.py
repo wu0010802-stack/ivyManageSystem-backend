@@ -481,6 +481,51 @@ class TestRegister:
         )
         assert resp.status_code == 400
 
+    def test_register_triggers_dashboard_cache_invalidation(
+        self, activity_client, monkeypatch
+    ):
+        # F4：家長登入版報名原本完全不清任何 activity dashboard cache（連 summary 都沒清），
+        # 導致招生達成率儀表板統計陳舊。報名後須觸發 dashboard 快取失效。
+        # 註：家長端走 RLS session、handler 內不可 commit（get_parent_db 擁有交易，commit 會
+        # 掉 SET LOCAL）；SQLite 測試下未提交寫鎖會讓真正的 DELETE fail-soft（生產環境 Postgres
+        # 為獨立連線、正常清除），故此處以 spy 驗證「報名有觸發 invalidate」這個行為。
+        from services.activity_service import activity_service
+
+        calls = []
+        orig = activity_service.invalidate_dashboard_caches
+
+        def spy(session):
+            calls.append(True)
+            try:
+                return orig(session)
+            except Exception:
+                return 0
+
+        monkeypatch.setattr(activity_service, "invalidate_dashboard_caches", spy)
+
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            course = _create_course(session, name="繪畫")
+            session.commit()
+            token = _parent_token(user)
+            sid = student.id
+            cid = course.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [cid],
+                "supply_ids": [],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 201
+        assert calls, "家長端報名應觸發 dashboard 快取失效"
+
     def test_register_empty_courses_and_supplies_returns_400(self, activity_client):
         client, session_factory = activity_client
         with session_factory() as session:

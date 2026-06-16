@@ -75,6 +75,7 @@ from ._shared import (
     _invalid_class,
     _get_active_classroom,
     _invalidate_activity_dashboard_caches,
+    _invalidate_after_registration_mutation,
     _derive_payment_status,
     _check_registration_open,
     _attach_courses,
@@ -753,7 +754,7 @@ def public_register(
                     )
                 return _silent_success_response
             raise
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         logger.info(
             "新報名提交：id=%s matched=%s",
             reg.id,
@@ -1288,7 +1289,7 @@ def public_confirm_promotion(
             "parent",
         )
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         return {"message": f"已確認升為正式：{course_name}"}
     except HTTPException:
         session.rollback()
@@ -1335,7 +1336,7 @@ def public_decline_promotion(
                 )
             raise
         session.commit()
-        _invalidate_activity_dashboard_caches(session, summary_only=True)
+        _invalidate_after_registration_mutation(session)
         return {"message": f"已放棄升正式：{course_name}"}
     except HTTPException:
         session.rollback()
