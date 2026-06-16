@@ -115,6 +115,54 @@ def _seed_leave_quotas(ctx: SeedContext) -> int:
     return n
 
 
+def _seed_meetings(ctx: SeedContext) -> int:
+    """每個 closed 月一場園務會議,全員工出席(薪資輸入:會議加班費 + 缺席扣節慶)。
+
+    放在 m04(而非 m08_portal)是因為會議是「薪資輸入」,必須在 m06 結算薪資
+    「之前」就存在;否則結算當下會議尚未建立,SalaryRecord.meeting_overtime_pay
+    會結算為 0(引擎只讀 MeetingRecord.overtime_pay 累加,engine.py:2544)。
+    會議加班費 = 時薪 × 2hr(月薪走 base_salary/30/8,時薪走 hourly_rate)。
+    """
+    from models.database import MeetingRecord
+
+    session = ctx.session
+    employees = ctx.employees or []
+    if not employees or session is None:
+        return 0
+
+    meeting_ot_hours = 2.0  # 園務會議固定 2hr(對齊 BonusConfig.meeting_default_hours)
+    n = 0
+    for year, month in ctx.closed_months():
+        wd = workdays(year, month, upto=None)
+        if not wd:
+            continue
+        meeting_date = wd[-1]  # 該月最後一個工作日
+        meeting_dt = datetime(
+            meeting_date.year, meeting_date.month, meeting_date.day, 18, 0
+        )
+        for emp in employees:
+            if (emp.employee_type or "regular") == "hourly":
+                per_hour = float(emp.hourly_rate or 0)
+            else:
+                per_hour = float(emp.base_salary or 0) / 30 / 8
+            ot_pay = round_half_up(per_hour * meeting_ot_hours)
+            session.add(
+                MeetingRecord(
+                    employee_id=emp.id,
+                    meeting_date=meeting_date,
+                    meeting_type="staff_meeting",
+                    attended=True,
+                    overtime_hours=meeting_ot_hours,
+                    overtime_pay=ot_pay,
+                    remark="園務會議(seedgen)",
+                    created_at=meeting_dt,
+                    updated_at=meeting_dt,
+                )
+            )
+            n += 1
+    return n
+
+
 def seed(ctx: SeedContext) -> None:
     """建立請假/加班/補打卡記錄。"""
     from models.leave import LeaveRecord
@@ -272,7 +320,10 @@ def seed(ctx: SeedContext) -> None:
                 )
                 punch_n += 1
 
+    meeting_n = _seed_meetings(ctx)
+
     ctx.log("leave_quotas", quota_n)
     ctx.log("leave_records", leave_n)
     ctx.log("overtime_records", overtime_n)
     ctx.log("punch_correction_requests", punch_n)
+    ctx.log("meeting_records", meeting_n)

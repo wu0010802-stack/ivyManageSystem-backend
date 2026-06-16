@@ -58,6 +58,22 @@ _ROLE_TO_EMP_PREFIX: dict[str, str] = {
     "support": "SP",
 }
 
+# role key → Employee.position(職務字串)。**必填,不可留 NULL**:薪資引擎
+# calculate_festival_bonus_breakdown / _calculate_bonuses 的第一道閘是
+# `if not position: is_eligible=False`(engine.py:2033),position 為空會讓
+# 節慶獎金與超額獎金對「所有角色(含主管/帶班/辦公室)」一律歸零。
+# 字串需對齊引擎可辨識值:辦公室走 OFFICE_FESTIVAL_BONUS_BASE({司機/美編/行政}),
+# 帶班/主管的金額另由 classroom 關聯 / supervisor_role 決定,position 僅供過閘。
+_ROLE_TO_POSITION: dict[str, str] = {
+    "supervisor": "主任",  # 主管:節慶走 supervisor_role 分支(3500);position 過閘用
+    "admin": "行政",  # 辦公室:OFFICE_FESTIVAL_BONUS_BASE['行政']=2000
+    "accountant": "行政",  # 會計歸辦公室職員,走辦公室節慶(2000)
+    "homeroom": "幼兒園教師",  # 班導:帶班分支走 head_teacher,A 級
+    "assistant": "助理教保員",  # 副班導:帶班分支走 assistant_teacher,C 級
+    "art": "幼兒園教師",  # 才藝/美語老師:帶班分支走 art_teacher(三級皆 2000)
+    "support": "助理教保員",  # 支援人員:無帶班/非主管/非辦公室→節慶 0,position 僅過閘
+}
+
 # 已知測試帳號的固定密碼(dev DB 測試用,絕不上 prod)。
 _TEST_PASSWORD = "ivytest123"
 
@@ -154,6 +170,12 @@ def _make_employee(ctx: SeedContext, faker: Faker, role: str, seq: int):
         base_salary=0 if is_hourly else base_salary,
         hourly_rate=reference_data.ART_TEACHER_HOURLY_RATE if is_hourly else 0,
         insurance_salary_level=0 if is_hourly else base_salary,
+        # 職務(必填):空值會讓引擎節慶/超額獎金對全角色歸零(見 _ROLE_TO_POSITION 註解)。
+        position=_ROLE_TO_POSITION[role],
+        # bonus_grade 刻意留 NULL:引擎以 job_title.name("班導師"/"助教")查 DB
+        # grade_map(job_titles.bonus_grade=B)得正確等級。若硬塞 emp.bonus_grade='A',
+        # _get_effective_bonus_title 會把職稱改成"幼兒園教師"(不在 grade_map)→
+        # fallback 'C' 級、壓低 festival base(head 2000→1500)。
         supervisor_role=("主任" if role == "supervisor" else None),
         dependents=faker.rng.choice([0, 0, 0, 1, 2]),
     )

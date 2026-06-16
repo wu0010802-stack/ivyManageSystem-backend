@@ -1,6 +1,7 @@
 """m08_portal:公告(含收件人/已讀/家長收件人)、聯絡簿(含 ack/reply)、
 
-放學接送、會議紀錄、學校行事曆、工作日覆寫、行事曆確認。
+放學接送、學校行事曆、工作日覆寫、行事曆確認。
+(園務會議 MeetingRecord 已移至 m04_leave_ot——會議是薪資輸入,須在 m06 之前產生。)
 
 依賴(由 orchestrator 保證已落庫 + 在 ctx registry):
 - m00:`ctx.config`(學年/today/closed_months)
@@ -19,7 +20,6 @@
 - 公告已讀:員工端 AnnouncementRead + 家長端 AnnouncementParentRead。
 - 聯絡簿每位 active 學生在 closed/部分日期一筆;已發布者家長補 ack/reply。
 - 放學接送(StudentDismissalCall):closed 月已完成,當月留部分 pending。
-- 會議(MeetingRecord):每個 closed 月一場園務會議,全員工出席。
 - 行事曆(SchoolEvent)+ 工作日覆寫(WorkdayOverride)+ 家長簽閱
   (EventAcknowledgment,需 requires_acknowledgment 事件)。
 - 家長端(users role='parent')目前僅一個已知帳號;家長面紀錄(ack/reply/
@@ -47,7 +47,6 @@ from models.event import (
     AnnouncementRead,
     AnnouncementRecipient,
     EventAcknowledgment,
-    MeetingRecord,
     SchoolEvent,
     WorkdayOverride,
 )
@@ -434,42 +433,6 @@ def _seed_dismissal_calls(ctx: SeedContext, parent_user) -> None:
         ctx.log("student_dismissal_calls", n_call)
 
 
-def _seed_meetings(ctx: SeedContext) -> None:
-    """每個 closed 月一場園務會議,全員工出席(供薪資/加班對帳一致性)。"""
-    session = ctx.session
-    employees = ctx.employees or []
-    if not employees:
-        return
-
-    n_meeting = 0
-    for year, month in ctx.closed_months():
-        # 月底某個工作日開會。
-        from ..calendar import workdays as _workdays
-
-        wd = _workdays(year, month, upto=None)
-        if not wd:
-            continue
-        meeting_date = wd[-1]  # 該月最後一個工作日
-        for emp in employees:
-            session.add(
-                MeetingRecord(
-                    employee_id=emp.id,
-                    meeting_date=meeting_date,
-                    meeting_type="staff_meeting",
-                    attended=True,
-                    overtime_hours=0,
-                    overtime_pay=0,
-                    remark="園務會議(seedgen)",
-                    created_at=_naive_dt(meeting_date, hour=18, minute=0),
-                    updated_at=_naive_dt(meeting_date, hour=18, minute=0),
-                )
-            )
-            n_meeting += 1
-
-    if n_meeting:
-        ctx.log("meeting_records", n_meeting)
-
-
 def _seed_school_events(ctx: SeedContext, parent_user) -> None:
     """學校行事曆事件 + 工作日覆寫 + 需簽閱事件的家長簽閱紀錄。"""
     session = ctx.session
@@ -550,12 +513,15 @@ def _seed_school_events(ctx: SeedContext, parent_user) -> None:
 
 
 def seed(ctx: SeedContext) -> None:
-    """建立公告/聯絡簿/接送/會議/行事曆等 portal 資料。"""
+    """建立公告/聯絡簿/接送/行事曆等 portal 資料。
+
+    園務會議(MeetingRecord)已移至 m04_leave_ot 產生:會議是「薪資輸入」,
+    必須在 m06 結算薪資之前存在(否則 meeting_overtime_pay 結算為 0)。
+    """
     parent_user = _parent_user(ctx)
     author_emp = _admin_employee(ctx)
 
     _seed_announcements(ctx, author_emp, parent_user)
     _seed_contact_book(ctx, parent_user)
     _seed_dismissal_calls(ctx, parent_user)
-    _seed_meetings(ctx)
     _seed_school_events(ctx, parent_user)

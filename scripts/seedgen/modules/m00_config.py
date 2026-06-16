@@ -176,6 +176,7 @@ def _seed_bonus_configs_and_targets(ctx: SeedContext) -> tuple[int, int]:
     school_wide_target 取規模 students(全校在籍目標),供超額獎金引擎使用。
     """
     from models.config import BonusConfig, GradeTarget
+    from services.salary.constants import OVERTIME_TARGET, TARGET_ENROLLMENT
 
     school_target = ctx.config.scale_profile["students"]
     # uq_bonus_configs_active:只能一筆 is_active=True;僅最新年度為 active。
@@ -196,18 +197,24 @@ def _seed_bonus_configs_and_targets(ctx: SeedContext) -> tuple[int, int]:
         bonus_n += 1
 
         # 每年級一筆 grade_target(編制人數門檻;節慶/超額獎金人數級距)。
+        # 目標人數對齊薪資引擎 fallback 常數(各年級不同)。引擎自 GradeTarget
+        # 載入這些值「覆寫」hardcode 常數(engine._apply_configs_for_month),
+        # 若全用單一死值(如 30)會讓所有班「在籍 < 目標」→ 超額獎金永遠 0、
+        # 節慶比例(在籍/目標)被不當壓低。
         for name, _age, _sort, _is_grad in _GRADES:
+            fest = TARGET_ENROLLMENT.get(name, {})
+            over = OVERTIME_TARGET.get(name, {})
             ctx.session.add(
                 GradeTarget(
                     config_year=year,
                     grade_name=name,
                     bonus_config_id=bc.id,
-                    festival_two_teachers=30,
-                    festival_one_teacher=20,
-                    festival_shared=15,
-                    overtime_two_teachers=30,
-                    overtime_one_teacher=20,
-                    overtime_shared=15,
+                    festival_two_teachers=fest.get("2_teachers", 30),
+                    festival_one_teacher=fest.get("1_teacher", 20),
+                    festival_shared=fest.get("shared_assistant", 15),
+                    overtime_two_teachers=over.get("2_teachers", 30),
+                    overtime_one_teacher=over.get("1_teacher", 20),
+                    overtime_shared=over.get("shared_assistant", 15),
                 )
             )
             target_n += 1
