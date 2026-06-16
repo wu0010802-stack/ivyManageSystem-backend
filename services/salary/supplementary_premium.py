@@ -160,7 +160,15 @@ def _resolve_health_insured_salary(emp_dict: dict, insurance_service) -> float:
 
     優先序：emp_dict["health_insured_salary"] → bracket(resolved_raw)。
     無投保者（raw <= 0）回 0，caller 視為「不計補充保費」。
+
+    bug #6：health_exempt 員工（公保/老人健保等由其他管道投保健保者）一般健保本人
+    保費已歸零（insurance_service.calculate：health_exempt → health_emp=0）。補充保費
+    比照一般健保免扣口徑回 0（caller 皆以 health_insured_salary <= 0 短路停扣），
+    使引擎路徑與 manual_adjust 即時重算路徑（共用本函式）口徑一致。
+    ⚠ 補充保費對 health_exempt 是否法定應扣有爭議，預設比照一般健保免扣，待業主確認。
     """
+    if emp_dict.get("health_exempt"):
+        return 0.0
     raw = resolve_insurance_salary_raw(
         employee_type=emp_dict.get("employee_type") or "regular",
         base_salary=emp_dict.get("base_salary", 0) or 0,
@@ -199,6 +207,11 @@ def apply_bonus_supplementary_to_breakdown(
     時薪制既有「兼職薪資路徑」（engine.py:1567）已將其 supplementary_health_employee
     設值，本函式以 += 累計，兩條路徑共存（hourly 員工同時拿獎金時兩者都會扣）。
     """
+    # bug #6：health_exempt 員工（公保/老人健保等）一般健保本人保費已歸零，補充保費
+    # 比照免扣口徑提前 return 0（下方 _resolve_health_insured_salary 亦會回 0，此為
+    # 入口顯式守衛，與一般健保歸零對齊）。⚠ 法定爭議項，預設免扣待業主確認。
+    if emp_dict.get("health_exempt"):
+        return 0
     # 費率優先取 insurance_service 設定；僅在「屬性缺失或為 None」時退回預設。
     # 不可用 `or DEFAULT`——明確設定的 0.0 是 falsy，會被無聲退回 2.11%，
     # 使「費率設 0 停扣」失效（與兼職路徑 engine.py 的 `or 0` 語意相反）。
