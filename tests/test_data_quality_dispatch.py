@@ -71,6 +71,38 @@ def test_emit_skips_ignored_status(test_db_session):
     assert is_new is False
 
 
+def test_emit_skips_acked_status(test_db_session):
+    """bug #24 回歸：已 ack 的告警在隔日重掃時不應重新 open。
+
+    ack 語意採『暫時已讀仍可隨新資料重開』（待業主確認）：emit 偵測到同
+    dedup_key 已有 ack row 時只更新 last_seen_at、不新建 open row、不重推 Sentry/LINE。
+    """
+    v = _v(entity_id="47")
+    pre = DataQualityReport(
+        rule_code=v.rule_code,
+        severity=v.severity,
+        entity_type=v.entity_type,
+        entity_id=v.entity_id,
+        summary="prev",
+        dedup_key=v.dedup_key,
+        status="ack",
+    )
+    test_db_session.add(pre)
+    test_db_session.commit()
+
+    queue = []
+    is_new = emit(v, test_db_session, line_queue=queue)
+    rows = (
+        test_db_session.query(DataQualityReport)
+        .filter(DataQualityReport.dedup_key == v.dedup_key)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].status == "ack", "ack 狀態不得被重開成 open"
+    assert is_new is False
+    assert queue == [], "ack 抑制重開，不應再加入 LINE queue"
+
+
 def test_emit_appends_to_line_queue_on_new_open(test_db_session):
     v = _v(entity_id="45")
     queue = []

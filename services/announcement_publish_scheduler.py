@@ -78,18 +78,16 @@ def tick(session, now: datetime, last_dispatched_at: datetime) -> int:
             .filter(AnnouncementParentRecipient.announcement_id == ann.id)
             .all()
         )
-        try:
-            _fire_announcement_push(
-                session,
-                ann,
-                recipients,
-                sender_user_id=None,
-            )
-        except Exception:
-            logger.exception(
-                "announcement publish scheduler 對 announcement_id=%s push 失敗",
-                ann.id,
-            )
+        # bug #23：單筆推播失敗不可被吞——若吞掉，下方 set_watermark 仍會把游標
+        # 推過這筆公告 → 該公告永久略過、家長永不收到。故讓例外自然冒泡：
+        # 整個 tick 連同 set_watermark 一起回滾，游標停在 last_dispatched_at，
+        # 下一個 interval 重試整批（搭配 bug #22 由 scheduler_iteration 記為失敗）。
+        _fire_announcement_push(
+            session,
+            ann,
+            recipients,
+            sender_user_id=None,
+        )
 
     set_watermark(session, _WATERMARK_NAME, now)
     session.commit()
@@ -121,12 +119,15 @@ async def run_announcement_publish_scheduler(stop_event: asyncio.Event) -> None:
             expected_interval_seconds=check_interval,
         ):
             now = now_taipei_naive()
-            try:
-                with session_scope() as session:
-                    tick(session, now=now, last_dispatched_at=last_dispatched_at)
-                last_dispatched_at = now
-            except Exception:
-                logger.exception("announcement publish scheduler tick failed")
+            # bug #22：tick 例外不可在此被 try/except 吞掉，否則 scheduler_iteration
+            # 會把失敗記成成功（監控全綠卻零推播）。讓例外自然冒泡進
+            # scheduler_iteration（與其他 13 個 scheduler 及 offboarding SEC-007 一致），
+            # 由它記為失敗、退避上報，loop 於下個 interval 重試整批。
+            # last_dispatched_at 只在 tick 成功時推進；失敗時維持舊值，
+            # 配合 tick 內 set_watermark 回滾，確保失敗窗口下次重試。
+            with session_scope() as session:
+                tick(session, now=now, last_dispatched_at=last_dispatched_at)
+            last_dispatched_at = now
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
         except asyncio.TimeoutError:
