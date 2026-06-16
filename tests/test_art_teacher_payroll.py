@@ -24,6 +24,7 @@ from models.database import (
     ArtTeacherPayrollEntry,
     Base,
     Employee,
+    SalaryRecord,
     User,
 )
 from services.art_teacher_payroll import (
@@ -654,3 +655,228 @@ class TestArtPayrollViewerScope:
         _login_role(client, sf, role="admin", perm=["SALARY_READ"])
         res = client.get("/api/art-teacher-payroll", params={"year": 2026, "month": 4})
         assert res.status_code == 200, res.text
+
+
+def _finalized_record(session, emp_id, year=2026, month=4):
+    """建一筆封存（鎖定）的 SalaryRecord。"""
+    rec = SalaryRecord(
+        employee_id=emp_id,
+        salary_year=year,
+        salary_month=month,
+        is_finalized=True,
+        needs_recalc=False,
+        finalized_by="acct",
+    )
+    session.add(rec)
+    return rec
+
+
+def _draft_record(session, emp_id, year=2026, month=4):
+    """建一筆未封存草稿 SalaryRecord（needs_recalc=False）。"""
+    rec = SalaryRecord(
+        employee_id=emp_id,
+        salary_year=year,
+        salary_month=month,
+        is_finalized=False,
+        needs_recalc=False,
+    )
+    session.add(rec)
+    return rec
+
+
+class TestFinalizeGuard:
+    """才藝鐘點明細是薪資引擎的 hourly_total 來源（engine.py:3104）。
+    若該月薪資已封存仍可改來源，明細/薪資紀錄/轉帳清冊/財報會互相對不起來；
+    未封存月份改動則必須標 needs_recalc 讓 finalize 完整性檢查攔下。
+    """
+
+    def test_create_blocked_when_month_finalized(self, art_client):
+        client, sf = art_client
+        with sf() as session:
+            emp = _add_hourly_emp(session)
+            emp_id = emp.id
+            session.flush()
+            _finalized_record(session, emp_id)
+            session.commit()
+        _login(client, sf)
+        res = client.post(
+            "/api/art-teacher-payroll",
+            json={
+                "employee_id": emp_id,
+                "salary_year": 2026,
+                "salary_month": 4,
+                "subject": "美語",
+                "hours": 25,
+                "hourly_rate": 620,
+            },
+        )
+        assert res.status_code == 409, res.text
+
+    def test_update_blocked_when_month_finalized(self, art_client):
+        client, sf = art_client
+        with sf() as session:
+            emp = _add_hourly_emp(session)
+            entry = ArtTeacherPayrollEntry(
+                employee_id=emp.id,
+                salary_year=2026,
+                salary_month=4,
+                subject="美語",
+                hours=10,
+                hourly_rate=500,
+                base_amount=5000,
+                total_amount=5000,
+            )
+            session.add(entry)
+            session.flush()
+            _finalized_record(session, emp.id)
+            session.commit()
+            eid = entry.id
+        _login(client, sf)
+        res = client.put(f"/api/art-teacher-payroll/{eid}", json={"hours": 20})
+        assert res.status_code == 409, res.text
+
+    def test_delete_blocked_when_month_finalized(self, art_client):
+        client, sf = art_client
+        with sf() as session:
+            emp = _add_hourly_emp(session)
+            entry = ArtTeacherPayrollEntry(
+                employee_id=emp.id,
+                salary_year=2026,
+                salary_month=4,
+                subject="美語",
+                hours=1,
+                hourly_rate=100,
+                base_amount=100,
+                total_amount=100,
+            )
+            session.add(entry)
+            session.flush()
+            _finalized_record(session, emp.id)
+            session.commit()
+            eid = entry.id
+        _login(client, sf)
+        res = client.delete(f"/api/art-teacher-payroll/{eid}")
+        assert res.status_code == 409, res.text
+
+    def test_batch_import_blocked_when_month_finalized(self, art_client):
+        client, sf = art_client
+        with sf() as session:
+            emp = _add_hourly_emp(session, name="歐瑞煌")
+            session.flush()
+            _finalized_record(session, emp.id)
+            session.commit()
+        _login(client, sf)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["員工姓名", "科目", "時數", "鐘點費"])
+        ws.append(["歐瑞煌", "美語", 25, 550])
+        buf = BytesIO()
+        wb.save(buf)
+        res = client.post(
+            "/api/art-teacher-payroll/batch-import?year=2026&month=4",
+            files={
+                "file": (
+                    "in.xlsx",
+                    buf.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert res.status_code == 409, res.text
+
+    def test_create_marks_draft_salary_stale(self, art_client):
+        client, sf = art_client
+        with sf() as session:
+            emp = _add_hourly_emp(session)
+            emp_id = emp.id
+            session.flush()
+            _draft_record(session, emp_id)
+            session.commit()
+        _login(client, sf)
+        res = client.post(
+            "/api/art-teacher-payroll",
+            json={
+                "employee_id": emp_id,
+                "salary_year": 2026,
+                "salary_month": 4,
+                "subject": "美語",
+                "hours": 25,
+                "hourly_rate": 620,
+            },
+        )
+        assert res.status_code == 200, res.text
+        with sf() as session:
+            rec = (
+                session.query(SalaryRecord)
+                .filter_by(employee_id=emp_id, salary_year=2026, salary_month=4)
+                .first()
+            )
+            assert rec.needs_recalc is True
+
+    def test_update_marks_draft_salary_stale(self, art_client):
+        client, sf = art_client
+        with sf() as session:
+            emp = _add_hourly_emp(session)
+            emp_id = emp.id
+            entry = ArtTeacherPayrollEntry(
+                employee_id=emp.id,
+                salary_year=2026,
+                salary_month=4,
+                subject="美語",
+                hours=10,
+                hourly_rate=500,
+                base_amount=5000,
+                total_amount=5000,
+            )
+            session.add(entry)
+            session.flush()
+            _draft_record(session, emp_id)
+            session.commit()
+            eid = entry.id
+        _login(client, sf)
+        res = client.put(f"/api/art-teacher-payroll/{eid}", json={"hours": 20})
+        assert res.status_code == 200, res.text
+        with sf() as session:
+            rec = (
+                session.query(SalaryRecord)
+                .filter_by(employee_id=emp_id, salary_year=2026, salary_month=4)
+                .first()
+            )
+            assert rec.needs_recalc is True
+
+    def test_batch_import_marks_draft_salary_stale(self, art_client):
+        client, sf = art_client
+        with sf() as session:
+            emp = _add_hourly_emp(session, name="歐瑞煌")
+            emp_id = emp.id
+            session.flush()
+            _draft_record(session, emp_id)
+            session.commit()
+        _login(client, sf)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["員工姓名", "科目", "時數", "鐘點費"])
+        ws.append(["歐瑞煌", "美語", 25, 550])
+        buf = BytesIO()
+        wb.save(buf)
+        res = client.post(
+            "/api/art-teacher-payroll/batch-import?year=2026&month=4",
+            files={
+                "file": (
+                    "in.xlsx",
+                    buf.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["imported"] == 1
+        with sf() as session:
+            rec = (
+                session.query(SalaryRecord)
+                .filter_by(employee_id=emp_id, salary_year=2026, salary_month=4)
+                .first()
+            )
+            assert rec.needs_recalc is True
