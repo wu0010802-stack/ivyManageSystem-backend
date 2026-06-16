@@ -642,15 +642,19 @@ class SalaryEngine:
                 self._target_enrollment = {}
                 self._overtime_target = {}
                 for grade_name, t in merged.items():
+                    # grade_targets 任一欄在 DB 為 NULL 時以 0 取代，避免 None
+                    # 進入 target map → 下游 calculate_festival_bonus_v2 的
+                    # `target > 0` 對 None 拋 TypeError 被吞掉、節慶/超額靜默歸 0
+                    # （bug #14；festival.get_*_target 另有 `or 0` 防禦縱深）。
                     self._target_enrollment[grade_name] = {
-                        "2_teachers": t.festival_two_teachers,
-                        "1_teacher": t.festival_one_teacher,
-                        "shared_assistant": t.festival_shared,
+                        "2_teachers": t.festival_two_teachers or 0,
+                        "1_teacher": t.festival_one_teacher or 0,
+                        "shared_assistant": t.festival_shared or 0,
                     }
                     self._overtime_target[grade_name] = {
-                        "2_teachers": t.overtime_two_teachers,
-                        "1_teacher": t.overtime_one_teacher,
-                        "shared_assistant": t.overtime_shared,
+                        "2_teachers": t.overtime_two_teachers or 0,
+                        "1_teacher": t.overtime_one_teacher or 0,
+                        "shared_assistant": t.overtime_shared or 0,
                     }
 
     @contextmanager
@@ -811,15 +815,19 @@ class SalaryEngine:
                 self._target_enrollment = {}
                 self._overtime_target = {}
                 for grade_name, t in merged.items():
+                    # grade_targets 任一欄在 DB 為 NULL 時以 0 取代，避免 None
+                    # 進入 target map → 下游 calculate_festival_bonus_v2 的
+                    # `target > 0` 對 None 拋 TypeError 被吞掉、節慶/超額靜默歸 0
+                    # （bug #14；festival.get_*_target 另有 `or 0` 防禦縱深）。
                     self._target_enrollment[grade_name] = {
-                        "2_teachers": t.festival_two_teachers,
-                        "1_teacher": t.festival_one_teacher,
-                        "shared_assistant": t.festival_shared,
+                        "2_teachers": t.festival_two_teachers or 0,
+                        "1_teacher": t.festival_one_teacher or 0,
+                        "shared_assistant": t.festival_shared or 0,
                     }
                     self._overtime_target[grade_name] = {
-                        "2_teachers": t.overtime_two_teachers,
-                        "1_teacher": t.overtime_one_teacher,
-                        "shared_assistant": t.overtime_shared,
+                        "2_teachers": t.overtime_two_teachers or 0,
+                        "1_teacher": t.overtime_one_teacher or 0,
+                        "shared_assistant": t.overtime_shared or 0,
                     }
 
             # 載入職位標準底薪（抽到模組層 load_position_salary_standards 與年終 builder 共用）
