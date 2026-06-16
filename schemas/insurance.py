@@ -1,8 +1,7 @@
 """Insurance router (api/insurance.py) 對應 Out schemas — Phase 3.5。
 
-涵蓋 5 個 grandfather endpoint（全 admin 後台，無公開）：
+涵蓋 4 個 grandfather endpoint（全 admin 後台，無公開）：
 
-- POST   /insurance/import                  → DeleteResultOut (re-use, {message})
 - GET    /insurance/calculate               → InsuranceCalculationOut
 - GET    /insurance/brackets                → InsuranceBracketListOut
 - PUT    /insurance/brackets                → InsuranceBracketUpsertResultOut
@@ -22,9 +21,6 @@ from __future__ import annotations
 from typing import Optional
 
 from schemas._base import IvyBaseModel
-from schemas._common import (  # noqa: F401  (re-export 便於 router import)
-    DeleteResultOut,
-)
 
 # ============ GET /insurance/calculate ============
 

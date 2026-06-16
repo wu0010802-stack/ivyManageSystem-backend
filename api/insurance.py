@@ -19,7 +19,6 @@ from models.database import (
     InsuranceBracket,
     SalaryRecord,
 )
-from schemas._common import DeleteResultOut
 from schemas.insurance import (
     InsuranceBracketDeleteResultOut,
     InsuranceBracketListOut,
@@ -48,11 +47,6 @@ _DEP_SALARY_WRITE = require_staff_permission(Permission.SALARY_WRITE)
 
 
 # ============ Pydantic Models ============
-
-
-class InsuranceTableImport(BaseModel):
-    table_type: str = "labor"
-    data: List[dict]
 
 
 class InsuranceBracketIn(BaseModel):
@@ -148,20 +142,6 @@ def _count_finalized_months_for_year(session, salary_year: int) -> int:
 
 
 # ============ Routes ============
-
-
-@router.post("/insurance/import", response_model=DeleteResultOut)
-def import_insurance_table(
-    data: InsuranceTableImport,
-    current_user: dict = Depends(require_staff_permission(Permission.SALARY_WRITE)),
-):
-    """匯入勞健保級距表"""
-    success = _insurance_service.import_table(
-        data=data.data, table_type=data.table_type
-    )
-    if success:
-        return {"message": f"{data.table_type} 級距表匯入成功"}
-    raise HTTPException(status_code=400, detail="匯入失敗")
 
 
 @router.get("/insurance/calculate", response_model=InsuranceCalculationOut)

@@ -147,6 +147,15 @@ def _activity_rate(
     分母 = 該班 active 學生數（lifecycle_status==active）。
     對齊 status_aggregator._aggregate_activity_rate 的 query 語意，但回 fraction。
     分母 0 → 回 (Decimal('0'), 0, 0)（除零保護；無學生視為 0 才藝率）。
+
+    TODO(bh-misc #28, 待業主確認口徑)：分母目前用「現態 active 學生數」，
+    FIRST/SECOND 兩列共用同一分母（現態快照）。理想應改用「該學期基準日
+    point-in-time 在籍」per-semester 分母——學生跨學期進出時現態分母會與該學期
+    實際在籍不符，可能誤判達標（例：下學期才入學的學生灌大上學期分母）。
+    暫不乾淨落地，因為：(a) 此口徑刻意對齊既有考核才藝率
+    （status_aggregator），逕改會讓年終才藝率與考核才藝率漂移；(b) 無現成
+    per-semester 在籍快照可直接查（需 enrollment snapshot 或會籍歷史）。
+    改動前須業主明確裁示口徑，並同步評估考核才藝率一致性。
     """
     enrolled = int(
         db.scalar(
