@@ -77,7 +77,11 @@ def _create_admin(
     session,
     username: str = "fee_admin",
     password: str = "TempPass123",
-    permission_names: list[str] = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+    permission_names: list[str] = [
+        "ACTIVITY_READ",
+        "ACTIVITY_WRITE",
+        "ACTIVITY_PAYMENT_APPROVE",
+    ],
 ) -> User:
     user = User(
         username=username,
@@ -1418,3 +1422,124 @@ class TestForceRefundReasonAndApprovalGuards:
             )
             assert len(refunds) == 1
             assert _REFUND_REASON_OK in (refunds[0].notes or "")
+
+
+class TestActivityRefundInvalidatesFinanceCache:
+    """三條自動沖帳退款路徑（刪報名 / 退課 / 移除用品）寫 refund 後，
+    必須讓 finance-summary / monthly-pnl 快取失效。
+
+    這些退款被 finance_report_service.get_activity_refund_by_month 聚合進
+    /reports/finance-summary 與 /reports/monthly-pnl（30 分鐘快取）。正規退費端點
+    （registrations_payments / pos / registrations_static）都已呼叫
+    _invalidate_finance_summary_cache，這三條自動沖帳路徑漏掉會讓財務總表最多
+    30 分鐘看不到退款。
+    """
+
+    def test_delete_registration_invalidates_finance_cache(
+        self, fee_client, monkeypatch
+    ):
+        import api.activity.registrations as reg_mod
+
+        called = []
+        monkeypatch.setattr(
+            reg_mod,
+            "_invalidate_finance_summary_cache",
+            lambda: called.append(1),
+            raising=False,
+        )
+
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, paid_amount=1000)
+            s.add(
+                ActivityPaymentRecord(
+                    registration_id=reg.id,
+                    type="payment",
+                    amount=1000,
+                    payment_date=date.today(),
+                    payment_method="轉帳",
+                    operator="fee_admin",
+                )
+            )
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}"
+            "?force_refund=true&refund_reason=測試刪除沖帳（家長申請辦理退費）"
+        )
+        assert res.status_code == 200, res.text
+        assert called, "刪報名自動沖帳後未使 finance-summary 快取失效"
+
+    def test_withdraw_course_invalidates_finance_cache(self, fee_client, monkeypatch):
+        import api.activity.registrations_items as items_mod
+
+        called = []
+        monkeypatch.setattr(
+            items_mod,
+            "_invalidate_finance_summary_cache",
+            lambda: called.append(1),
+            raising=False,
+        )
+
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, course_price=500, paid_amount=500, is_paid=True)
+            s.commit()
+            reg_id = reg.id
+            course_id = (
+                s.query(RegistrationCourse.course_id)
+                .filter(RegistrationCourse.registration_id == reg_id)
+                .scalar()
+            )
+
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/courses/{course_id}"
+            "?force_refund=true&refund_reason=測試退課沖帳（家長申請辦理退費）"
+        )
+        assert res.status_code == 200, res.text
+        assert called, "退課自動沖帳後未使 finance-summary 快取失效"
+
+    def test_remove_supply_invalidates_finance_cache(self, fee_client, monkeypatch):
+        import api.activity.registrations_items as items_mod
+
+        called = []
+        monkeypatch.setattr(
+            items_mod,
+            "_invalidate_finance_summary_cache",
+            lambda: called.append(1),
+            raising=False,
+        )
+
+        client, sf = fee_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(
+                s,
+                course_price=500,
+                supply_price=500,
+                paid_amount=1000,
+                is_paid=True,
+            )
+            s.commit()
+            reg_id = reg.id
+            supply_record_id = (
+                s.query(RegistrationSupply.id)
+                .filter(RegistrationSupply.registration_id == reg_id)
+                .scalar()
+            )
+
+        assert _login(client).status_code == 200
+
+        res = client.delete(
+            f"/api/activity/registrations/{reg_id}/supplies/{supply_record_id}"
+            "?force_refund=true&refund_reason=測試移除用品沖帳（家長已同意辦理）"
+        )
+        assert res.status_code == 200, res.text
+        assert called, "移除用品自動沖帳後未使 finance-summary 快取失效"
