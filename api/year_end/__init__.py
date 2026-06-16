@@ -446,10 +446,12 @@ def add_special_bonus(
 ):
     if not session.get(YearEndCycle, cycle_id):
         raise HTTPException(404, "cycle 不存在")
-    # bug sweep 2026-05-16 P0-3：
+    # bug sweep 2026-05-16 P0-3 + P1（2026-06-16）：
     # (a) 反向 race：若 settlement 還未建，_recompute 會 silently no-op，
     #     special_bonus 寫入但 total_amount 不會反映，造成漏算。要求 settlement 先在。
-    # (b) FINALIZED 不可改：核定後再加 special_bonus 會改 total_amount，等於事後加錢。
+    # (b) 非 DRAFT 不可改：已簽核（SUPERVISOR/ACCOUNTING_SIGNED）或已核定（FINALIZED）
+    #     後再加 special_bonus 會改 total_amount，等於簽章還在卻事後改轉帳金額。
+    #     與 build_settlements / manual_patch / import_excel 的「非 DRAFT 即凍結」對齊。
     # 取 settlement 時加 with_for_update 防 race（與 sign 端點對齊）。
     settlement = (
         session.query(YearEndSettlement)
@@ -462,10 +464,13 @@ def add_special_bonus(
             status_code=400,
             detail="該員工尚未建立年終結算單，請先建立 settlement 再加 special_bonus",
         )
-    if settlement.status == YearEndSettlementStatus.FINALIZED:
+    if settlement.status != YearEndSettlementStatus.DRAFT:
         raise HTTPException(
             status_code=400,
-            detail="年終結算已 FINALIZED，不允許新增 special_bonus（會改變 total_amount）",
+            detail=(
+                f"年終結算狀態為 {settlement.status.value}（非 DRAFT），"
+                "不允許新增 special_bonus（會改變 total_amount）；已簽核請先退回 DRAFT"
+            ),
         )
     item = SpecialBonusItem(
         year_end_cycle_id=cycle_id,
@@ -487,9 +492,9 @@ def _recompute_settlement_special_total(
     """重算指定 (cycle, employee) settlement 的 special_bonus_total / total_amount。
 
     若 settlement 不存在則 no-op（settlement 建立時會主動回算既有 special_bonus）；
-    若 settlement 已 FINALIZED 則拋 HTTPException，避免事後改動轉帳金額
-    （caller add_special_bonus 已守住，這裡為 defense-in-depth：import_excel 等
-    批次 path 也走此 helper）。
+    若 settlement 非 DRAFT（已簽核 / 已核定）則拋 HTTPException，避免簽章還在卻
+    事後改動轉帳金額（caller add_special_bonus 已守住，這裡為 defense-in-depth：
+    import_excel 等批次 path 也走此口徑）。
     """
     total = (
         session.query(SpecialBonusItem)
@@ -506,9 +511,11 @@ def _recompute_settlement_special_total(
     )
     if s is None:
         return
-    if s.status == YearEndSettlementStatus.FINALIZED:
+    if s.status != YearEndSettlementStatus.DRAFT:
         raise HTTPException(
-            400, "settlement 已 FINALIZED，不可重算特別獎金（需重新開啟年終週期）"
+            400,
+            f"settlement 狀態為 {s.status.value}（非 DRAFT），"
+            "不可重算特別獎金（已簽核請先退回 DRAFT；已核定需重新開啟年終週期）",
         )
     s.special_bonus_total = total_sum
     s.total_amount = s.payable_amount + total_sum

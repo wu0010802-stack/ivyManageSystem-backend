@@ -218,6 +218,53 @@ class TestAddSpecialBonusFinalizedGuard:
         assert res.status_code == 400, res.text
         assert "尚未建立" in res.json()["detail"]
 
+    @pytest.mark.parametrize(
+        "signed_status",
+        [
+            YearEndSettlementStatus.SUPERVISOR_SIGNED,
+            YearEndSettlementStatus.ACCOUNTING_SIGNED,
+        ],
+    )
+    def test_rejects_when_settlement_signed(self, client_with_db, signed_status):
+        """P1（2026-06-16）：已簽核（主管/會計）但未核定的年終，仍不可被新增
+        special_bonus 改 total_amount。
+
+        威脅：add_special_bonus 原本只擋 FINALIZED，SUPERVISOR_SIGNED /
+        ACCOUNTING_SIGNED 會被放行 → 簽章還在，但轉帳金額被 YEAR_END_WRITE 改掉。
+        對齊其他 canonical 路徑（build / manual / import）一律以「非 DRAFT」為凍結。
+        """
+        client, sf = client_with_db
+        cycle_id, emp_id = _seed_cycle_with_settlement(sf, signed_status)
+        _login(client)
+        res = client.post(
+            f"/api/year_end/cycles/{cycle_id}/special_bonuses",
+            json={
+                "employee_id": emp_id,
+                "bonus_type": SpecialBonusType.TEACHING_EXTRA.value,
+                "amount": 5000,
+                "period_label": "2025下",
+                "reason": "簽核後事後加錢",
+            },
+        )
+        assert res.status_code == 400, res.text
+        assert signed_status.value in res.json()["detail"]
+
+        # 金額未被改動，且沒有 special_bonus row 落地
+        with sf() as s:
+            settlement = (
+                s.query(YearEndSettlement)
+                .filter_by(year_end_cycle_id=cycle_id, employee_id=emp_id)
+                .one()
+            )
+            assert settlement.total_amount == Decimal("50000")
+            assert settlement.special_bonus_total == Decimal("0")
+            count = (
+                s.query(SpecialBonusItem)
+                .filter_by(year_end_cycle_id=cycle_id, employee_id=emp_id)
+                .count()
+            )
+            assert count == 0
+
     def test_allows_when_settlement_draft_and_updates_total(self, client_with_db):
         """settlement DRAFT 狀態正常加入特別獎金，total_amount 同步更新。"""
         client, sf = client_with_db
