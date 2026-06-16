@@ -30,6 +30,7 @@ from models.activity import (
     ActivityCourse,
     ActivityPaymentRecord,
     ActivityRegistration,
+    ActivitySupply,
     RegistrationCourse,
 )
 from models.database import Base, Classroom, Guardian, Student, User
@@ -143,6 +144,26 @@ def _create_course(
     return course
 
 
+def _create_supply(
+    session,
+    *,
+    name="畫具",
+    price=300,
+    school_year=115,
+    semester=1,
+):
+    supply = ActivitySupply(
+        name=name,
+        price=price,
+        school_year=school_year,
+        semester=semester,
+        is_active=True,
+    )
+    session.add(supply)
+    session.flush()
+    return supply
+
+
 def _parent_token(user: User) -> str:
     return create_access_token(
         {
@@ -177,6 +198,30 @@ class TestListCourses:
         for i in items:
             assert i["enrolled_count"] == 0
             assert i["is_full"] is False
+
+    def test_list_courses_defaults_to_current_term(self, activity_client):
+        # F2：不帶學期參數時應只回「當前學期」active 課程，而非跨所有學期，
+        # 否則前端用第一筆課程決定報名學期可能被帶去報舊學期。對齊全模組
+        # resolve_academic_term_filters 慣例。
+        from utils.academic import resolve_current_academic_term
+
+        cur_sy, cur_sem = resolve_current_academic_term()
+        old_sy = cur_sy - 1
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, _, _ = _setup_family(session)
+            _create_course(session, name="當期課", school_year=cur_sy, semester=cur_sem)
+            _create_course(session, name="舊期課", school_year=old_sy, semester=cur_sem)
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get(
+            "/api/parent/activity/courses",
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        names = {i["name"] for i in resp.json()["items"]}
+        assert names == {"當期課"}
 
 
 class TestRegister:
@@ -353,6 +398,83 @@ class TestRegister:
                 "school_year": 115,
                 "semester": 1,
                 "course_ids": [c2_id],
+                "supply_ids": [],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_register_rejects_cross_term_course(self, activity_client):
+        # F1：報名 payload 學期與課程學期不符時應 400，不可把舊學期 active 課程
+        # 掛到新學期報名（混入跨學期項目 + 用舊學期價虛灌應收）。對齊公開/後台端。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            old_course = _create_course(
+                session, name="舊課", school_year=114, semester=2
+            )
+            session.commit()
+            token = _parent_token(user)
+            sid = student.id
+            cid = old_course.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [cid],
+                "supply_ids": [],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_register_rejects_cross_term_supply(self, activity_client):
+        # F1：用品學期與 payload 學期不符時應 400。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            old_supply = _create_supply(
+                session, name="舊用品", school_year=114, semester=2
+            )
+            session.commit()
+            token = _parent_token(user)
+            sid = student.id
+            sup_id = old_supply.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [],
+                "supply_ids": [sup_id],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 400
+
+    def test_register_rejects_duplicate_course_id(self, activity_client):
+        # F1：同一 course_id 重複出現應乾淨 400，而非 flush 撞 uq_reg_course → 500。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            course = _create_course(session, name="繪畫")
+            session.commit()
+            token = _parent_token(user)
+            sid = student.id
+            cid = course.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [cid, cid],
                 "supply_ids": [],
             },
             cookies={"access_token": token},

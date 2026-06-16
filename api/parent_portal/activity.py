@@ -32,6 +32,7 @@ from services.business_errors.parent import (
     ParentNotAuthorized,
     StudentNotFound,
 )
+from utils.academic import resolve_academic_term_filters
 from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
@@ -62,11 +63,15 @@ def list_courses(
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
 ):
-    q = session.query(ActivityCourse).filter(ActivityCourse.is_active == True)
-    if school_year is not None:
-        q = q.filter(ActivityCourse.school_year == school_year)
-    if semester is not None:
-        q = q.filter(ActivityCourse.semester == semester)
+    # F2：未帶學期參數時預設「當前學期」（對齊管理端/公開端全模組 resolve_academic_term_filters
+    # 慣例），否則回所有 active 課程（含『複製上學期』遺留），前端用第一筆課程決定報名學期
+    # 時可能被帶去報舊學期。只給單一參數會 raise 400，與其他端一致。
+    sy, sem = resolve_academic_term_filters(school_year, semester)
+    q = session.query(ActivityCourse).filter(
+        ActivityCourse.is_active == True,
+        ActivityCourse.school_year == sy,
+        ActivityCourse.semester == sem,
+    )
     courses = q.order_by(ActivityCourse.name.asc()).all()
 
     # 計算每個 course 已報名（enrolled + promoted_pending）人數，用於前端顯示是否額滿
@@ -169,6 +174,13 @@ def register_courses(
     if not payload.course_ids and not payload.supply_ids:
         raise HTTPException(status_code=400, detail="至少需選擇一門課程或一項用品")
 
+    # F1：去重，避免同一 id 重複出現在 flush 時撞 uq_reg_course/uq_reg_supply → 500
+    # （對齊公開報名端 api/activity/public.py 的 by-name 去重，收斂成乾淨 400）。
+    if len(payload.course_ids) != len(set(payload.course_ids)):
+        raise HTTPException(status_code=400, detail="課程清單中有重複項目")
+    if len(payload.supply_ids) != len(set(payload.supply_ids)):
+        raise HTTPException(status_code=400, detail="用品清單中有重複項目")
+
     user_id = current_user["user_id"]
     _assert_student_owned(session, user_id, payload.student_id, for_write=True)
 
@@ -226,9 +238,16 @@ def register_courses(
     # 加入課程：依容量決定 enrolled / waitlist。容量檢查同樣需用 admin-bypass
     # SECURITY DEFINER function 取真實 count（RLS 隔離下只看自己會誤判沒滿）
     for course_id in payload.course_ids:
+        # F1：限定同學期課程，避免把舊學期 active 課程掛到新學期報名（對齊公開/後台端）。
+        # 學期不符即視為查無此課，沿用既有「找不到課程」400 分支。
         course = (
             session.query(ActivityCourse)
-            .filter(ActivityCourse.id == course_id, ActivityCourse.is_active == True)
+            .filter(
+                ActivityCourse.id == course_id,
+                ActivityCourse.is_active == True,
+                ActivityCourse.school_year == payload.school_year,
+                ActivityCourse.semester == payload.semester,
+            )
             .first()
         )
         if course is None:
@@ -256,9 +275,15 @@ def register_courses(
         )
 
     for supply_id in payload.supply_ids:
+        # F1：限定同學期用品（對齊公開/後台端），學期不符視為查無此用品。
         supply = (
             session.query(ActivitySupply)
-            .filter(ActivitySupply.id == supply_id, ActivitySupply.is_active == True)
+            .filter(
+                ActivitySupply.id == supply_id,
+                ActivitySupply.is_active == True,
+                ActivitySupply.school_year == payload.school_year,
+                ActivitySupply.semester == payload.semester,
+            )
             .first()
         )
         if supply is None:
