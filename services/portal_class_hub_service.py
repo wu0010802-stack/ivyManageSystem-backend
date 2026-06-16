@@ -8,7 +8,7 @@ from typing import Literal, Optional
 
 from sqlalchemy.orm import Session
 from models.database import Employee, Classroom, Student
-from models.classroom import StudentAttendance, StudentIncident
+from models.classroom import LIFECYCLE_ACTIVE, StudentAttendance, StudentIncident
 from models.portfolio import (
     StudentMedicationOrder,
     StudentMedicationLog,
@@ -109,6 +109,7 @@ def count_attendance_pending(
         .filter(
             Student.classroom_id == classroom_id,
             Student.is_active.is_(True),
+            Student.lifecycle_status == LIFECYCLE_ACTIVE,
         )
         .all()
     )
@@ -162,6 +163,7 @@ def list_pending_medications(
             StudentMedicationOrder.order_date == today,
             Student.classroom_id == classroom_id,
             Student.is_active.is_(True),
+            Student.lifecycle_status == LIFECYCLE_ACTIVE,
             StudentMedicationLog.administered_at.is_(None),
             StudentMedicationLog.skipped.is_(False),
             StudentMedicationLog.correction_of.is_(None),
@@ -202,6 +204,7 @@ def count_observation_pending(
         .filter(
             Student.classroom_id == classroom_id,
             Student.is_active.is_(True),
+            Student.lifecycle_status == LIFECYCLE_ACTIVE,
         )
         .all()
     )
@@ -236,6 +239,7 @@ def count_incidents_today(
         .filter(
             Student.classroom_id == classroom_id,
             Student.is_active.is_(True),
+            Student.lifecycle_status == LIFECYCLE_ACTIVE,
             StudentIncident.occurred_at >= start,
             StudentIncident.occurred_at < end,
         )
@@ -259,6 +263,7 @@ def count_contact_book_pending(
         .filter(
             Student.classroom_id == classroom_id,
             Student.is_active.is_(True),
+            Student.lifecycle_status == LIFECYCLE_ACTIVE,
         )
         .all()
     )
