@@ -382,6 +382,13 @@ def export_monthly_report(
     for sd in student_details:
         sd["classroom_name"] = cls_map.get(sd.get("classroom_id"), "(未分班)")
 
+    # Finding E：匯出比照 GET——無 student 權限的角色（如 accountant）不得拿到
+    # 全園幼生完整身分證。遮罩後再交給 writer，並讓稽核 changes 反映實際是否含全碼。
+    full_id = _has_student_pii_access(current_user)
+    if not full_id:
+        for sd in student_details:
+            sd["id_number"] = _mask_id_number(sd.get("id_number"))
+
     first_row = snapshot_rows[0]
     overview = {
         "year": year,
@@ -418,8 +425,11 @@ def export_monthly_report(
         action="EXPORT",
         entity_type="gov_moe_monthly",
         entity_id=f"{year}-{month:02d}",
-        summary=f"匯出 {year}/{month} 教育部月報 Excel（{len(student_details)} 名幼生，含身分證）",
-        changes={"year": year, "month": month, "is_full_id_number": True},
+        summary=(
+            f"匯出 {year}/{month} 教育部月報 Excel（{len(student_details)} 名幼生，"
+            f"{'含完整身分證' if full_id else '身分證遮罩'}）"
+        ),
+        changes={"year": year, "month": month, "is_full_id_number": full_id},
     )
 
     today_str = now_taipei_naive().strftime("%Y-%m-%d")

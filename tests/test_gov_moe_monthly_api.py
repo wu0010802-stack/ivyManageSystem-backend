@@ -12,6 +12,7 @@ Fixture 設計：
     none_cookie
 """
 
+import json
 import os
 import sys
 from datetime import date
@@ -332,6 +333,106 @@ def test_monthly_view_keeps_full_id_for_admin(monthly_ctx):
     )
     assert r.status_code == 200, r.text
     ids = [d.get("id_number") for d in r.json()["student_detail"]]
+    assert "A123456789" in ids
+
+
+def _id_numbers_from_export(content: bytes) -> list:
+    """讀回匯出 xlsx「幼生明細」表的身分證欄（第 3 欄）。"""
+    wb = load_workbook(BytesIO(content))
+    ws = wb["幼生明細"]
+    rows = list(ws.rows)
+    # row[0] 是表頭，其後為資料列
+    return [r[2].value for r in rows[1:]]
+
+
+def test_export_masks_id_number_for_non_student_role(monthly_ctx):
+    """Finding E（#25）：持 GOV_REPORTS_EXPORT 但無 student 權限的角色，
+    匯出 Excel 的幼生明細不得含完整身分證（比照 GET 端遮罩）。"""
+    _seed_student_with_id(monthly_ctx)
+    with monthly_ctx["sf"]() as s:
+        s.add(
+            User(
+                username="acct_exp",
+                password_hash=hash_password("AcctExp1"),
+                role="accountant",
+                permission_names=["GOV_REPORTS_EXPORT", "GOV_REPORTS_VIEW"],
+                is_active=True,
+            )
+        )
+        s.commit()
+    _generate(monthly_ctx)  # export_admin 先產報
+
+    client = monthly_ctx["client"]
+    res = client.post(
+        "/api/auth/login", json={"username": "acct_exp", "password": "AcctExp1"}
+    )
+    acct_cookie = {"access_token": res.cookies.get("access_token")}
+    r = client.get(
+        "/api/gov-moe/monthly/export",
+        params={"year": 2026, "month": 5, "format": "xlsx"},
+        cookies=acct_cookie,
+    )
+    assert r.status_code == 200, r.text
+    ids = _id_numbers_from_export(r.content)
+    assert "A123456789" not in ids, f"accountant 匯出不應含完整身分證: {ids}"
+    assert "A*********" in ids, f"應為遮罩後身分證: {ids}"
+
+
+def test_export_masked_role_audit_marks_not_full_id(monthly_ctx):
+    """遮罩匯出時稽核 changes 的 is_full_id_number 須為 False（反映實際）。"""
+    _seed_student_with_id(monthly_ctx)
+    with monthly_ctx["sf"]() as s:
+        s.add(
+            User(
+                username="acct_exp2",
+                password_hash=hash_password("AcctExp2"),
+                role="accountant",
+                permission_names=["GOV_REPORTS_EXPORT", "GOV_REPORTS_VIEW"],
+                is_active=True,
+            )
+        )
+        s.commit()
+    _generate(monthly_ctx)
+
+    client = monthly_ctx["client"]
+    res = client.post(
+        "/api/auth/login", json={"username": "acct_exp2", "password": "AcctExp2"}
+    )
+    acct_cookie = {"access_token": res.cookies.get("access_token")}
+    r = client.get(
+        "/api/gov-moe/monthly/export",
+        params={"year": 2026, "month": 5, "format": "xlsx"},
+        cookies=acct_cookie,
+    )
+    assert r.status_code == 200, r.text
+
+    with monthly_ctx["sf"]() as s:
+        audit = (
+            s.query(AuditLog)
+            .filter(
+                AuditLog.action == "EXPORT",
+                AuditLog.entity_type == "gov_moe_monthly",
+            )
+            .order_by(AuditLog.id.desc())
+            .first()
+        )
+    assert audit is not None
+    changes = json.loads(audit.changes)
+    assert changes.get("is_full_id_number") is False
+
+
+def test_export_keeps_full_id_for_admin(monthly_ctx):
+    """回歸：有 student 權限（admin/wildcard）匯出仍含完整身分證。"""
+    _seed_student_with_id(monthly_ctx)
+    _generate(monthly_ctx)
+    r = _with_cookie(
+        monthly_ctx,
+        "export_cookie",
+        "get",
+        "/api/gov-moe/monthly/export?year=2026&month=5&format=xlsx",
+    )
+    assert r.status_code == 200, r.text
+    ids = _id_numbers_from_export(r.content)
     assert "A123456789" in ids
 
 
