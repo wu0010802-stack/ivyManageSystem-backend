@@ -125,9 +125,14 @@ def _guard_leave_quota(
     is_hospitalized: bool,
     exclude_id: int = None,
     include_pending: bool = True,
+    target_date=None,
 ) -> None:
     """sick 走勞工請假規則第 4 條雙配額；compensatory 走補休專用配額（quota 不存在=0）；
-    其他假別走 _check_quota 單一配額。"""
+    其他假別走 _check_quota 單一配額。
+
+    target_date（Bug #15 修補，2026-06-16）：假單 start_date，下傳給配額檢查讓
+      配額列年度與用量年度（year）對齊，避免跨學年邊界誤判。未傳時各 quota 檢查
+      內部 fallback 到今天（向後相容）。"""
     if leave_type == "sick":
         from datetime import date as _date  # local re-import safe
 
@@ -148,6 +153,7 @@ def _guard_leave_quota(
             leave_hours,
             exclude_id=exclude_id,
             include_pending=include_pending,
+            target_date=target_date,
         )
     else:
         _check_quota(
@@ -158,6 +164,7 @@ def _guard_leave_quota(
             leave_hours,
             include_pending=include_pending,
             exclude_id=exclude_id,
+            target_date=target_date,
         )
 
 
@@ -792,6 +799,7 @@ def create_leave(
             data.start_date.year,
             data.leave_hours,
             bool(data.is_hospitalized),
+            target_date=data.start_date,
         )
 
         # 優先使用 API 傳入的覆蓋值；未提供則依假別預設規則
@@ -991,6 +999,7 @@ def update_leave(
             new_hours,
             new_is_hosp,
             exclude_id=leave_id,
+            target_date=new_start,
         )
 
         # 封存月薪保護：同時檢查原始月份與更新後月份
@@ -1522,6 +1531,7 @@ def approve_leave(
                 bool(leave.is_hospitalized),
                 exclude_id=leave_id,
                 include_pending=True,
+                target_date=leave.start_date,
             )
 
         # ── 封存月薪保護（commit 前）────────────────────────────────────────
@@ -1932,6 +1942,7 @@ def batch_approve_leaves(
                             bool(leave.is_hospitalized),
                             exclude_id=leave_id,
                             include_pending=True,
+                            target_date=leave.start_date,
                         )
                         # 重疊核准硬擋：批次無 force_overlap 旗標，一律拒絕。
                         # 借助 SQLAlchemy autoflush，前一輪已 set status='approved'
@@ -2056,28 +2067,18 @@ def batch_approve_leaves(
                         leave.deduction_ratio = standard_ratio
                     leave.is_deductible = (leave.deduction_ratio or 0) > 0
 
-                # ── 補休假單 grant ledger FIFO 扣抵 / 退回（批次版）──────────
-                if leave.leave_type == "compensatory" and approval_changed:
-                    if data.approved is True:
-                        try:
-                            _consume_compensatory_grants_fifo(
-                                session, leave.employee_id, leave.leave_hours
-                            )
-                        except ValueError as exc:
-                            failed.append({"id": leave_id, "reason": str(exc)})
-                            continue
-                    elif data.approved is False and is_reject_of_approved:
-                        _release_compensatory_grants_fifo(
-                            session, leave.employee_id, leave.leave_hours
-                        )
-                # ─────────────────────────────────────────────────────────────
-
-                # 用 savepoint 把「狀態翻面 + 稽核 log + 考勤同步」包成原子單位：
-                # sync 衝突（LeaveAttendanceConflict/LeavePartialTimeMissing）時整筆
-                # 回滾、只讓該筆 failed，不污染同批其他條目，也不留下「已核准卻沒
-                # 同步 attendance」的半套狀態（P1-1：批次原本完全漏呼叫 sync.apply/
-                # revert，扣薪假別在 Attendance 留不下 LEAVE/partial → 薪資引擎 join
-                # 不到 → 整批漏扣薪且可被 finalize 封存）。
+                # 用 savepoint 把「狀態翻面 + 稽核 log + 考勤同步 + 補休 grant 扣抵/退回」
+                # 包成原子單位：sync 衝突（LeaveAttendanceConflict/LeavePartialTimeMissing）
+                # 或補休 grant 不足（ValueError）時整筆回滾、只讓該筆 failed，不污染同批
+                # 其他條目，也不留下「已核准卻沒同步 attendance」的半套狀態（P1-1：批次原本
+                # 完全漏呼叫 sync.apply/revert，扣薪假別在 Attendance 留不下 LEAVE/partial →
+                # 薪資引擎 join 不到 → 整批漏扣薪且可被 finalize 封存）。
+                #
+                # Bug #3（2026-06-16）：補休 grant 的 _consume/_release 原本在此 savepoint
+                # **之外**執行，sync 衝突回滾只回 savepoint 內變更（狀態/log/attendance），
+                # grant.consumed_hours 的變更卻被同批其他成功條目的 commit 一併落地 → 補休
+                # 帳本與假單脫鉤（少付／超發）。修法：移進同一 savepoint，與單筆 approve_leave
+                # 路徑（sync 先跑、衝突即中止、consume 在其後）的原子性對齊。
                 try:
                     with session.begin_nested():
                         leave.status = (
@@ -2111,9 +2112,23 @@ def batch_approve_leaves(
                             sync.apply(session, leave_id)
                         elif is_reject_of_approved:
                             sync.revert(session, leave_id)
+
+                        # ── 補休假單 grant ledger FIFO 扣抵 / 退回（批次版）──────
+                        # 必須與狀態翻面、sync 同一 savepoint：consume 的 ValueError
+                        # 或上方 sync 的衝突都會讓整個 savepoint 回滾，grant 變更不落地。
+                        if leave.leave_type == "compensatory" and approval_changed:
+                            if data.approved is True:
+                                _consume_compensatory_grants_fifo(
+                                    session, leave.employee_id, leave.leave_hours
+                                )
+                            elif data.approved is False and is_reject_of_approved:
+                                _release_compensatory_grants_fifo(
+                                    session, leave.employee_id, leave.leave_hours
+                                )
                 except (
                     sync.LeaveAttendanceConflict,
                     sync.LeavePartialTimeMissing,
+                    ValueError,
                 ) as exc:
                     failed.append({"id": leave_id, "reason": str(exc)})
                     continue
@@ -2529,6 +2544,7 @@ def _import_leaves_sync(content: bytes) -> dict:
                         emp.id,
                         start_date.year,
                         leave_hours,
+                        target_date=start_date,
                     )
                 else:
                     _check_quota(
@@ -2537,6 +2553,7 @@ def _import_leaves_sync(content: bytes) -> dict:
                         leave_type,
                         start_date.year,
                         leave_hours,
+                        target_date=start_date,
                     )
 
                 effective_ratio = LEAVE_DEDUCTION_RULES[leave_type]

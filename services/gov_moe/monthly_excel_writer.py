@@ -12,6 +12,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from utils.excel_utils import SafeWorksheet
+
 _HEADER_FILL = PatternFill("solid", fgColor="4472C4")
 _HEADER_FONT = Font(bold=True, color="FFFFFF")
 _HEADER_ALIGN = Alignment(horizontal="center", vertical="center")
@@ -41,7 +43,9 @@ def _autofit_columns(ws, min_w: int = 10, max_w: int = 30) -> None:
 
 
 def _dash_if_none(value):
-    return "-" if value is None or value == "" else value
+    # 用全形破折號「—」（非 Excel 公式前綴）作為缺值占位，與總表合計列一致；
+    # 半形「-」會被 SafeWorksheet 視為公式前綴而被加上單引號（SEC-004）。
+    return "—" if value is None or value == "" else value
 
 
 def _format_rate(rate_int: int) -> str:
@@ -50,7 +54,7 @@ def _format_rate(rate_int: int) -> str:
 
 
 def _build_sheet1(wb: Workbook, rows: list[dict]) -> None:
-    ws = wb.create_sheet("班級總表")
+    ws = SafeWorksheet(wb.create_sheet("班級總表"))
     headers = [
         "班級",
         "教師",
@@ -124,7 +128,7 @@ def _build_sheet1(wb: Workbook, rows: list[dict]) -> None:
 
 
 def _build_sheet2(wb: Workbook, details: list[dict]) -> None:
-    ws = wb.create_sheet("幼生明細")
+    ws = SafeWorksheet(wb.create_sheet("幼生明細"))
     headers = [
         "學號",
         "姓名",
@@ -159,7 +163,7 @@ def _build_sheet2(wb: Workbook, details: list[dict]) -> None:
 
 
 def _build_sheet3(wb: Workbook, overview: dict) -> None:
-    ws = wb.create_sheet("統計摘要")
+    ws = SafeWorksheet(wb.create_sheet("統計摘要"))
     lines = [
         ("總人數", overview.get("total_students", 0)),
         ("", ""),
@@ -189,10 +193,10 @@ def _build_sheet3(wb: Workbook, overview: dict) -> None:
                 (
                     overview.get("generated_at").strftime("%Y-%m-%d %H:%M")
                     if overview.get("generated_at")
-                    else "-"
+                    else "—"
                 ),
             ),
-            ("  產生人", overview.get("generated_by", "-")),
+            ("  產生人", overview.get("generated_by", "—")),
         ]
     )
     for label, value in lines:

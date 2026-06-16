@@ -795,13 +795,22 @@ async def import_shifts(
 
 def _import_shifts_sync(content: bytes, week_start: str, username: str) -> dict:
     validate_file_signature(content, ".xlsx")
+    # SEC-006：nrows 上限避免超大 xlsx（ZIP 可壓縮繞過 size cap）全載入凍結 worker
+    # / 耗盡 threadpool（認證後 DoS）；超過即拒絕。仿 api/attendance/upload.py。
+    from utils.excel_io import MAX_IMPORT_ROWS
+
     try:
-        df = pd.read_excel(BytesIO(content))
+        df = pd.read_excel(BytesIO(content), nrows=MAX_IMPORT_ROWS + 1)
     except Exception:
         logger.warning("班表 Excel 解析失敗", exc_info=True)
         raise HTTPException(
             status_code=400,
             detail="無法解析 Excel 檔案，請確認檔案格式正確且未損壞",
+        )
+    if len(df) > MAX_IMPORT_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"匯入列數超過上限 {MAX_IMPORT_ROWS}，請分批匯入",
         )
 
     try:

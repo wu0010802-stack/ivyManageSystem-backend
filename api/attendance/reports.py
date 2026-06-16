@@ -25,6 +25,7 @@ from models.database import (
 )
 from utils.auth import require_staff_permission
 from utils.error_messages import EMPLOYEE_DOES_NOT_EXIST
+from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
 from ._shared import LEAVE_TYPE_LABELS
 
@@ -233,46 +234,14 @@ def get_today_anomalies(
         session.close()
 
 
-@router.get("/anomaly-report")
-def download_anomaly_report(
-    year: int = Query(..., ge=2000, le=2100),
-    month: int = Query(..., ge=1, le=12),
-    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
-):
-    """下載指定月份異常清單（即時從 Attendance DB 重新產生）。
+def _build_anomaly_report_workbook(rows) -> Workbook:
+    """由 (Attendance, Employee) tuple 序列建出考勤異常清單 Workbook。
 
-    舊實作直接吐 output/anomaly_report.xlsx，這份檔案由上一次匯入覆寫，
-    任何 ATTENDANCE_READ 使用者都會拿到他人剛匯入的內容、或拿到月初的舊檔。
-    改成依 (year, month) 即時計算，請求隔離、無共享狀態。
+    透過 SafeWorksheet 包裝寫入，員工姓名 / 狀態等可編輯欄位即使含 Excel 公式
+    前綴（=、+、-、@、|）也不會在主管 / HR 端開啟時被當公式執行（SEC-005）。
     """
-    _, last_day = monthrange(year, month)
-    start = date(year, month, 1)
-    end = date(year, month, last_day)
-
-    session = get_session()
-    try:
-        rows = (
-            session.query(Attendance, Employee)
-            .join(Employee, Attendance.employee_id == Employee.id)
-            .filter(
-                Attendance.attendance_date >= start,
-                Attendance.attendance_date <= end,
-                or_(
-                    Attendance.is_late == True,  # noqa: E712
-                    Attendance.is_early_leave == True,  # noqa: E712
-                    Attendance.is_missing_punch_in == True,  # noqa: E712
-                    Attendance.is_missing_punch_out == True,  # noqa: E712
-                ),
-            )
-            .order_by(Attendance.attendance_date, Employee.name)
-            .limit(5000)
-            .all()
-        )
-    finally:
-        session.close()
-
     wb = Workbook()
-    ws = wb.active
+    ws = SafeWorksheet(wb.active)
     ws.title = "考勤異常清單"
     ws.append(
         [
@@ -315,6 +284,49 @@ def download_anomaly_report(
                 int(att.early_leave_minutes or 0),
             ]
         )
+
+    return wb
+
+
+@router.get("/anomaly-report")
+def download_anomaly_report(
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
+):
+    """下載指定月份異常清單（即時從 Attendance DB 重新產生）。
+
+    舊實作直接吐 output/anomaly_report.xlsx，這份檔案由上一次匯入覆寫，
+    任何 ATTENDANCE_READ 使用者都會拿到他人剛匯入的內容、或拿到月初的舊檔。
+    改成依 (year, month) 即時計算，請求隔離、無共享狀態。
+    """
+    _, last_day = monthrange(year, month)
+    start = date(year, month, 1)
+    end = date(year, month, last_day)
+
+    session = get_session()
+    try:
+        rows = (
+            session.query(Attendance, Employee)
+            .join(Employee, Attendance.employee_id == Employee.id)
+            .filter(
+                Attendance.attendance_date >= start,
+                Attendance.attendance_date <= end,
+                or_(
+                    Attendance.is_late == True,  # noqa: E712
+                    Attendance.is_early_leave == True,  # noqa: E712
+                    Attendance.is_missing_punch_in == True,  # noqa: E712
+                    Attendance.is_missing_punch_out == True,  # noqa: E712
+                ),
+            )
+            .order_by(Attendance.attendance_date, Employee.name)
+            .limit(5000)
+            .all()
+        )
+    finally:
+        session.close()
+
+    wb = _build_anomaly_report_workbook(rows)
 
     buf = io.BytesIO()
     wb.save(buf)

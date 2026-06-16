@@ -83,13 +83,20 @@ def _recompute_record_current_supplementary(session, record, insurance_service):
         emp = session.get(Employee, record.employee_id)
         if emp is None:
             return
-        emp_dict = {
-            "employee_type": getattr(emp, "employee_type", None) or "regular",
-            "base_salary": emp.base_salary or 0,
-            "insurance_salary": getattr(emp, "insurance_salary_level", None),
-            "hourly_rate": getattr(emp, "hourly_rate", 0) or 0,
-            "health_insured_salary": None,
-        }
+        # bug #7：原手刻 emp_dict 用 emp.base_salary（個人底薪）+ 未帶 health_exempt /
+        # 分項投保等欄位，與正式引擎 _load_emp_dict（走 _resolve_standard_base 取職位標準
+        # 底薪）口徑不一致 → 投保基底偏差使當月補充保費/健保/實發暫時算錯。改用引擎
+        # singleton 的 _load_emp_dict 建 emp_dict，確保基底與引擎零漂移。
+        # singleton 未注入時退回一個空配置的引擎（_position_salary_standards 為空 →
+        # _resolve_standard_base 沿用 emp.base_salary，等同舊行為），確保即時重算不靜默跳過。
+        from . import _salary_engine
+
+        engine = _salary_engine
+        if engine is None:
+            from services.salary_engine import SalaryEngine
+
+            engine = SalaryEngine(load_from_db=False)
+        emp_dict = engine._load_emp_dict(emp)
         health_insured_salary = _resolve_health_insured_salary(
             emp_dict, insurance_service
         )

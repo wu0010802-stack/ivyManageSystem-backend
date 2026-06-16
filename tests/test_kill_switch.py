@@ -10,14 +10,17 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-# Bypass paths 規格（與 middleware 內 BYPASS_PATHS 對齊）
+# Bypass paths 規格（與 middleware 內 BYPASS_PATHS 對齊）。
+# 須為「完整掛載前綴」path：auth router prefix=/api/auth，故 /api/auth/login、
+# /api/auth/refresh（先前誤寫 /auth/login 永不命中 → 維護模式下 admin 無法自救，
+# bh-misc #17 已修）。
 EXPECTED_BYPASS_PATHS = (
     "/health/live",
     "/health/ready",
     "/health/schedulers",
     "/api/internal/uptime-webhook",
-    "/auth/login",
-    "/auth/refresh",
+    "/api/auth/login",
+    "/api/auth/refresh",
 )
 
 

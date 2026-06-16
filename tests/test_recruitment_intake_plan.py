@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from models.base import Base
 from models.classroom import (
     ClassGrade,
+    Classroom,
     Student,
     LIFECYCLE_ENROLLED,
     LIFECYCLE_WITHDRAWN,
@@ -314,6 +315,62 @@ def test_reserved_excludes_no_deposit_visit(session):
         for r in compute_intake_plan(session, school_year=115, semester=1)
     }
     assert rows[mid.id]["reserved_count"] == 0
+
+
+def test_enrolled_counts_student_converted_without_reserving_seat(session):
+    """Bug #21：未經保留座位即轉化的學生（visit.provisional_grade_id 為 None）
+    仍應被該年級的 enrolled_count 算入，否則名額會被低估而超收。
+
+    年級歸屬改以 Student.classroom_id → Classroom.grade_id 推導，
+    不依賴是否曾 reserve-seat。
+    """
+    mid = _grade(session, "中班", 2)
+    session.add(
+        GradeIntakeTarget(grade_id=mid.id, school_year=115, semester=1, target_seats=30)
+    )
+    # 中班的一個班級
+    room = Classroom(
+        name="中班-甲",
+        school_year=115,
+        semester=1,
+        grade_id=mid.id,
+        class_code="M-A",
+    )
+    session.add(room)
+    session.flush()
+
+    # 直接轉化、未先保留座位：visit.provisional_grade_id 為 None
+    conv = RecruitmentVisit(
+        month="115.03",
+        child_name="直轉",
+        has_deposit=True,
+        provisional_grade_id=None,
+        target_school_year=115,
+        target_semester=1,
+        enrolled=True,
+    )
+    session.add(conv)
+    session.flush()
+    session.add(
+        Student(
+            student_id="115M001",
+            name="直轉",
+            classroom_id=room.id,
+            enrollment_school_year=115,
+            enrollment_seq=1,
+            lifecycle_status=LIFECYCLE_ENROLLED,
+            recruitment_visit_id=conv.id,
+        )
+    )
+    session.flush()
+
+    rows = {
+        r["grade_id"]: r
+        for r in compute_intake_plan(session, school_year=115, semester=1)
+    }
+    # 修補前此處為 0（學生被漏算）→ 名額超收
+    assert rows[mid.id]["enrolled_count"] == 1
+    assert rows[mid.id]["remaining"] == 29  # 30 - 0 reserved - 1 enrolled
 
 
 def test_set_provisional_seat_defaults_semester(session):

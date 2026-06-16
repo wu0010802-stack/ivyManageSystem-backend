@@ -770,6 +770,10 @@ async def upload_attendance(
             except Exception as e:
                 session.rollback()
                 logger.error(f"Failed to save legacy records: {e}")
+                # 不可吞掉後 fall-through 回傳 summary_df 組的「成功」摘要：
+                # commit 失敗代表 DB 一筆都沒存（已 rollback），靜默回報成功會造成
+                # 資料遺失（例如 status 超長 DataError）。re-raise 交由外層轉成 500。
+                raise
             finally:
                 session.close()
 

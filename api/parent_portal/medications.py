@@ -329,13 +329,13 @@ def create_medication_order(
     logs = _load_logs(session, order.id)
 
     # Audit
+    # SEC-002：原文藥名與衝突過敏原皆為特種個資且欄位級 Fernet 加密，不得寫入
+    # audit_summary（會落明文於 audit_logs.summary）。只記筆數，不嵌原文。
     request.state.audit_entity_id = str(order.id)
-    warning_note = (
-        f" allergy_overridden={[a.allergen for a in conflicts]}" if conflicts else ""
-    )
+    warning_note = f" allergy_override_count={len(conflicts)}" if conflicts else ""
     request.state.audit_summary = (
         f"家長提交用藥單：student_id={payload.student_id} "
-        f"order_id={order.id} medication={payload.medication_name} "
+        f"order_id={order.id} "
         f"slots={payload.time_slots}{warning_note}"
     )
     logger.info(

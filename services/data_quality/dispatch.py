@@ -23,7 +23,11 @@ def emit(
     """寫一條 violation 進 4 線：log + persist + （新 open 時）Sentry + 累積到 line_queue。
 
     Returns: True 若這次是「新 open」（push Sentry + 加入 LINE queue）；
-    False 表示同 dedup_key 已有 open / ignored row，只更新 last_seen_at。
+    False 表示同 dedup_key 已有 open / ack / ignored row，只更新 last_seen_at。
+
+    bug #24：dedup 必須納入 'ack'。否則 ack 後同一告警隔日重掃會被當成「新 open」
+    重建 row + 重推 Sentry/LINE，ack 形同失效。ack 語意採『暫時已讀仍可隨新資料
+    重開』（待業主確認）：抑制重開、只更新 last_seen_at，使後台仍能看到資料未消失。
     """
     # 1. log
     logger.warning(
@@ -39,7 +43,7 @@ def emit(
         session.query(DataQualityReport)
         .filter(
             DataQualityReport.dedup_key == violation.dedup_key,
-            DataQualityReport.status.in_(["open", "ignored"]),
+            DataQualityReport.status.in_(["open", "ack", "ignored"]),
         )
         .first()
     )

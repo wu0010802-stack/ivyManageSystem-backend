@@ -150,9 +150,24 @@ def _aggregate_attendance(
     early_expr = func.sum(
         case((Attendance.is_early_leave.is_(True), 1), else_=0)
     ).label("early")
+    # #11：曠職（status='absent'）日由 sync_attendance_flags 必設兩個
+    # is_missing_punch_* 旗標（曠職本就無打卡），全天請假（status='leave'）日
+    # 亦可能殘留缺卡旗標。若把這些日的缺卡旗標算進 MISSING_PUNCH，會與
+    # ABSENTEEISM / LEAVE 規則對同一天重複計分（曠職日同時 −4 又被未打卡 ×2）。
+    # 因此計 missing_punch 時排除 status IN ('absent','leave') 的列，
+    # 確保「一日缺勤只落一條規則」。
+    _missing_punch_excluded_status = ("absent", "leave")
     missing_expr = func.sum(
-        case((Attendance.is_missing_punch_in.is_(True), 1), else_=0)
-        + case((Attendance.is_missing_punch_out.is_(True), 1), else_=0)
+        case(
+            (
+                Attendance.status.in_(_missing_punch_excluded_status),
+                0,
+            ),
+            else_=(
+                case((Attendance.is_missing_punch_in.is_(True), 1), else_=0)
+                + case((Attendance.is_missing_punch_out.is_(True), 1), else_=0)
+            ),
+        )
     ).label("missing")
     absent_expr = func.sum(case((Attendance.status == "absent", 1), else_=0)).label(
         "absent"

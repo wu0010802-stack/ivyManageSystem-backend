@@ -57,14 +57,18 @@ async def run_offboarding_revoke_scheduler(stop_event: asyncio.Event) -> None:
     check_interval = get_settings().scheduler.offboarding_revoke_check_interval
     logger.info("offboarding revoke scheduler 啟動 (interval=%ss)", check_interval)
     while not stop_event.is_set():
-        with scheduler_iteration(
-            "offboarding_revoke", expected_interval_seconds=check_interval
-        ):
-            try:
+        # SEC-007：try/except 必須在 scheduler_iteration *外*。scheduler_iteration 本身
+        # 已 catch 例外、記 consecutive_failures + heartbeat success=False + 達閾值告警
+        # 後才 swallow 保住 loop。若把 try/except 放在 with 內，例外會在到達
+        # scheduler_iteration 前被吞掉，使失敗被靜默記成成功（撤權零執行而監控全綠）。
+        try:
+            with scheduler_iteration(
+                "offboarding_revoke", expected_interval_seconds=check_interval
+            ):
                 result = run_offboarding_revoke_due_once()
                 record_rows("offboarding_revoke", int(result.get("revoked", 0)))
-            except Exception:
-                logger.exception("offboarding revoke scheduler tick 失敗")
+        except Exception:
+            logger.exception("offboarding revoke scheduler tick 失敗")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
         except asyncio.TimeoutError:

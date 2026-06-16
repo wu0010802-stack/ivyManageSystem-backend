@@ -332,14 +332,16 @@ def create_allergy(
             session.flush()
             session.refresh(a)
             request.state.audit_entity_id = str(student_id)
+            # SEC-002：原文 allergen 為特種個資且欄位級 Fernet 加密，不得寫入
+            # audit_summary / log（會落明文於 audit_logs.summary 與應用 log，繞過加密）。
+            # 改記 alg_id；severity 為低敏感 3 值列舉可保留作為脈絡。
             request.state.audit_summary = (
-                f"新增過敏紀錄：allergen={payload.allergen}, "
-                f"severity={payload.severity}"
+                f"新增過敏紀錄：alg_id={a.id} severity={payload.severity}"
             )
             logger.info(
-                "新增過敏：student_id=%d allergen=%s severity=%s operator=%s",
+                "新增過敏：student_id=%d alg_id=%d severity=%s operator=%s",
                 student_id,
-                payload.allergen,
+                a.id,
                 payload.severity,
                 current_user.get("username"),
             )
@@ -609,10 +611,10 @@ def create_medication_order(
             logs = _load_logs_for_order(session, order.id)
 
             request.state.audit_entity_id = str(student_id)
+            # SEC-002：原文藥名為特種個資且欄位級加密，不得寫入 audit_summary。
             request.state.audit_summary = (
                 f"新增用藥單：order_id={order.id} "
                 f"date={payload.order_date} "
-                f"medication={payload.medication_name} "
                 f"slots={payload.time_slots}"
             )
             logger.info(

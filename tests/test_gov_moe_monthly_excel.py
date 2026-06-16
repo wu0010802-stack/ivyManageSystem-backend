@@ -170,4 +170,4 @@ def test_id_number_none_displayed_as_dash(sample_rows, sample_overview):
     wb = load_workbook(BytesIO(data))
     ws = wb["幼生明細"]
     row2 = list(ws.rows)[1]
-    assert row2[2].value == "-"  # 身分證欄位
+    assert row2[2].value == "—"  # 身分證欄位（缺值占位改全形破折號，SEC-004）

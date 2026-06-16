@@ -16,11 +16,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from models.classroom import (
     ClassGrade,
+    Classroom,
     Student,
     LIFECYCLE_GRADUATED,
     LIFECYCLE_TRANSFERRED,
@@ -62,20 +63,43 @@ def compute_intake_plan(
     )
     reserved_by_grade = {gid: cnt for gid, cnt in reserved_rows}
 
-    # enrolled：Student join visit；以 visit.provisional_grade_id 為年級歸屬
+    # enrolled：Student join visit；年級歸屬以 Student.classroom_id → Classroom.grade_id
+    # 優先（學生實際所在班級），缺班級時退回 visit.provisional_grade_id。
+    #
+    # Bug #21：原實作硬性要求 RecruitmentVisit.provisional_grade_id.isnot(None) 且
+    # 以 visit 的 target_school_year/semester 為年鍵，導致「未先保留座位即直接轉化」
+    # 的學生（visit.provisional_grade_id 為 None）整批被漏算 → 名額超收。
+    #
+    # 年/學期歸戶分兩路（or_）：
+    #   ① 已編班：用 Student.enrollment_school_year（永久不變）＋ Classroom.semester。
+    #   ② 未編班：退回 visit.target_school_year / target_semester（與 reserved 同鍵）。
+    effective_grade_id = func.coalesce(
+        Classroom.grade_id, RecruitmentVisit.provisional_grade_id
+    )
     enrolled_rows = (
-        session.query(RecruitmentVisit.provisional_grade_id, func.count(Student.id))
-        .join(Student, Student.recruitment_visit_id == RecruitmentVisit.id)
+        session.query(effective_grade_id, func.count(Student.id))
+        .select_from(Student)
+        .join(RecruitmentVisit, Student.recruitment_visit_id == RecruitmentVisit.id)
+        .outerjoin(Classroom, Student.classroom_id == Classroom.id)
         .filter(
-            RecruitmentVisit.provisional_grade_id.isnot(None),
-            # R4-5：enrolled 與 reserved 用同一年鍵（visit.target_school_year），避免
-            # 轉換後改 target_school_year 時同一人在某年算 enrolled、另一年算 reserved。
-            RecruitmentVisit.target_school_year == school_year,
-            RecruitmentVisit.target_semester == semester,
-            Student.enrollment_school_year == school_year,
+            effective_grade_id.isnot(None),
             Student.lifecycle_status.notin_(_TERMINAL),
+            or_(
+                # ① 已編班：依學生入學學年 + 班級學期歸戶
+                and_(
+                    Classroom.id.isnot(None),
+                    Student.enrollment_school_year == school_year,
+                    Classroom.semester == semester,
+                ),
+                # ② 未編班：退回 visit 的目標學年/學期（與 reserved 同鍵）
+                and_(
+                    Classroom.id.is_(None),
+                    RecruitmentVisit.target_school_year == school_year,
+                    RecruitmentVisit.target_semester == semester,
+                ),
+            ),
         )
-        .group_by(RecruitmentVisit.provisional_grade_id)
+        .group_by(effective_grade_id)
         .all()
     )
     enrolled_by_grade = {gid: cnt for gid, cnt in enrolled_rows}
