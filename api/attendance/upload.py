@@ -25,6 +25,7 @@ from utils.attendance_guards import assert_no_self_in_batch
 from utils.cache_layer import get_cache
 from utils.attendance_leave_merge import merge_attendance_with_leave
 from utils.attendance_calc import compute_shift_aware_status
+from utils.attendance_shift_window import compute_status_for_employee_date
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.errors import raise_safe_500
@@ -857,6 +858,36 @@ def upload_attendance_csv(
             )
             csv_attendance_cache = {(a.employee_id, a.attendance_date): a for a in _cc}
 
+        # 建 shift maps（對齊 Excel 路徑），讓 CSV 也能查班別視窗
+        _csv_shift_type_map = _get_shift_type_id_map(session)
+        _csv_daily_shift_map: dict = {}
+        _csv_shift_schedule_map: dict = {}
+        if _csv_emp_ids:
+            for ds in (
+                session.query(DailyShift)
+                .filter(DailyShift.employee_id.in_(_csv_emp_ids))
+                .all()
+            ):
+                st = _csv_shift_type_map.get(ds.shift_type_id)
+                if st:
+                    _csv_daily_shift_map[(ds.employee_id, ds.date)] = {
+                        "work_start": st.work_start,
+                        "work_end": st.work_end,
+                        "name": st.name,
+                    }
+            for sa in (
+                session.query(ShiftAssignment)
+                .filter(ShiftAssignment.employee_id.in_(_csv_emp_ids))
+                .all()
+            ):
+                st = _csv_shift_type_map.get(sa.shift_type_id)
+                if st:
+                    _csv_shift_schedule_map[(sa.employee_id, sa.week_start_date)] = {
+                        "work_start": st.work_start,
+                        "work_end": st.work_end,
+                        "name": st.name,
+                    }
+
         employee_stats = {}
 
         for row in request.records:
@@ -914,48 +945,27 @@ def upload_attendance_csv(
                     )
                     continue
 
-                work_start = datetime.strptime(
-                    employee.work_start_time or "08:00", "%H:%M"
-                ).time()
-                work_end = datetime.strptime(
-                    employee.work_end_time or "17:00", "%H:%M"
-                ).time()
-
-                is_late = False
-                is_early_leave = False
                 is_missing_punch_in = punch_in_time is None
                 is_missing_punch_out = punch_out_time is None
-                late_minutes = 0
-                early_leave_minutes = 0
-                status = "normal"
 
-                if punch_in_time:
-                    work_start_dt = datetime.combine(attendance_date, work_start)
-                    if punch_in_time > work_start_dt:
-                        is_late = True
-                        late_minutes = int(
-                            (punch_in_time - work_start_dt).total_seconds() / 60
-                        )
-                        status = "late"
-
-                if punch_out_time:
-                    work_end_dt = datetime.combine(attendance_date, work_end)
-                    if punch_out_time < work_end_dt:
-                        is_early_leave = True
-                        early_leave_minutes = int(
-                            (work_end_dt - punch_out_time).total_seconds() / 60
-                        )
-                        if status == "normal":
-                            status = "early_leave"
-                        else:
-                            status += "+early_leave"
-
-                if is_missing_punch_in:
-                    status = "missing" if status == "normal" else status + "+missing_in"
-                if is_missing_punch_out:
-                    status = (
-                        "missing" if status == "normal" else status + "+missing_out"
-                    )
+                is_head = getattr(employee, "is_head_teacher", False)
+                is_asst = getattr(employee, "is_assistant", False)
+                (
+                    is_late,
+                    late_minutes,
+                    is_early_leave,
+                    early_leave_minutes,
+                    status,
+                ) = compute_status_for_employee_date(
+                    employee,
+                    attendance_date,
+                    punch_in_time,
+                    punch_out_time,
+                    _csv_daily_shift_map,
+                    _csv_shift_schedule_map,
+                    is_head_teacher=is_head,
+                    is_assistant=is_asst,
+                )
 
                 existing = csv_attendance_cache.get((employee.id, attendance_date))
 
