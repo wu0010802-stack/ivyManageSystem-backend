@@ -608,3 +608,286 @@ def test_generate_payouts_does_not_touch_january(
 
     test_db_session.refresh(sr)
     assert sr.needs_recalc is False, "1 月薪資不被標 stale（B3 已移除）"
+
+
+# === P2（2026-06-16）：payout generate/void 不可改動已簽核年終的明細 ===
+#
+# 威脅：generate_payouts/void_payouts 只動 SpecialBonusItem（APPRAISAL_HALF_*），
+# 完全不檢查對應 YearEndSettlement.status。若年終已簽核/核定，settlement.total_amount
+# 已凍結（build_settlements 對非 DRAFT skip），但 payout 仍可覆寫/硬刪明細
+# → 匯出總表(讀 settlement.total)與明細條(讀 items)對不起來。
+
+from models.year_end import (  # noqa: E402
+    EmployeeYearEndSnapshot,
+    YearEndSettlement,
+    YearEndSettlementStatus,
+)
+
+
+def _make_frozen_settlement(
+    session,
+    cycle_id: int,
+    employee_id: int,
+    status: YearEndSettlementStatus,
+) -> YearEndSettlement:
+    """為指定 (year_end_cycle, employee) 建立一張已簽核/核定的 settlement。"""
+    snap = EmployeeYearEndSnapshot(
+        year_end_cycle_id=cycle_id,
+        employee_id=employee_id,
+        base_salary=Decimal("40000"),
+        festival_total=Decimal("0"),
+        hire_months=Decimal("12"),
+    )
+    session.add(snap)
+    session.flush()
+    s = YearEndSettlement(
+        year_end_cycle_id=cycle_id,
+        employee_id=employee_id,
+        snapshot_id=snap.id,
+        payable_amount=Decimal("50000"),
+        total_amount=Decimal("50000"),
+        special_bonus_total=Decimal("0"),
+        status=status,
+    )
+    session.add(s)
+    session.flush()
+    return s
+
+
+def test_generate_payouts_skips_frozen_settlement(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+):
+    """已簽核 settlement 的員工：重跑 generate 不得覆寫其 APPRAISAL_HALF 金額。"""
+    # 首次生成（active 員工 earlier=6400 / later=7200）
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+    cycle = test_db_session.scalar(
+        select(YearEndCycle).where(YearEndCycle.academic_year == 114)
+    )
+    first_item = test_db_session.scalar(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_active_employee.id,
+            SpecialBonusItem.bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+        )
+    )
+    assert first_item.amount == Decimal("6400")
+
+    # 該員工年終結算已主管簽核（凍結）
+    _make_frozen_settlement(
+        test_db_session,
+        cycle.id,
+        sample_active_employee.id,
+        YearEndSettlementStatus.SUPERVISOR_SIGNED,
+    )
+
+    # 考核金額事後被改（模擬重算），再跑一次 generate
+    earlier_summary = test_db_session.scalar(
+        select(AppraisalSummary)
+        .join(
+            AppraisalParticipant,
+            AppraisalSummary.participant_id == AppraisalParticipant.id,
+        )
+        .where(
+            AppraisalParticipant.employee_id == sample_active_employee.id,
+            AppraisalSummary.bonus_amount == Decimal("6400"),
+        )
+    )
+    earlier_summary.bonus_amount = Decimal("9999")
+    test_db_session.flush()
+
+    result = generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+
+    test_db_session.refresh(first_item)
+    # 凍結 → 金額不得被覆寫成 9999
+    assert first_item.amount == Decimal("6400"), "已簽核年終明細被 generate 覆寫"
+    # 該員工被視為 frozen-skip，warnings 標記
+    assert any(
+        str(sample_active_employee.id) in w and "frozen" in w for w in result.warnings
+    ), f"frozen-skip 未反映在 warnings: {result.warnings}"
+
+
+def test_void_payouts_skips_frozen_settlement(
+    test_db_session,
+    setup_summaries_for_both_employees,
+    sample_active_employee,
+    sample_resigned_employee,
+):
+    """已簽核 settlement 的員工：void 不得硬刪其 APPRAISAL_HALF 明細；
+    未簽核(無 settlement)的員工照常刪除。"""
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids={sample_resigned_employee.id},
+        generated_by=1,
+    )
+    cycle = test_db_session.scalar(
+        select(YearEndCycle).where(YearEndCycle.academic_year == 114)
+    )
+    # active 員工年終已會計簽核（凍結）；resigned 員工無 settlement（可刪）
+    _make_frozen_settlement(
+        test_db_session,
+        cycle.id,
+        sample_active_employee.id,
+        YearEndSettlementStatus.ACCOUNTING_SIGNED,
+    )
+
+    deleted = void_payouts(test_db_session, payout_year=2026, voided_by=1)
+
+    active_items = test_db_session.scalars(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_active_employee.id,
+            SpecialBonusItem.bonus_type.in_(
+                [
+                    SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+                    SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
+                ]
+            ),
+        )
+    ).all()
+    resigned_items = test_db_session.scalars(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_resigned_employee.id
+        )
+    ).all()
+    # 凍結員工 2 筆保留；非凍結員工 2 筆刪除
+    assert len(active_items) == 2, "已簽核年終明細被 void 硬刪"
+    assert len(resigned_items) == 0
+    assert deleted == 2
+
+
+# === P3（2026-06-16）：generate payout 的審計資訊不可誤導 ===
+#
+# 威脅：generate_payouts 回傳寫死 warnings=[]，且 calc_meta["summary_status"] 只要有
+# summary id 就寫 "FINALIZED"——未核定 summary 被標成已核定，且 preview 已偵測到的
+# warning 被吞掉。
+
+
+def test_generate_payouts_calc_meta_reflects_unfinalized_summary(
+    test_db_session,
+    two_appraisal_cycles,
+    sample_active_employee,
+):
+    """earlier summary 未核定（DRAFT）→ calc_meta.summary_status 應為 NOT_FINALIZED，
+    且 result.warnings 帶出 preview 的 earlier_summary_not_finalized。"""
+    earlier, later = two_appraisal_cycles
+    p1 = AppraisalParticipant(
+        cycle_id=earlier.id,
+        employee_id=sample_active_employee.id,
+        role_group=RoleGroup.HEAD_TEACHER,
+        hire_months_in_cycle=Decimal("6"),
+    )
+    p2 = AppraisalParticipant(
+        cycle_id=later.id,
+        employee_id=sample_active_employee.id,
+        role_group=RoleGroup.HEAD_TEACHER,
+        hire_months_in_cycle=Decimal("6"),
+    )
+    test_db_session.add_all([p1, p2])
+    test_db_session.flush()
+    test_db_session.add_all(
+        [
+            # earlier 未核定
+            AppraisalSummary(
+                participant_id=p1.id,
+                cycle_id=earlier.id,
+                base_score=Decimal("100"),
+                total_score=Decimal("80"),
+                grade=Grade.GOOD,
+                bonus_amount=Decimal("6400"),
+                status=SummaryStatus.DRAFT,
+            ),
+            # later 已核定
+            AppraisalSummary(
+                participant_id=p2.id,
+                cycle_id=later.id,
+                base_score=Decimal("100"),
+                total_score=Decimal("90"),
+                grade=Grade.OUTSTANDING,
+                bonus_amount=Decimal("7200"),
+                status=SummaryStatus.FINALIZED,
+            ),
+        ]
+    )
+    test_db_session.flush()
+
+    result = generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+
+    first = test_db_session.scalar(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_active_employee.id,
+            SpecialBonusItem.bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_FIRST,
+        )
+    )
+    second = test_db_session.scalar(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_active_employee.id,
+            SpecialBonusItem.bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
+        )
+    )
+    # earlier 未核定 → 不可標成 FINALIZED
+    assert first.calc_meta["summary_status"] == "NOT_FINALIZED"
+    # later 已核定 → FINALIZED
+    assert second.calc_meta["summary_status"] == "FINALIZED"
+    # preview 偵測到的 warning 不可被吞
+    assert "earlier_summary_not_finalized" in result.warnings
+
+
+def test_generate_payouts_calc_meta_missing_summary(
+    test_db_session,
+    two_appraisal_cycles,
+    sample_active_employee,
+):
+    """員工只在 earlier 參與（later 無 summary）→ later 那筆 summary_status=MISSING。"""
+    earlier, later = two_appraisal_cycles
+    p1 = AppraisalParticipant(
+        cycle_id=earlier.id,
+        employee_id=sample_active_employee.id,
+        role_group=RoleGroup.HEAD_TEACHER,
+        hire_months_in_cycle=Decimal("6"),
+    )
+    test_db_session.add(p1)
+    test_db_session.flush()
+    test_db_session.add(
+        AppraisalSummary(
+            participant_id=p1.id,
+            cycle_id=earlier.id,
+            base_score=Decimal("100"),
+            total_score=Decimal("80"),
+            grade=Grade.GOOD,
+            bonus_amount=Decimal("6400"),
+            status=SummaryStatus.FINALIZED,
+        )
+    )
+    test_db_session.flush()
+
+    generate_payouts(
+        test_db_session,
+        payout_year=2026,
+        included_inactive_employee_ids=set(),
+        generated_by=1,
+    )
+
+    second = test_db_session.scalar(
+        select(SpecialBonusItem).where(
+            SpecialBonusItem.employee_id == sample_active_employee.id,
+            SpecialBonusItem.bonus_type == SpecialBonusType.APPRAISAL_HALF_BONUS_SECOND,
+        )
+    )
+    assert second.calc_meta["summary_status"] == "MISSING"
+    assert second.amount == Decimal("0")
