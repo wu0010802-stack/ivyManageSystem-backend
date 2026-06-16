@@ -581,17 +581,21 @@ async def import_excel(
         )
 
 
-@year_end_router.get("/cycles/{cycle_id}/summary.xlsx")
-def export_summary(
-    cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
-    session: Session = Depends(get_session_dep),
-):
-    cycle = session.get(YearEndCycle, cycle_id)
-    if cycle is None:
-        raise HTTPException(404)
+def _build_summary_rows(session: Session, cycle_id: int) -> list[SummaryExportRow]:
+    """組裝年終總表列。
+
+    排除負值結算（時薪/扣款超基數產生的負 payable）：這些不會出現在轉帳名冊
+    （export_transfer 過濾 total_amount>0），列入總表會曝出負年終誤導簽核者、
+    並使總表合計與名冊合計差「負值總和」。保留 0 列（資訊性）。
+    （2026-06-15 運作探測 P3-2；業主裁示不改 engine、僅修總表呈現。）
+    """
     settlements = (
-        session.query(YearEndSettlement).filter_by(year_end_cycle_id=cycle_id).all()
+        session.query(YearEndSettlement)
+        .filter(
+            YearEndSettlement.year_end_cycle_id == cycle_id,
+            YearEndSettlement.total_amount >= 0,
+        )
+        .all()
     )
     emp_idx = {e.id: e for e in session.query(Employee).all()}
     # 整合 special bonuses
@@ -615,6 +619,19 @@ def export_summary(
                 total=s.total_amount,
             )
         )
+    return rows
+
+
+@year_end_router.get("/cycles/{cycle_id}/summary.xlsx")
+def export_summary(
+    cycle_id: int,
+    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    session: Session = Depends(get_session_dep),
+):
+    cycle = session.get(YearEndCycle, cycle_id)
+    if cycle is None:
+        raise HTTPException(404)
+    rows = _build_summary_rows(session, cycle_id)
     payload = export_year_end_summary_xlsx(rows=rows, academic_year=cycle.academic_year)
     return Response(
         content=payload,

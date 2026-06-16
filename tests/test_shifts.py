@@ -17,8 +17,8 @@ from typing import Optional
 
 import pytest
 
-
 # ── Mock 物件（duck-typing，不需 DB）──────────────────────────────────────
+
 
 @dataclass
 class MockShiftAssignment:
@@ -55,7 +55,6 @@ from api.shifts import (  # noqa: E402
     _shift_type_in_use_message,
 )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 單元測試：_apply_employee_assignment_action
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,7 +78,9 @@ class TestApplyEmployeeAssignmentAction:
         session = MockSession()
         item = MockAssignmentItem(employee_id=1, shift_type_id=10)
 
-        result = _apply_employee_assignment_action(session, existing=None, item=item, week_date=WEEK)
+        result = _apply_employee_assignment_action(
+            session, existing=None, item=item, week_date=WEEK
+        )
 
         assert result == "inserted"
         assert len(session.added) == 1
@@ -90,23 +91,31 @@ class TestApplyEmployeeAssignmentAction:
     def test_existing_with_shift_type_updates_only_self(self):
         """已有排班 + 有班別 → 僅更新自己的記錄，不刪其他人"""
         session = MockSession()
-        existing = MockShiftAssignment(employee_id=1, week_start_date=WEEK, shift_type_id=5)
+        existing = MockShiftAssignment(
+            employee_id=1, week_start_date=WEEK, shift_type_id=5
+        )
         item = MockAssignmentItem(employee_id=1, shift_type_id=10)
 
-        result = _apply_employee_assignment_action(session, existing=existing, item=item, week_date=WEEK)
+        result = _apply_employee_assignment_action(
+            session, existing=existing, item=item, week_date=WEEK
+        )
 
         assert result == "updated"
         assert existing.shift_type_id == 10  # 原記錄被更新
-        assert len(session.added) == 0        # 不新增
-        assert len(session.deleted) == 0      # 不刪
+        assert len(session.added) == 0  # 不新增
+        assert len(session.deleted) == 0  # 不刪
 
     def test_existing_with_null_shift_type_deletes(self):
         """已有排班 + 清空班別 → 刪除該員工自己的排班"""
         session = MockSession()
-        existing = MockShiftAssignment(employee_id=1, week_start_date=WEEK, shift_type_id=5)
+        existing = MockShiftAssignment(
+            employee_id=1, week_start_date=WEEK, shift_type_id=5
+        )
         item = MockAssignmentItem(employee_id=1, shift_type_id=None)
 
-        result = _apply_employee_assignment_action(session, existing=existing, item=item, week_date=WEEK)
+        result = _apply_employee_assignment_action(
+            session, existing=existing, item=item, week_date=WEEK
+        )
 
         assert result == "deleted"
         assert existing in session.deleted
@@ -117,7 +126,9 @@ class TestApplyEmployeeAssignmentAction:
         session = MockSession()
         item = MockAssignmentItem(employee_id=1, shift_type_id=None)
 
-        result = _apply_employee_assignment_action(session, existing=None, item=item, week_date=WEEK)
+        result = _apply_employee_assignment_action(
+            session, existing=None, item=item, week_date=WEEK
+        )
 
         assert result == "skipped"
         assert len(session.added) == 0
@@ -134,11 +145,15 @@ class TestApplyEmployeeAssignmentAction:
         session = MockSession()
 
         # employee_2 已有排班（另一主管排的）
-        emp2_existing = MockShiftAssignment(employee_id=2, week_start_date=WEEK, shift_type_id=7)
+        emp2_existing = MockShiftAssignment(
+            employee_id=2, week_start_date=WEEK, shift_type_id=7
+        )
 
         # 現在只操作 employee_1（存新班別）
         item_emp1 = MockAssignmentItem(employee_id=1, shift_type_id=10)
-        _apply_employee_assignment_action(session, existing=None, item=item_emp1, week_date=WEEK)
+        _apply_employee_assignment_action(
+            session, existing=None, item=item_emp1, week_date=WEEK
+        )
 
         # employee_2 的記錄完全未被碰到
         assert emp2_existing not in session.deleted
@@ -147,10 +162,14 @@ class TestApplyEmployeeAssignmentAction:
     def test_notes_are_preserved_on_update(self):
         """更新時，notes 應同步被更新"""
         session = MockSession()
-        existing = MockShiftAssignment(employee_id=1, week_start_date=WEEK, shift_type_id=5, notes="舊備註")
+        existing = MockShiftAssignment(
+            employee_id=1, week_start_date=WEEK, shift_type_id=5, notes="舊備註"
+        )
         item = MockAssignmentItem(employee_id=1, shift_type_id=10, notes="新備註")
 
-        _apply_employee_assignment_action(session, existing=existing, item=item, week_date=WEEK)
+        _apply_employee_assignment_action(
+            session, existing=existing, item=item, week_date=WEEK
+        )
 
         assert existing.notes == "新備註"
 
@@ -158,6 +177,7 @@ class TestApplyEmployeeAssignmentAction:
 # ─────────────────────────────────────────────────────────────────────────────
 # 回歸測試 Bug 2：刪班別時漏查 DailyShift 與 ShiftSwapRequest
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestShiftTypeInUseMessage:
     """
@@ -218,3 +238,29 @@ class TestShiftTypeInUseMessage:
         assert "每週排班" in msg
         assert "每日調班" in msg
         assert "換班申請" not in msg
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 回歸：DailyShiftOut response_model 對排休日 NULL shift_type_id 不可炸
+#
+# Bug（2026-06-15 運作探測 P1-2）：daily_shifts 合法排休列 shift_type_id=NULL，
+#   但 DailyShiftOut.shift_type_id 宣告為非 Optional int → GET /shifts/daily
+#   只要範圍含一筆排休日即 ResponseValidationError → 500，排班頁在有放假日的
+#   月份整頁壞掉。既有測試全走 mock/純函式，照不到 response_model 序列化。
+# ─────────────────────────────────────────────────────────────────────────────
+def test_daily_shift_out_allows_null_shift_type_id():
+    """排休日 shift_type_id=None 為合法狀態，DailyShiftOut 應正常驗證不丟 ValidationError。"""
+    from schemas.shifts import DailyShiftOut
+
+    out = DailyShiftOut(
+        id=1,
+        employee_id=2,
+        employee_name="董雅婷",
+        shift_type_id=None,  # 排休
+        shift_type_name="",
+        work_start="",
+        work_end="",
+        date="2025-08-25",
+        notes="排休",
+    )
+    assert out.shift_type_id is None

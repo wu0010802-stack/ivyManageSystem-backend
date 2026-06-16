@@ -156,7 +156,8 @@ def _live_preview(session, target_date: date) -> dict:
     return {
         "date": target_date.isoformat(),
         "is_approved": False,
-        "status": ApprovalStatus.REJECTED.value,
+        # 未簽核日＝尚未日結（pending），POS 無 reject 動作，不可標 rejected。
+        "status": ApprovalStatus.PENDING.value,
         "approver_username": None,
         "approved_at": None,
         "note": None,
@@ -741,16 +742,14 @@ def pos_reconciliation(
                 {
                     "date": d.isoformat(),
                     "is_approved": data["is_approved"],
+                    # POS 僅兩態：已日結＝approved，未日結（False/None）＝pending。
+                    # 無 reject 動作，未簽核日不可標 rejected。
                     "status": data.get(
                         "status",
                         (
-                            ApprovalStatus.REJECTED.value
-                            if data.get("is_approved") is False
-                            else (
-                                ApprovalStatus.APPROVED.value
-                                if data.get("is_approved")
-                                else ApprovalStatus.PENDING.value
-                            )
+                            ApprovalStatus.APPROVED.value
+                            if data.get("is_approved")
+                            else ApprovalStatus.PENDING.value
                         ),
                     ),
                     "payment_total": data["payment_total"],

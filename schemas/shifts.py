@@ -81,7 +81,9 @@ class DailyShiftOut(IvyBaseModel):
     id: int
     employee_id: int
     employee_name: str
-    shift_type_id: int
+    # 排休日合法為 NULL（models/shift.py：shift_type_id nullable）；
+    # 非 Optional 會使含排休日的 GET /shifts/daily 整批 ResponseValidationError → 500。
+    shift_type_id: Optional[int] = None
     shift_type_name: str
     work_start: str
     work_end: str

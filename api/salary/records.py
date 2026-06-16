@@ -29,6 +29,7 @@ from services.salary.breakdown_enrollment import compute_enrollment_breakdown
 
 logger = logging.getLogger(__name__)
 from utils.auth import require_permission, require_staff_permission
+from utils.http_headers import content_disposition
 from utils.rounding import round_half_up
 from utils.permissions import Permission
 from utils.salary_access import (
@@ -268,9 +269,7 @@ def export_all_salaries(
             return StreamingResponse(
                 io.BytesIO(pdf_bytes),
                 media_type="application/pdf",
-                headers={
-                    "Content-Disposition": f"attachment; filename*=UTF-8''{filename}"
-                },
+                headers={"Content-Disposition": content_disposition(filename)},
             )
 
         from services.salary_slip import generate_salary_excel
@@ -280,7 +279,7 @@ def export_all_salaries(
         return StreamingResponse(
             io.BytesIO(excel_bytes),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+            headers={"Content-Disposition": content_disposition(filename)},
         )
 
 
