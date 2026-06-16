@@ -134,6 +134,88 @@ class TestAttendanceAggregator:
         assert att.early_leave_count == 1
         assert att.missing_punch_count == 1
 
+    def test_absent_day_not_double_counted_as_missing_punch(self, test_db_session):
+        """同一天 status='absent'（曠職、無打卡）只應落 ABSENTEEISM 一條規則，
+        不可同時被 MISSING_PUNCH ×2 重複計分（#11）。
+
+        真實資料中曠職日由 sync_attendance_flags 把 is_missing_punch_in/out
+        都設為 True（曠職日本就無打卡），若 missing_punch_count 把這兩個旗標
+        算進去，該日會被 ABSENTEEISM（−4）與 MISSING_PUNCH（×2）雙重扣分。
+        """
+        s = test_db_session
+        emp = _make_employee(s, "黃曠職")
+        cycle = _make_cycle(s)
+        _make_participant(s, cycle, emp)
+        s.add(
+            Attendance(
+                employee_id=emp.id,
+                attendance_date=date(2025, 9, 10),
+                status="absent",
+                # 曠職日無打卡，旗標如 sync_attendance_flags 實際所設
+                is_missing_punch_in=True,
+                is_missing_punch_out=True,
+            )
+        )
+        s.commit()
+        statuses = aggregate_cycle_status(s, cycle)
+        att = statuses[0].attendance
+        assert att.absent_days == 1
+        # 一日缺勤只落一條規則：曠職日不得再被 MISSING_PUNCH 重複計分
+        assert att.missing_punch_count == 0
+
+    def test_leave_day_not_counted_as_missing_punch(self, test_db_session):
+        """status='leave'（全天請假）同樣不應被 MISSING_PUNCH 計分；
+        防旁路寫入留下殘留旗標時的雙重計分（#11 防禦性收斂）。"""
+        s = test_db_session
+        emp = _make_employee(s, "李請假")
+        cycle = _make_cycle(s)
+        _make_participant(s, cycle, emp)
+        s.add(
+            Attendance(
+                employee_id=emp.id,
+                attendance_date=date(2025, 9, 11),
+                status="leave",
+                # 模擬旁路寫入未清旗標的殘留狀態
+                is_missing_punch_in=True,
+                is_missing_punch_out=True,
+            )
+        )
+        s.commit()
+        statuses = aggregate_cycle_status(s, cycle)
+        att = statuses[0].attendance
+        assert att.leave_days == 1
+        assert att.missing_punch_count == 0
+
+    def test_real_missing_punch_still_counted_when_not_absent(self, test_db_session):
+        """非曠職/請假日的真實缺卡仍應正常計入 MISSING_PUNCH（防過度排除）。"""
+        s = test_db_session
+        emp = _make_employee(s, "張缺卡")
+        cycle = _make_cycle(s)
+        _make_participant(s, cycle, emp)
+        s.add_all(
+            [
+                # 正常出勤日但漏打下班卡
+                Attendance(
+                    employee_id=emp.id,
+                    attendance_date=date(2025, 9, 12),
+                    status="normal",
+                    is_missing_punch_out=True,
+                ),
+                # 正常出勤日漏打上班卡
+                Attendance(
+                    employee_id=emp.id,
+                    attendance_date=date(2025, 9, 13),
+                    status="normal",
+                    is_missing_punch_in=True,
+                ),
+            ]
+        )
+        s.commit()
+        statuses = aggregate_cycle_status(s, cycle)
+        att = statuses[0].attendance
+        assert att.missing_punch_count == 2
+        assert att.absent_days == 0
+
     def test_attendance_excludes_dates_outside_cycle(self, test_db_session):
         s = test_db_session
         emp = _make_employee(s, "蔡宜倩")
