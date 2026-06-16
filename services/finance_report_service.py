@@ -52,6 +52,20 @@ def _month_range(year: int, month: int) -> tuple[date, date]:
     return date(year, month, 1), date(year, month + 1, 1)
 
 
+def _finalized_salary_conditions():
+    """財報只認封存且非 stale 的薪資（actual expenditure）。
+
+    對齊 api/reports.py `_query_salary_monthly`：草稿（is_finalized=False）與
+    待重算（needs_recalc=True）是中間態，計入會把測試重算的草稿當實際支出，
+    讓財務總覽/月度損益/明細/匯出失真（形同 A 錢空間）。所有薪資 provider
+    一律套用，避免新增 provider 時漏篩。
+    """
+    return (
+        SalaryRecord.is_finalized == True,  # noqa: E712
+        SalaryRecord.needs_recalc == False,  # noqa: E712
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 收入 providers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -167,7 +181,7 @@ def get_salary_expense_by_month(
             func.sum(SalaryRecord.health_insurance_employer),
             func.sum(SalaryRecord.pension_employer),
         )
-        .filter(SalaryRecord.salary_year == year)
+        .filter(SalaryRecord.salary_year == year, *_finalized_salary_conditions())
         .group_by(SalaryRecord.salary_month)
         .all()
     )
@@ -402,7 +416,7 @@ def get_salary_breakdown_by_month(
             func.sum(SalaryRecord.health_insurance_employer),
             func.sum(SalaryRecord.pension_employer),
         )
-        .filter(SalaryRecord.salary_year == year)
+        .filter(SalaryRecord.salary_year == year, *_finalized_salary_conditions())
         .group_by(SalaryRecord.salary_month)
         .all()
     )
@@ -459,7 +473,7 @@ def get_salary_breakdown_by_month_with_role(
             func.sum(SalaryRecord.pension_employer),
         )
         .join(Employee, Employee.id == SalaryRecord.employee_id)
-        .filter(SalaryRecord.salary_year == year)
+        .filter(SalaryRecord.salary_year == year, *_finalized_salary_conditions())
         .group_by(SalaryRecord.salary_month, Employee.employee_type)
         .all()
     )
@@ -728,6 +742,7 @@ def get_salary_detail(session: Session, year: int, month: int) -> list[dict]:
         .filter(
             SalaryRecord.salary_year == year,
             SalaryRecord.salary_month == month,
+            *_finalized_salary_conditions(),
         )
         .order_by(Employee.name)
         .all()

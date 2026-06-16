@@ -217,6 +217,7 @@ class TestSalaryExpense:
                     pension_employer=1800,
                     net_salary=25000,
                     total_deduction=5000,
+                    is_finalized=True,
                 )
             )
             s.commit()
@@ -468,6 +469,7 @@ class TestFinanceSummaryEndpoint:
                         pension_employer=1800,
                         net_salary=25000,
                         total_deduction=5000,
+                        is_finalized=True,
                     ),
                 ]
             )
@@ -587,6 +589,7 @@ class TestDetailEndpoint:
                         pension_employer=1800,
                         net_salary=25000,
                         total_deduction=5000,
+                        is_finalized=True,
                     ),
                 ]
             )
@@ -633,3 +636,114 @@ class TestExportEndpoint:
         assert "學費明細" in wb.sheetnames
         assert "才藝明細" in wb.sheetnames
         assert "薪資明細" in wb.sheetnames
+
+
+# ── 薪資只認封存且非 stale（actual expenditure）─────────────────────────────
+#
+# Bug: 四個薪資 provider（expense / breakdown / breakdown_with_role / detail）
+# 原本只篩 salary_year/month，把草稿（is_finalized=False）與 stale
+# （needs_recalc=True）薪資當實際支出。對齊 api/reports.py _query_salary_monthly
+# 的「只認 is_finalized=True AND needs_recalc=False」。草稿/待重算是中間態，
+# 讓會計用測試重算的草稿影響財務總覽/月損益/匯出形同 A 錢空間。
+class TestSalaryFinalizedOnly:
+    def _seed_three_states(self, sf):
+        """5 月三筆薪資：封存非 stale（計入）/ 草稿（排除）/ 封存但 stale（排除）。"""
+        with sf() as s:
+            emps = []
+            for i in range(3):
+                e = Employee(
+                    employee_id=f"SF{i}",
+                    name=f"SF{i}",
+                    base_salary=30000,
+                    employee_type="regular",
+                    is_active=True,
+                )
+                s.add(e)
+                emps.append(e)
+            s.flush()
+            # 0: 封存非 stale → 唯一計入
+            s.add(
+                SalaryRecord(
+                    employee_id=emps[0].id,
+                    salary_year=2026,
+                    salary_month=5,
+                    gross_salary=30000,
+                    festival_bonus=1000,
+                    overtime_bonus=500,
+                    labor_insurance_employer=2500,
+                    health_insurance_employer=1400,
+                    pension_employer=1800,
+                    net_salary=25000,
+                    total_deduction=5000,
+                    is_finalized=True,
+                    needs_recalc=False,
+                )
+            )
+            # 1: 草稿（未封存）→ 排除
+            s.add(
+                SalaryRecord(
+                    employee_id=emps[1].id,
+                    salary_year=2026,
+                    salary_month=5,
+                    gross_salary=99999,
+                    festival_bonus=99999,
+                    overtime_bonus=99999,
+                    labor_insurance_employer=99999,
+                    health_insurance_employer=99999,
+                    pension_employer=99999,
+                    net_salary=99999,
+                    total_deduction=0,
+                    is_finalized=False,
+                    needs_recalc=False,
+                )
+            )
+            # 2: 封存但 needs_recalc=True（異常 stale）→ 排除
+            s.add(
+                SalaryRecord(
+                    employee_id=emps[2].id,
+                    salary_year=2026,
+                    salary_month=5,
+                    gross_salary=88888,
+                    festival_bonus=88888,
+                    overtime_bonus=88888,
+                    labor_insurance_employer=88888,
+                    health_insurance_employer=88888,
+                    pension_employer=88888,
+                    net_salary=88888,
+                    total_deduction=0,
+                    is_finalized=True,
+                    needs_recalc=True,
+                )
+            )
+            s.commit()
+
+    def test_expense_excludes_draft_and_stale(self, fin_client):
+        _, sf = fin_client
+        self._seed_three_states(sf)
+        with sf() as s:
+            out = svc.get_salary_expense_by_month(s, 2026)
+        # employee_gross = 30000 + 1000 + 500；employer_benefit = 2500+1400+1800
+        assert out == {5: {"employee_gross": 31500, "employer_benefit": 5700}}
+
+    def test_breakdown_excludes_draft_and_stale(self, fin_client):
+        _, sf = fin_client
+        self._seed_three_states(sf)
+        with sf() as s:
+            out = svc.get_salary_breakdown_by_month(s, 2026)
+        assert out[5]["gross_salary"] == 30000
+        assert out[5]["festival_bonus"] == 1000
+
+    def test_breakdown_with_role_excludes_draft_and_stale(self, fin_client):
+        _, sf = fin_client
+        self._seed_three_states(sf)
+        with sf() as s:
+            out = svc.get_salary_breakdown_by_month_with_role(s, 2026)
+        assert out[5]["regular"]["gross_salary"] == 30000
+
+    def test_detail_excludes_draft_and_stale(self, fin_client):
+        _, sf = fin_client
+        self._seed_three_states(sf)
+        with sf() as s:
+            rows = svc.get_salary_detail(s, 2026, 5)
+        assert len(rows) == 1
+        assert rows[0]["gross_salary"] == 30000
