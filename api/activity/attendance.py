@@ -3,7 +3,7 @@ api/activity/attendance.py — 才藝點名管理（管理端）
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from io import BytesIO
 from typing import List, Optional
 from urllib.parse import quote
@@ -35,6 +35,7 @@ from api.activity._shared import (
 from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
 from schemas.activity_admin import (
     ActivityAttendanceBatchUpdateResultOut,
+    ActivitySessionBatchCreateResultOut,
     ActivitySessionCreateResultOut,
     ActivitySessionDeleteResultOut,
     ActivitySessionDetailOut,
@@ -53,6 +54,19 @@ class SessionCreate(BaseModel):
     course_id: int
     session_date: date
     notes: Optional[str] = None
+
+
+class SessionBatchCreate(BaseModel):
+    course_id: int
+    start_date: date
+    end_date: date
+    # 省略則用課程 meeting_weekday；0=Mon..6=Sun
+    weekday: Optional[int] = Field(None, ge=0, le=6)
+    notes: Optional[str] = None
+
+
+# 一次批次最多展開的場次數（一學年每週約 ~44 堂，60 留裕度且擋誤填超大範圍）
+_MAX_BATCH_SESSIONS = 60
 
 
 class AttendanceRecordItem(BaseModel):
@@ -165,6 +179,99 @@ def create_session(
             "notes": sess.notes or "",
             "created_by": sess.created_by,
             "created_at": sess.created_at.isoformat() if sess.created_at else None,
+        }
+    finally:
+        session.close()
+
+
+@router.post(
+    "/sessions/batch",
+    response_model=ActivitySessionBatchCreateResultOut,
+    dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_WRITE))],
+)
+def create_sessions_batch(
+    body: SessionBatchCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    """依「每週上課星期」在日期範圍內批次建立場次（取代逐堂手動新增十幾二十次）。
+
+    weekday 省略時取課程 meeting_weekday；同課同日已存在（uq_activity_session_course_date）
+    者跳過並計入 skipped_existing（冪等 → 可重複按 / 微調範圍重跑不報錯）。
+    """
+    if body.end_date < body.start_date:
+        raise HTTPException(status_code=400, detail="結束日期不可早於起始日期")
+
+    session = get_session()
+    try:
+        course = (
+            session.query(ActivityCourse)
+            .filter(
+                ActivityCourse.id == body.course_id,
+                ActivityCourse.is_active.is_(True),
+            )
+            .first()
+        )
+        if not course:
+            raise HTTPException(status_code=404, detail="找不到課程")
+
+        weekday = body.weekday if body.weekday is not None else course.meeting_weekday
+        if weekday is None:
+            raise HTTPException(
+                status_code=400,
+                detail="請指定上課星期，或先於課程設定每週上課星期",
+            )
+
+        # 展開日期範圍內所有符合上課星期的日期
+        dates: list[date] = []
+        cursor = body.start_date
+        while cursor <= body.end_date:
+            if cursor.weekday() == weekday:
+                dates.append(cursor)
+            cursor += timedelta(days=1)
+
+        if not dates:
+            raise HTTPException(
+                status_code=400, detail="此日期範圍內沒有符合上課星期的日期"
+            )
+        if len(dates) > _MAX_BATCH_SESSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"日期範圍過大（將產生 {len(dates)} 場），一次最多 "
+                    f"{_MAX_BATCH_SESSIONS} 場，請縮小範圍"
+                ),
+            )
+
+        username = current_user.get("username")
+        created_dates: list[date] = []
+        skipped = 0
+        for d in dates:
+            try:
+                # savepoint：同課同日 uq 撞到只回滾該筆並跳過，不毀整批
+                with session.begin_nested():
+                    session.add(
+                        ActivitySession(
+                            course_id=body.course_id,
+                            session_date=d,
+                            notes=body.notes,
+                            created_by=username,
+                        )
+                    )
+                    session.flush()
+                created_dates.append(d)
+            except IntegrityError:
+                skipped += 1
+        session.commit()
+
+        return {
+            "course_id": course.id,
+            "course_name": course.name,
+            "weekday": weekday,
+            "start_date": body.start_date.isoformat(),
+            "end_date": body.end_date.isoformat(),
+            "created_count": len(created_dates),
+            "skipped_existing": skipped,
+            "created_dates": [d.isoformat() for d in sorted(created_dates)],
         }
     finally:
         session.close()

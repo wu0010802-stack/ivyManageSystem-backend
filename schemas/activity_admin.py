@@ -1119,6 +1119,23 @@ class ActivitySessionCreateResultOut(IvyBaseModel):
     created_at: Optional[str] = None
 
 
+class ActivitySessionBatchCreateResultOut(IvyBaseModel):
+    """POST /attendance/sessions/batch 回應：依上課星期展開日期範圍批次建立場次。
+
+    created_dates 為實際新建的日期（ISO 升冪）；已存在（uq course+date）者計入
+    skipped_existing 而不報錯，讓重複按或微調範圍重跑為冪等。
+    """
+
+    course_id: int
+    course_name: str
+    weekday: int  # 0=Mon .. 6=Sun
+    start_date: str
+    end_date: str
+    created_count: int
+    skipped_existing: int
+    created_dates: list[str]
+
+
 class ActivitySessionDeleteResultOut(IvyBaseModel):
     """DELETE /attendance/sessions/{id} 回應。
 
