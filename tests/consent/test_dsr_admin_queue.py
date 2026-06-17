@@ -191,6 +191,57 @@ class TestDsrAdminQueue403:
         assert resp.status_code == 403
 
 
+class TestDsrAdminBlocksTeacherEvenWithPermission:
+    """GUARD-1：teacher 即使（誤配）持有 DSR_MANAGE 也不得直接存取管理端 DSR API。
+    require_staff_permission 的 role 結構閘（縱深防禦）——個資刪除/駁回核准不該因
+    自訂角色或誤配把 DSR_MANAGE 給了教師就被觸及。"""
+
+    def _login_teacher_with_dsr(self, c, sf) -> None:
+        with sf() as session:
+            session.add(
+                User(
+                    username="dsr_teacher_priv",
+                    password_hash=hash_password("pass"),
+                    role="teacher",
+                    permission_names=["DSR_MANAGE"],
+                )
+            )
+            session.commit()
+        resp = c.post(
+            "/api/auth/login",
+            json={"username": "dsr_teacher_priv", "password": "pass"},
+        )
+        assert resp.status_code == 200
+
+    def test_list_blocks_teacher_even_with_dsr_manage(self, dsr_admin_client):
+        c, sf = dsr_admin_client
+        self._login_teacher_with_dsr(c, sf)
+        resp = c.get("/api/admin/dsr-requests")
+        assert resp.status_code == 403
+
+    def test_reject_blocks_teacher_even_with_dsr_manage(self, dsr_admin_client):
+        c, sf = dsr_admin_client
+        _admin_login(c)
+        first_id = _get_first_pending_id(c)
+        self._login_teacher_with_dsr(c, sf)
+        resp = c.post(
+            f"/api/admin/dsr-requests/{first_id}/reject",
+            json={"decision_note": "x"},
+        )
+        assert resp.status_code == 403
+
+    def test_approve_blocks_teacher_even_with_dsr_manage(self, dsr_admin_client):
+        c, sf = dsr_admin_client
+        _admin_login(c)
+        first_id = _get_first_pending_id(c)
+        self._login_teacher_with_dsr(c, sf)
+        resp = c.post(
+            f"/api/admin/dsr-requests/{first_id}/approve",
+            json={"decision_note": "x"},
+        )
+        assert resp.status_code == 403
+
+
 # ============================================================
 # Task 11：有 DSR_MANAGE — 正常路徑
 # ============================================================

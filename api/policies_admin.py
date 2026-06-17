@@ -17,7 +17,7 @@ from models.consent import PolicyVersion
 from models.database import get_session_dep
 from schemas.dsr import PolicyVersionAdminOut, PolicyVersionCreateIn
 from utils.audit import write_explicit_audit
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def _to_out(pv: PolicyVersion) -> PolicyVersionAdminOut:
 @router.get("", response_model=list[PolicyVersionAdminOut])
 def list_policy_versions(
     session: Session = Depends(get_session_dep),
-    _: dict = Depends(require_permission(Permission.DSR_MANAGE)),
+    _: dict = Depends(require_staff_permission(Permission.DSR_MANAGE)),
 ):
     """列出所有 PolicyVersion，effective_at desc（最新生效版排前）。"""
     rows = (
@@ -55,7 +55,7 @@ def create_policy_version(
     payload: PolicyVersionCreateIn,
     request: Request,
     session: Session = Depends(get_session_dep),
-    current_user: dict = Depends(require_permission(Permission.DSR_MANAGE)),
+    current_user: dict = Depends(require_staff_permission(Permission.DSR_MANAGE)),
 ):
     """建立新 PolicyVersion。
 

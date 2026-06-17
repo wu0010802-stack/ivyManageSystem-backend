@@ -125,6 +125,47 @@ def _teacher_login(client) -> None:
 # ============================================================
 
 
+class TestPoliciesAdminBlocksTeacherEvenWithPermission:
+    """GUARD-1：teacher 即使（誤配）持有 DSR_MANAGE 也不得存取政策版本管理端
+    （require_staff_permission 的 role 結構閘）。"""
+
+    def _login_teacher_with_dsr(self, c, sf) -> None:
+        with sf() as session:
+            session.add(
+                User(
+                    username="policy_teacher_priv",
+                    password_hash=hash_password("pass"),
+                    role="teacher",
+                    permission_names=["DSR_MANAGE"],
+                )
+            )
+            session.commit()
+        resp = c.post(
+            "/api/auth/login",
+            json={"username": "policy_teacher_priv", "password": "pass"},
+        )
+        assert resp.status_code == 200
+
+    def test_list_blocks_teacher_even_with_dsr_manage(self, policy_admin_client):
+        c, sf = policy_admin_client
+        self._login_teacher_with_dsr(c, sf)
+        resp = c.get("/api/admin/policies")
+        assert resp.status_code == 403
+
+    def test_create_blocks_teacher_even_with_dsr_manage(self, policy_admin_client):
+        c, sf = policy_admin_client
+        self._login_teacher_with_dsr(c, sf)
+        resp = c.post(
+            "/api/admin/policies",
+            json={
+                "version": "2026.9",
+                "effective_at": now_taipei_naive().isoformat(),
+                "document_path": "/policies/2026-9.pdf",
+            },
+        )
+        assert resp.status_code == 403
+
+
 class TestPoliciesAdmin403:
     def test_list_without_permission_returns_403(self, policy_admin_client):
         c, _ = policy_admin_client

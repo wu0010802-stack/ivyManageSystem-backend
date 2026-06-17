@@ -27,7 +27,7 @@ from models.guardian import Guardian
 from schemas.dsr import DsrDecisionIn, DsrRequestAdminOut
 from services.student_lifecycle import LifecycleTransitionError, transition
 from utils.audit import write_explicit_audit
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.taipei_time import now_taipei_naive
 
@@ -59,7 +59,7 @@ def _to_admin_out(req: DsrRequest) -> DsrRequestAdminOut:
 def list_dsr_requests(
     status: str | None = None,
     session: Session = Depends(get_session_dep),
-    _: dict = Depends(require_permission(Permission.DSR_MANAGE)),
+    _: dict = Depends(require_staff_permission(Permission.DSR_MANAGE)),
 ):
     """列出 DSR 請求（可選 status filter），submitted_at desc。"""
     q = session.query(DsrRequest)
@@ -75,7 +75,7 @@ def reject_dsr_request(
     payload: DsrDecisionIn,
     request: Request,
     session: Session = Depends(get_session_dep),
-    current_user: dict = Depends(require_permission(Permission.DSR_MANAGE)),
+    current_user: dict = Depends(require_staff_permission(Permission.DSR_MANAGE)),
 ):
     """駁回 pending DSR 請求 → status=rejected + decision_note + audit。"""
     req = session.query(DsrRequest).filter(DsrRequest.id == req_id).first()
@@ -103,7 +103,7 @@ def approve_dsr_request(
     payload: DsrDecisionIn,
     request: Request,
     session: Session = Depends(get_session_dep),
-    current_user: dict = Depends(require_permission(Permission.DSR_MANAGE)),
+    current_user: dict = Depends(require_staff_permission(Permission.DSR_MANAGE)),
 ):
     """核准 pending DSR 請求。
 
