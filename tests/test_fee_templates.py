@@ -300,10 +300,10 @@ def client_fees_writer(_backend):
 def test_create_template_under_50k_no_finance_approve_required(
     client_fees_writer, grade_da
 ):
-    """單筆範本金額 ≤ 50K 不需金流簽核（一般月費 NT$10K~30K 走得通）。"""
+    """單筆範本金額 < 50K 不需金流簽核（C10 後 ＝50K 已需簽核；用 49K 測無簽核路徑）。"""
     r = client_fees_writer.post(
         "/api/fees/templates",
-        json=_payload(grade_da.id, amount=50_000),
+        json=_payload(grade_da.id, amount=49_000),
     )
     assert r.status_code == 200, r.text
 

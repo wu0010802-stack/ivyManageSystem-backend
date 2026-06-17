@@ -198,7 +198,9 @@ class TestSyncPermissionTightening:
         """SALARY_WRITE 應通過權限檢查。"""
         client, sf = pos_client
         with sf() as s:
-            _make_employee(s, base_salary=34000)  # delta = 1000，不觸發大額簽核
+            _make_employee(
+                s, base_salary=34500
+            )  # delta = 500，不觸發大額簽核（C10 後 ＝1000 已需簽核）
             _seed_position_config(s, head_teacher_a=35000)
             _make_user(
                 s,
@@ -299,7 +301,11 @@ class TestSyncLargeDeltaRequiresApproval:
             _make_user(
                 s,
                 username="salary_approver",
-                permission_names=["SALARY_READ", "SALARY_WRITE", "ACTIVITY_PAYMENT_APPROVE"],
+                permission_names=[
+                    "SALARY_READ",
+                    "SALARY_WRITE",
+                    "ACTIVITY_PAYMENT_APPROVE",
+                ],
             )
             s.commit()
 
