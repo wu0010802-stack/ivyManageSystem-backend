@@ -35,6 +35,7 @@ from utils.rate_limit import SlidingWindowLimiter
 
 from utils.finance_cache import (
     invalidate_finance_summary_cache as _invalidate_finance_summary_cache,
+    invalidate_salary_report_cache as _invalidate_salary_report_cache,
 )
 
 # _salary_calc_limiter / MAX_BULK_EMPLOYEES_SYNC 已搬到 .calculate 子檔。
@@ -564,6 +565,7 @@ def finalize_salary_month(
         finalized_at_iso = now.isoformat()
 
     _invalidate_finance_summary_cache()
+    _invalidate_salary_report_cache()
     return {
         "message": f"已封存 {data.year} 年 {data.month} 月共 {count} 筆薪資記錄",
         "count": count,
@@ -668,6 +670,7 @@ def unfinalize_salary(
         )
     # 解封後 finance_summary 快取需失效（已封存月份的薪資金額會回變動態）
     _invalidate_finance_summary_cache()
+    _invalidate_salary_report_cache()
     return {"message": "已解除封存，操作記錄已寫入備註欄位"}
 
 

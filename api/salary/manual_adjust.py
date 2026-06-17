@@ -226,6 +226,7 @@ def manual_adjust_salary(
     # Lazy import：保持 monkeypatch 仍作用於 __init__ 那份。
     from . import (
         _invalidate_finance_summary_cache,
+        _invalidate_salary_report_cache,
         _recalculate_salary_record_totals,
     )
 
@@ -438,8 +439,9 @@ def manual_adjust_salary(
             changes={"fields": modified_fields, "reason": adjustment_reason},
         )
 
-    # session_scope 退出後 commit，再失效 finance summary 快取
+    # session_scope 退出後 commit，再失效 finance summary 與薪資報表快取
     _invalidate_finance_summary_cache()
+    _invalidate_salary_report_cache()
 
     with session_scope() as session:
         record = (

@@ -306,6 +306,68 @@ class TestCountAttendancePending:
         )
 
 
+from services.portal_class_hub_service import (
+    active_class_roster,
+    count_contact_book_pending,
+    count_observation_pending,
+)
+
+
+class TestActiveClassRosterSharing:
+    """active_class_roster 共用名冊：傳 roster= 與自查結果一致（行為等價），
+    讓 caller 在 endpoint 層查一次餵三個 count_*_pending，省掉重查 3 次。"""
+
+    def _seed(self, sess):
+        c = Classroom(name="共用班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        for i in range(4):
+            sess.add(
+                Student(
+                    student_id=f"R{i+1}",
+                    name=f"生{i+1}",
+                    classroom_id=c.id,
+                    is_active=(i != 3),  # 第 4 位 inactive，不入名冊
+                    lifecycle_status=LIFECYCLE_ACTIVE,
+                )
+            )
+        sess.flush()
+        return c
+
+    def test_active_class_roster_excludes_inactive(self, in_mem_session):
+        sess = in_mem_session
+        c = self._seed(sess)
+        roster = active_class_roster(sess, classroom_id=c.id)
+        assert len(roster) == 3
+        assert all(s.is_active for s in roster)
+
+    def test_passed_roster_matches_self_fetch(self, in_mem_session):
+        sess = in_mem_session
+        c = self._seed(sess)
+        roster = active_class_roster(sess, classroom_id=c.id)
+        today = date(2026, 5, 4)
+        for fn in (
+            count_attendance_pending,
+            count_observation_pending,
+            count_contact_book_pending,
+        ):
+            assert fn(sess, classroom_id=c.id, today=today, roster=roster) == fn(
+                sess, classroom_id=c.id, today=today
+            )
+
+    def test_empty_roster_short_circuits(self, in_mem_session):
+        sess = in_mem_session
+        c = Classroom(name="空班", is_active=True)
+        sess.add(c)
+        sess.flush()
+        assert (
+            count_attendance_pending(
+                sess, classroom_id=c.id, today=date(2026, 5, 4), roster=[]
+            )
+            == 0
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helper 5a: list_pending_medications
 # ---------------------------------------------------------------------------

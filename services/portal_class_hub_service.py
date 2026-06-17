@@ -93,18 +93,13 @@ def resolve_teacher_classroom(
     return art
 
 
-def count_attendance_pending(
-    sess: Session,
-    *,
-    classroom_id: int,
-    today: date_cls,
-) -> int:
-    """今日尚未點名的學生數。
+def active_class_roster(sess: Session, *, classroom_id: int) -> list[Student]:
+    """該班 active 學生（is_active + lifecycle active）。
 
-    判定條件：班上 active 學生中，今日無 StudentAttendance row 者。
-    （`StudentAttendance.status` 為 NOT NULL default '出席'，故有 row 即視為已點名。）
+    今日工作台三個待辦計數（點名/觀察/聯絡簿）吃同一份名冊；caller 應在 endpoint 層
+    查一次傳入三個 count_*_pending（`roster=`），避免單一 request 重查 3 次同班名冊。
     """
-    students = (
+    return (
         sess.query(Student)
         .filter(
             Student.classroom_id == classroom_id,
@@ -112,6 +107,27 @@ def count_attendance_pending(
             Student.lifecycle_status == LIFECYCLE_ACTIVE,
         )
         .all()
+    )
+
+
+def count_attendance_pending(
+    sess: Session,
+    *,
+    classroom_id: int,
+    today: date_cls,
+    roster: Optional[list[Student]] = None,
+) -> int:
+    """今日尚未點名的學生數。
+
+    判定條件：班上 active 學生中，今日無 StudentAttendance row 者。
+    （`StudentAttendance.status` 為 NOT NULL default '出席'，故有 row 即視為已點名。）
+
+    `roster` 傳入時跳過名冊查詢（由 caller 共用一次查詢結果）；None 則自查（相容）。
+    """
+    students = (
+        roster
+        if roster is not None
+        else active_class_roster(sess, classroom_id=classroom_id)
     )
     if not students:
         return 0
@@ -193,20 +209,19 @@ def count_observation_pending(
     *,
     classroom_id: int,
     today: date_cls,
+    roster: Optional[list[Student]] = None,
 ) -> int:
     """今日尚未填觀察的學生數。
 
     判定：班上 active 學生中，無 StudentObservation row（observation_date == today,
     deleted_at IS NULL）的學生數。一個學生可能有多筆觀察 → 用 distinct student_id。
+
+    `roster` 傳入時跳過名冊查詢（由 caller 共用一次查詢結果）；None 則自查（相容）。
     """
     students = (
-        sess.query(Student)
-        .filter(
-            Student.classroom_id == classroom_id,
-            Student.is_active.is_(True),
-            Student.lifecycle_status == LIFECYCLE_ACTIVE,
-        )
-        .all()
+        roster
+        if roster is not None
+        else active_class_roster(sess, classroom_id=classroom_id)
     )
     if not students:
         return 0
@@ -252,20 +267,19 @@ def count_contact_book_pending(
     *,
     classroom_id: int,
     today: date_cls,
+    roster: Optional[list[Student]] = None,
 ) -> int:
     """今日尚未填聯絡簿的學生數。
 
     判定：班上 active 學生中，無 StudentContactBookEntry（log_date == today,
     deleted_at IS NULL）的學生數。Draft（published_at IS NULL）視為已填。
+
+    `roster` 傳入時跳過名冊查詢（由 caller 共用一次查詢結果）；None 則自查（相容）。
     """
     students = (
-        sess.query(Student)
-        .filter(
-            Student.classroom_id == classroom_id,
-            Student.is_active.is_(True),
-            Student.lifecycle_status == LIFECYCLE_ACTIVE,
-        )
-        .all()
+        roster
+        if roster is not None
+        else active_class_roster(sess, classroom_id=classroom_id)
     )
     if not students:
         return 0

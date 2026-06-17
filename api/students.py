@@ -58,6 +58,25 @@ logger = logging.getLogger(__name__)
 from utils.audit import mark_soft_delete, write_explicit_audit
 
 
+def _invalidate_activity_dashboard_after_enrollment_change(session) -> None:
+    """學生在籍/班籍異動（轉班 / 退學 / 畢業）後失效才藝儀表板快取。
+
+    才藝 dashboard 招生達成率分母用各班在籍人數（activity_service._query_classroom_stats，
+    activity_dashboard_table 快取 TTL 1800s）；學生離校/轉班後若不主動失效，老闆學期中
+    最長要等 30 分才看到新分母。best-effort：失敗只 log，不阻擋學生主流程。一律在
+    session.commit() 之後呼叫（report_cache_service 用獨立 session）。
+    """
+    try:
+        from api.activity._shared import _invalidate_activity_dashboard_caches
+
+        _invalidate_activity_dashboard_caches(session)
+    except Exception:
+        logger.warning(
+            "invalidate activity dashboard after enrollment change failed",
+            exc_info=True,
+        )
+
+
 def _cancel_active_dismissal_calls(session, student: Student) -> list[dict]:
     """取消學生所有進行中（pending/acknowledged）的接送通知。
 
@@ -828,7 +847,11 @@ def get_student_medical(
     權限：STUDENTS_HEALTH_READ
     回 fields: allergy / medication / special_needs（ORM 透明解密）
     """
-    from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
+    from models.medical_access_log import (
+        MEDICAL_ACCESS_EXPLICIT,
+        MEDICAL_FIELD_BUNDLE,
+        MedicalAccessLog,
+    )
     from utils.request_ip import get_client_ip
 
     # RA-L4：min_length 不 trim，純空白可過；strip 後再驗語意長度，避免空洞 reason 架空 §6 稽核
@@ -841,12 +864,15 @@ def get_student_medical(
     try:
         student = assert_student_access(session, current_user, student_id)
 
-        # 寫 medical_access_log（獨立 trail，不走 audit_log）
+        # 寫 medical_access_log（獨立 trail，不走 audit_log）。
+        # access_type=explicit：此為 reason-gated 具理由取用，與詳細頁/清單/家長端
+        # 被動顯示（server_default passive）區分，供 §6 取用檢視結構化篩選。
         log = MedicalAccessLog(
             user_id=current_user["user_id"],
             student_id=student_id,
             field_name=MEDICAL_FIELD_BUNDLE,
             reason=reason,
+            access_type=MEDICAL_ACCESS_EXPLICIT,
             ip_address=get_client_ip(request),
         )
         session.add(log)
@@ -1044,6 +1070,8 @@ def update_student(
             )
 
         session.commit()
+        if _count_changed:
+            _invalidate_activity_dashboard_after_enrollment_change(session)
         return {"message": "學生資料更新成功", "id": student.id}
     except HTTPException:
         raise
@@ -1113,6 +1141,7 @@ async def delete_student(
             )
 
         session.commit()
+        _invalidate_activity_dashboard_after_enrollment_change(session)
     except HTTPException:
         raise
     except Exception as e:
@@ -1228,6 +1257,7 @@ async def graduate_student(
             )
 
         session.commit()
+        _invalidate_activity_dashboard_after_enrollment_change(session)
         logger.warning(
             "學生離園：id=%s student_name=%s status=%s operator=%s",
             student.id,
@@ -1369,6 +1399,8 @@ def bulk_transfer_students(
             mark_salary_stale_for_enrollment_event(session, today_taipei())
 
         session.commit()
+        if moved_count:
+            _invalidate_activity_dashboard_after_enrollment_change(session)
         logger.info(
             "學生批次轉班：target_classroom_id=%s moved=%s operator=%s",
             item.target_classroom_id,

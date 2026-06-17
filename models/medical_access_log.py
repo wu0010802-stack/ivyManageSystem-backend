@@ -27,6 +27,11 @@ MEDICAL_FIELD_SPECIAL_NEEDS = "special_needs"
 MEDICAL_FIELD_TEMPERATURE = "temperature_c"
 MEDICAL_FIELD_BUNDLE = "bundle"  # 一次讀取全部醫療欄位
 
+# access_type 列舉：讓 §6 取用稽核可結構化區分「被動顯示」與「具理由取用」，
+# 不必靠 reason 字串比對（後者脆弱）。passive 為 server_default（多數寫入點皆被動）。
+MEDICAL_ACCESS_PASSIVE = "passive"  # 詳細頁/清單/家長端被動回出醫療欄位（無顯式理由）
+MEDICAL_ACCESS_EXPLICIT = "explicit"  # reason-gated /medical 端點具理由取用（≥10 字）
+
 
 class MedicalAccessLog(Base):
     """每筆 = 一次醫療欄位讀取記錄。"""
@@ -53,6 +58,12 @@ class MedicalAccessLog(Base):
         comment="allergy / medication / special_needs / temperature_c / bundle",
     )
     reason = Column(Text, nullable=False, comment="取用理由（endpoint 層 ≥10 字 gate）")
+    access_type = Column(
+        String(20),
+        nullable=False,
+        server_default=MEDICAL_ACCESS_PASSIVE,
+        comment="passive=被動顯示(詳細頁/清單/家長端,無顯式理由) / explicit=具理由取用(/medical)",
+    )
     accessed_at = Column(DateTime, default=now_taipei_naive, nullable=False)
     ip_address = Column(String(45), nullable=True)
 

@@ -354,24 +354,28 @@ def get_insured_employee_count_by_month(session: Session, year: int) -> dict[int
       labor_insured_salary 為 NULL，沿用 insurance_salary_level，本切片從嚴
       只認真正有設 labor_insured_salary 的列，與「投保人數」字面意義一致）
     """
+    # 一次撈出所有「有設 labor_insured_salary」的員工 hire/resign，於記憶體分月計數；
+    # 取代原本每月一次 COUNT（同一張 Employee 表 12 趟 round-trip → 1 趟）。
+    rows = (
+        session.query(Employee.hire_date, Employee.resign_date)
+        .filter(
+            Employee.hire_date.isnot(None),
+            Employee.labor_insured_salary.isnot(None),
+            Employee.labor_insured_salary > 0,
+        )
+        .all()
+    )
+
     out: dict[int, int] = {}
     for m in range(1, 13):
         month_first, month_end_exclusive = _month_range(year, m)
-        # 該月最後一天 = next month 起算的前一天，用 < end_exclusive 表達
         # 條件：hire_date < month_end_exclusive AND (resign_date IS NULL OR resign_date > month_first)
-        count = (
-            session.query(func.count(Employee.id))
-            .filter(
-                Employee.hire_date.isnot(None),
-                Employee.hire_date < month_end_exclusive,
-                (Employee.resign_date.is_(None)) | (Employee.resign_date > month_first),
-                Employee.labor_insured_salary.isnot(None),
-                Employee.labor_insured_salary > 0,
-            )
-            .scalar()
-            or 0
+        out[m] = sum(
+            1
+            for hire_date, resign_date in rows
+            if hire_date < month_end_exclusive
+            and (resign_date is None or resign_date > month_first)
         )
-        out[m] = int(count)
     return out
 
 

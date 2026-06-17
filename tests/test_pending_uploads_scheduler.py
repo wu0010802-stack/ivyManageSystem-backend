@@ -1,4 +1,5 @@
 """tests/test_pending_uploads_scheduler.py — Phase 4 P1 resilience unit tests."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -104,9 +105,7 @@ class TestTickPendingUploads:
             assert retry_at > now
         assert "timeout" in (row.last_error or "")
 
-    def test_fifth_attempt_marks_final(
-        self, test_db_session, tmp_path, monkeypatch
-    ):
+    def test_fifth_attempt_marks_final(self, test_db_session, tmp_path, monkeypatch):
         """第 5 次嘗試失敗 → attempts==5、last_error 以 'final:' 開頭、final_failed 計數。"""
         from models.pending_uploads import PendingUpload
         from services.notification.pending_uploads_scheduler import (
@@ -150,9 +149,7 @@ class TestTickPendingUploads:
         assert row.last_error is not None
         assert row.last_error.startswith("final:")
 
-    def test_local_backend_skips_silently(
-        self, test_db_session, tmp_path, monkeypatch
-    ):
+    def test_local_backend_skips_silently(self, test_db_session, tmp_path, monkeypatch):
         """backend 不是 SupabaseStorage → tick 回空 metric（不處理）。"""
         from models.pending_uploads import PendingUpload
         from services.notification.pending_uploads_scheduler import tick_pending_uploads
@@ -186,3 +183,73 @@ class TestTickPendingUploads:
         assert result["attempted"] == 1
         assert result["succeeded"] == 0
         assert result["failed"] == 0
+
+
+class TestFinalFailureEscalation:
+    """final 失敗（附件永久遺失）須升級 error 級；一般可重試失敗維持 warning。"""
+
+    def _setup_failing_backend(self, monkeypatch, exc):
+        fake_bucket = MagicMock()
+        fake_bucket.upload.side_effect = exc
+        fake_client = MagicMock()
+        fake_client.storage.from_.return_value = fake_bucket
+        fake_backend = MagicMock()
+        fake_backend.__class__.__name__ = "SupabaseStorage"
+        fake_backend._client = fake_client
+        monkeypatch.setattr("utils.storage.get_backend", lambda: fake_backend)
+
+    def _make_row(self, test_db_session, tmp_path, *, attempts, now):
+        from models.pending_uploads import PendingUpload
+
+        local_file = tmp_path / "esc.bin"
+        local_file.write_bytes(b"X")
+        row = PendingUpload(
+            module="activity_posters",
+            key="esc/x.png",
+            content_type="image/png",
+            local_path=str(local_file),
+            attempts=attempts,
+            next_retry_at=now - timedelta(seconds=1),
+        )
+        test_db_session.add(row)
+        test_db_session.commit()
+        return row
+
+    def test_final_failure_captures_error_level(
+        self, test_db_session, tmp_path, monkeypatch
+    ):
+        from services.notification.pending_uploads_scheduler import (
+            tick_pending_uploads,
+            _MAX_ATTEMPTS,
+        )
+
+        now = datetime.now(timezone.utc)
+        self._make_row(test_db_session, tmp_path, attempts=_MAX_ATTEMPTS - 1, now=now)
+        self._setup_failing_backend(monkeypatch, RuntimeError("permanent"))
+
+        with patch(
+            "services.notification.pending_uploads_scheduler.tagged_capture"
+        ) as cap:
+            result = tick_pending_uploads(now_provider=lambda: now)
+
+        assert result["final_failed"] == 1
+        cap.assert_called_once()
+        assert cap.call_args.kwargs.get("level") == "error"
+
+    def test_transient_failure_captures_warning_level(
+        self, test_db_session, tmp_path, monkeypatch
+    ):
+        from services.notification.pending_uploads_scheduler import tick_pending_uploads
+
+        now = datetime.now(timezone.utc)
+        self._make_row(test_db_session, tmp_path, attempts=0, now=now)
+        self._setup_failing_backend(monkeypatch, ConnectionError("timeout"))
+
+        with patch(
+            "services.notification.pending_uploads_scheduler.tagged_capture"
+        ) as cap:
+            result = tick_pending_uploads(now_provider=lambda: now)
+
+        assert result["failed"] == 1
+        cap.assert_called_once()
+        assert cap.call_args.kwargs.get("level") == "warning"

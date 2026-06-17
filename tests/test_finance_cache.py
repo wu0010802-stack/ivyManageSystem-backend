@@ -18,7 +18,10 @@ from utils import finance_cache
 from utils.finance_cache import (
     FINANCE_SUMMARY_CACHE_CATEGORY,
     MONTHLY_PNL_CACHE_CATEGORY,
+    REPORT_DASHBOARD_CACHE_CATEGORY,
+    SALARY_CONTRIBUTORS_CACHE_CATEGORY,
     invalidate_finance_summary_cache,
+    invalidate_salary_report_cache,
 )
 
 
@@ -107,3 +110,51 @@ class TestInvalidateFinanceSummaryCache:
         fake_module = MagicMock(report_cache_service=fake_service)
         with patch.dict("sys.modules", {"services.report_cache_service": fake_module}):
             assert invalidate_finance_summary_cache() is None
+
+
+class TestSalaryReportCacheCategoryConstant:
+    def test_report_dashboard_category_value(self):
+        assert REPORT_DASHBOARD_CACHE_CATEGORY == "reports_dashboard"
+
+    def test_salary_contributors_category_value(self):
+        assert SALARY_CONTRIBUTORS_CACHE_CATEGORY == "reports_salary_contributors"
+
+
+class TestInvalidateSalaryReportCache:
+    """invalidate_salary_report_cache 只清 reports_dashboard 與
+    reports_salary_contributors，且僅薪資寫入路徑呼叫（不隨學費/才藝/廠商 churn）。"""
+
+    def test_calls_invalidate_for_both_categories(self):
+        fake_service = MagicMock()
+        fake_module = MagicMock(report_cache_service=fake_service)
+        with patch.dict("sys.modules", {"services.report_cache_service": fake_module}):
+            invalidate_salary_report_cache()
+        assert fake_service.invalidate_category.call_count == 2
+        fake_service.invalidate_category.assert_has_calls(
+            [
+                call(None, REPORT_DASHBOARD_CACHE_CATEGORY),
+                call(None, SALARY_CONTRIBUTORS_CACHE_CATEGORY),
+            ]
+        )
+
+    def test_first_category_failure_does_not_block_second(self):
+        fake_service = MagicMock()
+        fake_service.invalidate_category.side_effect = [RuntimeError("boom"), None]
+        fake_module = MagicMock(report_cache_service=fake_service)
+        with patch.dict("sys.modules", {"services.report_cache_service": fake_module}):
+            invalidate_salary_report_cache()  # 不應 raise
+        assert fake_service.invalidate_category.call_count == 2
+
+    def test_returns_none(self):
+        fake_service = MagicMock()
+        fake_module = MagicMock(report_cache_service=fake_service)
+        with patch.dict("sys.modules", {"services.report_cache_service": fake_module}):
+            assert invalidate_salary_report_cache() is None
+
+
+def test_salary_package_exposes_invalidate_salary_report_cache():
+    """calculate/manual_adjust 以 `from . import _invalidate_salary_report_cache`
+    lazy import；確保名稱掛在 api.salary package 上，否則 runtime ImportError。"""
+    import api.salary as salary_pkg
+
+    assert salary_pkg._invalidate_salary_report_cache is invalidate_salary_report_cache

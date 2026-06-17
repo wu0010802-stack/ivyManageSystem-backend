@@ -8,6 +8,7 @@ GET /api/internal/integrations/health
 
 權限：AUDIT_LOGS（與 /api/internal/metrics 一致）。
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,7 @@ class LineHealth(BaseModel):
 class SupabaseHealth(BaseModel):
     breaker: str
     pending_uploads: int
+    final_failed: int
 
 
 class ExternalHttpHealth(BaseModel):
@@ -58,9 +60,7 @@ def get_integrations_health(
     """回傳外部整合系統的即時健康狀態。"""
     from models.notification_log import NotificationLog
 
-    token_row = (
-        session.query(LineTokenHealth).filter(LineTokenHealth.id == 1).first()
-    )
+    token_row = session.query(LineTokenHealth).filter(LineTokenHealth.id == 1).first()
 
     retry_pending = (
         session.query(NotificationLog)
@@ -88,6 +88,16 @@ def get_integrations_health(
         )
         .count()
     )
+    # 永久失敗（重試 5 次後仍未成功 → 附件遺失）的待補傳數；in-memory metric 重啟即清，
+    # 此 gauge 以 DB 為主資料源讓 admin 看得到（對應 LINE 的 retry_final_failed）。
+    supabase_final_failed = (
+        session.query(PendingUpload)
+        .filter(
+            PendingUpload.succeeded_at.is_(None),
+            PendingUpload.attempts >= 5,
+        )
+        .count()
+    )
 
     return IntegrationsHealthResponse(
         line=LineHealth(
@@ -105,6 +115,7 @@ def get_integrations_health(
         supabase=SupabaseHealth(
             breaker=SUPABASE_BREAKER.state,
             pending_uploads=pending_uploads,
+            final_failed=supabase_final_failed,
         ),
         external_http=ExternalHttpHealth(breaker=EXTERNAL_HTTP_BREAKER.state),
     )
