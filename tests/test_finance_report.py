@@ -225,6 +225,81 @@ class TestSalaryExpense:
             out = svc.get_salary_expense_by_month(s, 2026)
         assert out == {3: {"employee_gross": 30000, "employer_benefit": 5700}}
 
+    def test_unused_leave_payout_included_in_expense(self, fin_client):
+        """特休未休折現（unused_leave_payout）不進 gross_salary，但屬園方實際現金流出，
+        get_salary_expense_by_month 的 employee_gross 必須加入，否則離職月薪資支出低估。"""
+        _, sf = fin_client
+        with sf() as s:
+            emp = Employee(
+                employee_id="E_ULP1",
+                name="特休測試員",
+                base_salary=30000,
+                employee_type="regular",
+                is_active=True,
+            )
+            s.add(emp)
+            s.flush()
+            s.add(
+                SalaryRecord(
+                    employee_id=emp.id,
+                    salary_year=2026,
+                    salary_month=6,
+                    gross_salary=30000,
+                    unused_leave_payout=5000,  # 特休未休折現，獨立欄位不進 gross
+                    labor_insurance_employer=2500,
+                    health_insurance_employer=1400,
+                    pension_employer=1800,
+                    net_salary=25000,
+                    total_deduction=5000,
+                    is_finalized=True,
+                )
+            )
+            s.commit()
+        with sf() as s:
+            out = svc.get_salary_expense_by_month(s, 2026)
+        # employee_gross 應含 unused_leave_payout(5000)：30000 + 5000 = 35000
+        assert (
+            out[6]["employee_gross"] == 35000
+        ), f"employee_gross 應含 unused_leave_payout 5000，實際={out[6]['employee_gross']}"
+
+    def test_unused_leave_payout_included_in_detail_real_cost(self, fin_client):
+        """get_salary_detail 的 real_cost 同樣必須含 unused_leave_payout，
+        否則明細加總與月摘要不一致。"""
+        _, sf = fin_client
+        with sf() as s:
+            emp = Employee(
+                employee_id="E_ULP2",
+                name="特休明細員",
+                base_salary=28000,
+                employee_type="regular",
+                is_active=True,
+            )
+            s.add(emp)
+            s.flush()
+            s.add(
+                SalaryRecord(
+                    employee_id=emp.id,
+                    salary_year=2026,
+                    salary_month=7,
+                    gross_salary=28000,
+                    unused_leave_payout=3000,  # 特休折現
+                    labor_insurance_employer=2500,
+                    health_insurance_employer=1400,
+                    pension_employer=1800,
+                    net_salary=23000,
+                    total_deduction=5000,
+                    is_finalized=True,
+                )
+            )
+            s.commit()
+        with sf() as s:
+            rows = svc.get_salary_detail(s, 2026, 7)
+        assert len(rows) == 1
+        # real_cost = gross(28000) + unused_leave_payout(3000) + employer(5700) = 36700
+        assert (
+            rows[0]["real_cost"] == 36700
+        ), f"real_cost 應含 unused_leave_payout 3000，實際={rows[0]['real_cost']}"
+
 
 class TestVendorPaymentExpense:
     def test_aggregated_by_month_regardless_of_status(self, fin_client):

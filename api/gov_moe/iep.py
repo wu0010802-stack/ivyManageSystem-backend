@@ -77,7 +77,11 @@ class IepOut(IepBase):
 # ---------------------------------------------------------------------------
 
 
-def _student_ids_in_scope(db: Session, current_user: dict):
+def _student_ids_in_scope(
+    db: Session,
+    current_user: dict,
+    code: str = Permission.STUDENTS_SPECIAL_NEEDS_WRITE.value,
+):
     """回傳 caller 可存取的 student_id 集合；None 表示全部放行（admin / :all scope）。
 
     delegate 至 utils/portfolio_access.student_ids_in_scope —
@@ -87,10 +91,12 @@ def _student_ids_in_scope(db: Session, current_user: dict):
     回傳值：None 表全放行；空 list 表無存取權；否則為可存取 student_id 清單。
     既有 _scoped_query 的 ``if allowed is None`` / ``if not allowed`` / ``in allowed``
     判斷對 list 仍正確（``in`` 對 list 線性搜尋；scope 端點預期清單大小 < 數百）。
+
+    Args:
+        code: 用於判斷 scope 的 permission code；讀取端點傳 READ code，
+              寫入端點維持預設 WRITE code。
     """
-    return student_ids_in_scope(
-        db, current_user, code=Permission.STUDENTS_SPECIAL_NEEDS_WRITE.value
-    )
+    return student_ids_in_scope(db, current_user, code=code)
 
 
 def _assert_student_in_scope(db: Session, current_user: dict, student_id: int) -> None:
@@ -111,16 +117,25 @@ def _assert_student_in_scope(db: Session, current_user: dict, student_id: int) -
     )
 
 
-def _scoped_query(db: Session, current_user: dict):
+def _scoped_query(
+    db: Session,
+    current_user: dict,
+    code: str = Permission.STUDENTS_SPECIAL_NEEDS_WRITE.value,
+):
     """班導/副班導 只看自己班級的 IEP；主任以上看全部。
 
     JWT payload 不含 supervisor_role / classroom_id，故對非 admin 用戶
     執行 DB lookup（Employee 表），再依 supervisor_role + classroom_id 套用範圍。
+
+    Args:
+        code: 傳給 _student_ids_in_scope 的 permission code；
+              讀取端點（list/export）傳 READ code 以讓僅持 READ 的教師可存取；
+              寫入端點（update/submit/approve/close/clone）保留預設 WRITE code。
     """
     q = db.query(StudentIEPRecord).filter(
         StudentIEPRecord.deleted_at == None  # noqa: E711
     )
-    allowed = _student_ids_in_scope(db, current_user)
+    allowed = _student_ids_in_scope(db, current_user, code=code)
     if allowed is None:
         return q
     if not allowed:
@@ -140,10 +155,12 @@ def list_iep(
     semester: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(
-        require_permission(Permission.STUDENTS_SPECIAL_NEEDS_WRITE)
+        require_permission(Permission.STUDENTS_SPECIAL_NEEDS_READ)
     ),
 ):
-    q = _scoped_query(db, current_user)
+    q = _scoped_query(
+        db, current_user, code=Permission.STUDENTS_SPECIAL_NEEDS_READ.value
+    )
     if student_id:
         q = q.filter(StudentIEPRecord.student_id == student_id)
     if school_year:
@@ -278,7 +295,7 @@ def export_iep_pdf(
     iep_id: int,
     db: Session = Depends(get_db),
     current_user: dict = Depends(
-        require_permission(Permission.STUDENTS_SPECIAL_NEEDS_WRITE)
+        require_permission(Permission.STUDENTS_SPECIAL_NEEDS_READ)
     ),
 ):
     import urllib.parse
@@ -287,7 +304,13 @@ def export_iep_pdf(
 
     from services.iep_pdf import generate_iep_pdf
 
-    row = _scoped_query(db, current_user).filter(StudentIEPRecord.id == iep_id).first()
+    row = (
+        _scoped_query(
+            db, current_user, code=Permission.STUDENTS_SPECIAL_NEEDS_READ.value
+        )
+        .filter(StudentIEPRecord.id == iep_id)
+        .first()
+    )
     if not row:
         raise HTTPException(404)
     student = db.query(Student).filter(Student.id == row.student_id).first()

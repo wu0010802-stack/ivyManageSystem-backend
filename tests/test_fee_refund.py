@@ -158,14 +158,14 @@ class TestRefundEndpoint:
         c, sf = client
         with sf() as s:
             _admin(s)
-            rec = _seed(s, amount_due=1000, amount_paid=1000, status="paid")
+            rec = _seed(s, amount_due=800, amount_paid=800, status="paid")
             s.commit()
             rec_id = rec.id
 
         assert _login(c).status_code == 200
         res = c.post(
             f"/api/fees/records/{rec_id}/refund",
-            json={"amount": 1000, "reason": "家長要求全額退費"},
+            json={"amount": 800, "reason": "家長要求全額退費"},
         )
         assert res.status_code == 201, res.text
         assert res.json()["status"] == "unpaid"
