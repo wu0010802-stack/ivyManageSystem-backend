@@ -40,6 +40,8 @@ class _FakeUser:
 
 # 教師模板中屬 class-scoped 的權限：必須帶 :own_class，否則 NULL-perm 教師被提權成全園。
 _TEACHER_SCOPED_CODES = [
+    "STUDENTS_READ",
+    "STUDENTS_WRITE",
     "PORTFOLIO_READ",
     "PORTFOLIO_WRITE",
     "STUDENTS_HEALTH_READ",
