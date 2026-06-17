@@ -690,21 +690,72 @@ def _recompute_settlement_special_total(
 
 
 def _build_employee_resolver(session: Session):
-    employees = session.query(Employee).all()
-    name_to_id = {e.name: e.id for e in employees}
+    """建立「姓名 → employee.id」resolver，防止重名靜默誤掛。
+
+    規則（fail-safe）：
+    1. 唯一姓名         → 回該 id
+    2. 多名中恰一位在職 → 回在職者 id（在職新人＋同名離職前輩是常態）
+    3. 多名中 0 或 ≥2 在職 → None（歧義不可解析，交由 skipped_unresolved_names 回報 HR）
+    """
+    from collections import defaultdict
+
+    name_to_employees: dict[str, list[Employee]] = defaultdict(list)
+    for e in session.query(Employee).all():
+        name_to_employees[e.name].append(e)
 
     def resolver(name: str):
-        return name_to_id.get(name)
+        matches = name_to_employees.get(name)
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0].id
+        # 多名同名：嘗試以 is_active 消歧義
+        active = [e for e in matches if e.is_active]
+        if len(active) == 1:
+            return active[0].id
+        # 0 或 ≥2 位在職 → 歧義不可解析
+        logger.warning(
+            "年終匯入：姓名「%s」有 %d 位員工（在職 %d 位），無法唯一解析，跳過。",
+            name,
+            len(matches),
+            len(active),
+        )
+        return None
 
     return resolver
 
 
 def _build_classroom_resolver(session: Session):
-    rooms = session.query(Classroom).all()
-    name_to_id = {r.name: r.id for r in rooms}
+    """建立「班名 → classroom.id」resolver，防止重名靜默誤掛。
+
+    規則（fail-safe）：
+    1. 唯一班名         → 回該 id
+    2. 多個同名中恰一個 is_active=True → 回該 active 班級 id
+    3. 多個同名中 0 或 ≥2 個 active  → None（歧義，交由 skipped_unresolved_names 回報 HR）
+    """
+    from collections import defaultdict
+
+    name_to_rooms: dict[str, list[Classroom]] = defaultdict(list)
+    for r in session.query(Classroom).all():
+        name_to_rooms[r.name].append(r)
 
     def resolver(name: str):
-        return name_to_id.get(name)
+        matches = name_to_rooms.get(name)
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0].id
+        # 多個同名：嘗試以 is_active 消歧義
+        active = [r for r in matches if r.is_active]
+        if len(active) == 1:
+            return active[0].id
+        logger.warning(
+            "年終匯入：班名「%s」有 %d 個班級（active %d 個），無法唯一解析，跳過。",
+            name,
+            len(matches),
+            len(active),
+        )
+        return None
 
     return resolver
 
