@@ -12,7 +12,7 @@ api/activity/_shared.py re-export 維持 api/activity/courses.py / supplies.py
 from datetime import time
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # F2-aux：常數集中到 utils/activity_constants.py，避免重複宣告與 typo regression
 # （第三階段曾因雙份宣告把 999_999 typo 成 99_999 → 課程/用品價超 99K 被誤拒）。
@@ -21,6 +21,21 @@ from utils.activity_constants import (
     MIN_REFUND_REASON_LENGTH,
     MIN_VOID_REASON_LENGTH,
 )
+
+# 允許的 video_url scheme（前端 :href 直出，禁 javascript:/data: 等避免儲存型 XSS）
+_ALLOWED_VIDEO_URL_SCHEMES = {"http", "https"}
+
+
+def _validate_video_url_scheme(v: Optional[str]) -> Optional[str]:
+    """非空 video_url 的 scheme 須為 http/https；空字串/None 放行。"""
+    if v is None or v == "":
+        return v
+    from urllib.parse import urlparse
+
+    scheme = urlparse(v).scheme.lower()
+    if scheme not in _ALLOWED_VIDEO_URL_SCHEMES:
+        raise ValueError("video_url 僅允許 http 或 https 連結")
+    return v
 
 
 class CourseCreate(BaseModel):
@@ -40,6 +55,8 @@ class CourseCreate(BaseModel):
     meeting_weekday: Optional[int] = Field(None, ge=0, le=6)
     meeting_start_time: Optional[time] = None
     meeting_end_time: Optional[time] = None
+
+    _validate_video_url = field_validator("video_url")(_validate_video_url_scheme)
 
     @model_validator(mode="after")
     def _validate_phase3(self):
@@ -72,6 +89,8 @@ class CourseUpdate(BaseModel):
     meeting_weekday: Optional[int] = Field(None, ge=0, le=6)
     meeting_start_time: Optional[time] = None
     meeting_end_time: Optional[time] = None
+
+    _validate_video_url = field_validator("video_url")(_validate_video_url_scheme)
 
     @model_validator(mode="after")
     def _validate_phase3(self):
