@@ -52,41 +52,13 @@ def test_resolve_grant_none_permission_names():
     user = SimpleNamespace(permission_names=None, employee_id=1)
     assert resolve_grant(user, "STUDENTS_READ") is None
 
+
 def test_resolve_grant_unknown_scope_only_returns_none():
     """User with only an invalid scope string falls fail-closed to None (no silent upgrade)."""
-    user = SimpleNamespace(permission_names=["STUDENTS_READ:bogus_scope"], employee_id=1)
-    assert resolve_grant(user, "STUDENTS_READ") is None
-
-
-from fastapi import HTTPException
-from utils.permissions import require_scoped_permission, Permission
-
-
-def test_require_scoped_permission_returns_user_and_grant():
     user = SimpleNamespace(
-        permission_names=["STUDENTS_READ:own_class"],
-        employee_id=42,
+        permission_names=["STUDENTS_READ:bogus_scope"], employee_id=1
     )
-    dep = require_scoped_permission(Permission.STUDENTS_READ)
-    # FastAPI dependency function is the inner callable
-    result_user, grant = dep(user=user)
-    assert result_user is user
-    assert grant.scope == "own_class"
-
-
-def test_require_scoped_permission_raises_403_when_missing():
-    user = SimpleNamespace(permission_names=[], employee_id=1)
-    dep = require_scoped_permission(Permission.STUDENTS_READ)
-    with pytest.raises(HTTPException) as exc:
-        dep(user=user)
-    assert exc.value.status_code == 403
-
-
-def test_require_scoped_permission_wildcard_grants_all():
-    user = SimpleNamespace(permission_names=["*"], employee_id=1)
-    dep = require_scoped_permission(Permission.STUDENTS_READ)
-    _, grant = dep(user=user)
-    assert grant.scope == "all"
+    assert resolve_grant(user, "STUDENTS_READ") is None
 
 
 import logging
@@ -110,6 +82,7 @@ def test_sanity_no_warning_when_scope_options_present(caplog):
 
 
 # --- dict input tests (get_current_user returns a dict, not a model) ---
+
 
 def test_resolve_grant_dict_wildcard_returns_all():
     user = {"permission_names": ["*"], "employee_id": 1}

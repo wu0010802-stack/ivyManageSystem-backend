@@ -65,7 +65,6 @@ SCOPE_HELPER_NAMES = frozenset(
         "assert_all_scope",  # 全園彙總端點鎖 :all（堵 fail-open，零行為變更）
         # --- utils.permissions scope 解析原語 ---
         "resolve_grant",
-        "require_scoped_permission",
         # --- portal 班級/學生反查根 ---
         "_get_teacher_classroom_ids",
         "_get_teacher_student_ids",
@@ -86,7 +85,6 @@ GATE_FUNCS = frozenset(
     {
         "require_permission",
         "require_staff_permission",
-        "require_scoped_permission",
     }
 )
 

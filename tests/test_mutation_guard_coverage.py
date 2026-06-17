@@ -2,7 +2,7 @@
 
 斷言 main.app 每個 mutation 端點（POST/PUT/PATCH/DELETE）的 dependant 樹都掛了
 已知授權守衛 dependency（require_permission / require_staff_permission /
-require_admin / require_*_role / require_current_consent / require_scoped_permission），
+require_admin / require_*_role / require_current_consent），
 否則必須明確列入 KNOWN_UNGUARDED 白名單並附理由。
 
 Why（設計稽核 2026-06-17, AUTHZ-TEST-2）：授權守衛散落在各 handler 與前端，缺乏
@@ -36,7 +36,6 @@ _GUARD_MARKERS = (
     "require_admin",
     "require_parent_role",
     "require_non_parent_role",
-    "require_scoped_permission",
     "require_current_consent",
 )
 
