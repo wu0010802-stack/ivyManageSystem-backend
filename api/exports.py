@@ -135,15 +135,18 @@ def _mask_bank_account(account: str | None) -> str:
 @router.get("/employees")
 def export_employees(
     request: Request,
+    search: str | None = Query(None),
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.EMPLOYEES_READ)),
 ):
     """匯出員工名冊 Excel"""
     session = get_session()
     try:
-        employees = list(
-            session.query(Employee).order_by(Employee.employee_id).yield_per(500)
-        )
+        q = session.query(Employee).order_by(Employee.employee_id)
+        if search:
+            like = f"%{search}%"
+            q = q.filter(Employee.name.ilike(like) | Employee.employee_id.ilike(like))
+        employees = list(q.yield_per(500))
         classrooms = _id_name_map(session, Classroom)
         job_titles = _id_name_map(session, JobTitle)
         can_view_full_account = has_permission(
