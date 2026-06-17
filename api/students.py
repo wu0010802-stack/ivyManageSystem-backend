@@ -23,6 +23,7 @@ from schemas._base import IvyBaseModel
 from schemas._common import MutationResultOut
 from schemas.students import (
     AcademicSummaryOut,
+    BulkGraduateResultOut,
     BulkTransferResultOut,
     GuardianListOut,
     GuardianOut,
@@ -391,6 +392,14 @@ class StudentGraduate(BaseModel):
 class StudentBulkTransfer(BaseModel):
     student_ids: list[int]
     target_classroom_id: int
+
+
+class StudentBulkGraduate(BaseModel):
+    student_ids: list[int]
+    graduation_date: str
+    status: Literal["已畢業", "已轉出"] = "已畢業"
+    reason: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class LifecycleTransitionRequest(BaseModel):
@@ -1419,6 +1428,147 @@ def bulk_transfer_students(
         raise_safe_500(e, context="轉班失敗")
     finally:
         session.close()
+
+
+@router.post("/students/bulk-graduate", response_model=BulkGraduateResultOut)
+async def bulk_graduate_students(
+    item: StudentBulkGraduate,
+    current_user: dict = Depends(require_staff_permission(Permission.STUDENTS_WRITE)),
+):
+    """批次畢業/轉出（整班學年末一次處理，取代逐一開 dialog 點 N 次）。
+
+    有效在讀學生原子處理（單一交易）；找不到 / 已非在讀 / 離園日早於入學日者列入
+    skipped 不影響其餘。對齊單筆 graduate_student 副作用：set_lifecycle_status（PII
+    retention 戳記，不可繞過）+ StudentChangeLog + 才藝報名軟刪 + 接送/請假取消 +
+    發放月薪資 stale。限 admin/hr/supervisor（require_unrestricted_role）。
+    """
+    require_unrestricted_role(current_user, action_label="批次畢業/離園")
+    if not item.student_ids:
+        raise HTTPException(status_code=400, detail="請先選擇學生")
+    try:
+        graduation_date = datetime.strptime(item.graduation_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="離園日期格式錯誤（須 YYYY-MM-DD）")
+
+    from models.student_log import StudentChangeLog
+    from services.salary.utils import mark_salary_stale_for_enrollment_event
+    from api.activity._shared import sync_registrations_on_student_deactivate
+
+    lifecycle = (
+        LIFECYCLE_GRADUATED if item.status == "已畢業" else LIFECYCLE_TRANSFERRED
+    )
+    event_type = "畢業" if item.status == "已畢業" else "轉出"
+
+    session = get_session()
+    dismissal_broadcasts: list[dict] = []
+    succeeded_ids: list[int] = []
+    skipped: list[dict] = []
+    try:
+        found = {
+            s.id: s
+            for s in session.query(Student)
+            .filter(Student.id.in_(item.student_ids))
+            .all()
+        }
+        school_year, semester = resolve_current_academic_term()
+        operator_id = current_user.get("user_id")
+
+        seen: set[int] = set()
+        for sid in item.student_ids:
+            if sid in seen:
+                continue
+            seen.add(sid)
+            student = found.get(sid)
+            if student is None:
+                skipped.append({"student_id": sid, "reason": "找不到學生"})
+                continue
+            if not student.is_active:
+                skipped.append({"student_id": sid, "reason": "已非在讀狀態"})
+                continue
+            if student.enrollment_date and graduation_date < student.enrollment_date:
+                skipped.append({"student_id": sid, "reason": "離園日期早於入學日期"})
+                continue
+
+            # commit 前取消進行中接送/請假（broadcast 後置；rollback 則不 broadcast）
+            dismissal_broadcasts.extend(
+                _cancel_active_dismissal_calls(session, student)
+            )
+            _cancel_pending_student_leaves(session, student)
+
+            student.graduation_date = graduation_date
+            student.status = item.status
+            student.is_active = False
+            set_lifecycle_status(
+                session,
+                student,
+                lifecycle,
+                actor_user_id=operator_id,
+                audit=False,
+                reason=item.reason,
+            )
+            session.add(
+                StudentChangeLog(
+                    student_id=student.id,
+                    school_year=school_year,
+                    semester=semester,
+                    event_type=event_type,
+                    event_date=graduation_date,
+                    classroom_id=student.classroom_id,
+                    from_classroom_id=(
+                        student.classroom_id if item.status == "已轉出" else None
+                    ),
+                    reason=item.reason,
+                    notes=item.notes,
+                    recorded_by=operator_id,
+                )
+            )
+            sync_registrations_on_student_deactivate(
+                session, student.id, current_user=current_user
+            )
+            succeeded_ids.append(student.id)
+
+        # 在籍人數變動 → 標記發放月節慶/超額未封存薪資 stale（事件日同批一次即可）
+        if succeeded_ids:
+            mark_salary_stale_for_enrollment_event(session, graduation_date)
+
+        session.commit()
+        if succeeded_ids:
+            _invalidate_activity_dashboard_after_enrollment_change(session)
+        logger.warning(
+            "學生批次離園：status=%s graduated=%s skipped=%s operator=%s",
+            item.status,
+            len(succeeded_ids),
+            len(skipped),
+            current_user.get("username"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e, context="批次離園失敗")
+    finally:
+        session.close()
+
+    if dismissal_broadcasts:
+        from utils.broadcast import get_broadcast
+        from api.dismissal_ws import _classroom_channel, _ADMIN_CHANNEL
+
+        backend = get_broadcast()
+        for b in dismissal_broadcasts:
+            await backend.publish_many(
+                [_classroom_channel(b["classroom_id"]), _ADMIN_CHANNEL], b["event"]
+            )
+
+    msg = f"已將 {len(succeeded_ids)} 名學生設為「{item.status}」"
+    if skipped:
+        msg += f"，略過 {len(skipped)} 名"
+    return {
+        "message": msg,
+        "status": item.status,
+        "graduated_count": len(succeeded_ids),
+        "succeeded_ids": succeeded_ids,
+        "skipped": skipped,
+    }
 
 
 # ============ 學生檔案聚合端點 ============

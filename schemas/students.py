@@ -198,3 +198,20 @@ class BulkTransferResultOut(IvyBaseModel):
     message: str
     moved_count: int
     target_classroom_id: int
+
+
+class BulkGraduateSkippedItem(IvyBaseModel):
+    """bulk-graduate 跳過的學生（找不到 / 已非在讀 / 離園日早於入學日）。"""
+
+    student_id: int
+    reason: str
+
+
+class BulkGraduateResultOut(IvyBaseModel):
+    """POST /students/bulk-graduate 回傳：有效在讀學生原子處理，無效者列入 skipped。"""
+
+    message: str
+    status: str
+    graduated_count: int
+    succeeded_ids: list[int]
+    skipped: list[BulkGraduateSkippedItem]
