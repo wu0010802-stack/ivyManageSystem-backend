@@ -10,6 +10,8 @@ from services.audit_high_risk import (
     HIGH_RISK_ACTIONS,
     filter_high_risk,
     classify_risk_kind,
+    classify_risk_kind_fields,
+    is_high_risk_event,
 )
 
 # ============== classify_risk_kind ==============
@@ -193,3 +195,43 @@ def test_high_risk_actions_constant():
         "BLOCKED_UPDATE",
         "BLOCKED_DELETE",
     }
+
+
+# ============== is_high_risk_event（write-time predicate，須與 filter_high_risk 等價）==============
+
+
+@pytest.mark.parametrize(
+    "action,summary,entity_type,expected",
+    [
+        ("DELETE", "刪除員工", "employee", True),  # HTTP DELETE
+        ("BLOCKED_DELETE", "拒絕", "employee", True),  # 越權嘗試
+        ("BLOCKED_CREATE", "拒絕", "user", True),
+        ("UPDATE", "真刪 員工 (不可復原)", "employee", True),  # marker-only hard delete
+        ("UPDATE", "修改使用者 (role: hr → admin)", "user", True),  # 提權
+        ("UPDATE", "修改使用者 (權限變更)", "user", True),  # 中文關鍵字
+        ("UPDATE", "修改員工資料", "employee", False),  # 普通 UPDATE
+        (
+            "UPDATE",
+            "修改使用者 (role: ...)",
+            "employee",
+            False,
+        ),  # role 但非 user entity
+        ("CREATE", "新增員工", "employee", False),
+        ("UPDATE", None, "user", False),  # summary None 不炸
+    ],
+)
+def test_is_high_risk_event(action, summary, entity_type, expected):
+    assert is_high_risk_event(action, summary, entity_type) is expected
+
+
+def test_classify_risk_kind_fields_matches_row_version():
+    """classify_risk_kind(row) 與 classify_risk_kind_fields(action,summary) 一致。"""
+    cases = [
+        ("DELETE", "x (不可復原)"),
+        ("BLOCKED_UPDATE", "拒絕"),
+        ("UPDATE", "改 role"),
+        ("UPDATE", "真刪 (不可復原)"),
+    ]
+    for action, summary in cases:
+        row = AuditLog(action=action, entity_type="user", summary=summary)
+        assert classify_risk_kind(row) == classify_risk_kind_fields(action, summary)

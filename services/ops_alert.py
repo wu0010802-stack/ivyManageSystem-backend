@@ -126,6 +126,69 @@ def notify_scheduler_failure(
         )
 
 
+_HIGH_RISK_KIND_LABELS = {
+    "hard_delete": "硬刪除（不可復原）",
+    "blocked": "越權嘗試被伺服器擋下",
+    "permission_change": "權限／角色變更",
+}
+
+
+def notify_high_risk_audit(
+    *,
+    risk_kind: str,
+    action: str,
+    entity_type: str,
+    summary: str | None,
+    username: str | None = None,
+) -> None:
+    """高風險稽核事件（硬刪 / 提權-角色變更 / 越權嘗試）主動 LINE 告警。
+
+    原本高風險事件觸達完全被動：只靠前端每 60s 輪詢紅點，且分頁隱藏時跳過 → 下班 /
+    假日無人開後台即無人知曉。caller（utils.audit）已過 per-risk_kind cooldown 判斷。
+
+    group_id 未設或 LineService 未注入時 no-op（log warn）；push 例外吞掉並 log，
+    不可影響稽核寫入主流程。summary 由 caller 傳入時已遮罩 PII。
+    """
+    cfg = settings.ops_alert
+    if not cfg.line_group_id:
+        logger.warning(
+            "高風險稽核事件但 OPS_ALERT_LINE_GROUP_ID 未設；"
+            "risk_kind=%s action=%s entity=%s",
+            risk_kind,
+            action,
+            entity_type,
+        )
+        return
+
+    if _line_service is None:
+        logger.warning(
+            "LineService 未注入（init_ops_alert_service 未呼叫）；"
+            "high-risk audit alert risk_kind=%s 跳過 LINE push",
+            risk_kind,
+        )
+        return
+
+    label = _HIGH_RISK_KIND_LABELS.get(risk_kind, risk_kind)
+    text = (
+        f"🔴 高風險操作\n"
+        f"類型：{label}\n"
+        f"動作：{action} / {entity_type}\n"
+        f"操作者：{username or '未知'}\n"
+        f"摘要：{summary or '(無)'}\n"
+        f"env：{settings.core.env}"
+    )
+
+    try:
+        _line_service.push_text_to_group(cfg.line_group_id, text)
+    except Exception as e:
+        logger.error(
+            "High-risk audit alert push 失敗 (risk_kind=%s): %s",
+            risk_kind,
+            e,
+            exc_info=True,
+        )
+
+
 def reset_for_tests() -> None:
     """測試 helper：清空注入的 LineService。"""
     global _line_service

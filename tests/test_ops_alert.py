@@ -99,3 +99,67 @@ def test_happy_path_pushes_to_group(_restore_group_id):
     assert "/api/students/42" in text
     assert "15 次" in text
     assert "3500ms" in text
+
+
+# ============== notify_high_risk_audit ==============
+
+
+def test_high_risk_no_group_id_skips(caplog, _restore_group_id):
+    settings.ops_alert.line_group_id = None
+    ops_alert.init_ops_alert_service(MagicMock())
+    with caplog.at_level("WARNING"):
+        ops_alert.notify_high_risk_audit(
+            risk_kind="hard_delete",
+            action="DELETE",
+            entity_type="user",
+            summary="刪除管理員 (不可復原)",
+        )
+    assert any("OPS_ALERT_LINE_GROUP_ID 未設" in r.message for r in caplog.records)
+
+
+def test_high_risk_service_not_injected_skips(caplog, _restore_group_id):
+    settings.ops_alert.line_group_id = "Cabcdef"
+    with caplog.at_level("WARNING"):
+        ops_alert.notify_high_risk_audit(
+            risk_kind="permission_change",
+            action="UPDATE",
+            entity_type="user",
+            summary="提權",
+        )
+    assert any("LineService 未注入" in r.message for r in caplog.records)
+
+
+def test_high_risk_push_exception_swallowed(caplog, _restore_group_id):
+    settings.ops_alert.line_group_id = "Cabcdef"
+    bad = MagicMock()
+    bad.push_text_to_group.side_effect = RuntimeError("LINE down")
+    ops_alert.init_ops_alert_service(bad)
+    with caplog.at_level("ERROR"):
+        ops_alert.notify_high_risk_audit(
+            risk_kind="blocked",
+            action="BLOCKED_DELETE",
+            entity_type="employee",
+            summary="拒絕",
+        )
+    assert any("High-risk audit alert push 失敗" in r.message for r in caplog.records)
+    bad.push_text_to_group.assert_called_once()
+
+
+def test_high_risk_happy_path_pushes(_restore_group_id):
+    settings.ops_alert.line_group_id = "Cabcdef"
+    line = MagicMock()
+    ops_alert.init_ops_alert_service(line)
+    ops_alert.notify_high_risk_audit(
+        risk_kind="hard_delete",
+        action="DELETE",
+        entity_type="user",
+        summary="刪除管理員 admin (不可復原)",
+        username="boss",
+    )
+    line.push_text_to_group.assert_called_once()
+    args = line.push_text_to_group.call_args
+    assert args[0][0] == "Cabcdef"
+    text = args[0][1]
+    assert "硬刪除" in text  # risk_kind label
+    assert "DELETE / user" in text
+    assert "boss" in text

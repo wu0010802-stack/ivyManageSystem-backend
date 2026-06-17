@@ -509,6 +509,61 @@ def _redact_summary(summary):
     return redact_pii_text(summary)
 
 
+# ── 高風險稽核事件主動告警（per-process per-risk_kind cooldown，避免 burst 洗版）──
+_HIGH_RISK_ALERT_COOLDOWN_SECONDS = 60.0
+_last_high_risk_alert: "dict[str, float]" = {}
+
+
+def _reset_high_risk_alert_throttle() -> None:
+    """測試 helper：清空 cooldown 狀態。"""
+    _last_high_risk_alert.clear()
+
+
+def _should_alert_high_risk(risk_kind: str) -> bool:
+    """per-risk_kind cooldown：同類事件 cooldown 內只告警一次（首發即時、後續抑制），
+    避免批次硬刪等 burst 洗版 LINE。"""
+    now = time.monotonic()
+    last = _last_high_risk_alert.get(risk_kind)
+    if last is not None and (now - last) < _HIGH_RISK_ALERT_COOLDOWN_SECONDS:
+        return False
+    _last_high_risk_alert[risk_kind] = now
+    return True
+
+
+def _maybe_alert_high_risk_audit(payload: dict) -> None:
+    """稽核寫入成功後，對高風險事件主動 LINE 告警（best-effort，不阻擋主流程）。
+
+    在 _write_audit_sync 背景 thread 內呼叫（不阻塞 request）；payload['summary'] 此時
+    已遮罩。偵測條件與 read-time filter_high_risk 共用（services.audit_high_risk），
+    確保前端紅點清單與 LINE 告警判定一致。
+    """
+    try:
+        from services.audit_high_risk import (
+            classify_risk_kind_fields,
+            is_high_risk_event,
+        )
+
+        action = payload.get("action") or ""
+        summary = payload.get("summary")
+        entity_type = payload.get("entity_type")
+        if not is_high_risk_event(action, summary, entity_type):
+            return
+        risk_kind = classify_risk_kind_fields(action, summary)
+        if not _should_alert_high_risk(risk_kind):
+            return
+        from services.ops_alert import notify_high_risk_audit
+
+        notify_high_risk_audit(
+            risk_kind=risk_kind,
+            action=action,
+            entity_type=entity_type or "",
+            summary=summary,
+            username=payload.get("username"),
+        )
+    except Exception as e:  # best-effort：告警掛勾絕不影響稽核寫入
+        logger.warning("high-risk audit alert hook failed: %s", e)
+
+
 def _write_audit_sync(payload: dict) -> None:
     """在 threadpool 中執行的同步寫入，不可拋出例外到上層。
 
@@ -549,6 +604,8 @@ def _write_audit_sync(payload: dict) -> None:
             session.commit()
         finally:
             session.close()
+        # 寫入成功後對高風險事件主動告警（已在背景 thread，不阻塞 request）
+        _maybe_alert_high_risk_audit(payload)
     except Exception as e:
         logger.warning(f"Audit log write failed: {e}")
 

@@ -24,6 +24,33 @@ HIGH_RISK_ACTIONS = {
     "BLOCKED_DELETE",
 }
 
+# 權限變更偵測關鍵字（filter_high_risk 的 SQL LIKE 與 is_high_risk_event 的 Python
+# 比對共用同一份，避免 read-time 與 write-time 偵測漂移）。
+_PERMISSION_KEYWORDS = ("role", "permission", "角色", "權限")
+_HARD_DELETE_MARKER = "(不可復原)"
+
+
+def is_high_risk_event(
+    action: str, summary: str | None, entity_type: str | None
+) -> bool:
+    """Row 層級高風險判定（write-time 用），與 filter_high_risk 的 SQL 條件等價。
+
+    主動告警掛在稽核寫入後，用此判斷是否值得推播；條件須與 read-time
+    filter_high_risk 一致，否則紅點清單與 LINE 告警會對不上。
+    """
+    if action in HIGH_RISK_ACTIONS:
+        return True
+    if summary and _HARD_DELETE_MARKER in summary:
+        return True
+    if (
+        entity_type == "user"
+        and action == "UPDATE"
+        and summary
+        and any(kw in summary for kw in _PERMISSION_KEYWORDS)
+    ):
+        return True
+    return False
+
 
 def filter_high_risk(query, *, since: datetime, only_unack: bool = True):
     """套用 high-risk filter 到 SQLAlchemy query。
@@ -38,16 +65,11 @@ def filter_high_risk(query, *, since: datetime, only_unack: bool = True):
     """
     cond = sa.or_(
         AuditLog.action.in_(HIGH_RISK_ACTIONS),
-        AuditLog.summary.like("%(不可復原)%"),
+        AuditLog.summary.like(f"%{_HARD_DELETE_MARKER}%"),
         sa.and_(
             AuditLog.entity_type == "user",
             AuditLog.action == "UPDATE",
-            sa.or_(
-                AuditLog.summary.like("%role%"),
-                AuditLog.summary.like("%permission%"),
-                AuditLog.summary.like("%角色%"),
-                AuditLog.summary.like("%權限%"),
-            ),
+            sa.or_(*[AuditLog.summary.like(f"%{kw}%") for kw in _PERMISSION_KEYWORDS]),
         ),
     )
     query = query.filter(AuditLog.created_at >= since).filter(cond)
@@ -56,14 +78,21 @@ def filter_high_risk(query, *, since: datetime, only_unack: bool = True):
     return query.order_by(AuditLog.created_at.desc())
 
 
+def classify_risk_kind_fields(
+    action: str, summary: str | None
+) -> Literal["hard_delete", "blocked", "permission_change"]:
+    """以 (action, summary) 欄位分類 risk kind（write-time 用，無需 ORM row）。"""
+    if action in {"BLOCKED_CREATE", "BLOCKED_UPDATE", "BLOCKED_DELETE"}:
+        return "blocked"
+    if action == "DELETE":
+        return "hard_delete"
+    if summary and _HARD_DELETE_MARKER in summary:
+        return "hard_delete"
+    return "permission_change"
+
+
 def classify_risk_kind(
     row: AuditLog,
 ) -> Literal["hard_delete", "blocked", "permission_change"]:
     """分類單筆 row 的 risk kind（response shape 用）。"""
-    if row.action in {"BLOCKED_CREATE", "BLOCKED_UPDATE", "BLOCKED_DELETE"}:
-        return "blocked"
-    if row.action == "DELETE":
-        return "hard_delete"
-    if row.summary and "(不可復原)" in row.summary:
-        return "hard_delete"
-    return "permission_change"
+    return classify_risk_kind_fields(row.action, row.summary)
