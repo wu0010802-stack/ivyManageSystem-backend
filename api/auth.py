@@ -63,6 +63,7 @@ from utils.permissions import (
     get_permissions_definition,
     get_role_default_permissions,
     has_permission,
+    permissions_subset,
     resolve_user_permissions,
     validate_permission_names,
     ROLE_LABELS,
@@ -512,6 +513,19 @@ def impersonate_user(
 
         # 5. 產生該使用者的 token
         permission_names = resolve_user_permissions(target_user, session)
+
+        # 4.6（C13）越權預覽防護：目標權限集必須 ⊆ 操作者權限集（含 scope 維度）。
+        # 否則 principal（PORTAL_PREVIEW 但無 EMPLOYEES_READ）可藉冒充 HR 讀全園
+        # 員工個資。admin（wildcard）為任何人之 superset 仍可；冒充權限 ⊆ 自己的
+        # 一般 teacher 仍可。
+        if not permissions_subset(permission_names, user_perms):
+            logger.warning(
+                "冒充被拒（目標權限超出操作者）：操作者 user_id=%s 嘗試冒充 user_id=%s",
+                current_user.get("user_id"),
+                target_user.id,
+            )
+            raise HTTPException(status_code=403, detail="不可冒充權限高於您的帳號")
+
         target_token = create_access_token(
             {
                 "user_id": target_user.id,

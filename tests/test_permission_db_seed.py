@@ -124,7 +124,8 @@ def test_seed_roles_admin_is_wildcard(session_with_seed):
 
 def test_seed_roles_principal_inherits_supervisor(session_with_seed):
     """principal seed 內容 = supervisor + SALARY_READ + AUDIT_LOGS + GOV_REPORTS_EXPORT
-    + PORTAL_PREVIEW + DATA_QUALITY_READ + DATA_QUALITY_WRITE。"""
+    + PORTAL_PREVIEW + DATA_QUALITY_READ + DATA_QUALITY_WRITE
+    + C13 補齊 ANNOUNCEMENTS_READ / DISMISSAL_CALLS_READ / DISMISSAL_CALLS_WRITE。"""
     from utils.permissions import ROLE_TEMPLATES, Permission
 
     pri = set(
@@ -140,6 +141,9 @@ def test_seed_roles_principal_inherits_supervisor(session_with_seed):
         Permission.PORTAL_PREVIEW.value,
         Permission.DATA_QUALITY_READ.value,
         Permission.DATA_QUALITY_WRITE.value,
+        Permission.ANNOUNCEMENTS_READ.value,
+        Permission.DISMISSAL_CALLS_READ.value,
+        Permission.DISMISSAL_CALLS_WRITE.value,
     }
 
 
