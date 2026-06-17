@@ -36,6 +36,42 @@ def _q1(x: Any) -> Decimal:
     return Decimal(str(x)).quantize(_Q1, rounding=ROUND_HALF_UP)
 
 
+def compute_special_bonus_total_by_emp(
+    db: Session, cycle_id: int
+) -> dict[int, Decimal]:
+    """每員工 special_bonus_total，套用「excel 最終真相」去重（P1#2，2026-06-17）。
+
+    對每個 (employee, bonus_type)：若存在 Excel 匯入來源列（source_ref == '年終獎金總表'），
+    則該 bonus_type 只計 Excel 列、排除同型 auto-derive 列（source_ref 以 'auto:' 開頭）。
+    無 Excel 列的 bonus_type（純 auto / 純手動）維持全計。
+
+    Why: auto-derive 與 Excel 匯入對同一 bonus_type 用不同 period_label（auto per-class
+    '{yr}-FD'/'{yr}上-C{cid}'，Excel 固定 '114上'/'114.8-115.01'），uq 鍵含 period_label 故
+    兩列並存；build_settlements(refresh_rates=True) 在 Excel 匯入後重新 derive auto 列，舊版
+    SUM(全部) 會把同型 Excel+auto 雙計 → total_amount/轉帳多發。import 前的一般 build 無 Excel
+    列、行為不變。
+    """
+    from collections import defaultdict
+
+    from sqlalchemy import select as _select
+
+    from models.year_end import SpecialBonusItem as _SBI
+
+    _EXCEL_SRC = "年終獎金總表"
+    groups: dict[tuple[int, Any], list] = defaultdict(list)
+    for item in db.scalars(_select(_SBI).where(_SBI.year_end_cycle_id == cycle_id)):
+        groups[(int(item.employee_id), item.bonus_type)].append(item)
+
+    totals: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+    for (emp_id, _bt), group in groups.items():
+        has_excel = any((g.source_ref or "") == _EXCEL_SRC for g in group)
+        for g in group:
+            if has_excel and (g.source_ref or "").startswith("auto:"):
+                continue  # excel 最終真相：排除同型 auto 列，不雙計
+            totals[emp_id] += Decimal(str(g.amount if g.amount is not None else 0))
+    return dict(totals)
+
+
 # --------------------------------------------------------------------------- #
 # 角色 key → BonusConfig 節慶基數欄位名稱對應表                               #
 # --------------------------------------------------------------------------- #
@@ -222,7 +258,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 
 if TYPE_CHECKING:
     from services.year_end.auto_derive import DeriveReport
@@ -868,17 +904,9 @@ def build_settlements(
             )
         )
     }
-    _special_total_by_emp: dict[int, Decimal] = {
-        int(eid): Decimal(str(total)) if total is not None else Decimal("0")
-        for eid, total in db.execute(
-            select(
-                SpecialBonusItem.employee_id,
-                func.coalesce(func.sum(SpecialBonusItem.amount), 0),
-            )
-            .where(SpecialBonusItem.year_end_cycle_id == cycle.id)
-            .group_by(SpecialBonusItem.employee_id)
-        ).all()
-    }
+    # P1#2（excel 最終真相）：以 excel-wins 去重計 special_bonus_total，避免 build refresh
+    # 在 Excel 匯入後重建的 auto 列與 excel 列同型被 SUM 雙計（見 compute_* docstring）。
+    _special_total_by_emp = compute_special_bonus_total_by_emp(db, cycle.id)
     # 班導 target 預載：key=(head_teacher_employee_id, semester_first)。原逐筆
     # db.scalar 對重複列取第一筆，以 id 排序 + setdefault 維持確定性等價。
     _class_targets: dict[tuple[int, bool], ClassEnrollmentTarget] = {}
