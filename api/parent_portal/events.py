@@ -32,7 +32,11 @@ from models.database import (
 )
 from models.portfolio import ATTACHMENT_OWNER_EVENT_ACK
 from utils.auth import require_parent_role
-from utils.file_upload import safe_attachment_filename, validate_file_signature
+from utils.file_upload import (
+    read_upload_with_size_check,
+    safe_attachment_filename,
+    validate_file_signature,
+)
 
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
@@ -244,18 +248,21 @@ async def upload_ack_signature(
     """
     user_id = current_user["user_id"]
 
+    # 擁有權檢查移到讀檔前：避免惡意家長對「非自己學生」的 event 強迫超大上傳讀取
+    # （以前 read() 在前、ownership 在後，可被未授權者用大檔耗用記憶體 / worker）。
+    _assert_student_owned(session, user_id, student_id, for_write=True)
+
     filename = file.filename or "signature.png"
     ext = os.path.splitext(filename)[1].lower() or ".png"
     if ext not in _SIGNATURE_ALLOWED_EXT:
         raise HTTPException(status_code=400, detail="簽名檔僅接受 PNG")
 
-    # 不沿用 read_upload_with_size_check 預設 10MB 上限：簽名圖過大代表非預期使用
-    content = await file.read()
-    if len(content) > _SIGNATURE_MAX_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"簽名圖過大（{len(content)} bytes，上限 {_SIGNATURE_MAX_BYTES}）",
-        )
+    # 不沿用預設 10MB 上限：簽名圖過大代表非預期使用。chunked 早停避免 OOM/DoS。
+    content = await read_upload_with_size_check(
+        file,
+        max_bytes=_SIGNATURE_MAX_BYTES,
+        size_error_detail=f"簽名圖過大（上限 {_SIGNATURE_MAX_BYTES} bytes）",
+    )
     validate_file_signature(content, ext)
     # P0a 兒童照片 EXIF strip（簽名圖也走 strip：iPhone 截圖含 timestamp / device id）
     from utils.image_sanitize import IMAGE_EXTENSIONS_TO_SANITIZE, strip_image_metadata
@@ -264,8 +271,6 @@ async def upload_ack_signature(
         content = strip_image_metadata(content, ext)
 
     from utils.portfolio_storage import get_portfolio_storage
-
-    _assert_student_owned(session, user_id, student_id, for_write=True)
 
     # 資安掃描 2026-05-07 P2：防 ack_deadline 後補簽。家長若有正當理由
     # 補簽，需請校方協助走後台 admin override（不在本端點開放）。

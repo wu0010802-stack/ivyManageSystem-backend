@@ -217,6 +217,34 @@ class TestReadUploadChunked:
             asyncio.run(read_upload_with_size_check(f, extension=".mp4"))
         assert f.bytes_read <= MAX_VIDEO_UPLOAD_SIZE + 64 * 1024
 
+    # ── max_bytes 自訂上限（簽名圖 200KB / 教師請假附件 5MB 等小於預設者）────────
+    def test_max_bytes_override_under_limit_returns_content(self):
+        """max_bytes 自訂上限：未超過時回完整內容。"""
+        f = _FakeUpload(total_size=100 * 1024)
+        out = asyncio.run(read_upload_with_size_check(f, max_bytes=200 * 1024))
+        assert len(out) == 100 * 1024
+        assert f.bytes_read == 100 * 1024
+
+    def test_max_bytes_override_aborts_early(self):
+        """max_bytes 自訂上限：超過時 chunked 早停，不先全載入避免 OOM/DoS。"""
+        f = _FakeUpload(total_size=50 * 1024 * 1024)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(read_upload_with_size_check(f, max_bytes=200 * 1024))
+        assert exc.value.status_code == 400
+        # 早停：實際讀取量不應超過 max_bytes + 1 個 chunk
+        assert f.bytes_read <= 200 * 1024 + 64 * 1024
+
+    def test_max_bytes_custom_error_detail(self):
+        """size_error_detail 提供時，超限錯誤訊息用呼叫端指定字串。"""
+        f = _FakeUpload(total_size=50 * 1024 * 1024)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                read_upload_with_size_check(
+                    f, max_bytes=200 * 1024, size_error_detail="簽名圖過大"
+                )
+            )
+        assert exc.value.detail == "簽名圖過大"
+
 
 # ── P0a 落地：integration tests for image strip 透明清洗 ───────────────────
 

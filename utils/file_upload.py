@@ -81,6 +81,8 @@ async def read_upload_with_size_check(
     file: UploadFile,
     *,
     extension: str | None = None,
+    max_bytes: int | None = None,
+    size_error_detail: str | None = None,
 ) -> bytes:
     """以 chunked 方式讀取上傳內容，累計超過 size limit 立即中止避免 OOM。
 
@@ -94,8 +96,18 @@ async def read_upload_with_size_check(
         extension: 若提供，依副檔名套用對應 size limit（影片 50MB / 其他 10MB）
                    未提供時沿用 MAX_UPLOAD_SIZE (10MB)，維持舊呼叫者向後相容
                    且不會觸發 validate / strip（行為等同 helper 落地前）
+        max_bytes: 若提供，覆寫 size limit（優先於 extension 推得的上限）。用於
+                   小於預設 10MB 的自訂上限，例如簽名圖 200KB / 教師請假附件 5MB。
+                   讓這些端點也走 chunked 早停，而非先 read() 全檔再比大小（DoS 韌性）。
+        size_error_detail: 若提供，超限時用此訊息。預設訊息以 MB 表示，對 <1MB 的
+                   上限會顯示「0MB」不直觀，故允許呼叫端自訂。
     """
-    limit = max_upload_size_for(extension) if extension else MAX_UPLOAD_SIZE
+    if max_bytes is not None:
+        limit = max_bytes
+    elif extension:
+        limit = max_upload_size_for(extension)
+    else:
+        limit = MAX_UPLOAD_SIZE
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -104,6 +116,8 @@ async def read_upload_with_size_check(
             break
         total += len(chunk)
         if total > limit:
+            if size_error_detail is not None:
+                raise HTTPException(status_code=400, detail=size_error_detail)
             mb = limit // (1024 * 1024)
             raise HTTPException(status_code=400, detail=f"檔案超過 {mb}MB 限制")
         chunks.append(chunk)

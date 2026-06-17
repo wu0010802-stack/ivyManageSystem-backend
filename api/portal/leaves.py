@@ -69,7 +69,7 @@ from api.leaves import (
     _check_substitute_leave_conflict,
     _guard_leave_quota,
 )
-from utils.file_upload import validate_file_signature
+from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from api.leaves_workday import (
     _calc_shift_hours,
     validate_leave_hours_against_schedule,
@@ -495,11 +495,12 @@ async def upload_leave_attachments(
                     detail=f"不支援的檔案格式：{raw_ext or '(無副檔名)'}，僅接受圖片與 PDF",
                 )
 
-            content = await f.read()
-            if len(content) > _MAX_FILE_SIZE:
-                raise HTTPException(
-                    status_code=400, detail=f"檔案 {f.filename} 超過 5 MB 限制"
-                )
+            # chunked 早停：超過 5MB 立即中止，避免先 read() 全檔再比大小（DoS 韌性）
+            content = await read_upload_with_size_check(
+                f,
+                max_bytes=_MAX_FILE_SIZE,
+                size_error_detail=f"檔案 {f.filename} 超過 5 MB 限制",
+            )
             validate_file_signature(content, raw_ext)
             # P0a 兒童照片位置個資保護：image 附件清 EXIF（GPS / 相機 id / 拍攝時間）
             from utils.image_sanitize import (
