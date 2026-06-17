@@ -698,6 +698,18 @@ def import_year_end_to_db(
                 emp_id,
             )
             continue
+        # excel 為最終真相（業主裁示 2026-06-17）：移除同 (cycle, emp, bonus_type) 但
+        # period_label 不同、且非本匯入來源（auto-derived）的列，避免重算
+        # special_bonus_total 時同一筆獎金被兩列重複計入（P1：auto festival_diff
+        # label "{yr}-FD" vs excel "114.8-115.01"；per-class award/dividend 同理）。
+        # APPRAISAL_HALF 兩路徑 label 一致，本就 upsert 去重，不受影響。
+        session.query(SpecialBonusItem).filter(
+            SpecialBonusItem.year_end_cycle_id == cycle.id,
+            SpecialBonusItem.employee_id == emp_id,
+            SpecialBonusItem.bonus_type == sb.bonus_type,
+            SpecialBonusItem.period_label != sb.period_label,
+            SpecialBonusItem.source_ref != "年終獎金總表",
+        ).delete(synchronize_session=False)
         existing = (
             session.query(SpecialBonusItem)
             .filter_by(
