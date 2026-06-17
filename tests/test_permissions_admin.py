@@ -285,6 +285,79 @@ class TestRoleCRUD:
         assert resp.status_code == 200
 
 
+class TestRoleCRUDAudit:
+    """OPS-2：角色 CRUD（建/改/刪）須留 audit——可問責「誰在何時改了哪角色的哪條權限」。
+    對齊 update_user 既有 write_audit_in_session 作法（與主交易共生死）。"""
+
+    def test_create_role_writes_audit(self, client):
+        c, sf = client
+        _admin_login(c)
+        c.post(
+            "/api/roles",
+            json={"code": "audited_r", "label": "x", "permissions": ["DASHBOARD"]},
+        )
+        with sf() as session:
+            from models.audit import AuditLog
+
+            logs = (
+                session.query(AuditLog)
+                .filter(
+                    AuditLog.entity_type == "role",
+                    AuditLog.entity_id == "audited_r",
+                )
+                .all()
+            )
+        assert len(logs) == 1
+        assert logs[0].action == "CREATE"
+        assert logs[0].user_id is not None  # 記得到操作者
+
+    def test_update_role_permissions_writes_audit_with_diff(self, client):
+        c, sf = client
+        _admin_login(c)
+        c.post(
+            "/api/roles",
+            json={"code": "upd_r", "label": "x", "permissions": ["DASHBOARD"]},
+        )
+        c.put(
+            "/api/roles/upd_r",
+            json={"permissions": ["DASHBOARD", "EMPLOYEES_READ"]},
+        )
+        with sf() as session:
+            from models.audit import AuditLog
+
+            logs = (
+                session.query(AuditLog)
+                .filter(
+                    AuditLog.entity_type == "role",
+                    AuditLog.entity_id == "upd_r",
+                    AuditLog.action == "UPDATE",
+                )
+                .all()
+            )
+        assert len(logs) == 1
+        # changes 應反映新增的 EMPLOYEES_READ
+        assert "EMPLOYEES_READ" in str(logs[0].changes)
+
+    def test_delete_role_writes_audit(self, client):
+        c, sf = client
+        _admin_login(c)
+        c.post("/api/roles", json={"code": "del_r", "label": "x"})
+        c.delete("/api/roles/del_r")
+        with sf() as session:
+            from models.audit import AuditLog
+
+            logs = (
+                session.query(AuditLog)
+                .filter(
+                    AuditLog.entity_type == "role",
+                    AuditLog.entity_id == "del_r",
+                    AuditLog.action == "DELETE",
+                )
+                .all()
+            )
+        assert len(logs) == 1
+
+
 def test_assert_can_grant_scope_aware_blocks_escalation():
     """R6-7：_assert_can_grant 須 scope-aware——own_class caller 不可在角色授 :all
     （原本 split(":")[0] 剝 scope 放行）。"""

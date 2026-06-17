@@ -9,7 +9,7 @@
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from schemas.permissions_admin import (
     PermissionAdminOkOut,
     RoleOut,
 )
+from utils.audit import write_audit_in_session
 from utils.auth import require_permission
 from utils.permissions import Permission, has_permission, validate_permission_names
 from utils.portfolio_access import is_unrestricted
@@ -85,6 +86,7 @@ class RoleUpdate(BaseModel):
 @router.post("/roles", response_model=RoleOut)
 def create_role(
     payload: RoleIn,
+    request: Request,
     session: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_permission(Permission.ROLES_MANAGE)),
 ):
@@ -112,6 +114,16 @@ def create_role(
         is_core=False,
     )
     session.add(role)
+    # OPS-2：角色建立留 audit（與主交易共生死，對齊 update_user）
+    write_audit_in_session(
+        session,
+        request,
+        action="CREATE",
+        entity_type="role",
+        entity_id=payload.code,
+        summary=f"建立自訂角色 {payload.label}（{payload.code}）",
+        changes={"permissions_added": list(payload.permissions)},
+    )
     session.commit()
     session.refresh(role)
     return {
@@ -127,12 +139,20 @@ def create_role(
 def update_role(
     code: str,
     payload: RoleUpdate,
+    request: Request,
     session: Session = Depends(get_session_dep),
     current_user: dict = Depends(require_permission(Permission.ROLES_MANAGE)),
 ):
     role = session.query(Role).filter_by(code=code).first()
     if role is None:
         raise HTTPException(status_code=404, detail="角色不存在")
+
+    # OPS-2：擷取變更前狀態以供 audit diff
+    old_perms = list(role.permissions)
+    old_label = role.label
+    old_description = role.description
+    audit_changes: dict = {}
+    affected_count = 0
 
     if payload.permissions is not None:
         if role.is_core:
@@ -156,11 +176,37 @@ def update_role(
         affected = [u for u in role_users if u.permission_names is None]
         for u in affected:
             u.token_version = (u.token_version or 0) + 1
+        affected_count = len(affected)
+
+        new_perms = list(payload.permissions)
+        audit_changes["permissions_added"] = [
+            p for p in new_perms if p not in old_perms
+        ]
+        audit_changes["permissions_removed"] = [
+            p for p in old_perms if p not in new_perms
+        ]
+        audit_changes["affected_null_perm_users"] = affected_count
 
     if payload.label is not None:
+        if payload.label != old_label:
+            audit_changes["label"] = {"from": old_label, "to": payload.label}
         role.label = payload.label
     if payload.description is not None:
+        if payload.description != old_description:
+            audit_changes["description_changed"] = True
         role.description = payload.description
+
+    # OPS-2：角色變更留 audit（含權限 diff 與受影響 NULL-perm 帳號數）
+    if audit_changes:
+        write_audit_in_session(
+            session,
+            request,
+            action="UPDATE",
+            entity_type="role",
+            entity_id=code,
+            summary=f"更新角色 {role.label}（{code}）",
+            changes=audit_changes,
+        )
 
     session.commit()
     session.refresh(role)
@@ -176,6 +222,7 @@ def update_role(
 @router.delete("/roles/{code}", response_model=PermissionAdminOkOut)
 def delete_role(
     code: str,
+    request: Request,
     session: Session = Depends(get_session_dep),
     _: dict = Depends(require_permission(Permission.ROLES_MANAGE)),
 ):
@@ -192,6 +239,18 @@ def delete_role(
             detail=f"尚有 {user_count} 個帳號使用此角色，請先變更帳號角色再刪除",
         )
 
+    # OPS-2：刪除前擷取角色快照留 audit
+    deleted_label = role.label
+    deleted_perms = list(role.permissions)
+    write_audit_in_session(
+        session,
+        request,
+        action="DELETE",
+        entity_type="role",
+        entity_id=code,
+        summary=f"刪除自訂角色 {deleted_label}（{code}）",
+        changes={"permissions": deleted_perms},
+    )
     session.delete(role)
     session.commit()
     return {"ok": True}
