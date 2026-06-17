@@ -57,6 +57,25 @@ logger = logging.getLogger(__name__)
 from utils.audit import mark_soft_delete, write_explicit_audit
 
 
+def _invalidate_activity_dashboard_after_enrollment_change(session) -> None:
+    """學生在籍/班籍異動（轉班 / 退學 / 畢業）後失效才藝儀表板快取。
+
+    才藝 dashboard 招生達成率分母用各班在籍人數（activity_service._query_classroom_stats，
+    activity_dashboard_table 快取 TTL 1800s）；學生離校/轉班後若不主動失效，老闆學期中
+    最長要等 30 分才看到新分母。best-effort：失敗只 log，不阻擋學生主流程。一律在
+    session.commit() 之後呼叫（report_cache_service 用獨立 session）。
+    """
+    try:
+        from api.activity._shared import _invalidate_activity_dashboard_caches
+
+        _invalidate_activity_dashboard_caches(session)
+    except Exception:
+        logger.warning(
+            "invalidate activity dashboard after enrollment change failed",
+            exc_info=True,
+        )
+
+
 def _cancel_active_dismissal_calls(session, student: Student) -> list[dict]:
     """取消學生所有進行中（pending/acknowledged）的接送通知。
 
@@ -1037,6 +1056,8 @@ def update_student(
             )
 
         session.commit()
+        if _count_changed:
+            _invalidate_activity_dashboard_after_enrollment_change(session)
         return {"message": "學生資料更新成功", "id": student.id}
     except HTTPException:
         raise
@@ -1106,6 +1127,7 @@ async def delete_student(
             )
 
         session.commit()
+        _invalidate_activity_dashboard_after_enrollment_change(session)
     except HTTPException:
         raise
     except Exception as e:
@@ -1221,6 +1243,7 @@ async def graduate_student(
             )
 
         session.commit()
+        _invalidate_activity_dashboard_after_enrollment_change(session)
         logger.warning(
             "學生離園：id=%s student_name=%s status=%s operator=%s",
             student.id,
@@ -1362,6 +1385,8 @@ def bulk_transfer_students(
             mark_salary_stale_for_enrollment_event(session, today_taipei())
 
         session.commit()
+        if moved_count:
+            _invalidate_activity_dashboard_after_enrollment_change(session)
         logger.info(
             "學生批次轉班：target_classroom_id=%s moved=%s operator=%s",
             item.target_classroom_id,
