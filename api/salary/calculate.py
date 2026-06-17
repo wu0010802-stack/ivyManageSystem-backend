@@ -149,6 +149,7 @@ def _run_salary_calc_job(job_id: str, year: int, month: int) -> None:
     from . import (
         _active_employees_in_month_filter,
         _invalidate_finance_summary_cache,
+        _invalidate_salary_report_cache,
     )
 
     _salary_job_registry.mark_running(job_id)
@@ -189,6 +190,7 @@ def _run_salary_calc_job(job_id: str, year: int, month: int) -> None:
         results_dicts = [_breakdown_to_result_dict(e, b) for e, b in bulk_results]
         _salary_job_registry.complete(job_id, results_dicts, errors)
         _invalidate_finance_summary_cache()
+        _invalidate_salary_report_cache()
 
         if results_dicts:
             total_net = sum(r["net_pay"] for r in results_dicts)
@@ -218,6 +220,7 @@ def calculate_salaries_alt(
     from . import (
         _active_employees_in_month_filter,
         _invalidate_finance_summary_cache,
+        _invalidate_salary_report_cache,
         _trigger_past_month_snapshot_if_missing,
     )
 
@@ -339,6 +342,7 @@ def calculate_salaries_alt(
         )
 
     _invalidate_finance_summary_cache()
+    _invalidate_salary_report_cache()
     return {"results": results, "errors": errors}
 
 
