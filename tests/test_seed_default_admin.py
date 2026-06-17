@@ -86,3 +86,52 @@ def test_dev_no_admin_no_env_uses_dev_fallback(test_db_session, monkeypatch):
     assert len(admins) == 1
     assert admins[0].username == "admin"
     assert admins[0].must_change_password is True
+
+
+@pytest.mark.parametrize("env_value", ["staging", "Production", "pruduction", ""])
+def test_non_whitelisted_env_no_env_raises_not_weak_fallback(
+    test_db_session, monkeypatch, env_value
+):
+    """C38：非白名單 ENV（staging/typo/空字串）漏設 ADMIN_INIT_PASSWORD 不得
+    fallback 弱密碼 admin/admin123，必須 fail-fast raise。
+
+    舊邏輯只在 is_production() 才 raise，其餘（含 staging/typo/空）落入弱密碼
+    fallback——等同在類正式環境靜默建立 admin/admin123 後門。
+    """
+    monkeypatch.setenv("ENV", env_value)
+    monkeypatch.delenv("ADMIN_INIT_PASSWORD", raising=False)
+    monkeypatch.delenv("ADMIN_INIT_USERNAME", raising=False)
+
+    with pytest.raises(RuntimeError):
+        seed_default_admin()
+
+    assert _count_admins(test_db_session) == 0
+
+
+def test_unset_env_no_env_raises_not_weak_fallback(test_db_session, monkeypatch):
+    """C38：未設 ENV（model_fields_set 不含 env）亦視為未配置 dev → fail-fast。"""
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.delenv("ADMIN_INIT_PASSWORD", raising=False)
+    monkeypatch.delenv("ADMIN_INIT_USERNAME", raising=False)
+
+    with pytest.raises(RuntimeError):
+        seed_default_admin()
+
+    assert _count_admins(test_db_session) == 0
+
+
+@pytest.mark.parametrize("env_value", ["dev", "local", "test"])
+def test_whitelisted_dev_env_still_allows_fallback(
+    test_db_session, monkeypatch, env_value
+):
+    """C38：白名單 dev/local/test 維持弱密碼 fallback（本地開發體驗不變）。"""
+    monkeypatch.setenv("ENV", env_value)
+    monkeypatch.delenv("ADMIN_INIT_PASSWORD", raising=False)
+    monkeypatch.delenv("ADMIN_INIT_USERNAME", raising=False)
+
+    seed_default_admin()
+
+    admins = test_db_session.query(User).filter(User.role == "admin").all()
+    assert len(admins) == 1
+    assert admins[0].username == "admin"
+    assert admins[0].must_change_password is True
