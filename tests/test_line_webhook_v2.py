@@ -428,6 +428,89 @@ class TestWebhookEndpointIntegration:
             assert m.source == "line"
             assert m.body == "謝謝老師"
 
+    def test_dedup_unexpected_failure_does_not_dispatch(
+        self, session_factory, monkeypatch
+    ):
+        """去重 insert 拋非 IntegrityError 例外時，必須保守視為「可能已處理」
+        而跳過分發（fail-safe），不得把 event 當新事件 dispatch（否則重放防線失效）。"""
+        import json
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from api.line_webhook import (
+            init_webhook_service,
+            router as webhook_router,
+            verify_line_signature,
+        )
+
+        sf = session_factory
+        with sf() as session:
+            parent, _, _, thread = _seed_thread(session)
+            from services.line_reply_router import upsert_reply_context
+
+            upsert_reply_context(
+                session, line_user_id=parent.line_user_id, thread_id=thread.id
+            )
+            session.commit()
+            line_id = parent.line_user_id
+            thread_id = thread.id
+
+        from services.line_service import LineService
+
+        svc = LineService()
+        svc.configure(token="t", target_id="g", enabled=True, channel_secret="s")
+        svc._reply = MagicMock(return_value=True)
+        svc._reply_with_quick_reply = MagicMock(return_value=True)
+        svc.handle_webhook_message = MagicMock()
+        init_webhook_service(svc)
+
+        # 模擬去重 insert/commit 遇非預期 DB 例外（非重複）
+        def _boom(*args, **kwargs):
+            raise RuntimeError("DB connection lost")
+
+        monkeypatch.setattr("services.line_reply_router.deduplicate_event", _boom)
+
+        payload = json.dumps(
+            {
+                "events": [
+                    {
+                        "type": "message",
+                        "webhookEventId": "evt-boom-1",
+                        "source": {"userId": line_id},
+                        "replyToken": "rt-boom-1",
+                        "message": {"type": "text", "text": "謝謝老師"},
+                    }
+                ]
+            }
+        ).encode()
+
+        app = FastAPI()
+        app.include_router(webhook_router)
+        app.dependency_overrides[verify_line_signature] = lambda: payload
+
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/line/webhook",
+                content=payload,
+                headers={
+                    "X-Line-Signature": "x",
+                    "Content-Type": "application/json",
+                },
+            )
+
+        assert resp.status_code == 200
+        # fail-safe：未能確認 fresh → 不分發，不回覆、不寫訊息
+        svc._reply.assert_not_called()
+        svc.handle_webhook_message.assert_not_called()
+        with sf() as session:
+            m = (
+                session.query(ParentMessage)
+                .filter(ParentMessage.thread_id == thread_id)
+                .first()
+            )
+            assert m is None
+
     def test_teacher_text_routed_to_staff_handler(self, session_factory):
         import json
 
