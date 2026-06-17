@@ -74,6 +74,7 @@ from ._shared import (
     _match_student_id,
     resolve_student_pii_scope,
     student_pii_row_visible,
+    terminal_student_ids_in,
     has_payment_approve,
     require_refund_reason,
     require_approve_for_large_refund,
@@ -388,11 +389,20 @@ def get_registrations(
         # S7：STUDENTS_READ:own_class 者對非管轄班級的列照樣遮罩（per-row）
         pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
         can_see_guardian = can_view_guardian_pii(current_user)
+        # #4：scoped caller 對終態學生遮 birthday/FK（快照仍掛原班，需逐列判定）
+        terminal_ids = (
+            terminal_student_ids_in(session, [r.student_id for r in regs])
+            if pii_allowed is not None
+            else set()
+        )
 
         items = []
         for r in regs:
             can_see_student = student_pii_row_visible(
-                pii_visible, pii_allowed, r.classroom_id
+                pii_visible,
+                pii_allowed,
+                r.classroom_id,
+                student_terminal=r.student_id in terminal_ids,
             )
             paid_amount = r.paid_amount or 0
             total_amount = (course_amount_map.get(r.id, 0) or 0) + (
@@ -523,8 +533,11 @@ def get_registration_detail(
         # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII
         # S7：STUDENTS_READ:own_class 者對非管轄班級的報名照樣遮罩
         pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
+        _terminal = pii_allowed is not None and bool(
+            terminal_student_ids_in(session, [reg.student_id])
+        )
         can_see_student = student_pii_row_visible(
-            pii_visible, pii_allowed, reg.classroom_id
+            pii_visible, pii_allowed, reg.classroom_id, student_terminal=_terminal
         )
         can_see_guardian = can_view_guardian_pii(current_user)
         return {

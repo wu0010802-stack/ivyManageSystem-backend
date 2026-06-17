@@ -462,7 +462,10 @@ def decode_token_for_audit(token: str | None) -> dict | None:
 
 
 def _resolve_user_auth_fields(
-    user_id: int, token_version: int, request_path: str
+    user_id: int,
+    token_version: int,
+    request_path: str,
+    impersonated_by: int | None = None,
 ) -> tuple[bool, str]:
     """同步 DB 區塊：依 user_id 查 User、驗證帳號狀態與 token_version。
 
@@ -482,6 +485,17 @@ def _resolve_user_auth_fields(
             raise HTTPException(
                 status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）"
             )
+        # #5（2026-06-17）：模擬進行中即時檢查 impersonator(admin) 本人 is_active；
+        # admin 被停用/刪除即終止模擬（收斂「admin 停用後現有模擬 token 仍可寫」窗口）。
+        # 僅模擬請求（impersonated_by 非 None）多一次查詢，一般熱路徑不受影響。
+        if impersonated_by is not None:
+            impersonator = (
+                session.query(User).filter(User.id == impersonated_by).first()
+            )
+            if impersonator is None or not impersonator.is_active:
+                raise HTTPException(
+                    status_code=401, detail="模擬來源帳號已停用，模擬已終止"
+                )
         if (
             user.must_change_password
             and request_path not in _PASSWORD_CHANGE_ALLOWED_PATHS
@@ -534,6 +548,7 @@ async def get_current_user(request: Request):
         user_id,
         payload.get("token_version", 0),
         request.url.path,
+        payload.get("impersonated_by"),
     )
     payload["must_change_password"] = must_change_password
     payload["username"] = username

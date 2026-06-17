@@ -141,14 +141,52 @@ def resolve_student_pii_scope(db_session, current_user: dict):
     return True, set(accessible_classroom_ids(db_session, current_user, code=code))
 
 
-def student_pii_row_visible(visible: bool, allowed_classroom_ids, classroom_id) -> bool:
+def student_pii_row_visible(
+    visible: bool,
+    allowed_classroom_ids,
+    classroom_id,
+    student_terminal: bool = False,
+) -> bool:
     """resolve_student_pii_scope 結果套用到單列：own_class 者對非管轄班級
-    （含 classroom_id=None 未分班，fail-closed）照樣遮罩。"""
+    （含 classroom_id=None 未分班，fail-closed）照樣遮罩。
+
+    #4（2026-06-17）：scoped caller（own_class）對「終態學生」(退/畢/轉，
+    student_terminal=True) 比照 students.py / search.py 一律遮 birthday/student_id/
+    classroom_id——ActivityRegistration 為 denormalized 快照，終態學生仍掛原班
+    classroom_id 不會自動排除。full-scope（allowed=None，admin/HR）不遮，與 students.py
+    對 admin 不排除終態一致。
+    """
     if not visible:
         return False
     if allowed_classroom_ids is None:
         return True
+    if student_terminal:
+        return False
     return classroom_id is not None and classroom_id in allowed_classroom_ids
+
+
+def terminal_student_ids_in(db_session, student_ids) -> set:
+    """回傳 student_ids 中屬終態 lifecycle（退/畢/轉）者的子集。
+
+    供 activity 各快照路徑判斷某 ActivityRegistration.student_id 是否為終態學生，讓
+    own_class 教師對其 birthday/FK 遮罩（#4, 2026-06-17）。重用 portfolio_access 的
+    _TEACHER_BLOCKED_LIFECYCLE 單一來源。
+    """
+    ids = {sid for sid in student_ids if sid is not None}
+    if not ids:
+        return set()
+    from models.classroom import Student
+    from utils.portfolio_access import _TEACHER_BLOCKED_LIFECYCLE
+
+    rows = (
+        db_session.query(Student.id)
+        .filter(
+            Student.id.in_(ids),
+            Student.lifecycle_status.in_(_TEACHER_BLOCKED_LIFECYCLE),
+        )
+        .all()
+    )
+    return {r[0] for r in rows}
 
 
 # F2 第一階段：時區 helper 抽到 utils/taipei_time.py 共用（fees / activity / portal

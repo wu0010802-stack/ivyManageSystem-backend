@@ -518,6 +518,21 @@ class TestGetMeImpersonationMode:
 
         client, session_factory, teacher_user_id, teacher_emp_id = setup
 
+        # #5（2026-06-17）：get_current_user 模擬期間會驗 impersonated_by 對應 admin 的
+        # is_active；seed 與 impersonated_by=999 對應的 active admin。
+        with session_factory() as _s:
+            _s.add(
+                User(
+                    id=999,
+                    username="imp_admin_999",
+                    password_hash=hash_password("p"),
+                    role="admin",
+                    is_active=True,
+                    token_version=0,
+                )
+            )
+            _s.commit()
+
         # 直接構造帶 impersonation_mode=readonly claim 的 token
         impersonation_token = create_access_token(
             {

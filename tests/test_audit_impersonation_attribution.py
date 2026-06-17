@@ -148,6 +148,21 @@ def binding_client(tmp_path):
     base_module._SessionFactory = session_factory
 
     Base.metadata.create_all(engine)
+    # #5（2026-06-17）：get_current_user 模擬期間會即時驗 impersonated_by 對應 admin 的
+    # is_active；seed 與測試 token 之 impersonated_by=42 對應的 active admin。
+    with session_factory() as _s:
+        _s.add(
+            User(
+                id=42,
+                username="audit_imp_admin",
+                password_hash=hash_password("p"),
+                role="admin",
+                is_active=True,
+                token_version=0,
+                must_change_password=False,
+            )
+        )
+        _s.commit()
     _ip_attempts.clear()
     _account_failures.clear()
 

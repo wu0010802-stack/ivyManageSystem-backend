@@ -358,14 +358,24 @@ def manual_adjust_salary(
         existing_overrides = set(record.manual_overrides or [])
         record.manual_overrides = sorted(existing_overrides | set(modified_fields))
 
-        # C13：改到 YTD 累計獎金欄位時，當月補充保費同步即時重算（不只標 stale，見下方），
-        # 避免本端點只重算 total/net 而當月補充保費失準的暫時窗口。須在 _recalculate 前
-        # 執行，使調整後的 health_insurance_employee 併入 total_deduction。
+        # C13 / U3：改到 YTD 累計獎金欄位、或直接編輯 health_insurance_employee 時，當月補充
+        # 保費即時重算並併回 health_insurance_employee（須在 _recalculate 前，使 fee 進
+        # total_deduction）。
         from services.salary.supplementary_premium import (
             BONUS_FIELDS_FOR_YTD as _BONUS_YTD_FIELDS,
         )
 
-        if set(modified_fields) & set(_BONUS_YTD_FIELDS):
+        # U3（2026-06-17，業主裁示「HR 輸入視為基礎健保、系統疊加補充保費」）：HR 直接編輯
+        # health_insurance_employee = 重設為基礎（原併入的當月補充保費 fee 被移除）。先把
+        # informational 的 supplementary_health_employee 歸零，使下方 _recompute 以「全額」
+        # 而非 diff 把當月補充保費重新疊回 health_insurance_employee，維持「health_insurance_
+        # employee 恆含 fee」不變量；否則該欄被鎖後法定補充保費漏扣（既不在 health_insurance
+        # 也不入 total_deduction）。
+        he_edited = "health_insurance_employee" in modified_fields
+        if he_edited:
+            record.supplementary_health_employee = 0
+
+        if (set(modified_fields) & set(_BONUS_YTD_FIELDS)) or he_edited:
             from . import _insurance_service
 
             _recompute_record_current_supplementary(session, record, _insurance_service)

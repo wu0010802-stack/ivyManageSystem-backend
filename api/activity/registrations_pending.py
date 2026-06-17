@@ -40,6 +40,7 @@ from ._shared import (
     now_taipei_naive,
     resolve_student_pii_scope,
     student_pii_row_visible,
+    terminal_student_ids_in,
 )
 
 from schemas.activity_admin import (
@@ -215,12 +216,21 @@ def list_pending_registrations(
         # S7：STUDENTS_READ:own_class 者對非管轄班級的列照樣遮罩（per-row）
         pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
         can_see_guardian = can_view_guardian_pii(current_user)
+        # #4：scoped caller 對終態學生遮 birthday/FK
+        terminal_ids = (
+            terminal_student_ids_in(session, [r.student_id for r in rows])
+            if pii_allowed is not None
+            else set()
+        )
         return {
             "items": [
                 _serialize_pending_item(
                     r,
                     can_see_student_pii=student_pii_row_visible(
-                        pii_visible, pii_allowed, r.classroom_id
+                        pii_visible,
+                        pii_allowed,
+                        r.classroom_id,
+                        student_terminal=r.student_id in terminal_ids,
                     ),
                     can_see_guardian_pii=can_see_guardian,
                 )

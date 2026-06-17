@@ -83,7 +83,15 @@ def clear_access_token_cookie(response) -> None:
 
 
 def set_admin_token_cookie(response, token: str) -> None:
-    """在 response 上設定 admin_token httpOnly Cookie（冒充時備份管理員 Token）。"""
+    """在 response 上設定 admin_token httpOnly Cookie（冒充時備份管理員 Token）。
+
+    max_age 對齊 JWT_EXPIRE_MINUTES（而非 access_token 的 24h grace）：模擬 token 不可
+    刷新，admin_token 內含 JWT 僅 15min 過期，cookie 壽命不應更長，否則未正常 end-
+    impersonate 的舊 admin_token 會殘留至多 24h 被下次模擬備份/還原（#8, 2026-06-17）。
+    惰性 import 取單一來源、避免 utils.auth ↔ utils.cookie import 時序耦合。
+    """
+    from utils.auth import JWT_EXPIRE_MINUTES
+
     response.set_cookie(
         key="admin_token",
         value=token,
@@ -91,7 +99,7 @@ def set_admin_token_cookie(response, token: str) -> None:
         samesite=_COOKIE_SAMESITE,
         secure=_COOKIE_SECURE,
         path=_COOKIE_PATH,
-        max_age=_COOKIE_MAX_AGE,
+        max_age=JWT_EXPIRE_MINUTES * 60,
     )
 
 
