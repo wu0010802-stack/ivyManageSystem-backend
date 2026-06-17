@@ -12,8 +12,34 @@ from typing import Literal, Optional, Protocol
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from utils.academic import term_bounds
+
 Stage = Literal["visited", "deposited", "enrolled", "active"]
 STAGES: tuple[Stage, ...] = ("visited", "deposited", "enrolled", "active")
+
+
+def school_term_to_roc_months(
+    school_year: int, semester: Optional[int] = None
+) -> list[str]:
+    """民國學年/學期 → 該期間涵蓋的民國月份標籤（"YYY.MM"，對齊 RecruitmentVisit.month）。
+
+    直接由 utils.academic.term_bounds（canonical 學年邊界：上學期 8/1~隔年 1/31、
+    下學期 2/1~同年 7/31）展開逐月，避免重複學年規則造成漂移。semester=None → 整學年
+    （上+下學期）。招生 funnel 看板用此把 visit 依「訪視月份所屬學年」圈進，因
+    target_school_year 多為 NULL（僅保留座位時填）不能用來過濾。
+    """
+    semesters = (1, 2) if semester is None else (semester,)
+    labels: list[str] = []
+    for sem in semesters:
+        start, end = term_bounds(school_year, sem)
+        y, m = start.year, start.month
+        while (y, m) <= (end.year, end.month):
+            labels.append(f"{y - 1911}.{m:02d}")
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+    return labels
 
 
 class _VisitLike(Protocol):
