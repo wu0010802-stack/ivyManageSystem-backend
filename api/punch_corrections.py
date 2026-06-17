@@ -4,9 +4,9 @@ Punch correction management router（管理員審核補打卡申請）
 
 import logging
 from datetime import date, timedelta
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.errors import raise_safe_500
 from pydantic import BaseModel
 from models.database import (
@@ -20,6 +20,7 @@ from models.approval import ApprovalStatus
 from schemas._common import DeleteResultOut
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.rate_limit import create_limiter
 from utils.approval_helpers import (
     _check_approval_eligibility,
     _get_submitter_role,
@@ -45,6 +46,20 @@ CORRECTION_TYPE_LABELS = {
 class ApproveRequest(BaseModel):
     approved: bool
     rejection_reason: Optional[str] = None
+
+
+class PunchCorrectionBatchApproveRequest(BaseModel):
+    ids: List[int]
+    approved: bool
+    rejection_reason: Optional[str] = None
+
+
+_batch_approve_limiter = create_limiter(
+    max_calls=10,
+    window_seconds=60,
+    name="punch_correction_batch_approve",
+    error_detail="批次審核操作過於頻繁，請稍後再試",
+).as_dependency()
 
 
 def _format_correction(c: PunchCorrectionRequest, employee_name: str = "") -> dict:
@@ -121,6 +136,197 @@ def list_punch_corrections(
         session.close()
 
 
+def _apply_correction_decision(
+    session,
+    correction,
+    *,
+    approved: bool,
+    rejection_reason: str | None,
+    current_user: dict,
+) -> None:
+    """套用單筆補打卡核准/駁回的副作用（不 commit）。單筆與 batch 端點共用，確保
+    考勤寫入 / 薪資 stale / ApprovalLog / 通知邏輯不漂移。
+    caller 須先驗證：correction 存在且為 pending、非自我核准、approver 有資格、
+    （駁回時）rejection_reason 非空。核准分支可能 raise HTTPException(400)（上下班同時刻）
+    或 assert_months_not_finalized 的封存例外，由 caller 處理。"""
+    if not approved:
+        # 駁回副作用（原 182-223）
+        correction.status = ApprovalStatus.REJECTED.value
+        correction.rejection_reason = rejection_reason.strip()
+        correction.approved_by = current_user.get("username", "")
+        _write_approval_log(
+            session=session,
+            doc_type="punch_correction",
+            doc_id=correction.id,
+            action="rejected",
+            approver=current_user,
+            comment=rejection_reason,
+        )
+
+        # 個人推播（審核結果）— commit 前 enqueue 才會在 after_commit hook
+        # 被 fan-out；PR-A 原版誤放 commit 後，session.close 時 _clear_on_rollback
+        # 把 queue 抹掉，推播永遠不會送出（PR-D bug fix）。
+        from services.notification import dispatch
+
+        _owner_user = (
+            session.query(User)
+            .filter(User.employee_id == correction.employee_id)
+            .first()
+        )
+        if _owner_user is not None:
+            dispatch.enqueue(
+                session=session,
+                event_type="punch_correction.rejected",
+                recipient_user_id=_owner_user.id,
+                context={
+                    "reviewer_name": current_user.get("name")
+                    or current_user.get("username", ""),
+                    "target_date": (
+                        correction.attendance_date.isoformat()
+                        if hasattr(correction.attendance_date, "isoformat")
+                        else str(correction.attendance_date)
+                    ),
+                    "correction_id": correction.id,
+                    "rejection_reason": correction.rejection_reason,
+                },
+                sender_id=current_user.get("user_id"),
+                source_entity_type="punch_correction",
+                source_entity_id=correction.id,
+            )
+        return
+
+    # 核准副作用（原 236-368）
+    # 提早取得薪資鎖,讓「封存守衛 → 改 attendance → mark_stale → commit」
+    # 在同一鎖窗內完成,避免 finalize 在 commit 與 mark_stale 之間搶先封存。
+    from utils.advisory_lock import acquire_salary_lock as _acquire_salary_lock
+
+    _acquire_salary_lock(
+        session,
+        employee_id=correction.employee_id,
+        year=correction.attendance_date.year,
+        month=correction.attendance_date.month,
+    )
+
+    # 核准前檢查該月薪資是否已封存（避免改動已結算月份的考勤來源資料）
+    assert_months_not_finalized(
+        session,
+        employee_id=correction.employee_id,
+        months=collect_months_from_dates([correction.attendance_date]),
+    )
+
+    # 核准：取得或建立 Attendance 記錄
+    att = (
+        session.query(Attendance)
+        .filter(
+            Attendance.employee_id == correction.employee_id,
+            Attendance.attendance_date == correction.attendance_date,
+        )
+        .first()
+    )
+    if not att:
+        att = Attendance(
+            employee_id=correction.employee_id,
+            attendance_date=correction.attendance_date,
+        )
+        session.add(att)
+
+    if correction.correction_type in ("punch_in", "both"):
+        att.punch_in_time = correction.requested_punch_in
+    if correction.correction_type in ("punch_out", "both"):
+        att.punch_out_time = correction.requested_punch_out
+
+    # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 22:00→04:00）。
+    # 前端 PortalPunchCorrectionForm 用 `${attendance_date}T${time}:00` 把兩個
+    # datetime 都鎖在同日，跨夜情境會讓 recompute_attendance_status 算出
+    # work_hours 變負 / early_leave_minutes 約 14h / 加班費歸零 → 扣全薪。
+    # 與 api/attendance/records.py:266-273 + api/attendance/upload.py:340-356
+    # 既有 normalize pattern 對齊；helper docstring（utils/attendance_calc.py:54）
+    # 明列 caller 負責跨夜修正，本路徑原為唯一漏寫的 caller。
+    if (
+        att.punch_in_time
+        and att.punch_out_time
+        and att.punch_out_time < att.punch_in_time
+    ):
+        att.punch_out_time += timedelta(days=1)
+    elif (
+        att.punch_in_time
+        and att.punch_out_time
+        and att.punch_out_time == att.punch_in_time
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"時間錯誤：上下班時間相同 "
+                f"{att.punch_in_time.isoformat()}，請確認資料"
+            ),
+        )
+
+    # 依新 punch 時間整套重算 is_late/is_early_leave/late_minutes/
+    # early_leave_minutes/status/is_missing_*。否則舊的遲到/早退欄位殘留會被
+    # 薪資 engine（services/salary/engine.py:2099+）讀到，造成補卡通過卻仍
+    # 扣遲到金的真實漏帳（audit 2026-05-07 P0 #6）。
+    from utils.attendance_calc import apply_attendance_status
+
+    # 取員工排班時間（caller 已驗 employee 存在於 correction）
+    emp = session.query(Employee).filter(Employee.id == correction.employee_id).first()
+    apply_attendance_status(
+        att,
+        work_start_str=emp.work_start_time if emp else None,
+        work_end_str=emp.work_end_time if emp else None,
+        session=session,
+    )
+
+    # 更新申請狀態
+    correction.status = ApprovalStatus.APPROVED.value
+    correction.approved_by = current_user.get("username", "")
+    _write_approval_log(
+        session=session,
+        doc_type="punch_correction",
+        doc_id=correction.id,
+        action="approved",
+        approver=current_user,
+    )
+
+    # 補打卡修改 punch_in/out 與缺卡旗標 → 影響遲到/早退/缺打卡扣款。
+    # 若該月薪資已計算但尚未封存（finalize 那關才會擋封存），需標 stale 讓
+    # finalize 完整性檢查擋下；避免會計在薪資計算後核准補卡造成考勤源與
+    # 薪資結果分叉，最後仍可能 finalize 通過。
+    from services.salary.utils import mark_salary_stale
+
+    mark_salary_stale(
+        session,
+        correction.employee_id,
+        correction.attendance_date.year,
+        correction.attendance_date.month,
+    )
+
+    # 個人推播（審核結果）— commit 前 enqueue（PR-D bug fix；同 reject path）
+    from services.notification import dispatch
+
+    _owner_user = (
+        session.query(User).filter(User.employee_id == correction.employee_id).first()
+    )
+    if _owner_user is not None:
+        dispatch.enqueue(
+            session=session,
+            event_type="punch_correction.approved",
+            recipient_user_id=_owner_user.id,
+            context={
+                "reviewer_name": current_user.get("name")
+                or current_user.get("username", ""),
+                "target_date": (
+                    correction.attendance_date.isoformat()
+                    if hasattr(correction.attendance_date, "isoformat")
+                    else str(correction.attendance_date)
+                ),
+                "correction_id": correction.id,
+            },
+            sender_id=current_user.get("user_id"),
+            source_entity_type="punch_correction",
+            source_entity_id=correction.id,
+        )
+
+
 @router.put(
     "/punch-corrections/{correction_id}/approve", response_model=DeleteResultOut
 )
@@ -175,212 +381,127 @@ def approve_punch_correction(
                 detail=f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的補打卡申請",
             )
 
-        if not body.approved:
-            # 駁回
-            if not body.rejection_reason or not body.rejection_reason.strip():
-                raise HTTPException(status_code=422, detail="駁回時必須填寫駁回原因")
-            correction.status = ApprovalStatus.REJECTED.value
-            correction.rejection_reason = body.rejection_reason.strip()
-            correction.approved_by = current_user.get("username", "")
-            _write_approval_log(
-                session=session,
-                doc_type="punch_correction",
-                doc_id=correction_id,
-                action="rejected",
-                approver=current_user,
-                comment=body.rejection_reason,
-            )
+        if not body.approved and not (body.rejection_reason or "").strip():
+            raise HTTPException(status_code=422, detail="駁回時必須填寫駁回原因")
 
-            # 個人推播（審核結果）— commit 前 enqueue 才會在 after_commit hook
-            # 被 fan-out；PR-A 原版誤放 commit 後，session.close 時 _clear_on_rollback
-            # 把 queue 抹掉，推播永遠不會送出（PR-D bug fix）。
-            from services.notification import dispatch
-
-            _owner_user = (
-                session.query(User)
-                .filter(User.employee_id == correction.employee_id)
-                .first()
-            )
-            if _owner_user is not None:
-                dispatch.enqueue(
-                    session=session,
-                    event_type="punch_correction.rejected",
-                    recipient_user_id=_owner_user.id,
-                    context={
-                        "reviewer_name": current_user.get("name")
-                        or current_user.get("username", ""),
-                        "target_date": (
-                            correction.attendance_date.isoformat()
-                            if hasattr(correction.attendance_date, "isoformat")
-                            else str(correction.attendance_date)
-                        ),
-                        "correction_id": correction.id,
-                        "rejection_reason": correction.rejection_reason,
-                    },
-                    sender_id=current_user.get("user_id"),
-                    source_entity_type="punch_correction",
-                    source_entity_id=correction.id,
-                )
-            session.commit()
-            logger.warning(
-                "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 駁回",
-                correction_id,
-                correction.employee_id,
-                correction.attendance_date,
-                current_user.get("username"),
-            )
-            return {"message": "補打卡申請已駁回"}
-
-        # 提早取得薪資鎖,讓「封存守衛 → 改 attendance → mark_stale → commit」
-        # 在同一鎖窗內完成,避免 finalize 在 commit 與 mark_stale 之間搶先封存。
-        from utils.advisory_lock import acquire_salary_lock as _acquire_salary_lock
-
-        _acquire_salary_lock(
+        _apply_correction_decision(
             session,
-            employee_id=correction.employee_id,
-            year=correction.attendance_date.year,
-            month=correction.attendance_date.month,
+            correction,
+            approved=body.approved,
+            rejection_reason=body.rejection_reason,
+            current_user=current_user,
         )
-
-        # 核准前檢查該月薪資是否已封存（避免改動已結算月份的考勤來源資料）
-        assert_months_not_finalized(
-            session,
-            employee_id=correction.employee_id,
-            months=collect_months_from_dates([correction.attendance_date]),
-        )
-
-        # 核准：取得或建立 Attendance 記錄
-        att = (
-            session.query(Attendance)
-            .filter(
-                Attendance.employee_id == correction.employee_id,
-                Attendance.attendance_date == correction.attendance_date,
-            )
-            .first()
-        )
-        if not att:
-            att = Attendance(
-                employee_id=correction.employee_id,
-                attendance_date=correction.attendance_date,
-            )
-            session.add(att)
-
-        if correction.correction_type in ("punch_in", "both"):
-            att.punch_in_time = correction.requested_punch_in
-        if correction.correction_type in ("punch_out", "both"):
-            att.punch_out_time = correction.requested_punch_out
-
-        # 跨夜班修正：下班時間早於上班時間表示隔日下班（如 22:00→04:00）。
-        # 前端 PortalPunchCorrectionForm 用 `${attendance_date}T${time}:00` 把兩個
-        # datetime 都鎖在同日，跨夜情境會讓 recompute_attendance_status 算出
-        # work_hours 變負 / early_leave_minutes 約 14h / 加班費歸零 → 扣全薪。
-        # 與 api/attendance/records.py:266-273 + api/attendance/upload.py:340-356
-        # 既有 normalize pattern 對齊；helper docstring（utils/attendance_calc.py:54）
-        # 明列 caller 負責跨夜修正，本路徑原為唯一漏寫的 caller。
-        if (
-            att.punch_in_time
-            and att.punch_out_time
-            and att.punch_out_time < att.punch_in_time
-        ):
-            att.punch_out_time += timedelta(days=1)
-        elif (
-            att.punch_in_time
-            and att.punch_out_time
-            and att.punch_out_time == att.punch_in_time
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"時間錯誤：上下班時間相同 "
-                    f"{att.punch_in_time.isoformat()}，請確認資料"
-                ),
-            )
-
-        # 依新 punch 時間整套重算 is_late/is_early_leave/late_minutes/
-        # early_leave_minutes/status/is_missing_*。否則舊的遲到/早退欄位殘留會被
-        # 薪資 engine（services/salary/engine.py:2099+）讀到，造成補卡通過卻仍
-        # 扣遲到金的真實漏帳（audit 2026-05-07 P0 #6）。
-        from utils.attendance_calc import apply_attendance_status
-
-        # 取員工排班時間（caller 已驗 employee 存在於 correction）
-        emp = (
-            session.query(Employee)
-            .filter(Employee.id == correction.employee_id)
-            .first()
-        )
-        apply_attendance_status(
-            att,
-            work_start_str=emp.work_start_time if emp else None,
-            work_end_str=emp.work_end_time if emp else None,
-            session=session,
-        )
-
-        # 更新申請狀態
-        correction.status = ApprovalStatus.APPROVED.value
-        correction.approved_by = current_user.get("username", "")
-        _write_approval_log(
-            session=session,
-            doc_type="punch_correction",
-            doc_id=correction_id,
-            action="approved",
-            approver=current_user,
-        )
-
-        # 補打卡修改 punch_in/out 與缺卡旗標 → 影響遲到/早退/缺打卡扣款。
-        # 若該月薪資已計算但尚未封存（finalize 那關才會擋封存），需標 stale 讓
-        # finalize 完整性檢查擋下；避免會計在薪資計算後核准補卡造成考勤源與
-        # 薪資結果分叉，最後仍可能 finalize 通過。
-        from services.salary.utils import mark_salary_stale
-
-        mark_salary_stale(
-            session,
-            correction.employee_id,
-            correction.attendance_date.year,
-            correction.attendance_date.month,
-        )
-
-        # 個人推播（審核結果）— commit 前 enqueue（PR-D bug fix；同 reject path）
-        from services.notification import dispatch
-
-        _owner_user = (
-            session.query(User)
-            .filter(User.employee_id == correction.employee_id)
-            .first()
-        )
-        if _owner_user is not None:
-            dispatch.enqueue(
-                session=session,
-                event_type="punch_correction.approved",
-                recipient_user_id=_owner_user.id,
-                context={
-                    "reviewer_name": current_user.get("name")
-                    or current_user.get("username", ""),
-                    "target_date": (
-                        correction.attendance_date.isoformat()
-                        if hasattr(correction.attendance_date, "isoformat")
-                        else str(correction.attendance_date)
-                    ),
-                    "correction_id": correction.id,
-                },
-                sender_id=current_user.get("user_id"),
-                source_entity_type="punch_correction",
-                source_entity_id=correction.id,
-            )
         session.commit()
-
         logger.warning(
-            "補打卡申請 #%d（員工 %d，日期 %s）已由 %s 核准",
-            correction_id,
+            "補打卡申請 #%d（員工 %d，日期 %s）已由 %s %s",
+            correction.id,
             correction.employee_id,
             correction.attendance_date,
             current_user.get("username"),
+            "核准" if body.approved else "駁回",
         )
-        return {"message": "補打卡申請已核准，考勤記錄已更新"}
+        return {
+            "message": (
+                "補打卡申請已核准，考勤記錄已更新"
+                if body.approved
+                else "補打卡申請已駁回"
+            )
+        }
     except HTTPException:
         raise
     except Exception as e:
         session.rollback()
         logger.error("核准補打卡申請 #%d 時發生錯誤：%s", correction_id, e)
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.post("/punch-corrections/batch-approve")
+def batch_approve_punch_corrections(
+    data: PunchCorrectionBatchApproveRequest,
+    request: Request,
+    _rl=Depends(_batch_approve_limiter),
+    current_user: dict = Depends(require_staff_permission(Permission.APPROVALS)),
+):
+    """批次核准/駁回補打卡。Pass 1 純驗證收集 failed，Pass 2 逐筆 savepoint 套用，
+    最後統一 commit。核准成功項會寫考勤 + 標薪資 stale。"""
+    if not data.approved and not (data.rejection_reason or "").strip():
+        raise HTTPException(status_code=400, detail="批次駁回時必須填寫原因")
+
+    succeeded: list[int] = []
+    failed: list[dict] = []
+    session = get_session()
+    try:
+        corr_map = {
+            c.id: c
+            for c in session.query(PunchCorrectionRequest)
+            .filter(PunchCorrectionRequest.id.in_(data.ids))
+            .with_for_update()
+            .all()
+        }
+        approver_role = current_user.get("role", "")
+        approver_eid = current_user.get("employee_id")
+        _elig_cache: dict[str, bool] = {}
+
+        valid = []
+        for cid in data.ids:
+            c = corr_map.get(cid)
+            if not c:
+                failed.append({"id": cid, "reason": "找不到此補打卡申請"})
+                continue
+            if c.status != ApprovalStatus.PENDING.value:
+                failed.append({"id": cid, "reason": "此申請已審核，無法再次審核"})
+                continue
+            if approver_eid and c.employee_id == approver_eid:
+                failed.append({"id": cid, "reason": "不可自我核准補打卡申請"})
+                continue
+            submitter_role = _get_submitter_role(c.employee_id, session)
+            if submitter_role not in _elig_cache:
+                _elig_cache[submitter_role] = _check_approval_eligibility(
+                    "punch_correction", submitter_role, approver_role, session
+                )
+            if not _elig_cache[submitter_role]:
+                failed.append(
+                    {
+                        "id": cid,
+                        "reason": f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的補打卡申請",
+                    }
+                )
+                continue
+            valid.append(c)
+
+        for c in valid:
+            try:
+                with session.begin_nested():
+                    _apply_correction_decision(
+                        session,
+                        c,
+                        approved=data.approved,
+                        rejection_reason=data.rejection_reason,
+                        current_user=current_user,
+                    )
+                succeeded.append(c.id)
+            except HTTPException as he:
+                failed.append(
+                    {
+                        "id": c.id,
+                        "reason": (
+                            he.detail if isinstance(he.detail, str) else "處理失敗"
+                        ),
+                    }
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error("批次補打卡 #%d 套用失敗：%s", c.id, e)
+                failed.append({"id": c.id, "reason": "處理失敗"})
+
+        session.commit()
+        return {"succeeded": succeeded, "failed": failed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error("批次核准補打卡時發生錯誤：%s", e)
         raise_safe_500(e)
     finally:
         session.close()
