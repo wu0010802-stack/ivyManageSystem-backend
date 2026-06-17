@@ -12,14 +12,14 @@ import os
 import pytest
 from datetime import date, datetime, timedelta
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from pydantic import ValidationError
-
 
 # ============================================================
 # Pydantic schema 驗證測試
 # ============================================================
+
 
 class TestPunchCorrectionCreate:
     """PunchCorrectionCreate Pydantic schema 驗證"""
@@ -27,6 +27,7 @@ class TestPunchCorrectionCreate:
     @pytest.fixture(autouse=True)
     def _import_schema(self):
         from api.portal.punch_corrections import PunchCorrectionCreate
+
         self.Schema = PunchCorrectionCreate
 
     def _build(self, **kwargs):
@@ -39,7 +40,8 @@ class TestPunchCorrectionCreate:
                 (date.today() - timedelta(days=1)).year,
                 (date.today() - timedelta(days=1)).month,
                 (date.today() - timedelta(days=1)).day,
-                18, 0
+                18,
+                0,
             ),
             "reason": "忘記打下班",
         }
@@ -60,7 +62,9 @@ class TestPunchCorrectionCreate:
         obj = self.Schema(
             attendance_date=yesterday,
             correction_type="punch_in",
-            requested_punch_in=datetime(yesterday.year, yesterday.month, yesterday.day, 8, 0),
+            requested_punch_in=datetime(
+                yesterday.year, yesterday.month, yesterday.day, 8, 0
+            ),
             requested_punch_out=None,
             reason=None,
         )
@@ -72,8 +76,12 @@ class TestPunchCorrectionCreate:
         obj = self.Schema(
             attendance_date=yesterday,
             correction_type="both",
-            requested_punch_in=datetime(yesterday.year, yesterday.month, yesterday.day, 8, 0),
-            requested_punch_out=datetime(yesterday.year, yesterday.month, yesterday.day, 17, 0),
+            requested_punch_in=datetime(
+                yesterday.year, yesterday.month, yesterday.day, 8, 0
+            ),
+            requested_punch_out=datetime(
+                yesterday.year, yesterday.month, yesterday.day, 17, 0
+            ),
             reason="整天忘記打卡",
         )
         assert obj.correction_type == "both"
@@ -122,7 +130,9 @@ class TestPunchCorrectionCreate:
                 attendance_date=yesterday,
                 correction_type="both",
                 requested_punch_in=None,
-                requested_punch_out=datetime(yesterday.year, yesterday.month, yesterday.day, 17, 0),
+                requested_punch_out=datetime(
+                    yesterday.year, yesterday.month, yesterday.day, 17, 0
+                ),
             )
         assert "上班時間" in str(exc.value)
 
@@ -133,7 +143,9 @@ class TestPunchCorrectionCreate:
             self.Schema(
                 attendance_date=yesterday,
                 correction_type="both",
-                requested_punch_in=datetime(yesterday.year, yesterday.month, yesterday.day, 8, 0),
+                requested_punch_in=datetime(
+                    yesterday.year, yesterday.month, yesterday.day, 8, 0
+                ),
                 requested_punch_out=None,
             )
         assert "下班時間" in str(exc.value)
@@ -158,10 +170,64 @@ class TestPunchCorrectionCreate:
         )
         assert obj.attendance_date == today
 
+    # ── [C37] requested_punch 日期成分須對齊 attendance_date ──
+
+    def test_requested_punch_in_date_mismatch_raises(self):
+        """requested_punch_in 的日期不等於 attendance_date → 422
+
+        防止 attendance_date=今天但 requested_punch_in=2099-01-01 之類
+        錯位時間，核准後寫入算出異常 late/early_leave_minutes。
+        """
+        today = date.today()
+        with pytest.raises(ValidationError) as exc:
+            self.Schema(
+                attendance_date=today,
+                correction_type="punch_in",
+                requested_punch_in=datetime(2099, 1, 1, 8, 0),
+            )
+        assert "日期" in str(exc.value)
+
+    def test_requested_punch_out_date_mismatch_raises(self):
+        """requested_punch_out 的日期不等於 attendance_date（且非跨夜隔日）→ 422"""
+        today = date.today()
+        with pytest.raises(ValidationError) as exc:
+            self.Schema(
+                attendance_date=today,
+                correction_type="punch_out",
+                requested_punch_out=datetime(2099, 1, 1, 18, 0),
+            )
+        assert "日期" in str(exc.value)
+
+    def test_requested_punch_out_overnight_next_day_allowed(self):
+        """跨夜 punch_out：requested_punch_out 為 attendance_date + 1 天 → 合法"""
+        yesterday = date.today() - timedelta(days=1)
+        next_day = yesterday + timedelta(days=1)
+        obj = self.Schema(
+            attendance_date=yesterday,
+            correction_type="punch_out",
+            requested_punch_out=datetime(
+                next_day.year, next_day.month, next_day.day, 1, 0
+            ),
+        )
+        assert obj.attendance_date == yesterday
+
+    def test_requested_punch_in_same_date_allowed(self):
+        """requested_punch_in 日期等於 attendance_date → 合法"""
+        yesterday = date.today() - timedelta(days=1)
+        obj = self.Schema(
+            attendance_date=yesterday,
+            correction_type="punch_in",
+            requested_punch_in=datetime(
+                yesterday.year, yesterday.month, yesterday.day, 8, 0
+            ),
+        )
+        assert obj.requested_punch_in.date() == yesterday
+
 
 # ============================================================
 # approval_status property 測試
 # ============================================================
+
 
 class TestPunchCorrectionApprovalStatus:
     """PunchCorrectionRequest.approval_status property
@@ -173,10 +239,10 @@ class TestPunchCorrectionApprovalStatus:
         """直接呼叫 approval_status 邏輯（等同 ORM property）"""
         # 複製 model 的 property 邏輯，獨立驗證
         if is_approved is True:
-            return 'approved'
+            return "approved"
         if is_approved is False:
-            return 'rejected'
-        return 'pending'
+            return "rejected"
+        return "pending"
 
     def test_none_returns_pending(self):
         assert self._make_approval_status(None) == "pending"
@@ -209,6 +275,7 @@ class TestPunchCorrectionApprovalStatus:
 # CORRECTION_TYPE_LABELS 完整性測試
 # ============================================================
 
+
 class TestCorrectionTypeLabels:
     """確保所有合法的 correction_type 都有對應的中文 label"""
 
@@ -224,4 +291,5 @@ class TestCorrectionTypeLabels:
         """portal 端和 admin 端的 label 應相同"""
         from api.portal.punch_corrections import CORRECTION_TYPE_LABELS as PORTAL_LABELS
         from api.punch_corrections import CORRECTION_TYPE_LABELS as ADMIN_LABELS
+
         assert PORTAL_LABELS == ADMIN_LABELS
