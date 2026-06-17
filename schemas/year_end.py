@@ -116,6 +116,26 @@ class SettlementOut(BaseModel):
     version: int
 
 
+# ===== 批次簽核 / 核定 =====
+
+
+class SettlementBatchSignRequest(BaseModel):
+    settlement_ids: list[int]
+
+
+class SettlementBatchSignFailedItem(BaseModel):
+    settlement_id: int
+    reason: str
+
+
+class SettlementBatchSignResultOut(BaseModel):
+    """批次簽核/核定回應：逐筆成功/失敗（狀態不符、職責分離、自我核准等列入 failed）。"""
+
+    succeeded_ids: list[int]
+    succeeded_count: int
+    failed: list[SettlementBatchSignFailedItem]
+
+
 # ===== SpecialBonusItem =====
 
 

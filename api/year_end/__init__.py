@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timezone
 from utils.taipei_time import now_taipei_naive
 from decimal import Decimal
 from tempfile import NamedTemporaryFile
@@ -40,6 +40,8 @@ from schemas.year_end import (
     ManualPatchRequest,
     OrgYearSettingsCreate,
     OrgYearSettingsOut,
+    SettlementBatchSignRequest,
+    SettlementBatchSignResultOut,
     SettlementOut,
     SpecialBonusItemCreate,
     SpecialBonusItemOut,
@@ -418,6 +420,135 @@ def finalize_settlement(
     session.commit()
     session.refresh(s)
     return s
+
+
+# ===== 批次簽核 / 核定 =====
+# 23+ 員工的年終結算原本每關（主管/會計/老闆）逐筆點 N 次。下列批次端點對選取的
+# 結算單逐筆套用與單筆端點「相同」的守衛（狀態檢查 + assert_not_self_approval +
+# 職責分離），部分成功：違規者列入 failed 不影響其餘。每筆仍各自 with_for_update。
+# 刻意「純新增」不改上方單筆端點本體，降低與並行 year_end 開發的衝突面（邏輯重複，
+# 後續可 DRY）。
+
+
+def _apply_supervisor_sign(s: YearEndSettlement, current_user: dict) -> None:
+    if s.status != YearEndSettlementStatus.DRAFT:
+        raise HTTPException(400, f"非 DRAFT (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
+    s.status = YearEndSettlementStatus.SUPERVISOR_SIGNED
+    s.supervisor_signed_by = current_user.get("user_id")
+    s.supervisor_signed_at = datetime.now(timezone.utc)
+
+
+def _apply_accounting_sign(s: YearEndSettlement, current_user: dict) -> None:
+    if s.status not in (
+        YearEndSettlementStatus.DRAFT,
+        YearEndSettlementStatus.SUPERVISOR_SIGNED,
+    ):
+        raise HTTPException(400, f"非 DRAFT/主管已簽 (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
+    if (
+        s.supervisor_signed_by is not None
+        and current_user.get("user_id") == s.supervisor_signed_by
+    ):
+        raise HTTPException(403, "會計簽核人需與主管簽核人為不同人（職責分離）")
+    s.status = YearEndSettlementStatus.ACCOUNTING_SIGNED
+    s.accounting_signed_by = current_user.get("user_id")
+    s.accounting_signed_at = datetime.now(timezone.utc)
+
+
+def _apply_finalize(s: YearEndSettlement, current_user: dict) -> None:
+    if s.status != YearEndSettlementStatus.ACCOUNTING_SIGNED:
+        raise HTTPException(400, f"非會計已簽 (current={s.status.value})")
+    assert_not_self_approval(current_user, s.employee_id, doc_label="年終獎金結算")
+    if current_user.get("user_id") == s.accounting_signed_by:
+        raise HTTPException(403, "核定人需與會計簽核人為不同人（職責分離）")
+    s.status = YearEndSettlementStatus.FINALIZED
+    s.finalized_by = current_user.get("user_id")
+    s.finalized_at = datetime.now(timezone.utc)
+
+
+def _process_settlement_batch(session, settlement_ids, current_user, apply_fn) -> dict:
+    """逐筆鎖 + 套 apply_fn（違規 raise HTTPException → 記 failed），最後一次 commit。"""
+    succeeded: list[int] = []
+    failed: list[dict] = []
+    seen: set[int] = set()
+    for sid in settlement_ids:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        s = (
+            session.query(YearEndSettlement)
+            .filter(YearEndSettlement.id == sid)
+            .with_for_update()
+            .first()
+        )
+        if s is None:
+            failed.append({"settlement_id": sid, "reason": "找不到結算單"})
+            continue
+        try:
+            apply_fn(s, current_user)
+            succeeded.append(sid)
+        except HTTPException as e:
+            reason = e.detail if isinstance(e.detail, str) else str(e.detail)
+            failed.append({"settlement_id": sid, "reason": reason})
+    session.commit()
+    return {
+        "succeeded_ids": succeeded,
+        "succeeded_count": len(succeeded),
+        "failed": failed,
+    }
+
+
+@year_end_router.post(
+    "/settlements/sign_supervisor_batch", response_model=SettlementBatchSignResultOut
+)
+def sign_supervisor_batch(
+    body: SettlementBatchSignRequest,
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_REVIEW)),
+    session: Session = Depends(get_session_dep),
+):
+    """批次主管簽核（DRAFT → SUPERVISOR_SIGNED）。"""
+    if not body.settlement_ids:
+        raise HTTPException(400, "請先選擇結算單")
+    return _process_settlement_batch(
+        session, body.settlement_ids, current_user, _apply_supervisor_sign
+    )
+
+
+@year_end_router.post(
+    "/settlements/sign_accounting_batch", response_model=SettlementBatchSignResultOut
+)
+def sign_accounting_batch(
+    body: SettlementBatchSignRequest,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_ACCOUNTING)
+    ),
+    session: Session = Depends(get_session_dep),
+):
+    """批次會計簽核（DRAFT/SUPERVISOR_SIGNED → ACCOUNTING_SIGNED）。"""
+    if not body.settlement_ids:
+        raise HTTPException(400, "請先選擇結算單")
+    return _process_settlement_batch(
+        session, body.settlement_ids, current_user, _apply_accounting_sign
+    )
+
+
+@year_end_router.post(
+    "/settlements/finalize_batch", response_model=SettlementBatchSignResultOut
+)
+def finalize_batch(
+    body: SettlementBatchSignRequest,
+    current_user: dict = Depends(
+        require_staff_permission(Permission.YEAR_END_FINALIZE)
+    ),
+    session: Session = Depends(get_session_dep),
+):
+    """批次老闆核定（ACCOUNTING_SIGNED → FINALIZED）。"""
+    if not body.settlement_ids:
+        raise HTTPException(400, "請先選擇結算單")
+    return _process_settlement_batch(
+        session, body.settlement_ids, current_user, _apply_finalize
+    )
 
 
 # ===== Special bonuses =====
