@@ -121,12 +121,17 @@ async def run_data_quality_scheduler(stop_event: asyncio.Event) -> None:
                                     "data_quality",
                                     int(result.get("detected", 0) or 0),
                                 )
-                            last_run_date = now.date()
-                            logger.info(
-                                "資料品質排程完成 date=%s result=%s",
-                                now.date().isoformat(),
-                                result,
-                            )
+                                # C35：fail-closed。last_run_date / 成功 log 必須在
+                                # scheduler_iteration 區塊 *內*——若放區塊外，
+                                # run_data_quality_once 拋例外被 swallow 後仍會把當日
+                                # 標成已跑完（致整天不重試）且引用未綁定的 result。
+                                # 對齊 graduation_scheduler 的 fail-closed 寫法。
+                                last_run_date = now.date()
+                                logger.info(
+                                    "資料品質排程完成 date=%s result=%s",
+                                    now.date().isoformat(),
+                                    result,
+                                )
                         else:
                             logger.info(
                                 "資料品質排程：已有其他 worker 在執行 date=%s，本次略過",
