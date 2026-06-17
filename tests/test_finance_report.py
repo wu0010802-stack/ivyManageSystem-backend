@@ -747,3 +747,110 @@ class TestSalaryFinalizedOnly:
             rows = svc.get_salary_detail(s, 2026, 5)
         assert len(rows) == 1
         assert rows[0]["gross_salary"] == 30000
+
+
+class TestInsuredEmployeeCountByMonth:
+    """get_insured_employee_count_by_month：單次撈列在記憶體分月，取代 12 次 COUNT。
+
+    characterization 測試——refactor 前後皆須 GREEN，保證行為等價
+    （hire/resign 邊界與 labor_insured_salary>0 從嚴條件不變）。
+    """
+
+    def test_counts_match_hire_resign_and_labor_insured(self, fin_client):
+        _, sf = fin_client
+        with sf() as s:
+            s.add_all(
+                [
+                    # A：2026-01-01 入職、無離職、有投保 → 全年 12 月計入
+                    Employee(
+                        employee_id="A",
+                        name="A",
+                        base_salary=30000,
+                        employee_type="regular",
+                        is_active=True,
+                        hire_date=date(2026, 1, 1),
+                        labor_insured_salary=30000,
+                    ),
+                    # B：2025-12-31 入職、2026-06-15 離職 → 1-6 月計入
+                    Employee(
+                        employee_id="B",
+                        name="B",
+                        base_salary=30000,
+                        employee_type="regular",
+                        is_active=False,
+                        hire_date=date(2025, 12, 31),
+                        resign_date=date(2026, 6, 15),
+                        labor_insured_salary=30000,
+                    ),
+                    # C：labor_insured_salary=NULL → 不計入
+                    Employee(
+                        employee_id="C",
+                        name="C",
+                        base_salary=30000,
+                        employee_type="regular",
+                        is_active=True,
+                        hire_date=date(2026, 1, 1),
+                        labor_insured_salary=None,
+                    ),
+                    # D：2026-05-01 入職 → 5-12 月計入（hire_date < month_end_exclusive）
+                    Employee(
+                        employee_id="D",
+                        name="D",
+                        base_salary=25000,
+                        employee_type="regular",
+                        is_active=True,
+                        hire_date=date(2026, 5, 1),
+                        labor_insured_salary=25000,
+                    ),
+                    # E：labor_insured_salary=0 → 不計入（從嚴，0 不算投保）
+                    Employee(
+                        employee_id="E",
+                        name="E",
+                        base_salary=30000,
+                        employee_type="regular",
+                        is_active=True,
+                        hire_date=date(2026, 1, 1),
+                        labor_insured_salary=0,
+                    ),
+                ]
+            )
+            s.commit()
+        with sf() as s:
+            out = svc.get_insured_employee_count_by_month(s, 2026)
+        # 1-4 月：A + B = 2
+        assert [out[m] for m in range(1, 5)] == [2, 2, 2, 2]
+        # 5-6 月：A + B + D = 3（B 6/15 離職，resign_date > 6/1 仍計入）
+        assert out[5] == 3
+        assert out[6] == 3
+        # 7-12 月：A + D = 2
+        assert [out[m] for m in range(7, 13)] == [2] * 6
+
+    def test_resign_on_first_of_month_excluded_that_month(self, fin_client):
+        """resign_date == 月初當天 → 該月不計入（條件為 resign_date > month_first）。"""
+        _, sf = fin_client
+        with sf() as s:
+            s.add(
+                Employee(
+                    employee_id="R",
+                    name="R",
+                    base_salary=30000,
+                    employee_type="regular",
+                    is_active=False,
+                    hire_date=date(2026, 1, 1),
+                    resign_date=date(2026, 3, 1),
+                    labor_insured_salary=30000,
+                )
+            )
+            s.commit()
+        with sf() as s:
+            out = svc.get_insured_employee_count_by_month(s, 2026)
+        assert out[1] == 1
+        assert out[2] == 1
+        assert out[3] == 0  # 3/1 不 > 3/1
+        assert out[4] == 0
+
+    def test_empty_returns_all_zero(self, fin_client):
+        _, sf = fin_client
+        with sf() as s:
+            out = svc.get_insured_employee_count_by_month(s, 2026)
+        assert out == {m: 0 for m in range(1, 13)}
