@@ -69,7 +69,9 @@ def _create_user(session, username: str, password: str, employee: Employee) -> U
         username=username,
         password_hash=hash_password(password),
         role="teacher",
-        permission_names=[],
+        # 真實教師持有 STUDENTS_READ:own_class（對齊 ROLE_TEMPLATES["teacher"]）；
+        # TPA-2 起 my-students 端點需 STUDENTS_READ 能力閘，空權限教師會被擋（正確）。
+        permission_names=["STUDENTS_READ:own_class"],
         is_active=True,
         must_change_password=False,
     )
@@ -79,11 +81,15 @@ def _create_user(session, username: str, password: str, employee: Employee) -> U
 
 
 def _login(client: TestClient, username: str, password: str):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 class TestPortalMyStudents:
-    def test_english_teacher_role_label_is_exposed_to_users(self, portal_students_client):
+    def test_english_teacher_role_label_is_exposed_to_users(
+        self, portal_students_client
+    ):
         client, session_factory = portal_students_client
 
         with session_factory() as session:
@@ -98,7 +104,14 @@ class TestPortalMyStudents:
             )
             session.add(classroom)
             session.flush()
-            session.add(Student(student_id="S888", name="小花", classroom_id=classroom.id, is_active=True))
+            session.add(
+                Student(
+                    student_id="S888",
+                    name="小花",
+                    classroom_id=classroom.id,
+                    is_active=True,
+                )
+            )
             session.commit()
 
         login_res = _login(client, "english_teacher", "TempPass123")
@@ -109,7 +122,9 @@ class TestPortalMyStudents:
         assert res.status_code == 200
         assert res.json()["classrooms"][0]["role"] == "美語老師"
 
-    def test_students_grouped_correctly_for_multiple_classrooms(self, portal_students_client):
+    def test_students_grouped_correctly_for_multiple_classrooms(
+        self, portal_students_client
+    ):
         """教師跨多班時，學生應正確依班級分組，不重複"""
         client, session_factory = portal_students_client
 
@@ -117,18 +132,53 @@ class TestPortalMyStudents:
             teacher = _create_employee(session, "T600", "跨班老師")
             _create_user(session, "multi_class_teacher", "TempPass123", teacher)
 
-            cr1 = Classroom(name="A班", school_year=2025, semester=2, head_teacher_id=teacher.id, is_active=True)
-            cr2 = Classroom(name="B班", school_year=2025, semester=2, assistant_teacher_id=teacher.id, is_active=True)
-            cr3 = Classroom(name="C班", school_year=2025, semester=2, art_teacher_id=teacher.id, is_active=True)
+            cr1 = Classroom(
+                name="A班",
+                school_year=2025,
+                semester=2,
+                head_teacher_id=teacher.id,
+                is_active=True,
+            )
+            cr2 = Classroom(
+                name="B班",
+                school_year=2025,
+                semester=2,
+                assistant_teacher_id=teacher.id,
+                is_active=True,
+            )
+            cr3 = Classroom(
+                name="C班",
+                school_year=2025,
+                semester=2,
+                art_teacher_id=teacher.id,
+                is_active=True,
+            )
             session.add_all([cr1, cr2, cr3])
             session.flush()
 
             # A班 2 個學生，B班 1 個，C班 0 個
-            session.add_all([
-                Student(student_id="A01", name="學生甲", classroom_id=cr1.id, is_active=True),
-                Student(student_id="A02", name="學生乙", classroom_id=cr1.id, is_active=True),
-                Student(student_id="B01", name="學生丙", classroom_id=cr2.id, is_active=True),
-            ])
+            session.add_all(
+                [
+                    Student(
+                        student_id="A01",
+                        name="學生甲",
+                        classroom_id=cr1.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="A02",
+                        name="學生乙",
+                        classroom_id=cr1.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="B01",
+                        name="學生丙",
+                        classroom_id=cr2.id,
+                        is_active=True,
+                    ),
+                ]
+            )
             session.commit()
 
         login_res = _login(client, "multi_class_teacher", "TempPass123")

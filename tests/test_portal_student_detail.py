@@ -299,6 +299,55 @@ class TestStudentDetail:
             )
         assert len(logs) == 1, f"結構化健康資料輸出未留 §6 稽核: {len(logs)}"
 
+    def test_detail_403_without_students_read_perm(self, detail_client):
+        """TPA-2：班級成員教師若 token 不含 STUDENTS_READ capability，detail 須 403
+        （後端能力閘，不可僅靠前端路由守衛把關，避免 curl 繞過）。"""
+        client, sf = detail_client
+        seed = _seed(sf)
+        tk = _token(
+            seed["teacher_id"], seed["teacher_emp_id"], "t1", ["PORTFOLIO_READ"]
+        )
+        rsp = client.get(
+            f"/api/portal/students/{seed['student_my_id']}/detail",
+            cookies={"access_token": tk},
+        )
+        assert rsp.status_code == 403, rsp.text
+
+    def test_reveal_phone_403_without_students_read_perm(self, detail_client):
+        """TPA-2：reveal-phone（揭未遮罩電話）同須 STUDENTS_READ 能力閘。"""
+        client, sf = detail_client
+        seed = _seed(sf)
+        tk = _token(
+            seed["teacher_id"], seed["teacher_emp_id"], "t1", ["PORTFOLIO_READ"]
+        )
+        rsp = client.post(
+            f"/api/portal/students/{seed['student_my_id']}/reveal-phone",
+            json={"target": "parent"},
+            cookies={"access_token": tk},
+        )
+        assert rsp.status_code == 403, rsp.text
+
+    def test_my_students_403_without_students_read_perm(self, detail_client):
+        """TPA-2：my-students（全班 PII 清單）同須 STUDENTS_READ 能力閘。"""
+        client, sf = detail_client
+        seed = _seed(sf)
+        tk = _token(
+            seed["teacher_id"], seed["teacher_emp_id"], "t1", ["PORTFOLIO_READ"]
+        )
+        rsp = client.get("/api/portal/my-students", cookies={"access_token": tk})
+        assert rsp.status_code == 403, rsp.text
+
+    def test_detail_200_with_students_read_perm(self, detail_client):
+        """TPA-2 對照：持 STUDENTS_READ 的同班教師仍可讀 detail。"""
+        client, sf = detail_client
+        seed = _seed(sf)
+        tk = _token(seed["teacher_id"], seed["teacher_emp_id"], "t1", ["STUDENTS_READ"])
+        rsp = client.get(
+            f"/api/portal/students/{seed['student_my_id']}/detail",
+            cookies={"access_token": tk},
+        )
+        assert rsp.status_code == 200, rsp.text
+
     def test_other_classroom_student_403(self, detail_client):
         client, sf = detail_client
         seed = _seed(sf)

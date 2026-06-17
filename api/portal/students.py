@@ -42,7 +42,7 @@ from schemas.portal_students import (
     StudentMeasurementSnapshotItem,
 )
 from utils.audit import write_audit_in_session, write_explicit_audit
-from utils.auth import get_current_user
+from utils.auth import get_current_user, require_permission
 from utils.masking import mask_phone
 from utils.permissions import Permission, has_permission
 from utils.portfolio_access import (
@@ -205,7 +205,9 @@ def _aggregate_health_alerts(
 @router.get("/my-students", response_model=MyStudentsOut)
 def get_my_students(
     classroom_id: Optional[int] = Query(None),
-    current_user: dict = Depends(get_current_user),
+    # TPA-2：補 STUDENTS_READ 能力閘（原僅靠前端路由守衛，curl 可繞）。
+    # 班級範圍仍由 assert/班級成員過濾收斂，本層只驗能力。
+    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
 ):
     """取得教師所屬班級的學生資料（精簡欄位 + 健康/出席聚合）。
 
@@ -507,7 +509,8 @@ def _build_transfer_history(
 def get_student_detail(
     student_id: int,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    # TPA-2：補 STUDENTS_READ 能力閘（原僅前端路由守衛，curl 可繞讀全班 PII）。
+    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
 ):
     """單一學生彙總頁：基本資料 + 健康 + 30 天出席/觀察/事件 + 評量 + 近期聯絡簿。
 
@@ -872,7 +875,8 @@ def reveal_student_phone(
     student_id: int,
     payload: RevealPhoneRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    # TPA-2：揭未遮罩電話屬高敏感，補 STUDENTS_READ 能力閘（原僅前端守衛）。
+    current_user: dict = Depends(require_permission(Permission.STUDENTS_READ)),
 ):
     """揭露學生關係人完整電話。
 
