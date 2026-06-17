@@ -27,13 +27,19 @@ def scheduler_enabled() -> bool:
 def run_offboarding_revoke_due_once() -> dict:
     """掃 resign_date<=today 但 User 仍 active（user_revoked_at IS NULL）的離職記錄，
     補執行 revoke_user（is_active=False + token_version bump + 撤 staff_refresh family）。
-    回 {"revoked": n}。冪等。"""
+    回 {"revoked": n, "failed": m}。冪等。
+
+    C33：每筆獨立故障隔離。原本整批包單一交易，一筆 poison record 例外會 rollback
+    全批 → 永久 head-of-line blocking（該筆每次巡檢都先被撈出又先炸，其後所有到期離職
+    永遠撤不掉而監控全綠）。改為每筆用 begin_nested()(savepoint)，單筆例外只 rollback
+    該 savepoint + log + 計入 failed，續處理其餘記錄。"""
     from models.base import session_scope
     from models.offboarding import EmployeeOffboardingRecord
     from services.offboarding.steps.revoke_user import run as revoke_run
 
     today = today_taipei()
     revoked = 0
+    failed = 0
     with session_scope() as session:
         records = (
             session.query(EmployeeOffboardingRecord)
@@ -44,10 +50,19 @@ def run_offboarding_revoke_due_once() -> dict:
             .all()
         )
         for record in records:
-            result = revoke_run(session, record)
-            if result.get("status") == "completed":
-                revoked += 1
-    return {"revoked": revoked}
+            try:
+                with session.begin_nested():
+                    result = revoke_run(session, record)
+                if result.get("status") == "completed":
+                    revoked += 1
+            except Exception:
+                # savepoint 已 rollback（with 區塊離開時自動），只丟這一筆。
+                failed += 1
+                logger.exception(
+                    "離職撤帳失敗（隔離本筆，續處理其餘）employee_id=%s",
+                    getattr(record, "employee_id", None),
+                )
+    return {"revoked": revoked, "failed": failed}
 
 
 async def run_offboarding_revoke_scheduler(stop_event: asyncio.Event) -> None:
