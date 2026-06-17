@@ -825,13 +825,9 @@ def public_update_registration(
             .with_for_update()
             .first()
         )
-        # 通用錯誤：查不到 / 三欄不符一律回相同訊息
-        normalized_phone = _normalize_phone(body.parent_phone)
-        if (
-            not reg
-            or reg.student_name != body.name
-            or reg.birthday != body.birthday
-            or _normalize_phone(reg.parent_phone) != normalized_phone
+        # 通用錯誤：查不到 / 身分不符一律回相同訊息（資安 #5：有 token 報名強制 token）
+        if not reg or not _parent_mutation_identity_ok(
+            reg, body.name, body.birthday, body.parent_phone, body.query_token
         ):
             raise HTTPException(
                 status_code=403,
@@ -1202,15 +1198,40 @@ _public_confirm_limiter_instance = create_limiter(
 _public_confirm_limiter = _public_confirm_limiter_instance.as_dependency()
 
 
+def _parent_mutation_identity_ok(
+    reg, name: str, birthday: str, parent_phone: str, query_token: str | None
+) -> bool:
+    """公開破壞性 mutation 的身分驗證（資安 #5，Option A）。
+
+    - 有 query_token_hash 的報名（新報名）：強制有效未過期 query_token + phone。
+      PII 三欄（姓名+生日+手機）不再足夠 → 閉合「知道三欄即可破壞性操作」漏洞。
+    - 無 token 的舊報名：沿用三欄（向後相容，因無 token 可驗）。
+
+    回傳 bool；caller 自行 raise 統一錯誤碼（不洩漏是哪一項不符）。
+    """
+    phone_ok = _normalize_phone(reg.parent_phone) == _normalize_phone(parent_phone)
+    if reg.query_token_hash is not None:
+        if not query_token:
+            return False
+        if _hash_query_token(query_token) != reg.query_token_hash:
+            return False
+        if is_query_token_expired(reg.query_token_issued_at):
+            return False
+        return phone_ok
+    return reg.student_name == name and reg.birthday == birthday and phone_ok
+
+
 def _verify_parent_identity(
-    session, registration_id: int, name: str, birthday: str, parent_phone: str
+    session,
+    registration_id: int,
+    name: str,
+    birthday: str,
+    parent_phone: str,
+    query_token: str | None = None,
 ) -> ActivityRegistration:
-    """三欄驗證：name + birthday + parent_phone 與報名一致才回 registration。
+    """破壞性 mutation 身分驗證：有 token 報名強制 token，舊報名沿用三欄（資安 #5）。
 
-    不符一律回 404 且不洩漏是哪一欄錯，維持隱私契約。
-
-    TODO(follow-up): 候補確認/放棄為破壞性 mutation，身分僅憑姓名+生日+手機三欄；
-    通知連結應帶 query token 作第二因素（spec out-of-scope）。
+    不符一律回 404 且不洩漏是哪一項錯，維持隱私契約。
     """
     reg = (
         session.query(ActivityRegistration)
@@ -1222,12 +1243,7 @@ def _verify_parent_identity(
     )
     if not reg:
         raise HTTPException(status_code=404, detail="查無對應報名資料")
-    normalized = _normalize_phone(parent_phone)
-    if (
-        reg.student_name != name
-        or reg.birthday != birthday
-        or _normalize_phone(reg.parent_phone) != normalized
-    ):
+    if not _parent_mutation_identity_ok(reg, name, birthday, parent_phone, query_token):
         raise HTTPException(status_code=404, detail="查無對應報名資料")
     return reg
 
@@ -1236,6 +1252,8 @@ class _PromotionActionPayload(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
     birthday: str = Field(..., min_length=1, max_length=20)
     parent_phone: str = Field(..., min_length=1, max_length=30)
+    # 資安 #5：有 token 的報名強制帶有效未過期 query_token；舊報名沿用三欄。
+    query_token: str | None = Field(None, max_length=256)
 
 
 @router.post(
@@ -1259,7 +1277,12 @@ def public_confirm_promotion(
     session = get_session()
     try:
         _verify_parent_identity(
-            session, registration_id, body.name, body.birthday, body.parent_phone
+            session,
+            registration_id,
+            body.name,
+            body.birthday,
+            body.parent_phone,
+            body.query_token,
         )
         try:
             student_name, course_name = activity_service.confirm_waitlist_promotion(
@@ -1318,7 +1341,12 @@ def public_decline_promotion(
     session = get_session()
     try:
         _verify_parent_identity(
-            session, registration_id, body.name, body.birthday, body.parent_phone
+            session,
+            registration_id,
+            body.name,
+            body.birthday,
+            body.parent_phone,
+            body.query_token,
         )
         try:
             student_name, course_name = activity_service.decline_waitlist_promotion(

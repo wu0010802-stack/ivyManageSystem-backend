@@ -470,6 +470,7 @@ class TestPublicUpdateSupplyPriceSnapshotPreserved:
             },
         )
         assert r.status_code == 201, r.text
+        token = r.json()["query_token"]  # 資安 #5：token-bearing 報名修改需帶 token
 
         q = client.post(
             "/api/activity/public/query",
@@ -502,6 +503,7 @@ class TestPublicUpdateSupplyPriceSnapshotPreserved:
                 ],
                 "supplies": [{"name": "畫具", "price": "200"}],
                 "if_unmodified_since": q["updated_at"],
+                "query_token": token,
             },
         )
         assert res.status_code == 200, res.text

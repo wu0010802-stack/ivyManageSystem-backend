@@ -158,7 +158,7 @@ class TestOptimisticLockToken:
         client, sf = phase2_client
         with sf() as s:
             _seed(s)
-        _register(client)
+        token = _register(client).json()["query_token"]
         q = _query(client).json()
 
         res = client.post(
@@ -175,6 +175,7 @@ class TestOptimisticLockToken:
                 ],
                 "supplies": [{"name": "畫具", "price": "200"}],
                 "if_unmodified_since": q["updated_at"],
+                "query_token": token,  # 資安 #5：token-bearing 報名修改需帶 token
             },
         )
         assert res.status_code == 200, res.text
@@ -183,7 +184,7 @@ class TestOptimisticLockToken:
         client, sf = phase2_client
         with sf() as s:
             _seed(s)
-        _register(client)
+        token = _register(client).json()["query_token"]
         q1 = _query(client).json()
 
         # 先用第一份 token 改一次（成功會 bump updated_at）
@@ -198,10 +199,11 @@ class TestOptimisticLockToken:
                 "courses": [{"name": "圍棋", "price": "1000"}],
                 "supplies": [{"name": "畫具", "price": "200"}],
                 "if_unmodified_since": q1["updated_at"],
+                "query_token": token,
             },
         )
 
-        # 再用同一份舊 token 嘗試覆寫 → 應 409 STALE
+        # 再用同一份舊 if_unmodified_since 嘗試覆寫 → 應 409 STALE
         res = client.post(
             "/api/activity/public/update",
             json={
@@ -213,17 +215,18 @@ class TestOptimisticLockToken:
                 "courses": [{"name": "圍棋", "price": "1000"}],
                 "supplies": [],
                 "if_unmodified_since": q1["updated_at"],
+                "query_token": token,
             },
         )
         assert res.status_code == 409
         assert "資料已被校方更新" in res.json()["detail"]
 
-    def test_update_without_token_still_succeeds(self, phase2_client):
-        """向後相容：if_unmodified_since 是選填，未帶仍可儲存。"""
+    def test_update_without_optimistic_lock_token_still_succeeds(self, phase2_client):
+        """向後相容：if_unmodified_since 是選填，未帶仍可儲存（query_token 仍需帶）。"""
         client, sf = phase2_client
         with sf() as s:
             _seed(s)
-        _register(client)
+        token = _register(client).json()["query_token"]
         q = _query(client).json()
 
         res = client.post(
@@ -236,6 +239,7 @@ class TestOptimisticLockToken:
                 "class": q["class_name"],
                 "courses": [{"name": "圍棋", "price": "1000"}],
                 "supplies": [],
+                "query_token": token,
             },
         )
         assert res.status_code == 200
@@ -246,7 +250,7 @@ class TestUpdateReturnsFullPayload:
         client, sf = phase2_client
         with sf() as s:
             _seed(s)
-        _register(client)
+        token = _register(client).json()["query_token"]
         q = _query(client).json()
 
         res = client.post(
@@ -263,6 +267,7 @@ class TestUpdateReturnsFullPayload:
                 ],
                 "supplies": [{"name": "畫具", "price": "200"}],
                 "if_unmodified_since": q["updated_at"],
+                "query_token": token,
             },
         )
         assert res.status_code == 200
@@ -295,7 +300,7 @@ class TestUpdateReturnsFullPayload:
         client, sf = phase2_client
         with sf() as s:
             _seed(s)
-        _register(client)
+        token = _register(client).json()["query_token"]
         q = _query(client).json()
 
         res = client.post(
@@ -308,8 +313,10 @@ class TestUpdateReturnsFullPayload:
                 "class": q["class_name"],
                 "courses": [{"name": "圍棋", "price": "1000"}],
                 "supplies": [],
+                "query_token": token,
             },
         )
+        assert res.status_code == 200, res.text
         body = res.json()
         for forbidden in (
             "match_status",
@@ -325,7 +332,7 @@ class TestRegistrationChangeBusinessTrail:
         client, sf = phase2_client
         with sf() as s:
             _seed(s)
-        _register(client)
+        token = _register(client).json()["query_token"]
         q = _query(client).json()
 
         client.post(
@@ -341,6 +348,7 @@ class TestRegistrationChangeBusinessTrail:
                     {"name": "畫畫", "price": "800"},
                 ],
                 "supplies": [],
+                "query_token": token,
             },
         )
 
@@ -361,7 +369,7 @@ class TestRegistrationChangeBusinessTrail:
         client, sf = phase2_client
         with sf() as s:
             _seed(s)
-        _register(client)
+        token = _register(client).json()["query_token"]
         q = _query(client).json()
 
         # 用相同內容再儲存一次
@@ -375,6 +383,7 @@ class TestRegistrationChangeBusinessTrail:
                 "class": q["class_name"],
                 "courses": [{"name": "圍棋", "price": "1000"}],
                 "supplies": [],
+                "query_token": token,
             },
         )
 
@@ -408,7 +417,9 @@ def test_public_update_preserves_unchanged_registration_course_id(phase2_client)
         s.commit()
 
     # reg1（王小明）+ reg2（李小華）皆報名圍棋；reg2 的 RegistrationCourse id 較高。
-    assert _register(client).status_code in (200, 201)
+    reg1_resp = _register(client)
+    assert reg1_resp.status_code in (200, 201)
+    token = reg1_resp.json()["query_token"]
     q1 = _query(client).json()
     reg1_id = q1["id"]
     assert _register(client, name="李小華", phone="0922333444").status_code in (
@@ -435,6 +446,7 @@ def test_public_update_preserves_unchanged_registration_course_id(phase2_client)
             "class": q1["class_name"],
             "courses": [{"name": "圍棋", "price": "1000"}],
             "if_unmodified_since": q1["updated_at"],
+            "query_token": token,
         },
     )
     assert res.status_code == 200, res.text

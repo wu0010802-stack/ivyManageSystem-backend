@@ -188,6 +188,9 @@ class PublicUpdatePayload(BaseModel):
     # 選填：樂觀鎖 token，由 /public/query 回傳的 updated_at（ISO 字串）。
     # 提供時若與 reg.updated_at 不符即拒；不提供則沿用舊行為（向後相容）。
     if_unmodified_since: Optional[str] = Field(None, max_length=64)
+    # 資安 #5（2026-06-17）：查詢碼第二因素。有 query_token_hash 的報名（新報名）
+    # 修改時必須帶有效未過期 token（PII 三欄不再足夠）；無 token 的舊報名沿用三欄。
+    query_token: Optional[str] = Field(None, max_length=256)
 
     @field_validator("birthday")
     @classmethod
@@ -298,6 +301,9 @@ class PublicRegistrationDetailOut(IvyBaseModel):
     field_state: PublicFieldStateOut
     updated_at: Optional[str] = None
     message: Optional[str] = None
+    # 資安 #5（2026-06-17）：此報名是否有 query_token（=破壞性 mutation 需帶 token）。
+    # 前端用於「三欄載入（無 token）」時把 token-bearing 報名顯示為唯讀。
+    query_token_required: bool = False
 
 
 class PublicRegisterResultOut(IvyBaseModel):

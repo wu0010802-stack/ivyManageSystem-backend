@@ -424,6 +424,9 @@ def _build_public_query_payload(session, reg) -> dict:
         # 樂觀鎖 token：前端持有，回傳給 /public/update 的 if_unmodified_since。
         # 後端原樣字串比較，不 parse；/public/update 結尾顯式 bump 確保 row 一定 dirty。
         "updated_at": reg.updated_at.isoformat() if reg.updated_at else None,
+        # 資安 #5：有 token 的報名（新報名）破壞性 mutation 需帶 query_token。
+        # 前端據此在「三欄載入（無 token）」時把這類報名顯示為唯讀。
+        "query_token_required": reg.query_token_hash is not None,
     }
 
 

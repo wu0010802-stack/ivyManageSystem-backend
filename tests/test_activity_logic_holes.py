@@ -379,6 +379,7 @@ class TestPublicUpdatePhoneConflict:
         )
         assert r_a.status_code == 201, r_a.text
         reg_a_id = r_a.json()["id"]
+        token_a = r_a.json()["query_token"]  # 資安 #5：token-bearing 報名修改需帶 token
 
         # 家長 B（不同姓名）報名
         r_b = c.post(
@@ -399,6 +400,7 @@ class TestPublicUpdatePhoneConflict:
                 "class": "大象班",
                 "courses": [{"name": "圍棋", "price": "1"}],
                 "supplies": [],
+                "query_token": token_a,
             },
         )
         # 資安 P1 (2026-05-07)：409 → 400 與其他驗證錯誤同 status code。

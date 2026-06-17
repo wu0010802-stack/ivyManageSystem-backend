@@ -1287,6 +1287,7 @@ class TestF029_PublicUpdatePhone:
         )
         assert r_a.status_code == 201, r_a.text
         reg_a_id = r_a.json()["id"]
+        token_a = r_a.json()["query_token"]  # 資安 #5：token-bearing 報名修改需帶 token
 
         # 家長 B 用另一支電話報名
         r_b = client.post(
@@ -1314,6 +1315,7 @@ class TestF029_PublicUpdatePhone:
                 "class": "大象班",
                 "courses": [{"name": "圍棋"}],
                 "supplies": [],
+                "query_token": token_a,
             },
         )
         # 資安掃描 2026-05-07 P1：原本回 409，但 status code 仍能讓攻擊者區分
@@ -1343,6 +1345,7 @@ class TestF029_PublicUpdatePhone:
         )
         assert r_a.status_code == 201, r_a.text
         reg_a_id = r_a.json()["id"]
+        token_a = r_a.json()["query_token"]  # 資安 #5：token-bearing 報名修改需帶 token
 
         # 改成沒人用的新電話
         r_upd = client.post(
@@ -1356,6 +1359,7 @@ class TestF029_PublicUpdatePhone:
                 "class": "大象班",
                 "courses": [{"name": "圍棋"}],
                 "supplies": [],
+                "query_token": token_a,
             },
         )
         assert r_upd.status_code == 200, r_upd.text
