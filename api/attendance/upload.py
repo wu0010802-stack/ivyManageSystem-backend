@@ -42,6 +42,17 @@ def _upload_dir() -> Path:
     return get_storage_path(_UPLOAD_MODULE)
 
 
+def _covered_week_starts(dates):
+    """由考勤檔出現的日期推導涵蓋到的「週一」集合。
+
+    ShiftAssignment.week_start_date 存該週週一（models/shift.py）；考勤匯入只會用到
+    檔案日期所屬週的排班，故用此集合過濾 ShiftAssignment，避免全表載入歷年排班
+    （隨年只增不減）。lookup 端 week_monday 用同一公式
+    `d - timedelta(days=d.weekday())`，過濾後集合為其超集、行為等價。
+    """
+    return {d - timedelta(days=d.weekday()) for d in dates}
+
+
 _EXCEL_EXT_RE = re.compile(r"^\.[a-z0-9]+$")
 
 # scope: global
@@ -158,7 +169,22 @@ async def upload_attendance(
                     if c.assistant_teacher_id:
                         assistant_teacher_map.add(c.assistant_teacher_id)
 
-                shift_assignments = session.query(ShiftAssignment).all()
+                # 先由考勤檔日期推導涵蓋範圍，供 ShiftAssignment（依週）與
+                # DailyShift（依日）過濾，避免全表載入歷年排班。
+                file_dates = None
+                if "日期" in df.columns:
+                    _td = pd.to_datetime(df["日期"], errors="coerce").dt.date.dropna()
+                    if not _td.empty:
+                        file_dates = _td
+
+                shift_assignments_q = session.query(ShiftAssignment)
+                if file_dates is not None:
+                    shift_assignments_q = shift_assignments_q.filter(
+                        ShiftAssignment.week_start_date.in_(
+                            _covered_week_starts(file_dates)
+                        )
+                    )
+                shift_assignments = shift_assignments_q.all()
                 shift_types = _get_shift_type_id_map(session)
                 shift_schedule_map = {}
                 for sa in shift_assignments:
@@ -172,28 +198,25 @@ async def upload_attendance(
 
                 daily_shift_map = {}
 
-                if "日期" in df.columns:
-                    temp_dates = pd.to_datetime(
-                        df["日期"], errors="coerce"
-                    ).dt.date.dropna()
-                    if not temp_dates.empty:
-                        min_date, max_date = temp_dates.min(), temp_dates.max()
-                        daily_shifts_query = (
-                            session.query(DailyShift)
-                            .filter(
-                                DailyShift.date >= min_date, DailyShift.date <= max_date
-                            )
-                            .all()
+                if file_dates is not None:
+                    min_date, max_date = file_dates.min(), file_dates.max()
+                    daily_shifts_query = (
+                        session.query(DailyShift)
+                        .filter(
+                            DailyShift.date >= min_date,
+                            DailyShift.date <= max_date,
                         )
+                        .all()
+                    )
 
-                        for ds in daily_shifts_query:
-                            st = shift_types.get(ds.shift_type_id)
-                            if st:
-                                daily_shift_map[(ds.employee_id, ds.date)] = {
-                                    "work_start": st.work_start,
-                                    "work_end": st.work_end,
-                                    "name": st.name,
-                                }
+                    for ds in daily_shifts_query:
+                        st = shift_types.get(ds.shift_type_id)
+                        if st:
+                            daily_shift_map[(ds.employee_id, ds.date)] = {
+                                "work_start": st.work_start,
+                                "work_end": st.work_end,
+                                "name": st.name,
+                            }
 
                 results_data = {
                     "total": len(df),
