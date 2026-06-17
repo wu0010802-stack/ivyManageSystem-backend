@@ -302,3 +302,70 @@ def test_assert_can_grant_scope_aware_blocks_escalation():
         {"permission_names": ["STUDENTS_READ:all"], "role": "admin"},
         ["STUDENTS_READ:all"],
     )
+
+
+class TestRoleScopedPermission:
+    """#3（qa-loop 全掃 2026-06-17）：自訂角色須能指派 scope-qualified（:own_class）權限。
+
+    舊版對 payload.permissions 逐項以 DB permission_definitions 做存在性檢查、未剝 scope
+    後綴，導致前端送 `STUDENTS_READ:own_class` 永遠查無 → 422，唯一能指派 row-level scope
+    的角色管理入口被擋死。改用 validate_permission_names（剝 scope + 驗 base enum + 驗 scope），
+    與 per-user 覆寫路徑（api/auth.py）統一。
+    """
+
+    def test_create_role_with_scoped_permission_succeeds(self, client):
+        c, _ = client
+        _admin_login(c)
+        resp = c.post(
+            "/api/roles",
+            json={
+                "code": "homeroom_lead",
+                "label": "班導組長",
+                "permissions": ["DASHBOARD", "STUDENTS_READ:own_class"],
+            },
+        )
+        assert resp.status_code == 200, (
+            f"scoped 權限應被接受（剝 scope 後驗 base enum），實得 "
+            f"{resp.status_code}：{resp.text}"
+        )
+        assert "STUDENTS_READ:own_class" in resp.json()["permissions"]
+
+    def test_create_role_with_invalid_scope_value_returns_422(self, client):
+        c, _ = client
+        _admin_login(c)
+        resp = c.post(
+            "/api/roles",
+            json={
+                "code": "bad_scope",
+                "label": "x",
+                "permissions": ["STUDENTS_READ:nonsense"],
+            },
+        )
+        assert resp.status_code == 422
+
+    def test_create_role_scope_on_non_scope_aware_code_returns_422(self, client):
+        c, _ = client
+        _admin_login(c)
+        resp = c.post(
+            "/api/roles",
+            json={
+                "code": "bad_scope2",
+                "label": "x",
+                "permissions": ["DASHBOARD:own_class"],
+            },
+        )
+        assert resp.status_code == 422
+
+    def test_update_role_with_scoped_permission_succeeds(self, client):
+        c, sf = client
+        _admin_login(c)
+        c.post(
+            "/api/roles",
+            json={"code": "lead2", "label": "x", "permissions": ["DASHBOARD"]},
+        )
+        resp = c.put(
+            "/api/roles/lead2",
+            json={"permissions": ["DASHBOARD", "STUDENTS_WRITE:own_class"]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert "STUDENTS_WRITE:own_class" in resp.json()["permissions"]

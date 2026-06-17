@@ -14,13 +14,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from models.database import User, get_session_dep
-from models.permission_models import PermissionDefinition, Role
+from models.permission_models import Role
 from schemas.permissions_admin import (
     PermissionAdminOkOut,
     RoleOut,
 )
 from utils.auth import require_permission
-from utils.permissions import Permission, has_permission
+from utils.permissions import Permission, has_permission, validate_permission_names
 from utils.portfolio_access import is_unrestricted
 
 logger = logging.getLogger(__name__)
@@ -92,20 +92,14 @@ def create_role(
     if existing is not None:
         raise HTTPException(status_code=422, detail=f"角色 code 已存在：{payload.code}")
 
-    # Validate permissions exist
-    invalid = []
-    for perm_code in payload.permissions:
-        if perm_code == "*":
-            continue
-        if (
-            not session.query(PermissionDefinition.code)
-            .filter_by(code=perm_code)
-            .first()
-        ):
-            invalid.append(perm_code)
+    # 驗證 permissions 合法：剝 scope 後綴後驗 base enum + scope 值（#3, 2026-06-17）。
+    # 與 per-user 覆寫路徑（api/auth.py validate_permission_names）統一，使自訂角色可指派
+    # row-level scope（如 STUDENTS_READ:own_class）；舊版以 DB code 原值存在性檢查會誤判 422。
+    invalid = validate_permission_names(payload.permissions)
     if invalid:
         raise HTTPException(
-            status_code=422, detail=f"以下 permission code 不存在：{invalid}"
+            status_code=422,
+            detail=f"以下 permission code 不合法（不存在或 scope 不正確）：{invalid}",
         )
 
     _assert_can_grant(current_user, payload.permissions)
@@ -146,19 +140,11 @@ def update_role(
                 status_code=409,
                 detail="核心角色的權限不可修改（僅可改 label/description）",
             )
-        invalid = []
-        for perm_code in payload.permissions:
-            if perm_code == "*":
-                continue
-            if (
-                not session.query(PermissionDefinition.code)
-                .filter_by(code=perm_code)
-                .first()
-            ):
-                invalid.append(perm_code)
+        invalid = validate_permission_names(payload.permissions)
         if invalid:
             raise HTTPException(
-                status_code=422, detail=f"以下 permission code 不存在：{invalid}"
+                status_code=422,
+                detail=f"以下 permission code 不合法（不存在或 scope 不正確）：{invalid}",
             )
         _assert_can_grant(current_user, payload.permissions)
         role.permissions = list(payload.permissions)
