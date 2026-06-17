@@ -29,7 +29,7 @@ from api.portal import router as portal_router
 from api.students import router as students_router
 from models.classroom import LIFECYCLE_ACTIVE, Classroom, Student
 from models.database import Base, Employee, User
-from models.medical_access_log import MedicalAccessLog
+from models.medical_access_log import MEDICAL_ACCESS_PASSIVE, MedicalAccessLog
 from utils.auth import create_access_token, hash_password
 
 # ── students.py detail 端點（admin 後台，login-cookie auth）──
@@ -118,6 +118,8 @@ def test_students_detail_with_health_read_writes_medical_log(students_app):
         )
         assert len(logs) == 1
         assert logs[0].reason  # 有 generic reason
+        # 詳細頁被動回出 → access_type=passive（與 reason-gated /medical 區分）
+        assert logs[0].access_type == MEDICAL_ACCESS_PASSIVE
 
 
 def test_students_detail_without_health_read_no_log(students_app):
@@ -255,6 +257,8 @@ def test_portal_detail_with_health_read_writes_medical_log(portal_app):
         )
         assert len(logs) == 1
         assert logs[0].reason
+        # 教師端詳情頁被動回出 → access_type=passive
+        assert logs[0].access_type == MEDICAL_ACCESS_PASSIVE
 
 
 def test_portal_detail_without_health_read_no_log(portal_app):

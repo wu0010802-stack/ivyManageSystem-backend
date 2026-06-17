@@ -27,7 +27,7 @@ import models.base as base_module
 from api.students import router as students_router
 from models.classroom import LIFECYCLE_ACTIVE
 from models.database import Base, Classroom, Employee, Student, User
-from models.medical_access_log import MedicalAccessLog
+from models.medical_access_log import MEDICAL_ACCESS_EXPLICIT, MedicalAccessLog
 from utils.auth import create_access_token
 
 
@@ -150,6 +150,8 @@ def test_medical_endpoint_writes_access_log(medical_client):
         assert logs[0].field_name == "bundle"
         assert logs[0].reason == reason
         assert logs[0].user_id == 1
+        # reason-gated 具理由取用 → access_type=explicit（與詳細頁被動顯示區分）
+        assert logs[0].access_type == MEDICAL_ACCESS_EXPLICIT
 
 
 def test_medical_db_raw_column_is_encrypted(medical_client):

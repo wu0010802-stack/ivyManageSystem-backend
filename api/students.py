@@ -814,7 +814,11 @@ def get_student_medical(
     權限：STUDENTS_HEALTH_READ
     回 fields: allergy / medication / special_needs（ORM 透明解密）
     """
-    from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
+    from models.medical_access_log import (
+        MEDICAL_ACCESS_EXPLICIT,
+        MEDICAL_FIELD_BUNDLE,
+        MedicalAccessLog,
+    )
     from utils.request_ip import get_client_ip
 
     # RA-L4：min_length 不 trim，純空白可過；strip 後再驗語意長度，避免空洞 reason 架空 §6 稽核
@@ -827,12 +831,15 @@ def get_student_medical(
     try:
         student = assert_student_access(session, current_user, student_id)
 
-        # 寫 medical_access_log（獨立 trail，不走 audit_log）
+        # 寫 medical_access_log（獨立 trail，不走 audit_log）。
+        # access_type=explicit：此為 reason-gated 具理由取用，與詳細頁/清單/家長端
+        # 被動顯示（server_default passive）區分，供 §6 取用檢視結構化篩選。
         log = MedicalAccessLog(
             user_id=current_user["user_id"],
             student_id=student_id,
             field_name=MEDICAL_FIELD_BUNDLE,
             reason=reason,
+            access_type=MEDICAL_ACCESS_EXPLICIT,
             ip_address=get_client_ip(request),
         )
         session.add(log)
