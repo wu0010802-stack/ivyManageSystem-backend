@@ -42,6 +42,7 @@ from utils.permissions import Permission
 from utils.portfolio_access import (
     accessible_classroom_ids,
     assert_student_access,
+    emit_batch_medical_access_log,
     is_unrestricted,
     mask_student_health_fields,
     require_unrestricted_role,
@@ -444,6 +445,7 @@ class GuardianUpdate(BaseModel):
 
 @router.get("/students", response_model=StudentListOut)
 def get_students(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     classroom_id: Optional[int] = None,
@@ -519,7 +521,10 @@ def get_students(
         students = q.order_by(Student.id).offset(skip).limit(limit).all()
 
         items = []
+        medical_student_ids: list[int] = []
         for s in students:
+            if s.allergy or s.medication:
+                medical_student_ids.append(s.id)
             row = {
                 "id": s.id,
                 "student_id": s.student_id,
@@ -547,6 +552,15 @@ def get_students(
                 "is_active": s.is_active,
             }
             items.append(mask_student_health_fields(row, current_user))
+        # BE-3-medical-log：清單實際回出醫療欄位時補寫 §6 batch 取用稽核
+        if emit_batch_medical_access_log(
+            session,
+            current_user,
+            request,
+            medical_student_ids,
+            reason="學生清單檢視（無顯式理由）",
+        ):
+            session.commit()
         return {"items": items, "total": total, "skip": skip, "limit": limit}
     finally:
         session.close()
