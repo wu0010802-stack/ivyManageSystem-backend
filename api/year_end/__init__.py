@@ -478,6 +478,12 @@ def add_special_bonus(
                 "不允許新增 special_bonus（會改變 total_amount）；已簽核請先退回 DRAFT"
             ),
         )
+    # sec-batch 2026-06-16 C8：寫金額前補自我核准守衛。
+    # add_special_bonus 直接改 total_amount（轉帳金額），與 sign/finalize 同屬金額級
+    # 寫入；操作者不可對自己 employee_id 的結算加獎金（否則可自肥後自簽結案）。
+    assert_not_self_approval(
+        current_user, settlement.employee_id, doc_label="年終獎金結算"
+    )
     # #8（2026-06-16）：對重複 (cycle, emp, bonus_type, period_label) 改為 upsert。
     # 原本盲目 INSERT 會撞 uq_special_bonus_item → IntegrityError 500 並中止交易。
     # 比照 _recompute / Excel 匯入路徑：存在則更新欄位，否則新增。
@@ -956,6 +962,13 @@ def manual_patch_settlement(
         raise HTTPException(404, "settlement 不存在")
     if settlement.status != YearEndSettlementStatus.DRAFT:
         raise HTTPException(409, "僅 DRAFT 狀態可手動調整；已簽核請先退回")
+
+    # sec-batch 2026-06-16 C8：寫金額前補自我核准守衛。
+    # manual_patch 可改 deduction / excess_amount / hire_months → 直接改 total_amount
+    # （轉帳金額）；操作者不可手調自己 employee_id 的結算（防自肥）。
+    assert_not_self_approval(
+        current_user, settlement.employee_id, doc_label="年終獎金結算"
+    )
 
     cycle = session.get(YearEndCycle, settlement.year_end_cycle_id)
     if cycle is None:
