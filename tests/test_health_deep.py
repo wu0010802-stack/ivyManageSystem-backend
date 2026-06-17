@@ -9,11 +9,15 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def health_client():
-    """Pure health router TestClient — no auth, no DB swap (uses configured engine)."""
+    """Health router TestClient，deep 守衛已 override 成放行（測 deep shape 用）。"""
     from api.health import router as health_router
+    from api.health import verify_deep_readiness_access
 
     app = FastAPI()
     app.include_router(health_router)
+    # deep readiness 已加 staff-only 守衛（C29）；本 fixture 專測 deep shape，
+    # 故 override 成放行。未認證攔截行為另由 test_health_deep_requires_auth 驗。
+    app.dependency_overrides[verify_deep_readiness_access] = lambda: None
     with TestClient(app) as client:
         yield client
 
@@ -131,3 +135,27 @@ def test_ready_shallow_unaffected_by_deep_component_failures(health_client):
     assert body["status"] == "ok"
     assert body["db"] == "connected"
     assert "components" not in body
+
+
+def test_deep_readiness_blocks_unauthenticated_and_hides_internals():
+    """C29：未認證 ?deep=1 不得回 db_pool/breaker/parent_portal.detail 內部明細。
+
+    shallow（無 deep）維持公開；deep 為 staff-only。未認證打 deep → 403，
+    且 body 不含 components / db_pool / parent_portal。
+    """
+    from api.health import router as health_router
+
+    app = FastAPI()
+    app.include_router(health_router)  # 不 override 守衛 → 走真實認證
+    with TestClient(app) as client:
+        # shallow 仍公開
+        shallow = client.get("/health/ready")
+        assert shallow.status_code == 200
+
+        # deep 未認證 → 401/403，無內部明細外洩
+        deep = client.get("/health/ready?deep=1")
+        assert deep.status_code in (401, 403)
+        body = deep.json()
+        assert "components" not in body
+        assert "db_pool" not in str(body)
+        assert "parent_portal" not in body

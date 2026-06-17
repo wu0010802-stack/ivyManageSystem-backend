@@ -13,7 +13,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 
 from schemas._base import IvyBaseModel
@@ -136,8 +136,43 @@ def liveness():
     return {"status": "ok"}
 
 
+async def verify_deep_readiness_access(
+    request: Request, deep: bool = Query(False)
+) -> None:
+    """Deep readiness（?deep=1）存取守衛。
+
+    威脅：deep 分支回傳 db_pool 飽和度（used/size/utilization）、LINE/Supabase
+    breaker 內部狀態、parent_portal.detail 等運維敏感明細；整個 router 原本無
+    任何認證，未認證攻擊者即可 scrape 後端內部拓撲（資安掃描 2026-06-16 C29）。
+
+    收緊：shallow（無 deep）維持公開（K8s/LB probe 用）；deep 比照
+    internal_metrics_router 要求 AUDIT_LOGS 且非 teacher/parent（staff-only）。
+    """
+    if not deep:
+        return None
+
+    from utils.auth import get_current_user
+    from utils.permissions import Permission, has_permission
+
+    current_user = await get_current_user(request)
+    role = current_user.get("role")
+    if role in ("teacher", "parent"):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=403, detail="此帳號不可存取 deep readiness")
+    if not has_permission(current_user.get("permission_names"), Permission.AUDIT_LOGS):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=403, detail="您沒有此功能的存取權限")
+    return None
+
+
 @router.get("/ready")
-async def readiness(request: Request, deep: bool = Query(False)):
+async def readiness(
+    request: Request,
+    deep: bool = Query(False),
+    _deep_access: None = Depends(verify_deep_readiness_access),
+):
     """Readiness probe.
 
     Shallow（無 query）— 既有 shape，不更動：
