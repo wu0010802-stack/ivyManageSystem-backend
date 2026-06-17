@@ -25,6 +25,32 @@ def _keys(violations):
     return {key for key, _ in violations}
 
 
+def test_lint_scope_aware_perms_is_single_source_of_truth():
+    """SCOPE-5：lint 的 SCOPE_AWARE_PERMS 須直接來自 utils.permissions.SCOPE_AWARE_CODES
+    （同一物件），消除 BE↔lint 各自手抄漂移。若有人重新硬抄一份 frozenset，identity
+    比對會 fail。"""
+    import lint_scope_filter_guard as lint
+    from utils.permissions import SCOPE_AWARE_CODES
+
+    assert lint.SCOPE_AWARE_PERMS is SCOPE_AWARE_CODES, (
+        "lint.SCOPE_AWARE_PERMS 應 import 自 utils.permissions.SCOPE_AWARE_CODES，"
+        "不可在 lint 內另立硬抄副本（會與 BE has_permission 漂移）"
+    )
+
+
+def test_scope_aware_codes_count_canary():
+    """SCOPE-5 canary：scope-aware 權限數量改變時提醒同步前端 SCOPE_AWARE_CODES
+    與 permscope alembic seed（對應前端 scope-aware-parity.test.ts 的 size canary）。"""
+    from utils.permissions import SCOPE_AWARE_CODES
+
+    assert len(SCOPE_AWARE_CODES) == 13, (
+        f"SCOPE_AWARE_CODES 數量為 {len(SCOPE_AWARE_CODES)}（預期 13）；"
+        "新增/移除 scope-aware 權限時，請同步前端 auth.ts SCOPE_AWARE_CODES、"
+        "前端 scope-aware-parity.test.ts 的 EXPECTED、以及 permscope alembic seed，"
+        "再更新此 canary 數字。"
+    )
+
+
 def test_scope_aware_gate_without_filter_is_flagged():
     src = textwrap.dedent("""
         @router.get("/x")

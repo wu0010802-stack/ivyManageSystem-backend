@@ -27,28 +27,19 @@ import ast
 import sys
 from pathlib import Path
 
+# repo root 上 sys.path，讓本檔以 `python scripts/lint_scope_filter_guard.py`
+# 直接執行時也能 import utils（script 模式下 sys.path[0] 是 scripts/ 而非 repo root）。
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 # ---------------------------------------------------------------------------
-# 權威清單：permission_definitions.scope_options 非空的 13 個權限
-# （alembic permscope01-04 seed）。新增 scope-aware 權限時必須同步此處，
-# 否則新權限的端點不會被守衛檢查。
+# 權威清單：以 utils.permissions.SCOPE_AWARE_CODES 為單一事實來源（SCOPE-5）。
+# 本檔曾各自硬抄一份 13 碼 frozenset，與 BE has_permission 用的集合會漂移；改為
+# 直接 import 消除該副本。新增 scope-aware 權限只需改 utils/permissions.py 一處
+# + 對應 permscope alembic seed。
 # ---------------------------------------------------------------------------
-SCOPE_AWARE_PERMS = frozenset(
-    {
-        "STUDENTS_READ",
-        "STUDENTS_WRITE",
-        "STUDENTS_LIFECYCLE_WRITE",
-        "PORTFOLIO_READ",
-        "PORTFOLIO_WRITE",
-        "PORTFOLIO_PUBLISH",
-        "STUDENTS_HEALTH_READ",
-        "STUDENTS_HEALTH_WRITE",
-        "STUDENTS_SPECIAL_NEEDS_READ",
-        "STUDENTS_SPECIAL_NEEDS_WRITE",
-        "STUDENTS_MEDICATION_ADMINISTER",
-        "DISMISSAL_CALLS_READ",
-        "DISMISSAL_CALLS_WRITE",
-    }
-)
+from utils.permissions import SCOPE_AWARE_CODES as SCOPE_AWARE_PERMS  # noqa: E402
 
 # 端點 body（或其遞迴呼叫的同檔 helper）引用下列任一「葉子原語」即視為
 # 「有套 scope 過濾」。葉子 = 真正做 row/班級過濾或 scope 解析的根函式。
