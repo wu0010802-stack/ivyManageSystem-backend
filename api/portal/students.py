@@ -217,14 +217,12 @@ def get_my_students(
     try:
         emp = _get_employee(session, current_user)
 
-        query = session.query(Classroom).filter(
-            Classroom.is_active == True,  # noqa: E712
-            or_(
-                Classroom.head_teacher_id == emp.id,
-                Classroom.assistant_teacher_id == emp.id,
-                Classroom.art_teacher_id == emp.id,
-            ),
-        )
+        # scope 過濾根：教師所屬班級（head/assistant/art_teacher == emp.id）。
+        # 走中央 _get_teacher_classroom_ids（等價於原 inline 三欄 or_ + is_active
+        # 過濾），讓 scope-filter 守衛 lint 認得此端點已套 row 過濾（TPA-2 為本端點
+        # 補了 STUDENTS_READ scope-aware gate 後，須有可辨識的 scope helper）。
+        my_classroom_ids = _get_teacher_classroom_ids(session, emp.id)
+        query = session.query(Classroom).filter(Classroom.id.in_(my_classroom_ids))
         if classroom_id:
             query = query.filter(Classroom.id == classroom_id)
 
