@@ -984,8 +984,9 @@ async def app_lifespan(app_instance: FastAPI):
 _env_name = settings.core.env.lower()
 _is_prod_env = settings.core.is_production
 _cors_origins = settings.network.cors_origins
-_docs_force_enable = settings.core.enable_api_docs
-_docs_enabled = _docs_force_enable or not _is_prod_env
+# Fail-closed：僅顯式 ENABLE_API_DOCS=true 才掛載 docs/openapi（見 C30）。
+# 舊 `enable_api_docs or not is_production` 為 fail-open，ENV 拼錯/漏設即外洩地圖。
+_docs_enabled = settings.core.docs_enabled
 
 app = FastAPI(
     title="幼稚園考勤薪資系統",
