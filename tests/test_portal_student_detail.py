@@ -27,7 +27,7 @@ from models.database import (
     StudentContactBookEntry,
     User,
 )
-from models.portfolio import StudentAllergy
+from models.portfolio import StudentAllergy, StudentMedicationOrder
 from utils.auth import create_access_token
 from utils.permissions import Permission
 
@@ -214,6 +214,90 @@ class TestStudentDetail:
         assert body["attendance_30d"]["summary"]["leave"] == 1
         # contact book 限 5 筆
         assert len(body["contact_book_recent"]) == 5
+
+    def test_health_arrays_hidden_without_health_read_perm(self, detail_client):
+        """TPA-1：班級成員教師若 token 不含 STUDENTS_HEALTH_READ，detail 的結構化
+        健康陣列（過敏/投藥）須為空——不可洩漏 §6 醫療資料（與 deprecated 扁平
+        allergy_text/medication_text 欄位閘對齊）。"""
+        client, sf = detail_client
+        seed = _seed(sf)
+        # 種一筆 7 天內投藥單，證明 recent_medication_orders 也會外洩
+        with sf() as session:
+            session.add(
+                StudentMedicationOrder(
+                    student_id=seed["student_my_id"],
+                    order_date=date.today(),
+                    medication_name="普拿疼",
+                    dose="1 顆",
+                    time_slots=["08:30"],
+                )
+            )
+            session.commit()
+        # 同班教師 t1，但 token 權限不含 STUDENTS_HEALTH_READ
+        tk = _token(
+            seed["teacher_id"],
+            seed["teacher_emp_id"],
+            "t1",
+            ["STUDENTS_READ", "PORTFOLIO_READ"],
+        )
+        rsp = client.get(
+            f"/api/portal/students/{seed['student_my_id']}/detail",
+            cookies={"access_token": tk},
+        )
+        assert rsp.status_code == 200, rsp.text
+        body = rsp.json()
+        # deprecated 扁平欄位本就有閘
+        assert body["student"]["allergy_text"] is None
+        assert body["student"]["medication_text"] is None
+        # 結構化健康陣列也必須遮蔽（修補前會洩漏 花生 + 普拿疼）
+        assert body["health"]["allergies"] == [], body["health"]
+        assert body["health"]["recent_medication_orders"] == [], body["health"]
+
+    def test_health_arrays_visible_with_health_read_perm(self, detail_client):
+        """TPA-1 對照：持有 STUDENTS_HEALTH_READ 的同班教師仍能讀結構化健康陣列。"""
+        client, sf = detail_client
+        seed = _seed(sf)
+        tk = _token(
+            seed["teacher_id"],
+            seed["teacher_emp_id"],
+            "t1",
+            seed["perm"],  # 含 STUDENTS_HEALTH_READ
+        )
+        rsp = client.get(
+            f"/api/portal/students/{seed['student_my_id']}/detail",
+            cookies={"access_token": tk},
+        )
+        assert rsp.status_code == 200, rsp.text
+        body = rsp.json()
+        assert len(body["health"]["allergies"]) == 1
+        assert body["health"]["allergies"][0]["allergen"] == "花生"
+
+    def test_medical_access_logged_for_structured_only_health(self, detail_client):
+        """TPA-1 補稽核盲區：即使 legacy 扁平 allergy/medication 欄為空，只要實際輸出
+        結構化健康資料（過敏/投藥），§6 medical_access_log 仍須留痕。"""
+        from models.medical_access_log import MedicalAccessLog
+
+        client, sf = detail_client
+        seed = _seed(sf)
+        with sf() as session:
+            stu = session.get(Student, seed["student_my_id"])
+            stu.allergy = None  # 清掉 legacy 扁平欄
+            stu.medication = None
+            session.commit()
+        tk = _token(seed["teacher_id"], seed["teacher_emp_id"], "t1", seed["perm"])
+        rsp = client.get(
+            f"/api/portal/students/{seed['student_my_id']}/detail",
+            cookies={"access_token": tk},
+        )
+        assert rsp.status_code == 200, rsp.text
+        # 結構化過敏（花生）有被輸出 → §6 須留一筆
+        with sf() as session:
+            logs = (
+                session.query(MedicalAccessLog)
+                .filter(MedicalAccessLog.student_id == seed["student_my_id"])
+                .all()
+            )
+        assert len(logs) == 1, f"結構化健康資料輸出未留 §6 稽核: {len(logs)}"
 
     def test_other_classroom_student_403(self, detail_client):
         client, sf = detail_client

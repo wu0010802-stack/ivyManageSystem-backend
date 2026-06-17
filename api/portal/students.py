@@ -655,6 +655,40 @@ def get_student_detail(
         medication_text = student.medication if can_health else None
         special_needs = student.special_needs if can_special else None
 
+        # TPA-1：結構化健康資料（過敏/投藥）亦須受 STUDENTS_HEALTH_READ 欄位閘，
+        # 與上方 deprecated 扁平 allergy_text/medication_text 對齊。無權時回空陣列，
+        # 避免班級成員教師（即使不含 STUDENTS_HEALTH_READ）讀到 §6 醫療資料。
+        health_allergies = (
+            [
+                {
+                    "id": a.id,
+                    "allergen": a.allergen,
+                    "severity": a.severity,
+                    "reaction": a.reaction_symptom,
+                    "first_aid_note": a.first_aid_note,
+                }
+                for a in allergies
+            ]
+            if can_health
+            else []
+        )
+        health_med_orders = (
+            [
+                {
+                    "id": o.id,
+                    "order_date": o.order_date.isoformat(),
+                    "medication_name": o.medication_name,
+                    "dose": o.dose,
+                    "time_slots": o.time_slots,
+                    "source": o.source,
+                    "note": o.note,
+                }
+                for o in active_med_orders
+            ]
+            if can_health
+            else []
+        )
+
         write_explicit_audit(
             request,
             action="READ",
@@ -668,8 +702,12 @@ def get_student_detail(
             },
         )
 
-        # RA-MED-3：實際回出解密醫療欄位時補寫 §6 medical_access_log（generic reason）。
-        if can_health and (student.allergy or student.medication):
+        # RA-MED-3 / TPA-1：實際回出任何醫療資料（legacy 扁平欄或結構化過敏/投藥陣列）
+        # 時補寫 §6 medical_access_log（generic reason）。原本只看 legacy 扁平欄，會在
+        # 「僅有結構化過敏/投藥、扁平欄為空」時漏記，造成醫療揭露無稽核軌跡。
+        if can_health and (
+            student.allergy or student.medication or allergies or active_med_orders
+        ):
             from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
             from utils.request_ip import get_client_ip
 
@@ -735,28 +773,8 @@ def get_student_detail(
                 for g in guardians
             ],
             "health": {
-                "allergies": [
-                    {
-                        "id": a.id,
-                        "allergen": a.allergen,
-                        "severity": a.severity,
-                        "reaction": a.reaction_symptom,
-                        "first_aid_note": a.first_aid_note,
-                    }
-                    for a in allergies
-                ],
-                "recent_medication_orders": [
-                    {
-                        "id": o.id,
-                        "order_date": o.order_date.isoformat(),
-                        "medication_name": o.medication_name,
-                        "dose": o.dose,
-                        "time_slots": o.time_slots,
-                        "source": o.source,
-                        "note": o.note,
-                    }
-                    for o in active_med_orders
-                ],
+                "allergies": health_allergies,
+                "recent_medication_orders": health_med_orders,
             },
             "attendance_30d": {
                 "summary": att_summary,
