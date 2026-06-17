@@ -278,9 +278,19 @@ def manual_adjust_salary(
         old_festival_bonus = round_half_up(record.festival_bonus or 0)
         old_meeting_absence = round_half_up(record.meeting_absence_deduction or 0)
 
+        # C9：本次調整前「已被人工鎖定」的欄位集合。對這些欄位「再調整」屬於跨請求
+        # 拆筆風險——前次調整的 |偏移| 已從引擎 baseline 偏離(且本端點不持久化 baseline，
+        # 無法回算精確累積偏移)，故對「重調已鎖定欄位」一律視為跨門檻、要求金流簽核，
+        # 封死「多次各 < 門檻、每次 old_value 變成上次人工值」的繞過路徑。
+        prior_locked_fields = set(record.manual_overrides or [])
+
         changed_parts = []
         modified_fields = []  # 本次寫過的欄位名單,稍後合併入 record.manual_overrides
         total_abs_delta = 0  # 本次請求所有欄位變動絕對值合計（涵蓋拆欄繞過）
+        # C9：對「本次調整且已被前次人工鎖定」的欄位，累加其調整前值作為「相對 baseline
+        # 已累積的人工偏移」近似量（獎金/扣款欄 baseline 趨近 0）。把它疊進金流簽核門檻
+        # 基準，封死「多次各 < 門檻、靠 old_value 變成上次人工值」的跨請求拆筆繞過。
+        prior_offset_abs = 0
         for field, value in payload.items():
             if field not in EDITABLE_SALARY_FIELDS:
                 continue
@@ -294,6 +304,8 @@ def manual_adjust_salary(
             )
             modified_fields.append(field)
             total_abs_delta += abs(new_value - old_value)
+            if field in prior_locked_fields:
+                prior_offset_abs += abs(old_value)
 
         # 額外加給名目（文字欄，與數值欄分流）；設值時加入 manual_overrides，
         # 使 _fill_salary_record 的 _apply 在重算時跳過覆寫、保留名目（與金額欄同步鎖定）。
@@ -329,11 +341,15 @@ def manual_adjust_salary(
                 modified_fields.append("festival_bonus")
                 total_abs_delta += abs(recomputed_festival - old_festival_bonus)
 
-        # ── A 錢守衛：本次所有欄位 |delta| 合計（含 festival_bonus 連動）> 門檻需金流簽核 ──
+        # ── A 錢守衛：本次所有欄位 |delta| 合計（含 festival_bonus 連動）+ 已鎖定欄位的
+        # 歷史人工偏移 > 門檻需金流簽核 ──
         # Why: 舊版用「單欄位最大變動」作門檻，會計可一次調 N 欄各 999，總和達數千元
-        # 而仍各自低於門檻，繞過 ACTIVITY_PAYMENT_APPROVE。改用合計門檻封死拆欄路徑。
+        # 而仍各自低於門檻，繞過 ACTIVITY_PAYMENT_APPROVE。改用合計門檻封死拆欄路徑；
+        # 再疊上 prior_offset_abs（相對 baseline 的歷史偏移近似量），封死跨請求拆筆。
         require_finance_approve(
-            total_abs_delta, current_user, action_label="薪資單欄位調整總額"
+            total_abs_delta + prior_offset_abs,
+            current_user,
+            action_label="薪資單欄位調整總額",
         )
 
         # 將本次寫過的欄位名稱合併進 manual_overrides;後續上游事件觸發的重算,
