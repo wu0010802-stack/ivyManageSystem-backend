@@ -15,6 +15,7 @@ records → items），並重置 PK 序列；僅在 localhost / 127.0.0.1 環境
 import argparse
 import os
 import sys
+from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -23,13 +24,33 @@ from sqlalchemy import text  # noqa: E402
 from models.base import DATABASE_URL, session_scope  # noqa: E402
 
 
+def _redact_db_url(url: str) -> str:
+    """遮罩 DB URL 的帳密，只保留 scheme/host/port/db。
+
+    避免把 DATABASE_URL（可能含密碼）印進 stdout/stderr → 終端 scrollback /
+    CI log / 截圖。無帳密的 URL 原樣回傳；解析失敗一律回 "<redacted>"。
+    """
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<redacted>"
+    if parts.username or parts.password:
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        parts = parts._replace(netloc=f"***@{host}" if host else "***")
+    return urlunsplit(parts)
+
+
 def _ensure_localhost() -> None:
     if not DATABASE_URL:
         print("[abort] DATABASE_URL 未設定，拒絕執行。", file=sys.stderr)
         sys.exit(2)
     if ("localhost" not in DATABASE_URL) and ("127.0.0.1" not in DATABASE_URL):
         print(
-            f"[abort] DATABASE_URL='{DATABASE_URL}' 不是 localhost；"
+            f"[abort] DATABASE_URL='{_redact_db_url(DATABASE_URL)}' 不是 localhost；"
             "本腳本僅允許在本機 dev 環境執行。",
             file=sys.stderr,
         )
@@ -89,7 +110,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    print(f"[info] DATABASE_URL={DATABASE_URL}")
+    print(f"[info] DATABASE_URL={_redact_db_url(DATABASE_URL)}")
     print("[info] 開始清除學費資料...")
     counts = wipe_fees()
     print("[done] 刪除筆數摘要：")
