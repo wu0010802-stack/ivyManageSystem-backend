@@ -138,7 +138,7 @@ def require_finance_approve(
 
     amount 可為絕對變動金額（退款金額、薪資調整 delta）。
     """
-    if amount > threshold and not has_finance_approve(current_user):
+    if amount >= threshold and not has_finance_approve(current_user):
         raise HTTPException(
             status_code=403,
             detail=(
