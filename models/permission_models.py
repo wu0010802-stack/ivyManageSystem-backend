@@ -46,6 +46,15 @@ class PermissionDefinition(Base):
         server_default="false",
         comment="core 為 alembic seed 的 57 條，admin 不可刪",
     )
+    # OPS-1：permscope01 已 add_column 此欄到 DB，但 ORM 原本漏宣告，導致
+    # get_permissions_definition 永不回傳 scope_options → 前端角色編輯器的
+    # 『僅自班/全園』scope radio 永不渲染、admin 只能授 bare＝全園。
+    # 型別對齊 permscope01（PG=ARRAY(Text)，其餘 dialect=JSON）。
+    scope_options = Column(
+        JSON().with_variant(ARRAY(Text), "postgresql"),
+        nullable=True,
+        comment="scope-aware 權限的可選 scope（如 ['own_class','all']）；NULL=非 scope-aware",
+    )
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     updated_at = Column(
         TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now()

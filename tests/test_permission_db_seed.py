@@ -206,6 +206,29 @@ def test_get_permissions_definition_includes_split_modules(session_with_seed):
     assert definition["split_modules"] == SPLIT_MODULES
 
 
+def test_get_permissions_definition_includes_scope_options(session_with_seed):
+    """OPS-1：scope-aware 權限的 scope_options 須隨 get_permissions_definition 下發，
+    前端角色編輯器才渲染得出『僅自班/全園』radio（否則只能授 bare＝全園 footgun）。"""
+    from utils.permissions import get_permissions_definition
+
+    # 對齊 permscope01 DB seed：把 STUDENTS_READ 標為 scope-aware
+    pd = (
+        session_with_seed.query(PermissionDefinition)
+        .filter_by(code="STUDENTS_READ")
+        .first()
+    )
+    pd.scope_options = ["own_class", "all"]
+    session_with_seed.commit()
+
+    definition = get_permissions_definition(session_with_seed)
+    assert definition["permissions"]["STUDENTS_READ"]["scope_options"] == [
+        "own_class",
+        "all",
+    ]
+    # 非 scope-aware 權限不應有 scope_options（或為空）
+    assert not definition["permissions"]["DASHBOARD"].get("scope_options")
+
+
 # ============================================================
 # T6: get_role_default_permissions(session, code) 從 DB 拉
 # ============================================================

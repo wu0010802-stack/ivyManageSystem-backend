@@ -818,7 +818,14 @@ def get_permissions_definition(session) -> Dict:
     role_defs = session.query(Role).order_by(Role.is_core.desc(), Role.code).all()
 
     permissions = {
-        p.code: {"value": p.code, "label": p.label, "is_core": p.is_core}
+        p.code: {
+            "value": p.code,
+            "label": p.label,
+            "is_core": p.is_core,
+            # OPS-1：下發 scope-aware 權限的 scope_options，前端角色編輯器才能
+            # 渲染『僅自班/全園』radio（NULL/空 → 前端不顯示 scope 選項）。
+            "scope_options": p.scope_options or [],
+        }
         for p in perm_defs
     }
 
