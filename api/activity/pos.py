@@ -73,6 +73,7 @@ from ._shared import (
     compute_daily_snapshot,
     resolve_student_pii_scope,
     student_pii_row_visible,
+    terminal_student_ids_in,
     require_refund_reason,
     require_approve_for_large_refund,
     validate_payment_date,
@@ -547,11 +548,28 @@ def outstanding_by_student(
         # S7：STUDENTS_READ:own_class 者對非管轄班級的群組照樣遮罩（group 內
         # 任一報名屬管轄班級即視為自班學生）
         pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
+        # #4：scoped caller 對終態學生群組遮 birthday/FK
+        terminal_ids = (
+            terminal_student_ids_in(
+                session,
+                [reg.student_id for grp in groups.values() for reg in grp],
+            )
+            if pii_allowed is not None
+            else set()
+        )
 
         result_groups = []
         for (student_name, birthday), group_regs in groups.items():
+            group_terminal = pii_allowed is not None and any(
+                reg.student_id in terminal_ids for reg in group_regs
+            )
             can_see_student = any(
-                student_pii_row_visible(pii_visible, pii_allowed, reg.classroom_id)
+                student_pii_row_visible(
+                    pii_visible,
+                    pii_allowed,
+                    reg.classroom_id,
+                    student_terminal=group_terminal,
+                )
                 for reg in group_regs
             )
             registrations_payload = []
