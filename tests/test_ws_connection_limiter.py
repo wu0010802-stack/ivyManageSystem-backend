@@ -68,3 +68,28 @@ def test_isolation_between_users():
     assert_under_limit(2)
     register(2, MagicMock())
     assert count(2) == 1
+
+
+def test_register_atomic_raises_over_limit():
+    """[C44] register() 本身即原子 check-and-register：
+
+    達上限後第 (上限+1) 次 register 須 raise，且不 append（無中間 await
+    yield point 讓並發 handshake 全穿過上限）。
+    """
+    user_id = 7
+    for _ in range(WS_MAX_CONN_PER_USER):
+        register(user_id, MagicMock())
+    assert count(user_id) == WS_MAX_CONN_PER_USER
+
+    with pytest.raises(WSConnectionLimitExceeded):
+        register(user_id, MagicMock())
+    # raise 後不得佔用名額
+    assert count(user_id) == WS_MAX_CONN_PER_USER
+
+
+def test_register_atomic_allows_exactly_up_to_limit():
+    """[C44] register() 應允許註冊到剛好等於上限（第 上限 次仍成功）。"""
+    user_id = 9
+    for i in range(WS_MAX_CONN_PER_USER):
+        register(user_id, MagicMock())  # 第 1..上限 次皆不 raise
+    assert count(user_id) == WS_MAX_CONN_PER_USER

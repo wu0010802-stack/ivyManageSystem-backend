@@ -28,11 +28,23 @@ class WSConnectionLimitExceeded(Exception):
 
 
 def register(user_id: int, ws: WebSocket) -> None:
-    """新增一個 active WS 進 user 計數。
+    """原子 check-and-register：檢查上限並佔用名額，達上限即 raise。
 
-    必須在 ws.accept() 之後、subscribe 之前呼叫；assert_under_limit
-    通過後再 register 即可。
+    為避免「判斷上限」與「佔用名額」之間出現 ``await`` yield point
+    （並發 handshake 全穿過上限），檢查與 append **同步**在此完成，
+    中間無 await。caller 應**先**呼叫本函式佔位、**再** ``await ws.accept()``；
+    若 accept 失敗則 unregister 回收（見各 WS 端點）。
+
+    達上限時 raise WSConnectionLimitExceeded 且**不** append。
     """
+    if count(user_id) >= WS_MAX_CONN_PER_USER:
+        logger.warning(
+            "ws_connection_limit_exceeded user_id=%s current=%d max=%d",
+            user_id,
+            count(user_id),
+            WS_MAX_CONN_PER_USER,
+        )
+        raise WSConnectionLimitExceeded()
     _active_ws[user_id].append(ws)
 
 
@@ -55,7 +67,11 @@ def count(user_id: int) -> int:
 
 
 def assert_under_limit(user_id: int) -> None:
-    """檢查該 user 未超上限；超則 raise WSConnectionLimitExceeded。"""
+    """advisory 預檢：該 user 未超上限；超則 raise WSConnectionLimitExceeded。
+
+    真正具原子性的上限守衛在 register()（check-and-register 無中間 await）。
+    本函式保留供呼叫端做早期 close、避免無謂的 accept handshake。
+    """
     current = count(user_id)
     if current >= WS_MAX_CONN_PER_USER:
         logger.warning(
