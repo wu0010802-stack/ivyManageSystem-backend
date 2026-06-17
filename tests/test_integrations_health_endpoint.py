@@ -1,4 +1,5 @@
 """tests/test_integrations_health_endpoint.py — Phase 4 P1 resilience endpoint tests."""
+
 from __future__ import annotations
 
 import os
@@ -79,7 +80,9 @@ def _create_noaudit(session, username="ighealth_noaudit", password="TempPass123"
 
 
 def _login(client, username, password="TempPass123"):
-    r = client.post("/api/auth/login", json={"username": username, "password": password})
+    r = client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
     assert r.status_code == 200, f"Login failed: {r.text}"
     # auth uses httpOnly cookies; TestClient auto-stores them for subsequent requests
     return r
@@ -144,6 +147,38 @@ def test_counts_pending_uploads(client_with_db):
     assert r.status_code == 200
     data = r.json()
     assert data["supabase"]["pending_uploads"] == 1
+    assert data["supabase"]["final_failed"] == 0
+
+
+def test_counts_final_failed_uploads(client_with_db):
+    """attempts>=5 且未成功的 row → final_failed==1，且不被算進 pending_uploads。"""
+    client, session_factory = client_with_db
+    session = session_factory()
+    _create_admin(session)
+    session.commit()
+
+    from datetime import datetime, timezone
+    from models.pending_uploads import PendingUpload
+
+    session.add(
+        PendingUpload(
+            module="activity_posters",
+            key="final/x.png",
+            content_type="image/png",
+            local_path="/tmp/final.bin",
+            attempts=5,
+            next_retry_at=datetime.now(timezone.utc),
+        )
+    )
+    session.commit()
+
+    _login(client, "ighealth_admin")
+    r = client.get("/api/internal/integrations/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["supabase"]["final_failed"] == 1
+    # attempts<5 過濾 → 永久失敗不重複算進「仍可重試」的 pending_uploads
+    assert data["supabase"]["pending_uploads"] == 0
 
 
 def test_no_token_row_returns_null_fields(client_with_db):

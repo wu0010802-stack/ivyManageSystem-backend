@@ -3,6 +3,7 @@
 每 5 min 撈 pending_uploads.next_retry_at<=now() AND attempts<5 → 重 push to Supabase。
 backoff: 30s → 2min → 10min → 1hr → 6hr（5 次失敗後 mark final + Sentry alert）。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -70,16 +71,22 @@ def tick_pending_uploads(now_provider=lambda: datetime.now(timezone.utc)) -> dic
                 metric["succeeded"] += 1
             except Exception as exc:
                 logger.exception("pending_upload row=%s failed", row.id)
-                tagged_capture(exc, tag="supabase", level="warning")
                 row.attempts += 1
                 if row.attempts >= _MAX_ATTEMPTS:
+                    # 永久失敗：附件（成長報告 / IEP / 家長上傳）重試 5 次後將遺失。
+                    # 升級為 error 級，避免與一般可重試失敗同被當 warning 靜默吞掉
+                    # （health 端點另有 supabase.final_failed gauge 一併曝光）。
                     row.last_error = f"final: {exc!s}"[:500]
                     metric["final_failed"] += 1
+                    tagged_capture(exc, tag="supabase", level="error")
                 else:
-                    delay = _BACKOFF_SECONDS[min(row.attempts, len(_BACKOFF_SECONDS) - 1)]
+                    delay = _BACKOFF_SECONDS[
+                        min(row.attempts, len(_BACKOFF_SECONDS) - 1)
+                    ]
                     row.next_retry_at = now + timedelta(seconds=delay)
                     row.last_error = str(exc)[:500]
                     metric["failed"] += 1
+                    tagged_capture(exc, tag="supabase", level="warning")
         session.commit()
     finally:
         session.close()
