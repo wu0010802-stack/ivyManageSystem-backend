@@ -186,6 +186,67 @@ class TestPayRecordDecreaseBlocked:
             assert r.status == "paid"
 
 
+class TestPayRecordCumulativeApprovalThreshold:
+    """C5：登記繳費的金流簽核應以「該 record 既有累計已繳 + 本次 delta」
+    之新累計判定，防止把大筆收款拆成多次 < 50,000 的 delta 繞過簽核。"""
+
+    def test_split_payments_cross_threshold_requires_approve(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)  # 僅 FEES_READ/WRITE，無 ACTIVITY_PAYMENT_APPROVE
+            rec = _seed_record(s, amount_due=100_000, amount_paid=0, status="unpaid")
+            s.commit()
+            rec_id = rec.id
+
+        assert _login(c).status_code == 200
+        # 第一筆 delta=40,000（累計 40,000 < 50,000）→ 放行
+        res1 = c.put(
+            f"/api/fees/records/{rec_id}/pay",
+            json={
+                "payment_date": date.today().isoformat(),
+                "amount_paid": 40_000,
+                "payment_method": "現金",
+            },
+        )
+        assert res1.status_code == 200, res1.text
+
+        # 第二筆 delta=40,000，但「累計已繳」推進到 80,000 ≥ 50,000 → 需簽核 → 403
+        res2 = c.put(
+            f"/api/fees/records/{rec_id}/pay",
+            json={
+                "payment_date": date.today().isoformat(),
+                "amount_paid": 80_000,
+                "payment_method": "現金",
+            },
+        )
+        assert res2.status_code == 403, res2.text
+
+        # DB 不應落到 80,000（第二筆被擋）
+        with sf() as s:
+            r = s.query(StudentFeeRecord).filter_by(id=rec_id).one()
+            assert r.amount_paid == 40_000
+
+    def test_normal_monthly_fee_below_threshold_unaffected(self, client):
+        """常規月費 amount_due < 門檻：一次繳清不需簽核，不受累計判定影響。"""
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            rec = _seed_record(s, amount_due=12_000, amount_paid=0, status="unpaid")
+            s.commit()
+            rec_id = rec.id
+
+        assert _login(c).status_code == 200
+        res = c.put(
+            f"/api/fees/records/{rec_id}/pay",
+            json={
+                "payment_date": date.today().isoformat(),
+                "amount_paid": 12_000,
+                "payment_method": "現金",
+            },
+        )
+        assert res.status_code == 200, res.text
+
+
 class TestPayRecordAmountCap:
     def test_amount_above_cap_rejected(self, client):
         c, sf = client
