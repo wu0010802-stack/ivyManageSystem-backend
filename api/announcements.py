@@ -90,21 +90,23 @@ def _validate_schedule(publish_at, expires_at) -> None:
 
     if publish_at is not None and expires_at is not None:
         if expires_at <= publish_at:
-            raise HTTPException(
-                status_code=400, detail="到期時間必須晚於發佈時間"
-            )
+            raise HTTPException(status_code=400, detail="到期時間必須晚於發佈時間")
     if publish_at is not None:
         threshold = now_taipei_naive() - timedelta(minutes=5)
         if publish_at < threshold:
-            raise HTTPException(
-                status_code=400, detail="排程發佈時間不可早於目前時間"
-            )
+            raise HTTPException(status_code=400, detail="排程發佈時間不可早於目前時間")
 
 
 logger = logging.getLogger(__name__)
 
 _ANNOUNCEMENT_ALLOWED_EXT = {
-    ".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif", ".pdf",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".heic",
+    ".heif",
+    ".pdf",
 }
 _ANNOUNCEMENT_ATTACHMENT_LIMIT = 5
 
@@ -141,6 +143,8 @@ class AnnouncementUpdate(BaseModel):
 def list_announcements(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    search: str | None = Query(None),
+    priority: str | None = Query(None),
     current_user: dict = Depends(
         require_staff_permission(Permission.ANNOUNCEMENTS_READ)
     ),
@@ -179,13 +183,26 @@ def list_announcements(
                 read_count_subq.label("read_count"),
                 recipient_count_subq.label("recipient_count"),
             )
-            .options(joinedload(Announcement.author), selectinload(Announcement.attachments))
+            .options(
+                joinedload(Announcement.author), selectinload(Announcement.attachments)
+            )
             .order_by(
                 Announcement.is_pinned.desc(),
                 Announcement.created_at.desc(),
             )
         )
-        total = session.query(func.count(Announcement.id)).scalar() or 0
+        ann_filters = []
+        if search:
+            ann_filters.append(Announcement.title.ilike(f"%{search}%"))
+        if priority:
+            ann_filters.append(Announcement.priority == priority)
+        if ann_filters:
+            query = query.filter(*ann_filters)
+
+        count_q = session.query(func.count(Announcement.id))
+        if ann_filters:
+            count_q = count_q.filter(*ann_filters)
+        total = count_q.scalar() or 0
         rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
         ann_ids = [ann.id for ann, *_ in rows]
@@ -235,8 +252,12 @@ def list_announcements(
                     "updated_at": (
                         ann.updated_at.isoformat() if ann.updated_at else None
                     ),
-                    "publish_at": ann.publish_at.isoformat() if ann.publish_at else None,
-                    "expires_at": ann.expires_at.isoformat() if ann.expires_at else None,
+                    "publish_at": (
+                        ann.publish_at.isoformat() if ann.publish_at else None
+                    ),
+                    "expires_at": (
+                        ann.expires_at.isoformat() if ann.expires_at else None
+                    ),
                     "status": derive_status(ann, _now),
                     "read_count": int(read_count or 0),
                     "read_preview": preview,
@@ -614,9 +635,7 @@ def assert_announcement_attachment_visible(session, att, current_user) -> None:
     emp_id = current_user.get("employee_id")
     if emp_id is None:
         raise HTTPException(status_code=403, detail="無權存取此附件")
-    no_recipients = ~exists().where(
-        AnnouncementRecipient.announcement_id == ann_id
-    )
+    no_recipients = ~exists().where(AnnouncementRecipient.announcement_id == ann_id)
     targeted_to_me = exists().where(
         and_(
             AnnouncementRecipient.announcement_id == ann_id,
@@ -634,7 +653,6 @@ def assert_announcement_attachment_visible(session, att, current_user) -> None:
     )
     if ann is None:
         raise HTTPException(status_code=403, detail="無權存取此附件")
-
 
 
 @router.delete(
@@ -726,7 +744,10 @@ def _serialize_parent_recipient(r: AnnouncementParentRecipient) -> dict:
     }
 
 
-@router.get("/{announcement_id}/parent-recipients", response_model=AnnouncementParentRecipientsOut)
+@router.get(
+    "/{announcement_id}/parent-recipients",
+    response_model=AnnouncementParentRecipientsOut,
+)
 def list_parent_recipients(
     announcement_id: int,
     current_user: dict = Depends(
@@ -947,14 +968,14 @@ def _build_attachments_context(announcement) -> list:
     result = []
     for a in getattr(announcement, "attachments", None) or []:
         thumb_key = getattr(a, "thumb_key", None)
-        result.append({
-            "mime_type": getattr(a, "mime_type", None),
-            "thumb_url": (
-                f"/api/uploads/portfolio/{thumb_key}"
-                if thumb_key
-                else None
-            ),
-        })
+        result.append(
+            {
+                "mime_type": getattr(a, "mime_type", None),
+                "thumb_url": (
+                    f"/api/uploads/portfolio/{thumb_key}" if thumb_key else None
+                ),
+            }
+        )
     return result
 
 
@@ -996,7 +1017,10 @@ def _fire_announcement_push(
     )
 
 
-@router.put("/{announcement_id}/parent-recipients", response_model=AnnouncementParentRecipientsOut)
+@router.put(
+    "/{announcement_id}/parent-recipients",
+    response_model=AnnouncementParentRecipientsOut,
+)
 def replace_parent_recipients(
     announcement_id: int,
     payload: ParentRecipientsUpdate,
@@ -1067,6 +1091,7 @@ def _replace_recipients_impl(
         # 通知 enqueue（commit 前；dispatch after_commit hook 自動 fan-out）
         if rows:
             from utils.taipei_time import now_taipei_naive as _now_tn
+
             if ann.publish_at is not None and ann.publish_at > _now_tn():
                 logger.info(
                     "announcement %s publish_at 未到（%s），跳過立即推播；scheduler 接手",

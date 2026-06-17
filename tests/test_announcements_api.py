@@ -80,11 +80,15 @@ def _create_employee(session, employee_id: str, name: str) -> Employee:
 
 
 def _login(client: TestClient, username: str):
-    return client.post("/api/auth/login", json={"username": username, "password": "TempPass123"})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": "TempPass123"}
+    )
 
 
 class TestAnnouncementsApi:
-    def test_list_announcements_returns_read_preview_and_full_reader_list(self, announcements_client):
+    def test_list_announcements_returns_read_preview_and_full_reader_list(
+        self, announcements_client
+    ):
         client, session_factory = announcements_client
         with session_factory() as session:
             author = _create_employee(session, "E001", "園長")
@@ -105,12 +109,30 @@ class TestAnnouncementsApi:
             session.flush()
 
             base_time = datetime(2026, 3, 14, 9, 0, 0)
-            session.add_all([
-                AnnouncementRead(announcement_id=announcement.id, employee_id=reader_a.id, read_at=base_time),
-                AnnouncementRead(announcement_id=announcement.id, employee_id=reader_b.id, read_at=base_time + timedelta(minutes=5)),
-                AnnouncementRead(announcement_id=announcement.id, employee_id=reader_c.id, read_at=base_time + timedelta(minutes=10)),
-                AnnouncementRead(announcement_id=announcement.id, employee_id=reader_d.id, read_at=base_time + timedelta(minutes=15)),
-            ])
+            session.add_all(
+                [
+                    AnnouncementRead(
+                        announcement_id=announcement.id,
+                        employee_id=reader_a.id,
+                        read_at=base_time,
+                    ),
+                    AnnouncementRead(
+                        announcement_id=announcement.id,
+                        employee_id=reader_b.id,
+                        read_at=base_time + timedelta(minutes=5),
+                    ),
+                    AnnouncementRead(
+                        announcement_id=announcement.id,
+                        employee_id=reader_c.id,
+                        read_at=base_time + timedelta(minutes=10),
+                    ),
+                    AnnouncementRead(
+                        announcement_id=announcement.id,
+                        employee_id=reader_d.id,
+                        read_at=base_time + timedelta(minutes=15),
+                    ),
+                ]
+            )
             session.commit()
 
         login_res = _login(client, "announcement_admin")
@@ -121,10 +143,63 @@ class TestAnnouncementsApi:
         assert res.status_code == 200
         payload = res.json()["items"][0]
         assert payload["read_count"] == 4
-        assert [reader["name"] for reader in payload["read_preview"]] == ["黃老師", "陳老師", "林老師"]
+        assert [reader["name"] for reader in payload["read_preview"]] == [
+            "黃老師",
+            "陳老師",
+            "林老師",
+        ]
         assert payload["has_more_readers"] is True
         ann_id = payload["id"]
         readers_res = client.get(f"/api/announcements/{ann_id}/readers")
         assert readers_res.status_code == 200
         readers_data = readers_res.json()
-        assert [r["name"] for r in readers_data["items"]] == ["黃老師", "陳老師", "林老師", "王老師"]
+        assert [r["name"] for r in readers_data["items"]] == [
+            "黃老師",
+            "陳老師",
+            "林老師",
+            "王老師",
+        ]
+
+
+def test_list_announcements_search_filters_by_title(announcements_client):
+    client, sf = announcements_client
+    with sf() as session:
+        author = _create_employee(session, "E001", "園長")
+        _create_user(session, "ann_admin", author.id)
+        for title in ("期末注意事項", "校外教學通知", "期末成績"):
+            session.add(
+                Announcement(
+                    title=title, content="x", priority="normal", created_by=author.id
+                )
+            )
+        session.commit()
+    assert _login(client, "ann_admin").status_code == 200
+    res = client.get("/api/announcements", params={"search": "期末"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 2
+    assert all("期末" in it["title"] for it in body["items"])
+
+
+def test_list_announcements_priority_filter(announcements_client):
+    client, sf = announcements_client
+    with sf() as session:
+        author = _create_employee(session, "E001", "園長")
+        _create_user(session, "ann_admin", author.id)
+        session.add(
+            Announcement(
+                title="A", content="x", priority="urgent", created_by=author.id
+            )
+        )
+        session.add(
+            Announcement(
+                title="B", content="x", priority="normal", created_by=author.id
+            )
+        )
+        session.commit()
+    assert _login(client, "ann_admin").status_code == 200
+    res = client.get("/api/announcements", params={"priority": "urgent"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 1
+    assert body["items"][0]["priority"] == "urgent"
