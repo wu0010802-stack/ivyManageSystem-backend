@@ -258,15 +258,17 @@ def pay_fee_record(
         delta = amount_paid - previous_paid
         operator = current_user.get("username", "") or "unknown"
 
-        # ── A 錢守衛:本次入帳 delta 超 FEE_PAYMENT_APPROVAL_THRESHOLD 需金流簽核 ──
-        # Why: 舊版 FEES_WRITE 即可登記 NT$999,999 為現金收入,財報直接受影響。
-        # 用本次 delta(非累計)判斷:讓常規月費可走、學期/年費等大筆需 approver。
+        # ── A 錢守衛:該 record 新累計已繳 >= FEE_PAYMENT_APPROVAL_THRESHOLD 需金流簽核 ──
+        # Why: 舊版用「本次 delta」判斷,會計可把大筆收款拆成多次各 < 50,000 的 delta
+        # 連續登記,每筆都閃過簽核(財報直接受影響)。改用「previous_paid + delta」之新
+        # 累計值(即 amount_paid)判定,對齊 refunds.py / adjustments.py 累積簽核口徑,
+        # 封死拆筆路徑;常規月費 amount_due < 門檻一次繳清不受影響。
         if delta > 0:
             require_finance_approve(
-                delta,
+                amount_paid,
                 current_user,
                 threshold=FEE_PAYMENT_APPROVAL_THRESHOLD,
-                action_label="學費單筆繳款",
+                action_label="學費累計繳款",
             )
 
         # Append-only 流水：delta > 0 時才寫一筆（delta=0 只更新快照）

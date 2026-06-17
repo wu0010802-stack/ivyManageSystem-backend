@@ -21,7 +21,6 @@ from utils.broadcast import get_broadcast
 from utils.permissions import Permission, has_permission
 from utils.ws_connection_limiter import (
     WSConnectionLimitExceeded,
-    assert_under_limit,
     register,
     unregister,
 )
@@ -103,8 +102,9 @@ async def portal_contact_book_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
         return
 
+    # 原子佔位：先 register（check-and-register 無中間 await），再 accept。
     try:
-        assert_under_limit(user_id)
+        register(user_id, ws)
     except WSConnectionLimitExceeded:
         await ws.close(code=1008, reason="ws_connection_limit_exceeded")
         return
@@ -115,8 +115,11 @@ async def portal_contact_book_ws(ws: WebSocket):
         classroom_ids = _get_teacher_classroom_ids(employee_id)
 
     backend = get_broadcast()
-    await ws.accept()
-    register(user_id, ws)
+    try:
+        await ws.accept()
+    except Exception:
+        unregister(ws)  # accept 失敗回收名額
+        raise
     if classroom_ids:
         for cid in classroom_ids:
             backend.subscribe(_classroom_channel(cid), ws)
@@ -155,15 +158,19 @@ async def parent_contact_book_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
         return
 
+    # 原子佔位：先 register、再 accept（理由同教師端 WS）。
     try:
-        assert_under_limit(user_id)
+        register(user_id, ws)
     except WSConnectionLimitExceeded:
         await ws.close(code=1008, reason="ws_connection_limit_exceeded")
         return
 
     backend = get_broadcast()
-    await ws.accept()
-    register(user_id, ws)
+    try:
+        await ws.accept()
+    except Exception:
+        unregister(ws)  # accept 失敗回收名額
+        raise
     backend.subscribe(_parent_channel(user_id), ws)
 
     def _cleanup():

@@ -116,10 +116,22 @@ class TestRequireFinanceApprove:
         # threshold = 1000, amount = 500 → 放行
         require_finance_approve(500, user)
 
-    def test_amount_at_threshold_exactly_passes(self):
-        # 等於閾值不算超過（> 才擋）
+    def test_amount_at_threshold_exactly_requires_approve(self):
+        # C10：恰等於閾值（1000）也視為需簽核（>= 才擋），無 approve 權限應 403。
+        # Why: 拆筆者可把金額湊成「剛好 = 門檻」鑽 `>` 的漏洞。
         user = {"permission_names": []}
+        with pytest.raises(HTTPException) as exc:
+            require_finance_approve(FINANCE_APPROVAL_THRESHOLD, user)
+        assert exc.value.status_code == 403
+
+    def test_amount_at_threshold_with_perm_passes(self):
+        user = {"permission_names": ["ACTIVITY_PAYMENT_APPROVE"]}
         require_finance_approve(FINANCE_APPROVAL_THRESHOLD, user)
+
+    def test_amount_just_below_threshold_passes(self):
+        # 999 < 1000 → 仍放行
+        user = {"permission_names": []}
+        require_finance_approve(FINANCE_APPROVAL_THRESHOLD - 1, user)
 
     def test_amount_over_threshold_without_perm_raises(self):
         user = {"permission_names": []}

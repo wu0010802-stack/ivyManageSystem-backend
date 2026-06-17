@@ -316,6 +316,36 @@ def test_update_short_reason_rejected(client_admin, student_a):
     assert r.status_code == 400, r.text
 
 
+def test_delete_large_adjustment_requires_finance_approve(
+    client_admin, client_fees_writer, student_a
+):
+    """C6：刪除折抵是「還原應收（反向金流）」動作，與建立/更新對稱需金流簽核。
+    admin（有簽核權）建大額折抵後，無簽核權者刪除 → 403。"""
+    create = client_admin.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, amount=5000)
+    )
+    assert create.status_code == 200, create.text
+    adj_id = create.json()["id"]
+
+    r = client_fees_writer.delete(f"/api/fees/adjustments/{adj_id}")
+    assert r.status_code == 403, r.text
+
+    # 被擋後折抵仍在
+    check = client_admin.get(f"/api/fees/adjustments?student_id={student_a.id}")
+    assert check.json()["total"] == 1
+
+
+def test_delete_small_adjustment_allowed_for_writer(client_fees_writer, student_a):
+    """小額（< 閾值）折抵刪除：一般 FEES_WRITE 即可，不過度阻擋。"""
+    create = client_fees_writer.post(
+        "/api/fees/adjustments", json=_payload(student_a.id, amount=500)
+    )
+    assert create.status_code == 200, create.text
+    adj_id = create.json()["id"]
+    r = client_fees_writer.delete(f"/api/fees/adjustments/{adj_id}")
+    assert r.status_code == 200, r.text
+
+
 def test_same_student_period_type_multiple_allowed(client_admin, student_a):
     """同學生同學期同 type 可有多筆（不加 UNIQUE，允許多次扣款/折抵）。"""
     r1 = client_admin.post("/api/fees/adjustments", json=_payload(student_a.id))

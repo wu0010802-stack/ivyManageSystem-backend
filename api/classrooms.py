@@ -41,7 +41,10 @@ from utils.academic import resolve_current_academic_term, resolve_academic_term_
 from utils.auth import require_staff_permission
 from utils.error_messages import CLASSROOM_NOT_FOUND
 from utils.permissions import Permission
-from utils.portfolio_access import mask_student_health_fields
+from utils.portfolio_access import (
+    emit_batch_medical_access_log,
+    mask_student_health_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +368,10 @@ def _term_start_date(school_year: int, semester: int) -> date:
 
 
 def _serialize_classroom_detail(
-    session, classroom: Classroom, current_user: Optional[dict] = None
+    session,
+    classroom: Classroom,
+    current_user: Optional[dict] = None,
+    request=None,
 ):
     # Classroom.grade 已透過 joinedload 預載，直接存取即可
     grade_name = classroom.grade.name if classroom.grade else None
@@ -401,7 +407,10 @@ def _serialize_classroom_detail(
     )
 
     student_list = []
+    medical_student_ids: list[int] = []
     for s in students:
+        if s.allergy or s.medication:
+            medical_student_ids.append(s.id)
         row = {
             "id": s.id,
             "student_id": s.student_id,
@@ -417,6 +426,16 @@ def _serialize_classroom_detail(
         if current_user is not None:
             row = mask_student_health_fields(row, current_user)
         student_list.append(row)
+
+    # BE-3-medical-log：整班醫療欄位實際回出時補寫 §6 batch 取用稽核
+    if current_user is not None and emit_batch_medical_access_log(
+        session,
+        current_user,
+        request,
+        medical_student_ids,
+        reason="班級詳細檢視（無顯式理由）",
+    ):
+        session.commit()
 
     # is_active = NULL 視為在讀（歷史資料無明確設定時的預設行為）
     active_count = sum(1 for s in students if s.is_active is not False)
@@ -608,6 +627,7 @@ def get_teacher_options(
 @router.get("/classrooms/{classroom_id}", response_model=ClassroomDetailOut)
 def get_classroom(
     classroom_id: int,
+    request: Request,
     current_user: dict = Depends(require_staff_permission(Permission.CLASSROOMS_READ)),
 ):
     """取得單一班級詳細資料（含學生列表）"""
@@ -621,7 +641,9 @@ def get_classroom(
         )
         if not classroom:
             raise HTTPException(status_code=404, detail=CLASSROOM_NOT_FOUND)
-        return _serialize_classroom_detail(session, classroom, current_user)
+        return _serialize_classroom_detail(
+            session, classroom, current_user, request=request
+        )
     finally:
         session.close()
 

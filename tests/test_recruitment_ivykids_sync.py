@@ -45,6 +45,95 @@ def test_parse_backend_list_row_supports_leading_sort_column():
     assert record.month == "115.04"
 
 
+# ── SSRF 防護：detail_url / next-page 必須限制在官網網域 ─────────────────────
+
+
+_PAGE_URL = "https://www.ivykids.tw/manage/make_an_appointment/index.php?page=1"
+
+
+def test_parse_backend_list_row_rejects_offdomain_detail_link():
+    """惡意官網 HTML 含指向內網/外網絕對 URL 的 form.php 連結時，
+    不應產生對該 URL 的 detail_url（避免 server 端 SSRF GET）。"""
+    row_html = """
+    <tr>
+        <td></td>
+        <td>預約正常</td>
+        <td>2026-04-15</td>
+        <td>范瑀玹</td>
+        <td>2024-02-20</td>
+        <td>0919766932</td>
+        <td>親友介紹</td>
+        <td>2026-04-12 19:59:45</td>
+        <td>
+            <a href="http://169.254.169.254/manage/form.php?id=1">編輯</a>
+        </td>
+    </tr>
+    """
+
+    record = sync_service._parse_backend_list_row(row_html, _PAGE_URL)
+
+    # 被過濾：要嘛整列丟棄(None)，要嘛 detail_url 不指向內網
+    if record is not None:
+        assert record.detail_url is None or "169.254.169.254" not in (
+            record.detail_url or ""
+        )
+    # 並確認 helper 直接否決該 URL
+    assert (
+        sync_service._is_allowed_sync_url("http://169.254.169.254/manage/form.php?id=1")
+        is False
+    )
+
+
+def test_parse_backend_list_row_keeps_same_domain_detail_link():
+    """同網域的相對連結仍應正常組出 detail_url。"""
+    row_html = """
+    <tr>
+        <td></td>
+        <td>預約正常</td>
+        <td>2026-04-15</td>
+        <td>范瑀玹</td>
+        <td>2024-02-20</td>
+        <td>0919766932</td>
+        <td>親友介紹</td>
+        <td>2026-04-12 19:59:45</td>
+        <td><a href="form.php?id=177">編輯</a></td>
+    </tr>
+    """
+
+    record = sync_service._parse_backend_list_row(row_html, _PAGE_URL)
+
+    assert record is not None
+    assert record.detail_url == (
+        "https://www.ivykids.tw/manage/make_an_appointment/form.php?id=177"
+    )
+
+
+def test_discover_next_pages_filters_offdomain_links():
+    """next-page 連結指向外網/內網時必須被丟棄，不入抓取 queue。"""
+    page_html = """
+    <a href="index.php?page=2">下一頁</a>
+    <a href="http://169.254.169.254/index.php?page=3">內網</a>
+    <a href="https://evil.example.com/index.php?page=4">外網</a>
+    """
+
+    discovered = sync_service._discover_next_pages(page_html, _PAGE_URL)
+
+    assert any("page=2" in url for url in discovered)
+    assert all("169.254.169.254" not in url for url in discovered)
+    assert all("evil.example.com" not in url for url in discovered)
+
+
+def test_is_allowed_sync_url_blocks_private_and_offdomain():
+    assert sync_service._is_allowed_sync_url(
+        "https://www.ivykids.tw/manage/form.php?id=1"
+    )
+    assert not sync_service._is_allowed_sync_url("http://127.0.0.1/x")
+    assert not sync_service._is_allowed_sync_url("http://10.0.0.5/x")
+    assert not sync_service._is_allowed_sync_url("http://169.254.169.254/x")
+    assert not sync_service._is_allowed_sync_url("https://attacker.example.com/x")
+    assert not sync_service._is_allowed_sync_url("ftp://www.ivykids.tw/x")
+
+
 # ── _run_sync 整合測試（SQLite + 真實 ORM）─────────────────────────────────
 
 
@@ -257,7 +346,9 @@ class TestRunSyncNoNPlus1:
         from sqlalchemy import event
 
         engine, session, session_factory = sqlite_session
-        records = [_make_backend_record(str(i), child_name=f"小孩{i}") for i in range(20)]
+        records = [
+            _make_backend_record(str(i), child_name=f"小孩{i}") for i in range(20)
+        ]
         _install_run_sync_mocks(monkeypatch, records, session_factory=session_factory)
 
         select_record_count = 0
@@ -287,7 +378,9 @@ class TestRunSyncNoNPlus1:
     def test_idempotent_second_run_updates(self, monkeypatch, sqlite_session):
         """同樣 records 跑兩次：第二次應該全部走 update path，inserted=0、updated=20。"""
         _engine, session, session_factory = sqlite_session
-        records = [_make_backend_record(str(i), child_name=f"小孩{i}") for i in range(20)]
+        records = [
+            _make_backend_record(str(i), child_name=f"小孩{i}") for i in range(20)
+        ]
         _install_run_sync_mocks(monkeypatch, records, session_factory=session_factory)
 
         first = sync_service._run_sync(session, max_pages=1, trigger="test")

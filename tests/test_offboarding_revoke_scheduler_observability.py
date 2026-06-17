@@ -10,6 +10,7 @@ data_quality_scheduler），使失敗先穿過 observability 記錄再被 swallo
 """
 
 import asyncio
+from contextlib import contextmanager
 
 from utils import scheduler_observability
 
@@ -58,3 +59,81 @@ def test_tick_success_is_recorded_as_success(test_db_session, monkeypatch):
     assert stats is not None
     assert stats.consecutive_failures == 0
     assert stats.last_success_at is not None
+
+
+class _FakeSavepoint:
+    """模擬 session.begin_nested()：__exit__ 不吞例外（讓外層 try 接），
+    記錄 rollback 是否被觸發。"""
+
+    def __init__(self, session):
+        self._session = session
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self._session.savepoint_rollbacks += 1
+        return False  # 不吞例外
+
+
+class _FakeQuery:
+    def __init__(self, records):
+        self._records = records
+
+    def filter(self, *a, **k):
+        return self
+
+    def all(self):
+        return self._records
+
+
+class _FakeSession:
+    def __init__(self, records):
+        self._records = records
+        self.savepoint_rollbacks = 0
+
+    def begin_nested(self):
+        return _FakeSavepoint(self)
+
+    def query(self, *a, **k):
+        return _FakeQuery(self._records)
+
+
+def test_poison_record_isolated_others_still_revoked(monkeypatch):
+    """C33：每筆離職記錄獨立故障隔離——一筆 poison record 不可拖垮整批。
+
+    第 2 筆 revoke_run 拋例外時，第 1、3 筆仍應成功撤權、第 2 筆計入 failed，
+    且只 rollback 該筆 savepoint（不 rollback 整批）。
+    """
+    from services.offboarding import offboarding_revoke_scheduler as mod
+
+    rec1, rec2, rec3 = object(), object(), object()
+    fake_session = _FakeSession([rec1, rec2, rec3])
+
+    @contextmanager
+    def _fake_session_scope():
+        yield fake_session
+
+    seen = []
+
+    def _fake_revoke_run(session, record):
+        seen.append(record)
+        if record is rec2:
+            raise RuntimeError("poison offboarding record")
+        return {"status": "completed"}
+
+    # run_offboarding_revoke_due_once 內以 local import 取 session_scope / revoke_run，
+    # patch 來源模組屬性即可在呼叫時生效。
+    monkeypatch.setattr("models.base.session_scope", _fake_session_scope)
+    monkeypatch.setattr("services.offboarding.steps.revoke_user.run", _fake_revoke_run)
+
+    result = mod.run_offboarding_revoke_due_once()
+
+    # 三筆都被嘗試（poison 沒中止其餘）
+    assert seen == [rec1, rec2, rec3]
+    # 第 1、3 筆成功，第 2 筆失敗
+    assert result["revoked"] == 2
+    assert result["failed"] == 1
+    # 只 rollback poison 那一筆的 savepoint
+    assert fake_session.savepoint_rollbacks == 1

@@ -283,6 +283,97 @@ class TestRecalculatePreservesHourlyTotal:
             or "ACTIVITY_PAYMENT_APPROVE" in res.json()["detail"]
         )
 
+    def test_cross_request_split_accumulates_against_baseline(self, salary_client):
+        """C9：無金流簽核權者對他人 record 連兩次各 +800（單次 |delta|<1000，
+        各自能過舊「單次門檻」），但相對 baseline 的累積偏移已達 1600 > 1000，
+        第二次應要求 ACTIVITY_PAYMENT_APPROVE → 403。封死跨請求拆筆繞過。"""
+        client, sf = salary_client
+        with sf() as session:
+            emp = Employee(
+                employee_id="SPLIT1",
+                name="拆筆測試",
+                base_salary=30000,
+                employee_type="regular",
+                is_active=True,
+            )
+            session.add(emp)
+            session.flush()
+            record = SalaryRecord(
+                employee_id=emp.id,
+                salary_year=2026,
+                salary_month=6,
+                base_salary=30000,
+                special_bonus=0,
+                gross_salary=30000,
+                total_deduction=0,
+                net_salary=30000,
+                is_finalized=False,
+            )
+            session.add(record)
+            user = User(
+                employee_id=None,
+                username="hr_no_approve",
+                password_hash=hash_password("HrPass1234"),
+                role="hr",
+                permission_names=["SALARY_WRITE", "SALARY_READ"],
+                is_active=True,
+                must_change_password=False,
+            )
+            session.add(user)
+            session.commit()
+            record_id = record.id
+
+        res_login = client.post(
+            "/api/auth/login",
+            json={"username": "hr_no_approve", "password": "HrPass1234"},
+        )
+        assert res_login.status_code == 200, res_login.text
+
+        # 第一次：special_bonus 0 → 800（單次 delta=800 < 1000，baseline 偏移 800）→ 放行
+        res1 = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={"adjustment_reason": "第一次加給八百", "special_bonus": 800},
+        )
+        assert res1.status_code == 200, res1.text
+        assert res1.json()["record"]["manual_overrides"] == ["special_bonus"]
+
+        # 第二次：special_bonus 800 → 1600（單次 delta 仍 800 < 1000，但相對 baseline 0
+        # 累積偏移 = 1600 > 1000）→ 第二次應 403。
+        res2 = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={"adjustment_reason": "第二次再加八百", "special_bonus": 1600},
+        )
+        assert res2.status_code == 403, res2.text
+        assert (
+            "金流簽核" in res2.json()["detail"]
+            or "ACTIVITY_PAYMENT_APPROVE" in res2.json()["detail"]
+        )
+
+        # 被擋後 DB 不應落到 1600
+        with sf() as session:
+            r = session.query(SalaryRecord).filter_by(id=record_id).one()
+            assert r.special_bonus == 800
+
+    def test_single_field_baseline_accumulation_allows_with_approve(
+        self, salary_client
+    ):
+        """有金流簽核權者同樣的跨請求調整應放行（門檻只擋無權者）。"""
+        client, sf = salary_client
+        record_id = _seed_with_meeting_absence(sf)  # admin(*) seeded
+        _login(client)
+
+        res1 = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={"adjustment_reason": "管理員加給八百", "special_bonus": 800},
+        )
+        assert res1.status_code == 200, res1.text
+        res2 = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={"adjustment_reason": "管理員再加八百", "special_bonus": 1600},
+        )
+        assert res2.status_code == 200, res2.text
+        assert res2.json()["record"]["bonus_amount"] >= 0
+
     def test_edit_both_festival_and_meeting_absence_no_auto_recompute(
         self, salary_client
     ):
@@ -373,7 +464,9 @@ class TestExtraAllowanceManualAdjust:
     def test_set_extra_allowance_and_label(self, salary_client):
         """填入 extra_allowance 金額 + 名目：併入 gross/net、兩欄進 manual_overrides、回應帶名目。"""
         client, sf = salary_client
-        record_id = _seed_with_meeting_absence(sf)  # base 30000、festival 1800(不進 gross)
+        record_id = _seed_with_meeting_absence(
+            sf
+        )  # base 30000、festival 1800(不進 gross)
         _login(client)
 
         res = client.put(

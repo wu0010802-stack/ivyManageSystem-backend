@@ -64,7 +64,7 @@ from services.year_end.print_pdf import (
     generate_transfer_roster_pdf,
 )
 from utils.approval_helpers import assert_not_self_approval
-from utils.auth import require_permission
+from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ year_end_router.include_router(appraisal_payout_router)
 
 @year_end_router.get("/cycles", response_model=list[YearEndCycleOut])
 def list_cycles(
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return session.query(YearEndCycle).order_by(YearEndCycle.academic_year.desc()).all()
@@ -92,7 +92,9 @@ def list_cycles(
 @year_end_router.post("/cycles", response_model=YearEndCycleOut)
 def create_cycle(
     payload: YearEndCycleCreate,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.YEAR_END_FINALIZE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     if (
@@ -179,7 +181,7 @@ def create_cycle(
 )
 def list_org_settings(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return session.query(OrgYearSettings).filter_by(year_end_cycle_id=cycle_id).all()
@@ -191,7 +193,7 @@ def list_org_settings(
 def upsert_org_settings(
     cycle_id: int,
     payload: OrgYearSettingsCreate,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_WRITE)),
     session: Session = Depends(get_session_dep),
 ):
     if not session.get(YearEndCycle, cycle_id):
@@ -226,7 +228,7 @@ def upsert_org_settings(
 )
 def list_class_targets(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return (
@@ -246,7 +248,7 @@ def list_class_targets(
 def upsert_class_target(
     cycle_id: int,
     payload: ClassEnrollmentTargetUpsert,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_WRITE)),
     session: Session = Depends(get_session_dep),
 ):
     """手動設定班級招生目標（upsert by cycle+semester+classroom）。
@@ -293,7 +295,7 @@ def upsert_class_target(
 )
 def list_settlements(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     return (
@@ -309,7 +311,7 @@ def list_settlements(
 )
 def sign_supervisor(
     settlement_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_REVIEW)),
+    current_user: dict = Depends(require_staff_permission(Permission.APPRAISAL_REVIEW)),
     session: Session = Depends(get_session_dep),
 ):
     # with_for_update：兩個 reviewer 同時簽核會讓 *signed_by 被後贏者覆蓋
@@ -341,7 +343,9 @@ def sign_supervisor(
 )
 def sign_accounting(
     settlement_id: int,
-    current_user: dict = Depends(require_permission(Permission.APPRAISAL_ACCOUNTING)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.APPRAISAL_ACCOUNTING)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
@@ -384,7 +388,9 @@ def sign_accounting(
 )
 def finalize_settlement(
     settlement_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_FINALIZE)),
+    current_user: dict = Depends(
+        require_staff_permission(Permission.YEAR_END_FINALIZE)
+    ),
     session: Session = Depends(get_session_dep),
 ):
     # with_for_update：見 sign_supervisor 註解。bug sweep 2026-05-16 P1-3。
@@ -424,7 +430,7 @@ def list_special_bonuses(
     cycle_id: int,
     employee_id: int | None = Query(None),
     bonus_type: SpecialBonusType | None = Query(None),
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     q = session.query(SpecialBonusItem).filter_by(year_end_cycle_id=cycle_id)
@@ -441,7 +447,7 @@ def list_special_bonuses(
 def add_special_bonus(
     cycle_id: int,
     payload: SpecialBonusItemCreate,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_WRITE)),
     session: Session = Depends(get_session_dep),
 ):
     if not session.get(YearEndCycle, cycle_id):
@@ -472,6 +478,12 @@ def add_special_bonus(
                 "不允許新增 special_bonus（會改變 total_amount）；已簽核請先退回 DRAFT"
             ),
         )
+    # sec-batch 2026-06-16 C8：寫金額前補自我核准守衛。
+    # add_special_bonus 直接改 total_amount（轉帳金額），與 sign/finalize 同屬金額級
+    # 寫入；操作者不可對自己 employee_id 的結算加獎金（否則可自肥後自簽結案）。
+    assert_not_self_approval(
+        current_user, settlement.employee_id, doc_label="年終獎金結算"
+    )
     # #8（2026-06-16）：對重複 (cycle, emp, bonus_type, period_label) 改為 upsert。
     # 原本盲目 INSERT 會撞 uq_special_bonus_item → IntegrityError 500 並中止交易。
     # 比照 _recompute / Excel 匯入路徑：存在則更新欄位，否則新增。
@@ -575,7 +587,7 @@ async def import_excel(
     org_achievement_rate_first: Decimal = Query(Decimal("83.6")),
     org_achievement_rate_second: Decimal = Query(Decimal("91.5")),
     enrollment_target: int = Query(160),
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_WRITE)),
 ):
     if not file.filename or not file.filename.lower().endswith(".xls"):
         raise HTTPException(400, "年終經營績效目前只支援 .xls (Excel 97-2003)")
@@ -654,7 +666,7 @@ def _build_summary_rows(session: Session, cycle_id: int) -> list[SummaryExportRo
 @year_end_router.get("/cycles/{cycle_id}/summary.xlsx")
 def export_summary(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     cycle = session.get(YearEndCycle, cycle_id)
@@ -674,7 +686,7 @@ def export_summary(
 @year_end_router.get("/cycles/{cycle_id}/transfer_roster.xlsx")
 def export_transfer(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     cycle = session.get(YearEndCycle, cycle_id)
@@ -736,7 +748,7 @@ def _aggregate_bonus_by_type(
 def export_personal_slip_pdf(
     cycle_id: int,
     settlement_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """匯出個人年終獎金條 PDF（對應 Excel「New年終獎金條」）。"""
@@ -774,7 +786,7 @@ def export_personal_slip_pdf(
 @year_end_router.get("/cycles/{cycle_id}/transfer_roster.pdf", response_class=Response)
 def export_transfer_roster_pdf_endpoint(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     cycle = session.get(YearEndCycle, cycle_id)
@@ -816,7 +828,7 @@ def export_transfer_roster_pdf_endpoint(
 @year_end_router.get("/cycles/{cycle_id}/summary.pdf", response_class=Response)
 def export_summary_pdf(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     cycle = session.get(YearEndCycle, cycle_id)
@@ -858,7 +870,7 @@ def export_summary_pdf(
 def build_settlements_endpoint(
     cycle_id: int,
     payload: BuildSettlementsRequest,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_WRITE)),
     session: Session = Depends(get_session_dep),
 ):
     """跨員工計算並 upsert 年終結算單（idempotent）。非 DRAFT（已簽核）的結算不覆寫。"""
@@ -892,7 +904,7 @@ def build_settlements_endpoint(
 @year_end_router.get("/cycles/{cycle_id}/grid", response_model=list[GridRowOut])
 def grid_endpoint(
     cycle_id: int,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_READ)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_READ)),
     session: Session = Depends(get_session_dep),
 ):
     """回傳每位員工一列的年終結算 grid（含 special_bonuses 依 bonus_type 加總）。"""
@@ -939,7 +951,7 @@ def grid_endpoint(
 def manual_patch_settlement(
     settlement_id: int,
     payload: ManualPatchRequest,
-    current_user: dict = Depends(require_permission(Permission.YEAR_END_WRITE)),
+    current_user: dict = Depends(require_staff_permission(Permission.YEAR_END_WRITE)),
     session: Session = Depends(get_session_dep),
 ):
     """手動微調結算：獎懲扣項、超額獎金、在職月數覆寫。自動重算受影響的結算單。"""
@@ -950,6 +962,13 @@ def manual_patch_settlement(
         raise HTTPException(404, "settlement 不存在")
     if settlement.status != YearEndSettlementStatus.DRAFT:
         raise HTTPException(409, "僅 DRAFT 狀態可手動調整；已簽核請先退回")
+
+    # sec-batch 2026-06-16 C8：寫金額前補自我核准守衛。
+    # manual_patch 可改 deduction / excess_amount / hire_months → 直接改 total_amount
+    # （轉帳金額）；操作者不可手調自己 employee_id 的結算（防自肥）。
+    assert_not_self_approval(
+        current_user, settlement.employee_id, doc_label="年終獎金結算"
+    )
 
     cycle = session.get(YearEndCycle, settlement.year_end_cycle_id)
     if cycle is None:

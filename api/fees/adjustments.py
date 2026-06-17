@@ -264,6 +264,13 @@ def delete_adjustment(
             raise HTTPException(status_code=404, detail="折抵紀錄不存在")
         if not is_unrestricted(current_user):
             assert_student_access(session, current_user, adj.student_id)
+
+        # ── A 錢守衛 ──────────────────────────────────────────────────
+        # 刪除折抵 = 還原該筆應收（反向金流，效果等同重新加回應繳金額），
+        # 與建立/更新同屬金流動作，故對稱補金流簽核：大額折抵的刪除需
+        # ACTIVITY_PAYMENT_APPROVE，避免無簽核權者單方面抹除大額折抵。
+        require_finance_approve(adj.amount, current_user, action_label="刪除學費折抵")
+
         # 硬刪即還原（model 設計），刪除前留同交易 audit 快照供鑑識
         request.state.audit_summary = (
             f"刪除學費折抵 id={adj.id}：student_id={adj.student_id} "

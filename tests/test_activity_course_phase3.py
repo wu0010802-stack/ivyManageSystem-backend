@@ -281,3 +281,61 @@ class TestAdminCoursesNewFields:
             },
         )
         assert res.status_code == 422
+
+
+# ============================================================
+# [C48/C49] video_url scheme 驗證（防儲存型 XSS）
+# 純 schema 單元測試，不經 DB。
+# ============================================================
+
+
+class TestCourseVideoUrlScheme:
+    """CourseCreate/CourseUpdate.video_url 須限制 scheme ∈ {http, https}。
+
+    前端 :href 直出 video_url，若允許 javascript: 等 scheme，API 直寫
+    可繞過前端造成儲存型 XSS。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _import_schema(self):
+        from schemas.activity_admin import CourseCreate, CourseUpdate
+
+        self.Create = CourseCreate
+        self.Update = CourseUpdate
+
+    def test_create_javascript_scheme_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            self.Create(name="繪畫", price=800, video_url="javascript:alert(1)")
+
+    def test_update_javascript_scheme_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            self.Update(video_url="javascript:alert(1)")
+
+    def test_create_data_scheme_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            self.Create(
+                name="繪畫",
+                price=800,
+                video_url="data:text/html;base64,PHNjcmlwdD4=",
+            )
+
+    def test_create_https_youtu_allowed(self):
+        obj = self.Create(name="繪畫", price=800, video_url="https://youtu.be/x")
+        assert obj.video_url == "https://youtu.be/x"
+
+    def test_create_http_allowed(self):
+        obj = self.Create(name="繪畫", price=800, video_url="http://example.com/v")
+        assert obj.video_url == "http://example.com/v"
+
+    def test_create_empty_and_none_allowed(self):
+        assert self.Create(name="繪畫", price=800, video_url=None).video_url is None
+        assert self.Create(name="繪畫", price=800, video_url="").video_url == ""
+
+    def test_update_none_allowed(self):
+        assert self.Update(video_url=None).video_url is None

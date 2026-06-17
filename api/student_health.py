@@ -56,6 +56,7 @@ from utils.errors import raise_safe_500
 from utils.permissions import Permission
 from utils.portfolio_access import (
     assert_student_access,
+    emit_batch_medical_access_log,
     student_ids_in_scope,
 )
 
@@ -843,6 +844,7 @@ def correct_medication_log(
 
 @router.get("/portfolio/today-medication", response_model=TodayMedicationSummaryOut)
 def today_medication_summary(
+    request: Request,
     current_user: dict = Depends(require_permission(Permission.STUDENTS_HEALTH_READ)),
 ) -> dict:
     """回傳呼叫者班級範圍內，今日所有用藥任務（pending + done）。"""
@@ -914,6 +916,15 @@ def today_medication_summary(
                         "classroom_id": s.classroom_id if s else None,
                     }
                 )
+
+            # BE-3-medical-log：彙總實際回出用藥名/劑量/備註時補寫 §6 batch 取用稽核
+            emit_batch_medical_access_log(
+                session,
+                current_user,
+                request,
+                [o.student_id for o in orders],
+                reason="今日用藥彙總檢視（無顯式理由）",
+            )
             return {
                 "date": today.isoformat(),
                 "pending": pending,

@@ -342,6 +342,12 @@ ROLE_TEMPLATES["principal"] = ROLE_TEMPLATES["supervisor"] + [
     Permission.PORTAL_PREVIEW.value,  # 園長可預覽老師教師端（唯讀）
     Permission.DATA_QUALITY_READ.value,
     Permission.DATA_QUALITY_WRITE.value,
+    # C13：園長須真正涵蓋教師全部能力，PORTAL_PREVIEW 守衛（permissions_subset）才
+    # 不會把合法的園長→教師預覽誤擋。supervisor 已含 STUDENTS/PORTFOLIO/HEALTH 的
+    # bare（全園）形式（superset 教師 :own_class），唯這 3 條原本是教師獨有缺口：
+    Permission.ANNOUNCEMENTS_READ.value,
+    Permission.DISMISSAL_CALLS_READ.value,  # bare（全園）superset 教師 :own_class
+    Permission.DISMISSAL_CALLS_WRITE.value,
 ]
 ROLE_LABELS["principal"] = "園長"
 
@@ -675,6 +681,58 @@ def has_permission(
         scope_prefix = f"{name}:"
         return any(p.startswith(scope_prefix) for p in user_perms)
     return False
+
+
+def _operator_covers_token(operator_perms: List[str], token: str) -> bool:
+    """操作者權限集是否「涵蓋」目標的單一權限 token（含 scope 維度）。
+
+    C13 越權預覽防護用：冒充時要求目標每一條權限都在操作者已有的範圍內，
+    避免操作者藉冒充取得自己原本沒有的權限或更廣的 scope。
+
+    規則：
+        - wildcard 操作者涵蓋一切。
+        - 目標 token 為 bare（無 scope 後綴 = 全域 scope）：操作者必須持相同
+          bare code（或 wildcard）。**僅持 `:own_class`/`:all` scope 不足**——
+          否則等於把「限自班」升級成「全域」(bare vs :own_class 升級)。
+        - 目標 token 帶 `:own_class`：操作者持同 code 之 bare（superset）、
+          `:all`、`:own_class`（或 wildcard）皆涵蓋。
+        - 目標 token 帶 `:all`：操作者持同 code 之 bare、`:all`（或 wildcard）
+          涵蓋；僅持 `:own_class` 不足。
+    """
+    if WILDCARD in operator_perms:
+        return True
+    base, sep, scope = token.partition(":")
+    if not sep:
+        # bare token → 全域 scope，操作者須持完全相同的 bare code
+        return token in operator_perms
+    # 帶 scope 後綴
+    if base in operator_perms:
+        # 操作者持 bare = 全域 scope，superset 任何 scope
+        return True
+    if token in operator_perms:
+        # 操作者持完全相同 scope token
+        return True
+    if scope == "own_class":
+        # own_class 也被操作者的 :all 涵蓋
+        return f"{base}:all" in operator_perms
+    return False
+
+
+def permissions_subset(
+    target_perms: List[str] | None,
+    operator_perms: List[str] | None,
+) -> bool:
+    """目標權限集是否為操作者權限集的子集（scope-aware）。
+
+    用於冒充/impersonate 守衛：唯有 target ⊆ operator 才允許切換身份，否則
+    操作者會藉冒充越權預覽（principal 無 EMPLOYEES_READ 卻冒充 HR 讀全園個資）。
+    """
+    if operator_perms is not None and WILDCARD in operator_perms:
+        return True
+    if not target_perms:
+        return True
+    operator_perms = operator_perms or []
+    return all(_operator_covers_token(operator_perms, t) for t in target_perms)
 
 
 def validate_permission_names(names: List[str]) -> List[str]:

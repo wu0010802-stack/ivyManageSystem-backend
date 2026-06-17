@@ -306,6 +306,165 @@ class TestImpersonateEndpointMode:
         ), f"巢狀模擬應被 409 拒絕，got {resp.status_code}: {resp.json()}"
 
 
+# ─── C13：permissions_subset 純函式（scope-aware 子集判定）────────────────────
+
+
+class TestPermissionsSubsetPure:
+    """直接驗 permissions_subset 的 scope 升級語意（bare vs :own_class）。"""
+
+    def test_wildcard_operator_covers_everything(self):
+        from utils.permissions import permissions_subset
+
+        assert permissions_subset(["EMPLOYEES_READ", "SALARY_READ"], ["*"]) is True
+
+    def test_empty_target_is_subset(self):
+        from utils.permissions import permissions_subset
+
+        assert permissions_subset([], ["EMPLOYEES_READ"]) is True
+        assert permissions_subset(None, []) is True
+
+    def test_bare_target_needs_bare_operator(self):
+        from utils.permissions import permissions_subset
+
+        assert permissions_subset(["EMPLOYEES_READ"], ["EMPLOYEES_READ"]) is True
+        assert permissions_subset(["EMPLOYEES_READ"], ["DASHBOARD"]) is False
+
+    def test_bare_target_not_covered_by_scoped_operator(self):
+        """目標 bare（全園）但操作者僅 :own_class → 不涵蓋（防 scope 升級）。"""
+        from utils.permissions import permissions_subset
+
+        assert (
+            permissions_subset(["STUDENTS_READ"], ["STUDENTS_READ:own_class"]) is False
+        )
+
+    def test_own_class_target_covered_by_bare_operator(self):
+        """目標 :own_class，操作者持 bare（全園 superset）→ 涵蓋。"""
+        from utils.permissions import permissions_subset
+
+        assert (
+            permissions_subset(["STUDENTS_READ:own_class"], ["STUDENTS_READ"]) is True
+        )
+
+    def test_own_class_target_covered_by_all_operator(self):
+        from utils.permissions import permissions_subset
+
+        assert (
+            permissions_subset(["STUDENTS_READ:own_class"], ["STUDENTS_READ:all"])
+            is True
+        )
+
+    def test_own_class_target_not_covered_when_operator_lacks_code(self):
+        from utils.permissions import permissions_subset
+
+        assert (
+            permissions_subset(["DISMISSAL_CALLS_READ:own_class"], ["DASHBOARD"])
+            is False
+        )
+
+
+# ─── C13：目標權限集 ⊆ 操作者權限集（越權預覽防護）─────────────────────────────
+
+
+class TestImpersonatePermissionSubset:
+    """C13：principal（無 EMPLOYEES_READ）不可冒充持 EMPLOYEES_READ 的目標帳號。
+
+    防止 PORTAL_PREVIEW/PORTAL_IMPERSONATE 操作者藉冒充取得自己原本沒有的權限
+    （含 scope 升級 bare vs :own_class），達成越權預覽全園員工個資。
+    """
+
+    @pytest.fixture
+    def setup(self, app_and_client):
+        client, session_factory = app_and_client
+
+        with session_factory() as session:
+            # admin（wildcard，superset 任何人）
+            _make_user(
+                session,
+                username="c13_admin",
+                role="admin",
+                permission_names=["*"],
+            )
+
+            # principal（有 PORTAL_PREVIEW，無 EMPLOYEES_READ）
+            principal_emp = _make_employee(session, "C13P", "園長")
+            _make_user(
+                session,
+                employee_id=principal_emp.id,
+                username="c13_principal",
+                role="principal",
+            )
+
+            # HR target：持 EMPLOYEES_READ（principal 不具備此權限）
+            hr_emp = _make_employee(session, "C13HR", "人資")
+            _make_user(
+                session,
+                employee_id=hr_emp.id,
+                username="c13_hr",
+                role="teacher",
+                permission_names=[Permission.EMPLOYEES_READ.value],
+            )
+
+            # 純 teacher target（其權限 ⊆ principal，可被 preview）
+            teacher_emp = _make_employee(session, "C13T", "老師")
+            _make_user(
+                session,
+                employee_id=teacher_emp.id,
+                username="c13_teacher",
+                role="teacher",
+            )
+
+            session.commit()
+            ids = {
+                "hr_emp_id": hr_emp.id,
+                "teacher_emp_id": teacher_emp.id,
+            }
+        return client, ids
+
+    def test_principal_cannot_impersonate_hr_with_extra_perm(self, setup):
+        """principal 冒充持 EMPLOYEES_READ 的 HR → 403（越權預覽防護）。"""
+        client, ids = setup
+        r = _login(client, "c13_principal")
+        assert r.status_code == 200, f"principal login failed: {r.json()}"
+
+        resp = client.post(
+            "/api/auth/impersonate",
+            json={"employee_id": ids["hr_emp_id"], "mode": "readonly"},
+        )
+        assert resp.status_code == 403, (
+            "principal 不具 EMPLOYEES_READ，冒充持該權限的 HR 應 403，"
+            f"實際 {resp.status_code}: {resp.json()}"
+        )
+
+    def test_principal_can_impersonate_subset_teacher(self, setup):
+        """principal 冒充權限 ⊆ 自己的純 teacher → 仍 200。"""
+        client, ids = setup
+        r = _login(client, "c13_principal")
+        assert r.status_code == 200
+
+        resp = client.post(
+            "/api/auth/impersonate",
+            json={"employee_id": ids["teacher_emp_id"], "mode": "readonly"},
+        )
+        assert resp.status_code == 200, (
+            "teacher 權限 ⊆ principal，應可 preview，"
+            f"實際 {resp.status_code}: {resp.json()}"
+        )
+
+    def test_admin_can_impersonate_hr(self, setup):
+        """admin（wildcard superset）冒充 HR → 仍 200。"""
+        client, ids = setup
+        r = _login(client, "c13_admin")
+        assert r.status_code == 200
+
+        resp = client.post(
+            "/api/auth/impersonate",
+            json={"employee_id": ids["hr_emp_id"], "mode": "readonly"},
+        )
+        assert (
+            resp.status_code == 200
+        ), f"admin 應可冒充任何人，實際 {resp.status_code}: {resp.json()}"
+
+
 # ─── GET /me 回應含 impersonation_mode 欄位 ───────────────────────────────────
 
 

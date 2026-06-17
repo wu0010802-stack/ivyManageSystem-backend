@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import ipaddress
 import json
 import logging
 import re
@@ -567,6 +568,11 @@ def _parse_backend_list_row(
     if not match:
         return None
 
+    # SSRF 防護：detail_url 非同網域（例如被竄改成內網 metadata endpoint）時不入抓取
+    if not _is_allowed_sync_url(detail_url):
+        logger.warning("義華同步：丟棄非同網域 detail 連結 %s", detail_url)
+        detail_url = None
+
     visit_date = _strip_tags(cells[1])
     return IvykidsBackendRecord(
         external_id=match.group(1),
@@ -582,6 +588,51 @@ def _parse_backend_list_row(
     )
 
 
+def _allowed_sync_host() -> str:
+    """官網資料來源網域（小寫 host），作為 SSRF 白名單比對基準。"""
+    try:
+        return (
+            urlparse(get_settings().recruitment.ivykids_data_url).hostname or ""
+        ).lower()
+    except Exception:  # pragma: no cover - 設定異常時保守回空字串（全部拒絕）
+        return ""
+
+
+def _is_allowed_sync_url(url: Optional[str]) -> bool:
+    """SSRF 防護：僅允許 http(s) 且 host 與官網同網域、且非私有/loopback/link-local IP 的 URL。"""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    # 封鎖私有 / loopback / link-local / 保留 IP（即使設定網域被竄改也擋）
+    try:
+        ip = ipaddress.ip_address(host)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+    except ValueError:
+        # host 非 IP 字面值（一般網域名稱），繼續做網域比對
+        pass
+    allowed = _allowed_sync_host()
+    if not allowed:
+        return False
+    # 僅允許完全相符的 host（不放行子網域，避免 evil.ivykids.tw.attacker.com 繞過）
+    return host == allowed
+
+
 def _discover_next_pages(page_html: str, page_url: str) -> list[str]:
     discovered: list[str] = []
     for double_quoted, single_quoted in _NEXT_PAGE_RE.findall(page_html):
@@ -591,6 +642,9 @@ def _discover_next_pages(page_html: str, page_url: str) -> list[str]:
         candidate = urljoin(page_url, href)
         parsed = urlparse(candidate)
         if not parse_qs(parsed.query).get("page"):
+            continue
+        if not _is_allowed_sync_url(candidate):
+            logger.warning("義華同步：丟棄非同網域 next-page 連結 %s", candidate)
             continue
         if candidate not in discovered:
             discovered.append(candidate)

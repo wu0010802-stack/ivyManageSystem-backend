@@ -291,11 +291,13 @@ def seed_default_admin():
     分流（先檢查 DB 再讀 env，避免 prod 漏設 env 又無 admin 的 silent 失敗）：
     1. DB 已有 role='admin' 帳號 → no-op（既有部署重啟不受影響）
     2. DB 無 admin + env 齊備 → 建帳號（兼容 DR 重建 happy path）
-    3. DB 無 admin + 正式環境 + 無 env → raise RuntimeError
-       Why: DR 重建場景下若 Zeabur 漏設 ADMIN_INIT_PASSWORD，silent return
-       會讓容器健康啟動但無人能登入。fail-fast 讓 healthcheck 持續紅燈，
-       強迫操作者補 env 後重啟（見 docs/sop/dr-runbook.md §6 step 4）。
-    4. DB 無 admin + 開發環境 + 無 env → fallback admin/admin123 + must_change。
+    3. DB 無 admin + 非白名單 dev（含正式/staging/typo/未設 ENV/空字串）+ 無
+       ADMIN_INIT_PASSWORD → raise RuntimeError（C38 fail-closed）。
+       Why: 既避免 DR 重建漏設 env 又無人可登入的 silent 失敗（fail-fast 讓
+       healthcheck 持續紅燈），也防止在類正式環境靜默建立 admin/admin123 後門。
+       見 docs/sop/dr-runbook.md §6 step 4。
+    4. DB 無 admin + 白名單 dev（顯式 ENV=development/dev/local/test）+ 無 env →
+       fallback admin/admin123 + must_change（本地開發體驗）。
     """
     from utils.auth import hash_password
 
@@ -310,14 +312,10 @@ def seed_default_admin():
         if init_password:
             init_username = init_username or "admin"
             must_change = False
-        elif _is_production():
-            raise RuntimeError(
-                "DB 無管理員帳號且正式環境未設定 ADMIN_INIT_PASSWORD。"
-                "拒絕啟動以避免系統無人可登入（DR 重建漏設 env 的常見場景）。"
-                "請在 Zeabur Environment Variables 設定後重啟：\n"
-                "  ADMIN_INIT_USERNAME=<帳號>  ADMIN_INIT_PASSWORD=<強密碼>"
-            )
-        else:
+        elif settings.core.dev_router_should_mount:
+            # 弱密碼 fallback 僅限「顯式設定的 dev/local/test」（白名單）。
+            # dev_router_should_mount 要求 env 在 model_fields_set 且為 dev 值；
+            # 未設 ENV / staging / typo / 空字串一律不命中（C38 fail-closed）。
             init_username = init_username or "admin"
             init_password = "admin123"
             logger.warning(
@@ -325,6 +323,15 @@ def seed_default_admin():
                 "已標記 must_change_password=True。請勿在正式環境使用！"
             )
             must_change = True
+        else:
+            # 含正式環境、staging、typo、未設 ENV、空字串：拒絕弱密碼後門。
+            # fail-fast 讓 healthcheck 持續紅燈，強迫操作者補強密碼 env 後重啟。
+            raise RuntimeError(
+                "DB 無管理員帳號且未顯式為開發環境（ENV 須為 development/dev/"
+                "local/test）又未設定 ADMIN_INIT_PASSWORD。拒絕以弱密碼 admin/"
+                "admin123 啟動以避免後門。請在 Environment Variables 設定後重啟：\n"
+                "  ADMIN_INIT_USERNAME=<帳號>  ADMIN_INIT_PASSWORD=<強密碼>"
+            )
 
         emp = session.query(Employee).first()
         if not emp:

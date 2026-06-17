@@ -132,8 +132,14 @@ def line_webhook(body: bytes = Depends(verify_line_signature)):
                 )
                 session.commit()
             except Exception:
-                logger.warning("webhook 去重 insert 失敗（不阻斷）", exc_info=True)
-                fresh = True
+                # fail-safe：去重 insert/commit 發生非預期失敗（DB 連線中斷等）時，
+                # 無法確認此 event 是否已處理。保守視為「可能已處理」跳過分發，
+                # 避免重放防線失效造成重複處理（fresh=True 會把可疑事件當新事件 dispatch）。
+                # webhook_event_id UNIQUE 仍是主防線；LINE 會 retry，下次 insert 成功時放行。
+                logger.warning(
+                    "webhook 去重 insert 失敗（保守跳過該 event）", exc_info=True
+                )
+                fresh = False
             finally:
                 session.close()
             if not fresh:

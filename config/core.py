@@ -51,6 +51,18 @@ class CoreSettings(BaseSettings):
         return self.env.strip().lower() in ("production", "prod")
 
     @property
+    def docs_enabled(self) -> bool:
+        """是否掛載 /docs /redoc /openapi.json。
+
+        Fail-closed：僅顯式 ENABLE_API_DOCS=true 才開放（預設 False）。
+        舊邏輯 `enable_api_docs or not is_production` 為 fail-open——ENV 拼錯/
+        漏設（任何非 production 字面，如 'staging'/typo/空字串）即自動開放，
+        把完整 router/schema/權限欄位地圖洩漏給未認證者（資安掃描 2026-06-16 C30）。
+        dev 需看 docs 顯式設 ENABLE_API_DOCS=true。
+        """
+        return self.enable_api_docs
+
+    @property
     def dev_router_enabled(self) -> bool:
         return self.env.strip().lower() in _DEV_ROUTER_ENVS
 

@@ -3,7 +3,7 @@ Portal - punch correction request endpoints（員工補打卡申請）
 """
 
 import calendar as cal_module
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from utils.taipei_time import today_taipei
 from typing import Optional
 
@@ -55,6 +55,18 @@ class PunchCorrectionCreate(BaseModel):
     def validate_required_times(self):
         if self.attendance_date and self.attendance_date > today_taipei():
             raise ValueError("補打卡日期不得為未來日期")
+        # requested_punch_in 的日期成分須等於 attendance_date
+        if self.requested_punch_in is not None and self.attendance_date is not None:
+            if self.requested_punch_in.date() != self.attendance_date:
+                raise ValueError("申請上班時間的日期須與補打卡日期相同")
+        # requested_punch_out 須等於 attendance_date，或跨夜 punch_out 允許隔日
+        if self.requested_punch_out is not None and self.attendance_date is not None:
+            allowed_out_dates = {
+                self.attendance_date,
+                self.attendance_date + timedelta(days=1),
+            }
+            if self.requested_punch_out.date() not in allowed_out_dates:
+                raise ValueError("申請下班時間的日期須與補打卡日期相同（跨夜可為隔日）")
         if self.correction_type == "punch_in" and not self.requested_punch_in:
             raise ValueError("補正類型為「補上班打卡」時，申請上班時間為必填")
         if self.correction_type == "punch_out" and not self.requested_punch_out:

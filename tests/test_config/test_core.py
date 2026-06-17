@@ -57,3 +57,36 @@ def test_dev_router_enabled(monkeypatch):
     assert CoreSettings().dev_router_enabled is True
     monkeypatch.setenv("ENV", "production")
     assert CoreSettings().dev_router_enabled is False
+
+
+def test_docs_enabled_fail_closed(monkeypatch):
+    """C30：docs/openapi 掛載改 fail-closed，僅 ENABLE_API_DOCS=true 才開。
+
+    原 main.py `_docs_force_enable or not _is_prod_env` 為 fail-open：ENV 拼錯/
+    漏設（非 production 字面）即自動開放 /docs /openapi.json 洩漏全 router 地圖。
+    收緊為只看顯式 ENABLE_API_DOCS。
+    """
+    monkeypatch.delenv("ENABLE_API_DOCS", raising=False)
+
+    # 非標準 ENV（typo / staging）未顯式開 docs → 不掛載
+    monkeypatch.setenv("ENV", "staging")
+    assert CoreSettings().docs_enabled is False
+    monkeypatch.setenv("ENV", "pruduction")  # typo
+    assert CoreSettings().docs_enabled is False
+
+    # 連 development 未顯式設旗標也不開（fail-closed）
+    monkeypatch.setenv("ENV", "development")
+    assert CoreSettings().docs_enabled is False
+
+    # 未設 ENV → 不開
+    monkeypatch.delenv("ENV", raising=False)
+    assert CoreSettings().docs_enabled is False
+
+    # 顯式開啟才掛載（dev 看 docs 需顯式 ENABLE_API_DOCS=true）
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.setenv("ENABLE_API_DOCS", "true")
+    assert CoreSettings().docs_enabled is True
+
+    # prod 即使顯式開也允許（運維可控）
+    monkeypatch.setenv("ENV", "production")
+    assert CoreSettings().docs_enabled is True

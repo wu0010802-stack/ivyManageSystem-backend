@@ -34,6 +34,7 @@ from schemas.vendor_payments import (
 )
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
+from utils.search import escape_like_pattern, LIKE_ESCAPE_CHAR
 from utils.file_upload import (
     read_upload_with_size_check,
     safe_attachment_filename,
@@ -248,7 +249,10 @@ def list_vendor_payments(
         if end_date:
             filters.append(VendorPayment.payment_date <= end_date)
         if vendor_name:
-            filters.append(VendorPayment.vendor_name.ilike(f"%{vendor_name.strip()}%"))
+            safe = escape_like_pattern(vendor_name.strip())
+            filters.append(
+                VendorPayment.vendor_name.ilike(f"%{safe}%", escape=LIKE_ESCAPE_CHAR)
+            )
         if status:
             filters.append(VendorPayment.status == status)
         if payment_method:
@@ -306,7 +310,10 @@ def vendor_payments_summary(
         if end_date:
             filters.append(VendorPayment.payment_date <= end_date)
         if vendor_name:
-            filters.append(VendorPayment.vendor_name.ilike(f"%{vendor_name.strip()}%"))
+            safe = escape_like_pattern(vendor_name.strip())
+            filters.append(
+                VendorPayment.vendor_name.ilike(f"%{safe}%", escape=LIKE_ESCAPE_CHAR)
+            )
         if payment_method:
             filters.append(VendorPayment.payment_method == payment_method)
 

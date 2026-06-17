@@ -25,7 +25,6 @@ from utils.permissions import Permission, has_permission
 from utils.portfolio_access import is_unrestricted
 from utils.ws_connection_limiter import (
     WSConnectionLimitExceeded,
-    assert_under_limit,
     register,
     unregister,
 )
@@ -149,8 +148,11 @@ async def portal_dismissal_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
         return
 
+    # 原子佔位：先 register（check-and-register 無中間 await），再 accept。
+    # 避免「判斷上限」與「佔用名額」間夾 await ws.accept() yield point，
+    # 否則並發 handshake 會全穿過上限。
     try:
-        assert_under_limit(user_id)
+        register(user_id, ws)
     except WSConnectionLimitExceeded:
         await ws.close(code=1008, reason="ws_connection_limit_exceeded")
         return
@@ -167,8 +169,11 @@ async def portal_dismissal_ws(ws: WebSocket):
             else []
         )
 
-    await ws.accept()
-    register(user_id, ws)
+    try:
+        await ws.accept()
+    except Exception:
+        unregister(ws)  # accept 失敗回收名額
+        raise
     for ch in channels:
         backend.subscribe(ch, ws)
     logger.info(
@@ -226,15 +231,19 @@ async def admin_dismissal_ws(ws: WebSocket):
         await ws.close(code=WS_CLOSE_FORBIDDEN, reason="缺少 user_id")
         return
 
+    # 原子佔位：先 register、再 accept（理由同 portal WS）。
     try:
-        assert_under_limit(user_id)
+        register(user_id, ws)
     except WSConnectionLimitExceeded:
         await ws.close(code=1008, reason="ws_connection_limit_exceeded")
         return
 
     backend = get_broadcast()
-    await ws.accept()
-    register(user_id, ws)
+    try:
+        await ws.accept()
+    except Exception:
+        unregister(ws)  # accept 失敗回收名額
+        raise
     backend.subscribe(_ADMIN_CHANNEL, ws)
     logger.info("管理端 WS 已連線")
 

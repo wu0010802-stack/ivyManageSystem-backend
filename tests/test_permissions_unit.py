@@ -142,9 +142,12 @@ def test_all_permissions_have_labels():
 
 
 def test_role_templates_principal_inherits_supervisor():
-    """principal 必須含 supervisor 全部 + 6 條額外
-    （SALARY_READ / AUDIT_LOGS / GOV_REPORTS_EXPORT / PORTAL_PREVIEW
-    / DATA_QUALITY_READ / DATA_QUALITY_WRITE）。
+    """principal 必須含 supervisor 全部 + 額外條目。
+
+    原 6 條（SALARY_READ / AUDIT_LOGS / GOV_REPORTS_EXPORT / PORTAL_PREVIEW
+    / DATA_QUALITY_READ / DATA_QUALITY_WRITE）+ C13 補齊 3 條教師缺口
+    （ANNOUNCEMENTS_READ / DISMISSAL_CALLS_READ / DISMISSAL_CALLS_WRITE），
+    使 principal 真正涵蓋 teacher，PORTAL_PREVIEW 越權守衛才不誤擋合法預覽。
     """
     sup_set = set(ROLE_TEMPLATES["supervisor"])
     pri_set = set(ROLE_TEMPLATES["principal"])
@@ -157,6 +160,9 @@ def test_role_templates_principal_inherits_supervisor():
         Permission.PORTAL_PREVIEW.value,
         Permission.DATA_QUALITY_READ.value,
         Permission.DATA_QUALITY_WRITE.value,
+        Permission.ANNOUNCEMENTS_READ.value,
+        Permission.DISMISSAL_CALLS_READ.value,
+        Permission.DISMISSAL_CALLS_WRITE.value,
     }
 
 

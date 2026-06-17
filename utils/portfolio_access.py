@@ -237,6 +237,57 @@ def mask_student_health_fields(
     return result
 
 
+def emit_batch_medical_access_log(
+    session,
+    current_user: dict,
+    request,
+    student_ids: Iterable[int],
+    *,
+    reason: str = "批次端點回出醫療欄位（無顯式理由）",
+) -> bool:
+    """批次端點實際回出 ≥1 名學生的醫療內容時，補寫一筆 §6 batch medical_access_log。
+
+    BE-3-medical-log（OWASP A09）：清單 / 班級彙總 / 今日用藥等端點會一次回出多名
+    學生的解密醫療欄位（allergy / medication / dose / note），須與 detail 端點一致
+    留下特種個資取用稽核軌跡。
+
+    呼叫端責任：``student_ids`` 只傳「實際回出非空醫療內容」的學生 id 集合
+    （已遮罩 / 無內容者勿傳），本 helper 不重查 DB。
+
+    行為：
+    - caller 無 STUDENTS_HEALTH_READ（mask 後不會回出醫療）→ 不寫，回 False
+    - ``student_ids`` 為空（無任何學生有醫療內容）→ 不寫噪音，回 False
+    - 否則寫一筆 field_name=bundle、student_id=None（批次涉及多生）、reason 記涉及人數，回 True
+
+    僅 ``session.add``，不 commit（沿用 caller 的交易）。
+    """
+    from models.medical_access_log import (
+        MEDICAL_ACCESS_PASSIVE,
+        MEDICAL_FIELD_BUNDLE,
+        MedicalAccessLog,
+    )
+    from utils.request_ip import get_client_ip
+
+    if not can_view_student_health(current_user):
+        return False
+    ids = [sid for sid in student_ids if sid is not None]
+    if not ids:
+        return False
+
+    session.add(
+        MedicalAccessLog(
+            user_id=current_user.get("user_id"),
+            student_id=None,  # 批次涉及多名學生，逐生由 reason 記人數
+            field_name=MEDICAL_FIELD_BUNDLE,
+            # 批次端點為被動顯示（清單/班級彙總/今日用藥），對齊 medacctype01 的 access_type 語意
+            access_type=MEDICAL_ACCESS_PASSIVE,
+            reason=f"{reason}（涉及 {len(ids)} 名學生）",
+            ip_address=get_client_ip(request) if request is not None else None,
+        )
+    )
+    return True
+
+
 def get_owned_resource_or_403(
     session,
     model: Any,
