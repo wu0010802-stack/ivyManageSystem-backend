@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from models.database import get_session_dep
 from services.portal_class_hub_service import (
     SLOT_DEFINITIONS,
+    active_class_roster,
     classify_time_to_slot,
     count_attendance_pending,
     count_contact_book_pending,
@@ -124,9 +125,13 @@ def get_class_hub_today(
             ],
         )
 
-    # 蒐集各類待辦（依權限過濾）
+    # 蒐集各類待辦（依權限過濾）。三個 count 吃同一份班級 active 名冊，先查一次共用，
+    # 避免單一 request 內重查 3 次（class-hub/today 為教師每日首屏、前端每分鐘重評）。
+    roster = active_class_roster(sess, classroom_id=classroom.id)
     attn_pending = (
-        count_attendance_pending(sess, classroom_id=classroom.id, today=today)
+        count_attendance_pending(
+            sess, classroom_id=classroom.id, today=today, roster=roster
+        )
         if has(Permission.STUDENTS_READ)
         else 0
     )
@@ -141,7 +146,9 @@ def get_class_hub_today(
         else []
     )
     obs_pending = (
-        count_observation_pending(sess, classroom_id=classroom.id, today=today)
+        count_observation_pending(
+            sess, classroom_id=classroom.id, today=today, roster=roster
+        )
         if has(Permission.PORTFOLIO_READ)
         else 0
     )
@@ -151,7 +158,9 @@ def get_class_hub_today(
         else 0
     )
     contact_pending = (
-        count_contact_book_pending(sess, classroom_id=classroom.id, today=today)
+        count_contact_book_pending(
+            sess, classroom_id=classroom.id, today=today, roster=roster
+        )
         if has(Permission.PORTFOLIO_READ)
         else 0
     )
