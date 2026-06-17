@@ -261,7 +261,11 @@ def emit_batch_medical_access_log(
 
     僅 ``session.add``，不 commit（沿用 caller 的交易）。
     """
-    from models.medical_access_log import MEDICAL_FIELD_BUNDLE, MedicalAccessLog
+    from models.medical_access_log import (
+        MEDICAL_ACCESS_PASSIVE,
+        MEDICAL_FIELD_BUNDLE,
+        MedicalAccessLog,
+    )
     from utils.request_ip import get_client_ip
 
     if not can_view_student_health(current_user):
@@ -275,6 +279,8 @@ def emit_batch_medical_access_log(
             user_id=current_user.get("user_id"),
             student_id=None,  # 批次涉及多名學生，逐生由 reason 記人數
             field_name=MEDICAL_FIELD_BUNDLE,
+            # 批次端點為被動顯示（清單/班級彙總/今日用藥），對齊 medacctype01 的 access_type 語意
+            access_type=MEDICAL_ACCESS_PASSIVE,
             reason=f"{reason}（涉及 {len(ids)} 名學生）",
             ip_address=get_client_ip(request) if request is not None else None,
         )
