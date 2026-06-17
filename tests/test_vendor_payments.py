@@ -655,3 +655,56 @@ class TestVendorPaymentAttachments:
             files={"file": ("evil.exe", b"MZ\x90\x00", "application/octet-stream")},
         )
         assert res.status_code == 400
+
+
+class TestVendorNameSearchEscape:
+    """[C4] vendor_name 篩選須跳脫 LIKE 萬用字元，避免 '_' / '%' over-match。"""
+
+    def _seed(self, session):
+        _make_user(
+            session,
+            "vp_search",
+            ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"],
+        )
+
+    def _create(self, client, vendor_name):
+        res = client.post(
+            "/api/vendor-payments",
+            json=_payment_payload(vendor_name=vendor_name),
+        )
+        assert res.status_code == 201, res.text
+
+    def test_underscore_not_treated_as_wildcard(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            self._seed(session)
+        _login(client, "vp_search")
+
+        # 'A_B' 含字面底線；'AXB' 只有在 '_' 被當萬用字元時才會被誤匹配。
+        self._create(client, "A_B 清潔行")
+        self._create(client, "AXB 清潔行")
+
+        res = client.get("/api/vendor-payments", params={"vendor_name": "A_B"})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        names = sorted(item["vendor_name"] for item in body["items"])
+        # 只應命中字面 'A_B'，不應因 '_' 萬用字元帶出 'AXB'
+        assert names == ["A_B 清潔行"], names
+        assert body["total"] == 1
+
+    def test_percent_not_treated_as_wildcard(self, client_with_db):
+        client, session_factory = client_with_db
+        with session_factory() as session:
+            self._seed(session)
+        _login(client, "vp_search")
+
+        # 'C%D' 含字面百分比；'CZZD' 只有在 '%' 被當萬用字元時才會被誤匹配。
+        self._create(client, "C%D 文具")
+        self._create(client, "CZZD 文具")
+
+        res = client.get("/api/vendor-payments", params={"vendor_name": "C%D"})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        names = sorted(item["vendor_name"] for item in body["items"])
+        assert names == ["C%D 文具"], names
+        assert body["total"] == 1
