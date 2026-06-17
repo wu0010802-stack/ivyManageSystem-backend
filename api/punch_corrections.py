@@ -4,9 +4,9 @@ Punch correction management router（管理員審核補打卡申請）
 
 import logging
 from datetime import date, timedelta
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from utils.errors import raise_safe_500
 from pydantic import BaseModel
 from models.database import (
@@ -20,6 +20,7 @@ from models.approval import ApprovalStatus
 from schemas._common import DeleteResultOut
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.rate_limit import create_limiter
 from utils.approval_helpers import (
     _check_approval_eligibility,
     _get_submitter_role,
@@ -45,6 +46,20 @@ CORRECTION_TYPE_LABELS = {
 class ApproveRequest(BaseModel):
     approved: bool
     rejection_reason: Optional[str] = None
+
+
+class PunchCorrectionBatchApproveRequest(BaseModel):
+    ids: List[int]
+    approved: bool
+    rejection_reason: Optional[str] = None
+
+
+_batch_approve_limiter = create_limiter(
+    max_calls=10,
+    window_seconds=60,
+    name="punch_correction_batch_approve",
+    error_detail="批次審核操作過於頻繁，請稍後再試",
+).as_dependency()
 
 
 def _format_correction(c: PunchCorrectionRequest, employee_name: str = "") -> dict:
@@ -397,6 +412,96 @@ def approve_punch_correction(
     except Exception as e:
         session.rollback()
         logger.error("核准補打卡申請 #%d 時發生錯誤：%s", correction_id, e)
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.post("/punch-corrections/batch-approve")
+def batch_approve_punch_corrections(
+    data: PunchCorrectionBatchApproveRequest,
+    request: Request,
+    _rl=Depends(_batch_approve_limiter),
+    current_user: dict = Depends(require_staff_permission(Permission.APPROVALS)),
+):
+    """批次核准/駁回補打卡。Pass 1 純驗證收集 failed，Pass 2 逐筆 savepoint 套用，
+    最後統一 commit。核准成功項會寫考勤 + 標薪資 stale。"""
+    if not data.approved and not (data.rejection_reason or "").strip():
+        raise HTTPException(status_code=400, detail="批次駁回時必須填寫原因")
+
+    succeeded: list[int] = []
+    failed: list[dict] = []
+    session = get_session()
+    try:
+        corr_map = {
+            c.id: c
+            for c in session.query(PunchCorrectionRequest)
+            .filter(PunchCorrectionRequest.id.in_(data.ids))
+            .with_for_update()
+            .all()
+        }
+        approver_role = current_user.get("role", "")
+        approver_eid = current_user.get("employee_id")
+        _elig_cache: dict[str, bool] = {}
+
+        valid = []
+        for cid in data.ids:
+            c = corr_map.get(cid)
+            if not c:
+                failed.append({"id": cid, "reason": "找不到此補打卡申請"})
+                continue
+            if c.status != ApprovalStatus.PENDING.value:
+                failed.append({"id": cid, "reason": "此申請已審核，無法再次審核"})
+                continue
+            if approver_eid and c.employee_id == approver_eid:
+                failed.append({"id": cid, "reason": "不可自我核准補打卡申請"})
+                continue
+            submitter_role = _get_submitter_role(c.employee_id, session)
+            if submitter_role not in _elig_cache:
+                _elig_cache[submitter_role] = _check_approval_eligibility(
+                    "punch_correction", submitter_role, approver_role, session
+                )
+            if not _elig_cache[submitter_role]:
+                failed.append(
+                    {
+                        "id": cid,
+                        "reason": f"您的角色（{approver_role}）無權審核此員工（{submitter_role}）的補打卡申請",
+                    }
+                )
+                continue
+            valid.append(c)
+
+        for c in valid:
+            try:
+                with session.begin_nested():
+                    _apply_correction_decision(
+                        session,
+                        c,
+                        approved=data.approved,
+                        rejection_reason=data.rejection_reason,
+                        current_user=current_user,
+                    )
+                succeeded.append(c.id)
+            except HTTPException as he:
+                failed.append(
+                    {
+                        "id": c.id,
+                        "reason": (
+                            he.detail if isinstance(he.detail, str) else "處理失敗"
+                        ),
+                    }
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error("批次補打卡 #%d 套用失敗：%s", c.id, e)
+                failed.append({"id": c.id, "reason": "處理失敗"})
+
+        session.commit()
+        return {"succeeded": succeeded, "failed": failed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error("批次核准補打卡時發生錯誤：%s", e)
         raise_safe_500(e)
     finally:
         session.close()
