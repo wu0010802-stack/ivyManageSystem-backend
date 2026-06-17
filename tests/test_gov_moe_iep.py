@@ -227,8 +227,13 @@ def test_iep_scope_班導_only_sees_own_classroom(gov_moe_client):
             password_hash=hash_password("Teach123"),
             role="teacher",
             # Phase 2.2 起 teacher perm 用 :own_class scope（permscope03 backfill 同步）；
-            # bare 'STUDENTS_SPECIAL_NEEDS_WRITE' 在 resolve_grant 等同 :all 會繞過 scoping
-            permission_names=["STUDENTS_SPECIAL_NEEDS_WRITE:own_class"],
+            # bare 'STUDENTS_SPECIAL_NEEDS_WRITE' 在 resolve_grant 等同 :all 會繞過 scoping。
+            # list_iep gate 改 READ（P2#6 fix）：需同時持 READ:own_class 才能讀取列表；
+            # 能寫 IEP 的班導在實際 perm 模板亦同時持 READ（ROLE_TEMPLATES teacher 第 318 行）。
+            permission_names=[
+                "STUDENTS_SPECIAL_NEEDS_READ:own_class",
+                "STUDENTS_SPECIAL_NEEDS_WRITE:own_class",
+            ],
             is_active=True,
             employee_id=emp.id,
         )
@@ -709,3 +714,176 @@ def test_audit_pattern_registered_for_iep():
 
     assert any("iep_record" in (et or "") for _, et in ENTITY_PATTERNS)
     assert ENTITY_LABELS.get("iep_record") == "IEP 個別化教育計畫"
+
+
+# ---------------------------------------------------------------------------
+# A5 Tests: READ-only permission can list/export IEP (P2#6 fix)
+# ---------------------------------------------------------------------------
+
+
+def test_iep_list_read_only_permission_own_class(gov_moe_client):
+    """持 STUDENTS_SPECIAL_NEEDS_READ:own_class（無 WRITE）的教師
+    對自班學生的 IEP 呼叫 GET list 應回 200 且只回自班 IEP。
+
+    Bug (P2#6)：list_iep gate 設 STUDENTS_SPECIAL_NEEDS_WRITE → READ-only
+    教師無法讀取自班 IEP（fail-closed 過嚴、契約錯置）。
+    Fix：gate 改 STUDENTS_SPECIAL_NEEDS_READ；_scoped_query 傳 READ code。
+    """
+    from models.classroom import Classroom, Student
+    from models.employee import Employee
+
+    client, sf = gov_moe_client
+    admin_tok = _login_admin(client, sf)
+
+    with sf() as s:
+        cls_a = Classroom(name="A 班")
+        cls_b = Classroom(name="B 班")
+        s.add_all([cls_a, cls_b])
+        s.commit()
+        s.refresh(cls_a)
+        s.refresh(cls_b)
+
+        st_a = Student(
+            name="READ 班學生",
+            student_id="R001",
+            is_active=True,
+            classroom_id=cls_a.id,
+            disability_type="自閉症",
+        )
+        st_b = Student(
+            name="OTHER 班學生",
+            student_id="R002",
+            is_active=True,
+            classroom_id=cls_b.id,
+            disability_type="自閉症",
+        )
+        s.add_all([st_a, st_b])
+        s.commit()
+        s.refresh(st_a)
+        s.refresh(st_b)
+
+        emp = Employee(
+            name="READ 班導",
+            employee_id="R_T001",
+            is_active=True,
+            classroom_id=cls_a.id,
+            supervisor_role=None,
+        )
+        s.add(emp)
+        s.commit()
+        s.refresh(emp)
+
+        cls_a.head_teacher_id = emp.id
+        s.add(cls_a)
+        s.commit()
+
+        # 僅持 READ:own_class，無 WRITE
+        read_user = User(
+            username="read_teacher",
+            password_hash=hash_password("ReadPass1"),
+            role="teacher",
+            permission_names=["STUDENTS_SPECIAL_NEEDS_READ:own_class"],
+            is_active=True,
+            employee_id=emp.id,
+        )
+        s.add(read_user)
+        s.commit()
+
+        sid_a = st_a.id
+        sid_b = st_b.id
+
+    # admin 為兩個學生各建一筆 IEP
+    auth_admin = {"Authorization": f"Bearer {admin_tok}"}
+    for sid in (sid_a, sid_b):
+        r = client.post(
+            "/api/gov-moe/iep",
+            json={"student_id": sid, "school_year": 2026, "semester": 1},
+            headers=auth_admin,
+        )
+        assert r.status_code == 201, r.text
+
+    # READ-only 教師登入
+    resp = client.post(
+        "/api/auth/login", json={"username": "read_teacher", "password": "ReadPass1"}
+    )
+    assert resp.status_code == 200, resp.text
+    read_tok = resp.json().get("access_token") or resp.cookies.get("access_token")
+    auth_read = {"Authorization": f"Bearer {read_tok}"}
+
+    # 修前：list_iep gate=WRITE → 僅持 READ 的教師應得 403
+    # 修後：gate 改 READ → 200，僅看到自班 IEP
+    r = client.get("/api/gov-moe/iep", headers=auth_read)
+    assert (
+        r.status_code == 200
+    ), f"持 READ:own_class 的教師應能讀取 IEP 列表，實際 {r.status_code}: {r.text}"
+    rows = r.json()
+    assert len(rows) == 1, f"期望只看到 1 筆（自班），實際 {len(rows)} 筆：{rows}"
+    assert rows[0]["student_id"] == sid_a
+
+
+def test_iep_read_only_permission_cannot_create(gov_moe_client):
+    """持 READ-only 的教師不得建立 IEP（寫入端點維持 WRITE gate）。"""
+    from models.classroom import Classroom, Student
+    from models.employee import Employee
+
+    client, sf = gov_moe_client
+    admin_tok = _login_admin(client, sf)
+
+    with sf() as s:
+        cls_a = Classroom(name="CREAD 班")
+        s.add(cls_a)
+        s.commit()
+        s.refresh(cls_a)
+
+        st = Student(
+            name="CRE 學生",
+            student_id="CR001",
+            is_active=True,
+            classroom_id=cls_a.id,
+            disability_type="自閉症",
+        )
+        s.add(st)
+        s.commit()
+        s.refresh(st)
+
+        emp = Employee(
+            name="CRE 班導",
+            employee_id="CR_T001",
+            is_active=True,
+            classroom_id=cls_a.id,
+            supervisor_role=None,
+        )
+        s.add(emp)
+        s.commit()
+        s.refresh(emp)
+
+        cls_a.head_teacher_id = emp.id
+        s.add(cls_a)
+        s.commit()
+
+        read_user = User(
+            username="read_only_teacher",
+            password_hash=hash_password("ReadOnly1"),
+            role="teacher",
+            permission_names=["STUDENTS_SPECIAL_NEEDS_READ:own_class"],
+            is_active=True,
+            employee_id=emp.id,
+        )
+        s.add(read_user)
+        s.commit()
+        sid = st.id
+
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "read_only_teacher", "password": "ReadOnly1"},
+    )
+    tok = resp.json().get("access_token") or resp.cookies.get("access_token")
+
+    r = client.post(
+        "/api/gov-moe/iep",
+        json={"student_id": sid, "school_year": 2026, "semester": 1},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert (
+        r.status_code == 403
+    ), f"READ-only 教師不得建立 IEP，實際 {r.status_code}: {r.text}"
