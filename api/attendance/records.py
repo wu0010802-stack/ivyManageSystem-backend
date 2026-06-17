@@ -11,7 +11,15 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from utils.errors import raise_safe_500
 
-from models.database import get_session, Employee, Attendance, SalaryRecord
+from models.database import (
+    get_session,
+    Employee,
+    Attendance,
+    SalaryRecord,
+    DailyShift,
+    ShiftAssignment,
+    ShiftType,
+)
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import _get_finalized_salary_record
@@ -277,22 +285,81 @@ def create_or_update_attendance_record(
                 detail=f"時間錯誤：上下班時間相同 {record.punch_in}，請確認資料",
             )
 
-        from utils.attendance_calc import recompute_attendance_status
-
-        fields = recompute_attendance_status(
-            attendance_date=attendance_date,
-            punch_in_time=punch_in_time,
-            punch_out_time=punch_out_time,
-            work_start_str=employee.work_start_time,
-            work_end_str=employee.work_end_time,
+        # 查 DailyShift（該員工、該日），建 daily_shift_map
+        daily_shift_map: dict = {}
+        daily_shift_row = (
+            session.query(DailyShift)
+            .filter(
+                DailyShift.employee_id == employee.id,
+                DailyShift.date == attendance_date,
+            )
+            .first()
         )
-        is_late = fields["is_late"]
-        is_early_leave = fields["is_early_leave"]
-        is_missing_punch_in = fields["is_missing_punch_in"]
-        is_missing_punch_out = fields["is_missing_punch_out"]
-        late_minutes = fields["late_minutes"]
-        early_leave_minutes = fields["early_leave_minutes"]
-        status = fields["status"]
+        if daily_shift_row and daily_shift_row.shift_type_id:
+            st = (
+                session.query(ShiftType)
+                .filter(ShiftType.id == daily_shift_row.shift_type_id)
+                .first()
+            )
+            if st:
+                daily_shift_map[(employee.id, attendance_date)] = {
+                    "work_start": st.work_start,
+                    "work_end": st.work_end,
+                    "name": st.name,
+                }
+
+        # 查 ShiftAssignment（該員工、該週），建 shift_schedule_map
+        shift_schedule_map: dict = {}
+        week_start = attendance_date - timedelta(days=attendance_date.weekday())
+        sa_row = (
+            session.query(ShiftAssignment)
+            .filter(
+                ShiftAssignment.employee_id == employee.id,
+                ShiftAssignment.week_start_date == week_start,
+            )
+            .first()
+        )
+        if sa_row:
+            st_sa = (
+                session.query(ShiftType)
+                .filter(ShiftType.id == sa_row.shift_type_id)
+                .first()
+            )
+            if st_sa:
+                shift_schedule_map[(employee.id, week_start)] = {
+                    "work_start": st_sa.work_start,
+                    "work_end": st_sa.work_end,
+                    "name": st_sa.name,
+                }
+
+        # is_head_teacher / is_assistant：單員工補卡情境用 getattr fallback False。
+        # upload.py 用 classroom head_teacher_id/assistant_teacher_id 集合判定，
+        # 但補卡端點是單員工情境，Employee 模型無此欄位；
+        # DailyShift 已涵蓋最精確的排班，ShiftAssignment 僅導師/助教使用，
+        # 若員工有 ShiftAssignment 仍可透過 shift_schedule_map 查到。
+        is_head_teacher: bool = getattr(employee, "is_head_teacher", False)
+        is_assistant: bool = getattr(employee, "is_assistant", False)
+
+        from utils.attendance_shift_window import compute_status_for_employee_date
+
+        (
+            is_late,
+            late_minutes,
+            is_early_leave,
+            early_leave_minutes,
+            status,
+        ) = compute_status_for_employee_date(
+            employee,
+            attendance_date,
+            punch_in_time,
+            punch_out_time,
+            daily_shift_map,
+            shift_schedule_map,
+            is_head_teacher=is_head_teacher,
+            is_assistant=is_assistant,
+        )
+        is_missing_punch_in = punch_in_time is None
+        is_missing_punch_out = punch_out_time is None
 
         existing = (
             session.query(Attendance)

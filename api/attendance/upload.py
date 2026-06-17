@@ -25,6 +25,7 @@ from utils.attendance_guards import assert_no_self_in_batch
 from utils.cache_layer import get_cache
 from utils.attendance_leave_merge import merge_attendance_with_leave
 from utils.attendance_calc import compute_shift_aware_status
+from utils.attendance_shift_window import compute_status_for_employee_date
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
 from utils.errors import raise_safe_500
@@ -387,110 +388,37 @@ async def upload_attendance(
                             )
                             continue
 
-                        work_start = datetime.strptime(
-                            employee.work_start_time or "08:00", "%H:%M"
-                        ).time()
-                        work_end = datetime.strptime(
-                            employee.work_end_time or "17:00", "%H:%M"
-                        ).time()
-
-                        is_late = False
-                        is_early_leave = False
                         is_missing_punch_in = punch_in_time is None
                         is_missing_punch_out = punch_out_time is None
-                        late_minutes = 0
-                        early_leave_minutes = 0
-                        status = "normal"
-
-                        if punch_in_time:
-                            work_start_dt = datetime.combine(
-                                attendance_date, work_start
-                            )
-                            if punch_in_time > work_start_dt:
-                                is_late = True
-                                late_minutes = int(
-                                    (punch_in_time - work_start_dt).total_seconds() / 60
-                                )
-                                status = "late"
-
-                        if punch_out_time:
-                            work_end_dt = datetime.combine(attendance_date, work_end)
-                            if punch_out_time < work_end_dt:
-                                is_early_leave = True
-                                early_leave_minutes = int(
-                                    (work_end_dt - punch_out_time).total_seconds() / 60
-                                )
-                                status = (
-                                    "early_leave"
-                                    if status == "normal"
-                                    else status + "+early_leave"
-                                )
-
-                        if is_missing_punch_in:
-                            status = (
-                                "missing"
-                                if status == "normal"
-                                else status + "+missing_in"
-                            )
-                        if is_missing_punch_out:
-                            status = (
-                                "missing"
-                                if status == "normal"
-                                else status + "+missing_out"
-                            )
 
                         is_head_teacher = employee.id in head_teacher_map
                         is_assistant = employee.id in assistant_teacher_map
                         is_driver = "司機" in employee.title_name
 
-                        daily_key = (employee.id, attendance_date)
-                        week_monday = attendance_date - timedelta(
-                            days=attendance_date.weekday()
+                        # BE-3：無論有無 DailyShift / 週排班，一律走共用班別視窗 util。
+                        # compute_status_for_employee_date 內部優先序：
+                        #   DailyShift > 週排班（僅導師/助教）> employee 自訂 work_start/end_time > 08:00/17:00
+                        # resolve_shift_window 在 work_end < work_start 時自動 +1 day（跨夜 normalize），
+                        # 修正了舊 inline 分支用 datetime.combine(attendance_date, work_end) 不加隔日
+                        # 導致跨夜班早退完全無法偵測的 bug。
+                        # P1-4 的「有打卡的一側以班別基準算、缺的一側維持 missing 旗標」語意
+                        # 由 compute_shift_aware_status 保留（punch_in/out 可傳 None）。
+                        (
+                            is_late,
+                            late_minutes,
+                            is_early_leave,
+                            early_leave_minutes,
+                            status,
+                        ) = compute_status_for_employee_date(
+                            employee,
+                            attendance_date,
+                            punch_in_time,
+                            punch_out_time,
+                            daily_shift_map,
+                            shift_schedule_map,
+                            is_head_teacher=is_head_teacher,
+                            is_assistant=is_assistant,
                         )
-                        shift_key = (employee.id, week_monday)
-
-                        shift_data = None
-
-                        if daily_key in daily_shift_map:
-                            shift_data = daily_shift_map[daily_key]
-                        elif (
-                            is_head_teacher or is_assistant
-                        ) and shift_key in shift_schedule_map:
-                            shift_data = shift_schedule_map[shift_key]
-
-                        # P1-4：班別 late/early 計算與「兩筆打卡齊全」脫鉤。原本要求
-                        # punch_in 與 punch_out 都在才套班別時間，晚班教師（如 13:00-22:00）
-                        # 漏打一筆卡 → 落回上方依預設 08:00/17:00 算出的數百分鐘假遲到/假早退。
-                        # 改為有打卡的一側一律以班別基準算（compute_shift_aware_status），
-                        # 缺的一側維持 missing 旗標。
-                        if shift_data:
-                            shift_start = datetime.strptime(
-                                shift_data["work_start"], "%H:%M"
-                            ).time()
-                            shift_end = datetime.strptime(
-                                shift_data["work_end"], "%H:%M"
-                            ).time()
-
-                            shift_start_dt = datetime.combine(
-                                attendance_date, shift_start
-                            )
-                            shift_end_dt = datetime.combine(attendance_date, shift_end)
-                            # 跨夜班：排班結束在隔日（如 shift_end=02:00 < shift_start=18:00）
-                            if shift_end_dt <= shift_start_dt:
-                                shift_end_dt += timedelta(days=1)
-
-                            (
-                                is_late,
-                                late_minutes,
-                                is_early_leave,
-                                early_leave_minutes,
-                                status,
-                            ) = compute_shift_aware_status(
-                                punch_in_time,
-                                punch_out_time,
-                                shift_start_dt,
-                                shift_end_dt,
-                            )
 
                         # R4-4（業主 2026-06-06 決策：遲到照扣）：移除「無排班員工當日
                         # 工時 ≥540/480 分即清零遲到/早退扣款」的 reset。此 reset 只在 Excel
@@ -884,6 +812,36 @@ def upload_attendance_csv(
             )
             csv_attendance_cache = {(a.employee_id, a.attendance_date): a for a in _cc}
 
+        # 建 shift maps（對齊 Excel 路徑），讓 CSV 也能查班別視窗
+        _csv_shift_type_map = _get_shift_type_id_map(session)
+        _csv_daily_shift_map: dict = {}
+        _csv_shift_schedule_map: dict = {}
+        if _csv_emp_ids:
+            for ds in (
+                session.query(DailyShift)
+                .filter(DailyShift.employee_id.in_(_csv_emp_ids))
+                .all()
+            ):
+                st = _csv_shift_type_map.get(ds.shift_type_id)
+                if st:
+                    _csv_daily_shift_map[(ds.employee_id, ds.date)] = {
+                        "work_start": st.work_start,
+                        "work_end": st.work_end,
+                        "name": st.name,
+                    }
+            for sa in (
+                session.query(ShiftAssignment)
+                .filter(ShiftAssignment.employee_id.in_(_csv_emp_ids))
+                .all()
+            ):
+                st = _csv_shift_type_map.get(sa.shift_type_id)
+                if st:
+                    _csv_shift_schedule_map[(sa.employee_id, sa.week_start_date)] = {
+                        "work_start": st.work_start,
+                        "work_end": st.work_end,
+                        "name": st.name,
+                    }
+
         employee_stats = {}
 
         for row in request.records:
@@ -941,48 +899,27 @@ def upload_attendance_csv(
                     )
                     continue
 
-                work_start = datetime.strptime(
-                    employee.work_start_time or "08:00", "%H:%M"
-                ).time()
-                work_end = datetime.strptime(
-                    employee.work_end_time or "17:00", "%H:%M"
-                ).time()
-
-                is_late = False
-                is_early_leave = False
                 is_missing_punch_in = punch_in_time is None
                 is_missing_punch_out = punch_out_time is None
-                late_minutes = 0
-                early_leave_minutes = 0
-                status = "normal"
 
-                if punch_in_time:
-                    work_start_dt = datetime.combine(attendance_date, work_start)
-                    if punch_in_time > work_start_dt:
-                        is_late = True
-                        late_minutes = int(
-                            (punch_in_time - work_start_dt).total_seconds() / 60
-                        )
-                        status = "late"
-
-                if punch_out_time:
-                    work_end_dt = datetime.combine(attendance_date, work_end)
-                    if punch_out_time < work_end_dt:
-                        is_early_leave = True
-                        early_leave_minutes = int(
-                            (work_end_dt - punch_out_time).total_seconds() / 60
-                        )
-                        if status == "normal":
-                            status = "early_leave"
-                        else:
-                            status += "+early_leave"
-
-                if is_missing_punch_in:
-                    status = "missing" if status == "normal" else status + "+missing_in"
-                if is_missing_punch_out:
-                    status = (
-                        "missing" if status == "normal" else status + "+missing_out"
-                    )
+                is_head = getattr(employee, "is_head_teacher", False)
+                is_asst = getattr(employee, "is_assistant", False)
+                (
+                    is_late,
+                    late_minutes,
+                    is_early_leave,
+                    early_leave_minutes,
+                    status,
+                ) = compute_status_for_employee_date(
+                    employee,
+                    attendance_date,
+                    punch_in_time,
+                    punch_out_time,
+                    _csv_daily_shift_map,
+                    _csv_shift_schedule_map,
+                    is_head_teacher=is_head,
+                    is_assistant=is_asst,
+                )
 
                 existing = csv_attendance_cache.get((employee.id, attendance_date))
 
