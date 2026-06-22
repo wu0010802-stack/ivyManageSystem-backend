@@ -954,17 +954,16 @@ def query_valid_session_registrations(
 def _build_valid_attendance_agg_query(db_session, *, session_ids):
     """回傳只計「有效報名」點名的聚合查詢（GROUP BY session_id）。
 
-    有效報名口徑與 _build_session_detail_response 對齊：
+    有效報名口徑與 _build_session_detail_response 完全對齊：
       - ActivityRegistration.is_active IS True
       - ActivityRegistration.match_status != 'rejected'
       - RegistrationCourse.status == 'enrolled'
+      - student_id 為 None（校外生）或對應 Student.is_active IS True（在籍）
 
-    排除已軟刪（is_active=False）或被駁回（rejected）的孤兒點名 row，
+    排除已軟刪（is_active=False）、被駁回（rejected）、或底層學生已離校的孤兒點名 row，
     確保列表/儀表板統計與詳情頁一致，不因孤兒膨脹。
     """
-    from models.database import (
-        Student,
-    )  # 僅供 outerjoin，不加 Student 條件（校外生無 student_id）
+    from models.database import Student
 
     return (
         db_session.query(
@@ -988,10 +987,16 @@ def _build_valid_attendance_agg_query(db_session, *, session_ids):
             & (RegistrationCourse.course_id == ActivitySession.course_id)
             & (RegistrationCourse.status == "enrolled"),
         )
+        .outerjoin(Student, Student.id == ActivityRegistration.student_id)
         .filter(
             ActivityAttendance.session_id.in_(session_ids),
             ActivityRegistration.is_active.is_(True),
             ActivityRegistration.match_status != "rejected",
+            # 若 student_id 為 None（校外生），或對應 Student 尚啟用，都保留
+            or_(
+                ActivityRegistration.student_id.is_(None),
+                Student.is_active.is_(True),
+            ),
         )
         .group_by(ActivityAttendance.session_id)
     )

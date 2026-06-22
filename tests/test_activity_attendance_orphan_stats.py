@@ -31,7 +31,7 @@ from models.activity import (
     ActivitySession,
     RegistrationCourse,
 )
-from models.classroom import Student  # noqa: F401 — ensure metadata loaded
+from models.classroom import Student
 
 from api.activity._shared import (
     _build_session_detail_response,
@@ -106,12 +106,25 @@ def _make_session(s, course_id) -> ActivitySession:
     return sess
 
 
+def _make_student(s, *, name="學生甲", is_active=True) -> Student:
+    """建立 Student 記錄，is_active 可設 False 模擬離校。"""
+    st = Student(
+        student_id=f"T{name}",
+        name=name,
+        is_active=is_active,
+    )
+    s.add(st)
+    s.flush()
+    return st
+
+
 def _make_reg(
     s,
     *,
     name="王小明",
     is_active=True,
     match_status="matched",
+    student_id=None,
 ) -> ActivityRegistration:
     r = ActivityRegistration(
         student_name=name,
@@ -119,6 +132,7 @@ def _make_reg(
         class_name="大班",
         is_active=is_active,
         match_status=match_status,
+        student_id=student_id,
     )
     s.add(r)
     s.flush()
@@ -475,3 +489,129 @@ class TestFanOutMultiCourse:
             f"avg_rate={course_a_entry['avg_rate']}，應為 {round(2/3,2)}；"
             "fan-out 造成 total 非等比膨脹（甲乙各+1，丙不變），avg_rate 偏高"
         )
+
+
+# ── (I-1 / N-1) Student.is_active=False 離校學生不計入統計 ────────────────────
+
+
+class TestStudentInactiveExcluded:
+    """底層 Student.is_active=False（離校/畢業）的報名點名不計入統計。
+
+    詳情頁 _build_session_detail_response 已有：
+        or_(ActivityRegistration.student_id.is_(None), Student.is_active.is_(True))
+    兩個聚合查詢（_build_valid_attendance_agg_query / get_attendance_stats）
+    修前漏了此條件 → 離校生仍被計入，造成列表/儀表板與詳情頁不一致。
+    """
+
+    def test_build_session_rows_excludes_inactive_student(self, session):
+        """build_session_rows_with_stats：底層 Student.is_active=False 的報名不計入統計。
+
+        情境：
+          - 在籍生（Student.is_active=True）：報名 enrolled，點名出席。
+          - 離校生（Student.is_active=False）：報名 enrolled，點名出席（但詳情頁不算）。
+        修前：聚合查詢無 Student JOIN → 離校生出席被計入 → present_count=2。
+        修後：與詳情頁一致 → present_count=1（只算在籍生）。
+        """
+        course = _make_course(session, name="離校測試_list")
+        sess = _make_session(session, course.id)
+
+        # 在籍生
+        st_active = _make_student(session, name="在籍生A", is_active=True)
+        reg_active = _make_reg(session, name="在籍生A", student_id=st_active.id)
+        _enroll(session, reg_active.id, course.id)
+        _attend(session, sess.id, reg_active.id, is_present=True)
+
+        # 離校生（Student.is_active=False）
+        st_inactive = _make_student(session, name="離校生B", is_active=False)
+        reg_inactive = _make_reg(session, name="離校生B", student_id=st_inactive.id)
+        _enroll(session, reg_inactive.id, course.id)
+        _attend(session, sess.id, reg_inactive.id, is_present=True)
+
+        session.commit()
+
+        rows = _query_session_rows(session, course.id)
+        list_stats = build_session_rows_with_stats(session, rows)
+        assert len(list_stats) == 1
+        row = list_stats[0]
+
+        detail = _build_session_detail_response(session, sess)
+
+        # 列表與詳情頁 present_count 必須一致
+        assert row["present_count"] == detail["present_count"], (
+            f"list present_count={row['present_count']} != "
+            f"detail present_count={detail['present_count']}；"
+            "離校生（Student.is_active=False）被計入聚合統計"
+        )
+        # 且只計在籍生那 1 筆
+        assert (
+            row["present_count"] == 1
+        ), f"present_count={row['present_count']}，應為 1；離校生出席不應計入"
+        assert (
+            row["recorded_count"] == 1
+        ), f"recorded_count={row['recorded_count']}，應為 1；離校生點名不應計入"
+
+    def test_get_attendance_stats_excludes_inactive_student(self, session, svc):
+        """get_attendance_stats：底層 Student.is_active=False 的報名不計入儀表板出席統計。
+
+        情境：
+          - 在籍生：缺席（is_present=False）。
+          - 離校生：出席（is_present=True，但不應被計入）。
+        修前：avg_rate = 1/2 = 0.5（含離校生）。
+        修後：avg_rate = 0/1 = 0.0（只算在籍生，且在籍生缺席）。
+        """
+        course = _make_course(session, name="離校測試_dashboard")
+        sess = _make_session(session, course.id)
+
+        # 在籍生，缺席
+        st_active = _make_student(session, name="在籍生C", is_active=True)
+        reg_active = _make_reg(session, name="在籍生C", student_id=st_active.id)
+        _enroll(session, reg_active.id, course.id)
+        _attend(session, sess.id, reg_active.id, is_present=False)
+
+        # 離校生，出席（不應計入）
+        st_inactive = _make_student(session, name="離校生D", is_active=False)
+        reg_inactive = _make_reg(session, name="離校生D", student_id=st_inactive.id)
+        _enroll(session, reg_inactive.id, course.id)
+        _attend(session, sess.id, reg_inactive.id, is_present=True)
+
+        session.commit()
+
+        result = svc.get_attendance_stats(session, **TERM)
+        by_course = result["by_course"]
+        entry = next(
+            (e for e in by_course if e["course_name"] == "離校測試_dashboard"), None
+        )
+        assert entry is not None, "課程應出現在 by_course 中"
+
+        # 修前（含離校生）：present=1, total=2, avg=0.5
+        # 修後（排除離校生）：present=0, total=1, avg=0.0
+        assert entry["avg_rate"] == 0.0, (
+            f"avg_rate={entry['avg_rate']}，應為 0.0；"
+            "離校生（Student.is_active=False）出席被計入儀表板統計，應排除"
+        )
+
+    def test_no_student_id_reg_still_counted(self, session):
+        """校外生（student_id=None）的點名照常計入（不因 outerjoin 條件被排除）。
+
+        詳情頁口徑：or_(student_id.is_(None), Student.is_active.is_(True))
+        → student_id=None 的報名無論如何都保留。
+        """
+        course = _make_course(session, name="校外生測試")
+        sess = _make_session(session, course.id)
+
+        # 校外生（無 student_id）
+        reg_external = _make_reg(session, name="校外生E", student_id=None)
+        _enroll(session, reg_external.id, course.id)
+        _attend(session, sess.id, reg_external.id, is_present=True)
+
+        session.commit()
+
+        rows = _query_session_rows(session, course.id)
+        list_stats = build_session_rows_with_stats(session, rows)
+        assert len(list_stats) == 1
+        row = list_stats[0]
+
+        assert (
+            row["present_count"] == 1
+        ), f"present_count={row['present_count']}，校外生（student_id=None）應照常計入"
+        assert row["recorded_count"] == 1

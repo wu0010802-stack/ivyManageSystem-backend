@@ -454,6 +454,8 @@ class ActivityService:
             ActivityRegistration,
             RegistrationCourse,
         )
+        from models.classroom import Student
+        from sqlalchemy import or_
 
         rows = (
             session.query(
@@ -483,9 +485,15 @@ class ActivityService:
                 & (RegistrationCourse.course_id == ActivitySession.course_id)
                 & (RegistrationCourse.status == "enrolled"),
             )
+            .outerjoin(Student, Student.id == ActivityRegistration.student_id)
             .filter(
                 ActivityRegistration.is_active.is_(True),
                 ActivityRegistration.match_status != "rejected",
+                # 若 student_id 為 None（校外生），或對應 Student 尚啟用，都保留
+                or_(
+                    ActivityRegistration.student_id.is_(None),
+                    Student.is_active.is_(True),
+                ),
             )
             .group_by(ActivityCourse.name)
             .all()
