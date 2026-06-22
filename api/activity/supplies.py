@@ -7,7 +7,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from models.database import get_session, ActivitySupply
+from sqlalchemy import func
+
+from models.database import (
+    get_session,
+    ActivitySupply,
+    ActivityRegistration,
+    RegistrationSupply,
+)
 from utils.academic import resolve_academic_term_filters
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
@@ -196,6 +203,31 @@ def delete_supply(
         )
         if not supply:
             raise _not_found("用品")
+
+        # 仍被在籍（active）報名引用時不可停用：公開查詢仍會回該用品、前端原樣送回，
+        # 但公開更新只接受 active 用品 → 家長任何存檔都會 400 被卡住。改在停用點 fail-fast，
+        # 提示使用中筆數，須先處理（移除/改選）才能停用。inactive（軟刪）報名不算引用。
+        in_use_count = (
+            session.query(func.count(RegistrationSupply.id))
+            .join(
+                ActivityRegistration,
+                RegistrationSupply.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationSupply.supply_id == supply_id,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .scalar()
+            or 0
+        )
+        if in_use_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"此用品仍被 {in_use_count} 筆有效報名選用，無法停用。"
+                    f"請先於這些報名中移除此用品後再停用"
+                ),
+            )
 
         supply.is_active = False
         session.commit()
