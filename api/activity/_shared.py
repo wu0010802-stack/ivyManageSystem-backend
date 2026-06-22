@@ -771,10 +771,8 @@ def _build_registration_filter_query(
                 ActivityRegistration.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR),
             )
         )
-    if payment_status == "paid":
-        q = q.filter(ActivityRegistration.is_paid.is_(True))
-    elif payment_status in ("unpaid", "partial", "overpaid", "no_fee"):
-        # 這四態都需 total（enrolled 課程 + 用品）做判定，與 _derive_payment_status 對齊
+    if payment_status in ("paid", "unpaid", "partial", "overpaid", "no_fee"):
+        # 這五態都需 total（enrolled 課程 + 用品）做判定，與 _derive_payment_status 對齊
         course_total_sq = (
             sa_select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
             .where(
@@ -789,7 +787,15 @@ def _build_registration_filter_query(
             .scalar_subquery()
         )
         total_sq = course_total_sq + supply_total_sq
-        if payment_status == "unpaid":
+        if payment_status == "paid":
+            # 已繳清：應繳 > 0 且已繳 == 應繳。排除超繳（paid > total）——超繳走
+            # overpaid 篩選，避免同一列同時落入 paid 與 overpaid，並與
+            # _derive_payment_status 的 paid（僅 paid==total）對齊。
+            q = q.filter(
+                ActivityRegistration.is_paid.is_(True),
+                ActivityRegistration.paid_amount <= total_sq,
+            )
+        elif payment_status == "unpaid":
             # 真正欠款：應繳 > 0 但一毛未繳。total=0 的免繳列改走 no_fee，
             # 不再被 unpaid 撈到（否則 badge 顯示『免繳』卻出現在『未繳費』篩選）。
             q = q.filter(

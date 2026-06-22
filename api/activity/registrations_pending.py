@@ -257,9 +257,10 @@ def admin_search_students(
 ):
     """後台審核用：依姓名/學號/家長手機模糊搜尋在籍學生。
 
-    F-027：搜尋結果含 student_id（學號）/ birthday / parent_phone 等學生 PII，
-    必須額外要求 STUDENTS_READ 權限；缺則 403（不採欄位遮罩，因搜尋結果無
-    PII 即無辨識力）。
+    F-027：搜尋結果含 student_id（學號）/ birthday 等學生 PII，必須額外要求
+    STUDENTS_READ 權限；缺則 403（不採欄位遮罩，因搜尋結果無 PII 即無辨識力）。
+    A1：parent_phone 屬 Guardian PII，另需 GUARDIANS_READ——缺則輸出遮罩為
+    None，且搜尋條件不含手機欄位（關閉手機反查側信道），與 registrations 系列一致。
     """
     # F-027：缺 STUDENTS_READ 直接 403（避免「ACTIVITY_WRITE 拉學生目錄」側信道）
     if not can_view_student_pii(current_user):
@@ -276,21 +277,30 @@ def admin_search_students(
         if pii_allowed is not None and not pii_allowed:
             return {"items": []}
 
+        # A1：家長電話屬 Guardian PII，與 registrations / pending 列表口徑一致——
+        # 缺 GUARDIANS_READ 時 ① 輸出遮罩 parent_phone ② 搜尋條件不含手機欄位
+        # （否則可用部分手機號反查學生，形成繞過 GUARDIANS_READ 的側信道）。
+        can_guardian = can_view_guardian_pii(current_user)
+
         # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 拉全校學生目錄
         like = f"%{escape_like_pattern(q.strip())}%"
+        search_predicates = [
+            Student.name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+            Student.student_id.ilike(like, escape=LIKE_ESCAPE_CHAR),
+        ]
+        if can_guardian:
+            search_predicates.append(
+                Student.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR)
+            )
+            search_predicates.append(
+                Student.emergency_contact_phone.ilike(like, escape=LIKE_ESCAPE_CHAR)
+            )
         query = (
             session.query(Student, Classroom)
             .outerjoin(Classroom, Classroom.id == Student.classroom_id)
             .filter(
                 Student.is_active.is_(True),
-                or_(
-                    Student.name.ilike(like, escape=LIKE_ESCAPE_CHAR),
-                    Student.student_id.ilike(like, escape=LIKE_ESCAPE_CHAR),
-                    Student.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR),
-                    Student.emergency_contact_phone.ilike(
-                        like, escape=LIKE_ESCAPE_CHAR
-                    ),
-                ),
+                or_(*search_predicates),
             )
         )
         if pii_allowed is not None:
@@ -305,7 +315,7 @@ def admin_search_students(
                     "birthday": s.birthday.isoformat() if s.birthday else None,
                     "classroom_id": s.classroom_id,
                     "classroom_name": c.name if c else None,
-                    "parent_phone": s.parent_phone,
+                    "parent_phone": s.parent_phone if can_guardian else None,
                 }
                 for s, c in rows
             ]

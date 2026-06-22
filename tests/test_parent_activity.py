@@ -598,6 +598,58 @@ class TestRegister:
             ActivityCourse in locked_entities
         ), "家長報名應對 ActivityCourse 加 with_for_update 行鎖防超賣"
 
+    def test_register_acquires_registration_advisory_lock(
+        self, activity_client, monkeypatch
+    ):
+        # L2：同學生同學期唯一報名為 check-then-insert，DB partial unique 鍵含
+        # parent_phone 不含 student_id，兩位不同 Guardian 並發替同生報名可雙雙
+        # 通過。比照 admin match 以 acquire_activity_registration_lock 序列化
+        # （SQLite no-op，故 spy 驗證「報名路徑確實取得報名 advisory lock」）。
+        import api.parent_portal.activity as pa
+        from services.activity_service import activity_service
+
+        # dashboard 快取失效在 SQLite 測試下會與 RLS 未提交寫鎖搶連線（見
+        # test_register_triggers_dashboard_cache_invalidation 註解）；本測試聚焦
+        # advisory lock 行為，故把失效設為 no-op 避免無關的 DB-locked 噪音。
+        monkeypatch.setattr(
+            activity_service, "invalidate_dashboard_caches", lambda session: 0
+        )
+
+        calls = []
+
+        def spy(session, **kwargs):
+            calls.append(kwargs)
+
+        monkeypatch.setattr(
+            pa, "acquire_activity_registration_lock", spy, raising=False
+        )
+
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            course = _create_course(session, name="繪畫")
+            sname = student.name  # 取在 commit 前，避免 expire_on_commit 觸發 refresh
+            session.commit()
+            token = _parent_token(user)
+            sid, cid = student.id, course.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [cid],
+                "supply_ids": [],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 201
+        assert calls, "家長報名應取得同學生同學期報名 advisory lock（防並發重複報名）"
+        assert calls[0]["student_name"] == sname
+        assert calls[0]["school_year"] == 115
+        assert calls[0]["semester"] == 1
+
     def test_register_response_includes_payment_fields(self, activity_client):
         # ④ 家長端報名 response 須直接回傳 total_amount / outstanding_amount /
         # payment_status，前端不再自行加總（避免漏扣已繳、誤計候補課程、漏算用品）。
