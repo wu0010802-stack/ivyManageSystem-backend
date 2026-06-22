@@ -269,7 +269,10 @@ class TestFeesAggregation:
         resp = client.get("/api/parent/home/summary", cookies={"access_token": token})
         assert resp.status_code == 200
         fees = resp.json()["summary"]["fees"]
-        assert fees["outstanding_count"] == 3
+        # outstanding_count 計算語意為「折抵後仍有欠款的 (student, period) bucket 數」：
+        # child_a 兩筆 record 同屬 period="2026-1" → 合併為 1 bucket；
+        # child_b 一筆 record 同屬 period="2026-1" → 1 bucket；合計 2 buckets。
+        assert fees["outstanding_count"] == 2
         assert fees["outstanding"] == 20000
         assert fees["overdue"] == 10000
         assert fees["due_soon"] == 2000
