@@ -458,6 +458,13 @@ def print_pos_receipt_pdf(
         receipt = _parse_receipt_response_from_record(session, anchor)
         if receipt is None:
             raise HTTPException(status_code=404, detail="找不到此收據")
+        # operator 遮罩：與 /pos/recent-transactions 同口徑——僅 ACTIVITY_PAYMENT_APPROVE
+        # 才見真實經手人，否則遮成 [已遮罩]，避免只持 ACTIVITY_READ 的低權限員工
+        # 透過 PDF 端點繞過列表遮罩取得「誰收的款」。遮罩只加在此 read 端點層，
+        # 不放進 _parse_receipt_response_from_record（該函式亦供 checkout replay
+        # 共用，操作者本人需見自己的名字）。
+        if not has_finance_approve(current_user):
+            receipt["operator"] = "[已遮罩]"
         # 補印標記
         receipt["is_reprint"] = True
 

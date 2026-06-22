@@ -155,3 +155,52 @@ class TestOperatorMasking:
         assert res.status_code == 200, res.text
         body = res.json()
         assert body["transactions"][0]["operator"] == "張三"
+
+
+class TestReceiptPdfOperatorMasking:
+    """收據 PDF 端點必須套用與 recent-transactions 一致的 operator 遮罩。
+
+    威脅：list 端點已遮罩 operator，但 print.pdf 端點只需 ACTIVITY_READ 且無條件
+    輸出完整經手人姓名 → 只持 ACTIVITY_READ 的低權限員工可繞過遮罩拿到「誰收的款」。
+    """
+
+    _RECEIPT_NO = "POS-20260507-ABCDEF123456"
+
+    @staticmethod
+    def _spy_pdf(monkeypatch, captured):
+        import api.activity.pos as pos_mod
+
+        def _spy(*, receipt):
+            captured["receipt"] = receipt
+            return b"%PDF-1.4 stub"
+
+        monkeypatch.setattr(pos_mod, "generate_pos_receipt_pdf", _spy)
+
+    def test_pdf_operator_masked_for_read_only_user(self, pos_client, monkeypatch):
+        client, sf = pos_client
+        with sf() as s:
+            _create_user(s, username="reader2", perms=_READ_ONLY_PERMS)
+            _seed_payment(s)
+            s.commit()
+        assert _login(client, "reader2").status_code == 200
+
+        captured: dict = {}
+        self._spy_pdf(monkeypatch, captured)
+        res = client.get(f"/api/activity/pos/receipts/{self._RECEIPT_NO}/print.pdf")
+        assert res.status_code == 200, res.text
+        assert captured["receipt"]["operator"] == "[已遮罩]"
+        assert "張三" not in str(captured["receipt"])
+
+    def test_pdf_operator_visible_for_finance_approver(self, pos_client, monkeypatch):
+        client, sf = pos_client
+        with sf() as s:
+            _create_user(s, username="finance2", perms=_FINANCE_PERMS, role="admin")
+            _seed_payment(s)
+            s.commit()
+        assert _login(client, "finance2").status_code == 200
+
+        captured: dict = {}
+        self._spy_pdf(monkeypatch, captured)
+        res = client.get(f"/api/activity/pos/receipts/{self._RECEIPT_NO}/print.pdf")
+        assert res.status_code == 200, res.text
+        assert captured["receipt"]["operator"] == "張三"
