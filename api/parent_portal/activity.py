@@ -34,6 +34,8 @@ from services.business_errors.parent import (
 )
 from utils.academic import resolve_academic_term_filters
 from utils.auth import require_parent_role
+from services.activity_query_token import _generate_query_token, _hash_query_token
+from utils.taipei_time import now_taipei_naive
 
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
@@ -226,6 +228,13 @@ def register_courses(
     )
     parent_phone = guardian.phone if guardian else None
 
+    # #2：家長端登入報名也比照公開報名（public_register）產生 query token。
+    # 否則此報名 query_token_hash IS NULL → 公開破壞性 mutation 的身分驗證
+    # （_parent_mutation_identity_ok）退回姓名+生日+電話三欄，知道這三項 PII 的
+    # 陌生人即可未登入改課程/放棄候補。寫入 hash 後公開 mutation 強制有效 token；
+    # 明文 token 只在本次 response 回給家長一次（供「管理我的報名」連結，留存自助修改能力）。
+    plaintext_token = _generate_query_token()
+
     reg = ActivityRegistration(
         student_name=student.name,
         birthday=(student.birthday.isoformat() if student.birthday else None),
@@ -241,6 +250,8 @@ def register_courses(
         classroom_id=student.classroom_id,
         pending_review=False,  # 登入版視為已驗證
         match_status="manual",
+        query_token_hash=_hash_query_token(plaintext_token),
+        query_token_issued_at=now_taipei_naive(),
     )
     session.add(reg)
     session.flush()
@@ -321,7 +332,9 @@ def register_courses(
     session.refresh(reg)
     # F4：家長端報名改變 enrolled 集合 → 清 dashboard 快取（原本家長端完全不清）。
     activity_service.invalidate_dashboard_caches(session)
-    return _registration_summary(session, reg)
+    # #2：明文 query token 僅此 response 回傳一次（DB 只存 hash），供前端組「管理我的
+    # 報名」公開連結；後續查詢/列表不再回傳（無法由 hash 還原）。
+    return {**_registration_summary(session, reg), "query_token": plaintext_token}
 
 
 class ConfirmPromotionPayload(BaseModel):
