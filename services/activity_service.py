@@ -480,6 +480,7 @@ class ActivityService:
             .join(
                 RegistrationCourse,
                 (RegistrationCourse.registration_id == ActivityRegistration.id)
+                & (RegistrationCourse.course_id == ActivitySession.course_id)
                 & (RegistrationCourse.status == "enrolled"),
             )
             .filter(

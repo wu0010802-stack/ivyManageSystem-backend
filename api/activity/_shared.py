@@ -979,8 +979,13 @@ def _build_valid_attendance_agg_query(db_session, *, session_ids):
             ActivityRegistration.id == ActivityAttendance.registration_id,
         )
         .join(
+            ActivitySession,
+            ActivitySession.id == ActivityAttendance.session_id,
+        )
+        .join(
             RegistrationCourse,
             (RegistrationCourse.registration_id == ActivityRegistration.id)
+            & (RegistrationCourse.course_id == ActivitySession.course_id)
             & (RegistrationCourse.status == "enrolled"),
         )
         .filter(
