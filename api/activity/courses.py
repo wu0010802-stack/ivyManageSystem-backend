@@ -38,6 +38,7 @@ from schemas.activity_admin import (
     CoursesCopyResultOut,
     CourseWaitlistOut,
     CourseEnrolledOut,
+    validate_phase3_ranges,
 )
 from schemas._common import DeleteResultOut
 
@@ -405,6 +406,24 @@ def update_course(
                         "需由具備『才藝課收款簽核』（ACTIVITY_PAYMENT_APPROVE）權限者執行"
                     ),
                 )
+
+        # Finding 6：schema validator 只在成對欄位同時出現於 payload 時才比較，但此處
+        # 將 patch 覆寫既有資料 → 單獨更新一邊可寫出矛盾範圍（例 min_age>既有 max_age、
+        # start 晚於既有 end）。合併 DB 現值後對完整狀態重新驗證。
+        def _eff(field):
+            return (
+                update_data[field] if field in update_data else getattr(course, field)
+            )
+
+        try:
+            validate_phase3_ranges(
+                _eff("min_age_months"),
+                _eff("max_age_months"),
+                _eff("meeting_start_time"),
+                _eff("meeting_end_time"),
+            )
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
 
         for k, v in update_data.items():
             setattr(course, k, v)

@@ -283,6 +283,71 @@ class TestAdminCoursesNewFields:
         assert res.status_code == 422
 
 
+class TestPartialUpdateRangeValidation:
+    """Finding 6：部分更新需合併 DB 現值後驗證，避免寫出矛盾的年齡／時間範圍。
+
+    schema validator 只在成對欄位同時出現於 payload 時才比較，但 endpoint 把 patch
+    直接覆寫既有資料 → 單獨更新一邊可造成 min_age>max_age 或 start>=end。
+    """
+
+    def _setup_admin(self, sf, client):
+        with sf() as s:
+            _admin(s)
+            s.commit()
+        assert _login(client).status_code == 200
+
+    def _create_course(self, client, **fields):
+        body = {"name": "課程", "price": 1000, "sessions": 8, "capacity": 12}
+        body.update(fields)
+        res = client.post("/api/activity/courses", json=body)
+        assert res.status_code == 201, res.text
+        return res.json()["id"]
+
+    def test_update_min_age_above_existing_max_rejected(self, client_factory):
+        """既有 max_age=36，單獨 PUT min_age=60（>既有 max）→ 應被拒（400）。"""
+        client, sf = client_factory
+        self._setup_admin(sf, client)
+        cid = self._create_course(client, min_age_months=24, max_age_months=36)
+
+        res = client.put(f"/api/activity/courses/{cid}", json={"min_age_months": 60})
+        assert res.status_code == 400, res.text
+        # 確認未寫入矛盾值
+        c = next(
+            x
+            for x in client.get("/api/activity/courses").json()["courses"]
+            if x["id"] == cid
+        )
+        assert c["min_age_months"] == 24
+
+    def test_update_start_after_existing_end_rejected(self, client_factory):
+        """既有 end=15:00，單獨 PUT start=16:00（晚於既有 end）→ 應被拒（400）。"""
+        client, sf = client_factory
+        self._setup_admin(sf, client)
+        cid = self._create_course(
+            client, meeting_start_time="14:00", meeting_end_time="15:00"
+        )
+
+        res = client.put(
+            f"/api/activity/courses/{cid}", json={"meeting_start_time": "16:00"}
+        )
+        assert res.status_code == 400, res.text
+
+    def test_valid_partial_update_still_allowed(self, client_factory):
+        """合法的部分更新（min_age=30 ≤ 既有 max=36）→ 200。"""
+        client, sf = client_factory
+        self._setup_admin(sf, client)
+        cid = self._create_course(client, min_age_months=24, max_age_months=36)
+
+        res = client.put(f"/api/activity/courses/{cid}", json={"min_age_months": 30})
+        assert res.status_code == 200, res.text
+        c = next(
+            x
+            for x in client.get("/api/activity/courses").json()["courses"]
+            if x["id"] == cid
+        )
+        assert c["min_age_months"] == 30
+
+
 # ============================================================
 # [C48/C49] video_url scheme 驗證（防儲存型 XSS）
 # 純 schema 單元測試，不經 DB。

@@ -38,6 +38,35 @@ def _validate_video_url_scheme(v: Optional[str]) -> Optional[str]:
     return v
 
 
+def validate_phase3_ranges(
+    min_age_months: Optional[int],
+    max_age_months: Optional[int],
+    meeting_start_time: Optional[time],
+    meeting_end_time: Optional[time],
+) -> None:
+    """Phase 3 適齡 / 時段範圍一致性檢核（成對欄位皆有值才比較）。
+
+    供 CourseCreate / CourseUpdate 的 model_validator 與 update_course endpoint
+    共用——endpoint 將 patch 合併 DB 現值後再呼叫此函式，避免部分更新（只動一邊）
+    寫出 min_age>max_age 或 start>=end 的矛盾狀態（Finding 6）。
+
+    Raises:
+        ValueError：範圍矛盾時。
+    """
+    if (
+        min_age_months is not None
+        and max_age_months is not None
+        and min_age_months > max_age_months
+    ):
+        raise ValueError("min_age_months 不可大於 max_age_months")
+    if (
+        meeting_start_time is not None
+        and meeting_end_time is not None
+        and meeting_start_time >= meeting_end_time
+    ):
+        raise ValueError("meeting_start_time 必須早於 meeting_end_time")
+
+
 class CourseCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     price: int = Field(..., ge=0, le=MAX_PAYMENT_AMOUNT)
@@ -60,18 +89,12 @@ class CourseCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_phase3(self):
-        if (
-            self.min_age_months is not None
-            and self.max_age_months is not None
-            and self.min_age_months > self.max_age_months
-        ):
-            raise ValueError("min_age_months 不可大於 max_age_months")
-        if (
-            self.meeting_start_time is not None
-            and self.meeting_end_time is not None
-            and self.meeting_start_time >= self.meeting_end_time
-        ):
-            raise ValueError("meeting_start_time 必須早於 meeting_end_time")
+        validate_phase3_ranges(
+            self.min_age_months,
+            self.max_age_months,
+            self.meeting_start_time,
+            self.meeting_end_time,
+        )
         return self
 
 
@@ -94,18 +117,12 @@ class CourseUpdate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_phase3(self):
-        if (
-            self.min_age_months is not None
-            and self.max_age_months is not None
-            and self.min_age_months > self.max_age_months
-        ):
-            raise ValueError("min_age_months 不可大於 max_age_months")
-        if (
-            self.meeting_start_time is not None
-            and self.meeting_end_time is not None
-            and self.meeting_start_time >= self.meeting_end_time
-        ):
-            raise ValueError("meeting_start_time 必須早於 meeting_end_time")
+        validate_phase3_ranges(
+            self.min_age_months,
+            self.max_age_months,
+            self.meeting_start_time,
+            self.meeting_end_time,
+        )
         return self
 
 
