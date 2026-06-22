@@ -251,6 +251,10 @@ def portal_get_session_detail(
     """
     session = get_session()
     try:
+        # Finding 2：router 層 require_non_parent_role 只擋家長；此端點回完整跨班
+        # 名冊，須額外要求 employee 身分（對齊同檔 get_portal_activity_registrations
+        # 與 require_non_parent_role docstring），擋掉無員工關聯的服務／管理帳號。
+        _get_employee(session, current_user)
         sess = (
             session.query(ActivitySession)
             .filter(ActivitySession.id == session_id)
@@ -284,6 +288,9 @@ def portal_batch_update_attendance(
     """
     session = get_session()
     try:
+        # Finding 2：寫出席會影響退費比例（T_served），須要求 employee 身分；
+        # router 層 require_non_parent_role 只擋家長不足以授權寫入。
+        _get_employee(session, current_user)
         sess = (
             session.query(ActivitySession)
             .filter(ActivitySession.id == session_id)

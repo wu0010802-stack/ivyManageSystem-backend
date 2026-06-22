@@ -505,10 +505,14 @@ class TestOutstandingByStudent:
         assert names == {"王小明", "李小美"}
 
     def test_search_by_parent_phone(self, pos_client):
-        """關鍵字可比對 parent_phone。"""
+        """關鍵字可比對 parent_phone（Finding 4 後：須持 GUARDIANS_READ 才開放
+        手機欄位搜尋，否則為反查側信道）。"""
         client, sf = pos_client
         with sf() as s:
-            _create_admin(s)
+            _create_admin(
+                s,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "GUARDIANS_READ"],
+            )
             reg = _setup_reg(s, student_name="王小明")
             reg.parent_phone = "0912345678"
             s.commit()

@@ -791,7 +791,20 @@ class ActivityService:
         管理員手動升正式：從 waitlist 或 promoted_pending 直接升為 enrolled。
         使用 with_for_update() 防止並發超額。
         回傳 (student_name, course_name)，失敗時拋 ValueError。
+
+        Finding 3：鎖序統一「course → registration_course」（先鎖 ActivityCourse、
+        再鎖 RegistrationCourse），與 _auto_promote_first_waitlist 一致，消除手動
+        升位與自動遞補同時處理首位候補時的 PostgreSQL 鎖順序反轉（ABBA）死鎖。
         """
+        course = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id == course_id)
+            .with_for_update()
+            .first()
+        )
+        if not course:
+            raise ValueError("課程不存在")
+
         row = (
             session.query(RegistrationCourse, ActivityRegistration.student_name)
             .join(
@@ -810,15 +823,6 @@ class ActivityService:
         if not row:
             raise ValueError("報名課程項目不存在或非候補/待確認狀態")
         rc, student_name = row
-
-        course = (
-            session.query(ActivityCourse)
-            .filter(ActivityCourse.id == course_id)
-            .with_for_update()
-            .first()
-        )
-        if not course:
-            raise ValueError("課程不存在")
 
         # 升 enrolled 的容量閘：需看「非此列」的佔位數（否則 promoted_pending→enrolled 會自我阻擋）
         occupying_others = (

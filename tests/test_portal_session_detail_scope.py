@@ -86,7 +86,12 @@ def _seed(sf):
         emp = Employee(
             employee_id="PT001", name="王老師", base_salary=32000, is_active=True
         )
-        s.add(emp)
+        # all_staff 也需員工關聯（Finding 2：portal 點名端點要求 employee 身分）；
+        # 此員工不掛任何班級導師欄位，bare STUDENTS_READ 仍為全園 scope。
+        emp_staff = Employee(
+            employee_id="HR001", name="行政", base_salary=32000, is_active=True
+        )
+        s.add_all([emp, emp_staff])
         s.flush()
 
         c1 = Classroom(name="大象班", is_active=True, head_teacher_id=emp.id)
@@ -177,6 +182,7 @@ def _seed(sf):
                 username="portal_all_staff",
                 password_hash=hash_password(PASSWORD),
                 role="hr",
+                employee_id=emp_staff.id,
                 permission_names=[
                     "ACTIVITY_READ",
                     "ACTIVITY_WRITE",

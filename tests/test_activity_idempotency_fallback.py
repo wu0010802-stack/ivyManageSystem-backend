@@ -331,6 +331,55 @@ class TestAddRegistrationPaymentNoKeyDedup:
             reg = s.query(ActivityRegistration).get(reg_id)
             assert reg.paid_amount == 800
 
+    def test_different_payment_date_without_key_not_deduped(self, idk_client):
+        """Finding 5：無 key、同操作員、同額、同 type，但 payment_date 不同的兩筆
+        是合法的兩筆補登（例如同操作員 60 秒內補登昨天與今天各一筆同額繳費），
+        不可被短窗去重誤判為 replay 吞掉第二筆。
+
+        修前 → _recent_duplicate_payment 不比 payment_date，第二筆被當 replay
+        → 只 1 筆 / paid 只加一次。
+        修後 → 去重納入 payment_date，兩筆都入帳 → 2 筆 / paid 加兩次。"""
+        from datetime import timedelta
+
+        client, sf = idk_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, paid_amount=0)
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        base = {
+            "type": "payment",
+            "amount": 500,
+            "payment_method": "現金",
+            "notes": "",
+        }
+        res1 = client.post(
+            f"/api/activity/registrations/{reg_id}/payments",
+            json={**base, "payment_date": yesterday.isoformat()},
+        )
+        res2 = client.post(
+            f"/api/activity/registrations/{reg_id}/payments",
+            json={**base, "payment_date": today.isoformat()},
+        )
+        assert res1.status_code == 201, res1.text
+        assert res2.status_code == 201, res2.text
+        with sf() as s:
+            payments = (
+                s.query(ActivityPaymentRecord)
+                .filter(ActivityPaymentRecord.registration_id == reg_id)
+                .all()
+            )
+            assert (
+                len(payments) == 2
+            ), f"不同 payment_date 不應被短窗去重誤殺，實際 {len(payments)} 筆"
+            reg = s.query(ActivityRegistration).get(reg_id)
+            assert reg.paid_amount == 1000
+
 
 class TestPosCheckoutNoKeyDedup:
     def test_refund_without_key_double_submit_deduped(self, idk_client):
