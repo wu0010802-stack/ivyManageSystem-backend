@@ -140,7 +140,9 @@ def batch_update_payment(
             )
 
         notes_text = f"（批次標記已繳費自動補齊：{body.reason}）"
+        changed = 0
         for reg in regs:
+            was_paid = reg.is_paid
             if not reg.is_paid:
                 total_amount = total_amount_map.get(reg.id, 0)
                 shortfall = total_amount - (reg.paid_amount or 0)
@@ -157,26 +159,29 @@ def batch_update_payment(
                     session.add(rec)
                     reg.paid_amount = total_amount
                 reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
-            activity_service.log_change(
-                session,
-                reg.id,
-                reg.student_name,
-                "批次更新付款狀態",
-                f"付款狀態批次更新為：已繳費（原因：{body.reason}）",
-                operator,
-            )
+            # 只在確實從 False → True 時才寫稽核記錄並計入 changed
+            if not was_paid and reg.is_paid:
+                activity_service.log_change(
+                    session,
+                    reg.id,
+                    reg.student_name,
+                    "批次更新付款狀態",
+                    f"付款狀態批次更新為：已繳費（原因：{body.reason}）",
+                    operator,
+                )
+                changed += 1
 
         session.commit()
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         _invalidate_finance_summary_cache()
         logger.warning(
             "批次付款狀態更新：筆數=%d is_paid=True operator=%s",
-            len(regs),
+            changed,
             operator,
         )
         return {
-            "message": f"已更新 {len(regs)} 筆報名為已繳費",
-            "updated": len(regs),
+            "message": f"已更新 {changed} 筆報名為已繳費",
+            "updated": changed,
         }
     except HTTPException:
         session.rollback()
