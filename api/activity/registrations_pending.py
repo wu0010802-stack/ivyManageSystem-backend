@@ -34,9 +34,11 @@ from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
 from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 from ._shared import (
+    _calc_total_amount,
+    _compute_is_paid,
     _invalidate_after_registration_mutation,
-    _validate_tw_mobile,
     _not_found,
+    _validate_tw_mobile,
     now_taipei_naive,
     resolve_student_pii_scope,
     student_pii_row_visible,
@@ -859,6 +861,24 @@ def restore_registration(
             )
             if occupying >= capacity:
                 rc.status = "waitlist"
+
+            # Bug 2 修正（P2）：無論容量是否足夠，promoted_pending 列的確認計時欄位
+            # 必須清為 None（停錶）。restore 把整筆報名打回 pending_review=True，
+            # 此時 confirm_deadline 若保留舊的過去時間，下一輪
+            # sweep_expired_pending_promotions（篩 confirm_deadline IS NOT NULL AND < now）
+            # 會立刻把它當逾期刪掉，家長從未拿到新確認窗就被靜默踢掉名額。
+            # 對齊 services/activity_service.py:802-804 promote_waitlist 同樣清這三欄。
+            rc.confirm_deadline = None
+            rc.reminder_sent_at = None
+            rc.final_reminder_sent_at = None
+
+        # Bug 1 修正（P2）：rc_rows 迴圈可能把部分課程降為 waitlist，降低了應繳 total。
+        # 但 restore 通篇沒有重算 is_paid，導致 reg.is_paid 停在拒絕前的舊值（例如 True）
+        # → 帳面出現幽靈超繳。其他改課路徑（withdraw_course / add_course / public update）
+        # 一律在改動後重算，restore 補上對齊。
+        # 參照 api/activity/registrations_items.py:143-144 慣例。
+        total_amount = _calc_total_amount(session, reg.id)
+        reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
 
         prefix = (reg.remark or "").strip()
         note = f"[已還原 by {current_user.get('username')}]"

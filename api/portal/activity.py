@@ -26,6 +26,7 @@ from api.activity._shared import (
     _build_session_detail_response,
     build_session_rows_with_stats,
     query_valid_session_registrations,
+    resolve_student_pii_scope,
 )
 
 logger = logging.getLogger(__name__)
@@ -257,7 +258,14 @@ def portal_get_session_detail(
         if not sess:
             raise HTTPException(status_code=404, detail="找不到場次")
         group_key = "classroom" if group_by == "classroom" else None
-        return _build_session_detail_response(session, sess, group_by=group_key)
+        pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
+        return _build_session_detail_response(
+            session,
+            sess,
+            group_by=group_key,
+            mask_student_ids=not pii_visible,
+            student_pii_visible_classroom_ids=pii_allowed,
+        )
     finally:
         session.close()
 

@@ -428,7 +428,11 @@ class TestOutstandingByStudent:
     def test_groups_by_name_and_birthday(self, pos_client):
         client, sf = pos_client
         with sf() as s:
-            _create_admin(s)
+            # 須持 STUDENTS_READ 才能在 student_key 看到明文生日（安全修補後行為）
+            _create_admin(
+                s,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "STUDENTS_READ"],
+            )
             _setup_reg(
                 s, student_name="王小明", birthday="2020-01-01", course_name="美術"
             )

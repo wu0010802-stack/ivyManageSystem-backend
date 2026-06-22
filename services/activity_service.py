@@ -794,7 +794,8 @@ class ActivityService:
             .filter(RegistrationCourse.id != rc.id)
             .count()
         )
-        if course.capacity is not None and occupying_others >= course.capacity:
+        capacity = course.capacity if course.capacity is not None else 30
+        if occupying_others >= capacity:
             raise ValueError("課程容量已滿，無法升為正式")
 
         rc.status = "enrolled"
@@ -1259,7 +1260,8 @@ class ActivityService:
             .filter(RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)))
             .count()
         )
-        if course.capacity is not None and occupying >= course.capacity:
+        capacity = course.capacity if course.capacity is not None else 30
+        if occupying >= capacity:
             return  # 仍滿（有其他 promoted_pending 佔位），不升
 
         row = (
