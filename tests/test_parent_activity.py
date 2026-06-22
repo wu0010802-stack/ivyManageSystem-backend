@@ -30,8 +30,10 @@ from models.activity import (
     ActivityCourse,
     ActivityPaymentRecord,
     ActivityRegistration,
+    ActivityRegistrationSettings,
     ActivitySupply,
     RegistrationCourse,
+    RegistrationSupply,
 )
 from models.database import Base, Classroom, Guardian, Student, User
 from utils.auth import create_access_token
@@ -522,6 +524,147 @@ class TestRegister:
             cookies={"access_token": token},
         )
         assert resp.status_code == 400
+
+    def test_register_blocked_when_registration_closed(self, activity_client):
+        # ② 登入家長報名也須受報名開放時間限制（比照公開端 _check_registration_open）。
+        # 後台關閉報名（is_open=False）時，登入家長直接打 API 應被擋（400），
+        # 不可繞過時段。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            course = _create_course(session, name="繪畫")
+            session.add(ActivityRegistrationSettings(is_open=False))
+            session.commit()
+            token = _parent_token(user)
+            sid = student.id
+            cid = course.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [cid],
+                "supply_ids": [],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 400
+        assert "報名" in resp.json()["detail"]
+
+    def test_register_locks_course_rows_for_update(self, activity_client, monkeypatch):
+        # ① 家長報名須對課程列加行鎖（with_for_update），與公開端 public_register
+        # 相同的鎖定策略，避免並發報名同時讀到最後名額都寫成 enrolled 造成超賣。
+        # SQLite 下 FOR UPDATE 為 no-op（與 public_register 測試同），故此處以
+        # spy 驗證「報名路徑確實對 ActivityCourse 請求行鎖」這個行為；真正的
+        # 序列化由 PostgreSQL 行鎖提供（同 public_register）。
+        from sqlalchemy.orm import Query
+
+        locked_entities = []
+        orig_with_for_update = Query.with_for_update
+
+        def spy(self, *args, **kwargs):
+            for desc in self.column_descriptions:
+                entity = desc.get("entity")
+                if entity is not None:
+                    locked_entities.append(entity)
+            return orig_with_for_update(self, *args, **kwargs)
+
+        monkeypatch.setattr(Query, "with_for_update", spy)
+
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            course = _create_course(session, name="繪畫")
+            session.commit()
+            token = _parent_token(user)
+            sid = student.id
+            cid = course.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [cid],
+                "supply_ids": [],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 201
+        assert (
+            ActivityCourse in locked_entities
+        ), "家長報名應對 ActivityCourse 加 with_for_update 行鎖防超賣"
+
+    def test_register_response_includes_payment_fields(self, activity_client):
+        # ④ 家長端報名 response 須直接回傳 total_amount / outstanding_amount /
+        # payment_status，前端不再自行加總（避免漏扣已繳、誤計候補課程、漏算用品）。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            course = _create_course(session, name="繪畫", price=2000)
+            supply = _create_supply(session, name="畫具", price=300)
+            session.commit()
+            token = _parent_token(user)
+            sid = student.id
+            cid = course.id
+            sup_id = supply.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [cid],
+                "supply_ids": [sup_id],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        # 應繳 = enrolled 課程 2000 + 用品 300；未繳
+        assert data["total_amount"] == 2300
+        assert data["paid_amount"] == 0
+        assert data["outstanding_amount"] == 2300
+        assert data["payment_status"] == "unpaid"
+
+    def test_register_response_payment_fields_no_fee_for_waitlist(
+        self, activity_client
+    ):
+        # ④ 全候補（無 enrolled 課程、無用品）→ 應繳為 0 → payment_status=no_fee、
+        # outstanding_amount=0，前端據此顯示「免繳」而非誤標「未繳費」。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            # capacity=0 + 允許候補 → 報名直接進候補（不佔 enrolled，total=0）
+            course = _create_course(
+                session, name="候補課", capacity=0, allow_waitlist=True
+            )
+            session.commit()
+            token = _parent_token(user)
+            sid = student.id
+            cid = course.id
+
+        resp = client.post(
+            "/api/parent/activity/register",
+            json={
+                "student_id": sid,
+                "school_year": 115,
+                "semester": 1,
+                "course_ids": [cid],
+                "supply_ids": [],
+            },
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["courses"][0]["status"] == "waitlist"
+        assert data["total_amount"] == 0
+        assert data["outstanding_amount"] == 0
+        assert data["payment_status"] == "no_fee"
 
 
 class TestMyRegistrationsAndPayments:

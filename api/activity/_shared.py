@@ -772,13 +772,8 @@ def _build_registration_filter_query(
         )
     if payment_status == "paid":
         q = q.filter(ActivityRegistration.is_paid.is_(True))
-    elif payment_status == "partial":
-        q = q.filter(
-            ActivityRegistration.paid_amount > 0,
-            ActivityRegistration.is_paid.is_(False),
-        )
-    elif payment_status in ("unpaid", "overpaid", "no_fee"):
-        # 這三態都需 total（enrolled 課程 + 用品）做判定，與 _derive_payment_status 對齊
+    elif payment_status in ("unpaid", "partial", "overpaid", "no_fee"):
+        # 這四態都需 total（enrolled 課程 + 用品）做判定，與 _derive_payment_status 對齊
         course_total_sq = (
             sa_select(func.coalesce(func.sum(RegistrationCourse.price_snapshot), 0))
             .where(
@@ -799,6 +794,14 @@ def _build_registration_filter_query(
             q = q.filter(
                 ActivityRegistration.paid_amount == 0,
                 total_sq > 0,
+            )
+        elif payment_status == "partial":
+            # 部分繳費：0 < 已繳 < 應繳。必須比對 total（與 _derive_payment_status
+            # 對齊），否則「應繳為 0、已繳 >0」的超繳列（is_paid=False）會被舊條件
+            # （paid>0 AND is_paid=False）誤撈進 partial，同時又落入 overpaid。
+            q = q.filter(
+                ActivityRegistration.paid_amount > 0,
+                ActivityRegistration.paid_amount < total_sq,
             )
         elif payment_status == "no_fee":
             # 免繳：應繳為 0 且未繳（全候補 / 0 元課程），對齊 _derive 的 no_fee。

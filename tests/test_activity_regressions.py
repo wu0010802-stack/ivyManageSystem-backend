@@ -1427,3 +1427,53 @@ class TestOverpaidFilterIncludesSupplyOnlyRegs:
         body = res.json()
         ids = [r["id"] for r in body.get("registrations", body.get("items", []))]
         assert reg_id in ids, f"overpaid filter 未返回 {reg_id}; got: {body}"
+
+
+class TestPartialFilterExcludesZeroTotalOverpaid:
+    """payment_status=partial 篩選不可混入『應繳 0、已繳 >0』的超繳列。
+
+    Why: 舊 partial 條件只有 `paid_amount > 0 AND is_paid = False`，未比對 total。
+    應繳為 0（全候補 / 0 元）但 paid_amount > 0 的報名，_derive_payment_status
+    判定為 overpaid，但 is_paid 為 False（_compute_is_paid 要求 total>0），於是
+    同時落入 partial 與 overpaid。partial 的語意應為 `0 < paid < total`。
+    """
+
+    def test_partial_filter_excludes_zero_total_overpaid_reg(self, activity_client):
+        client, session_factory = activity_client
+
+        with session_factory() as session:
+            _create_admin(session)
+            # 無 enrolled 課程、無用品 → 應繳 total=0；但 paid_amount > 0（誤繳/超繳）
+            reg = _create_registration(
+                session,
+                student_name="零應繳超繳生",
+                class_name="大班",
+                parent_phone="0966666666",
+            )
+            reg.paid_amount = 500
+            session.commit()
+            reg_id = reg.id
+
+        login_res = _login(client)
+        assert login_res.status_code == 200
+
+        partial = client.get("/api/activity/registrations?payment_status=partial")
+        assert partial.status_code == 200
+        partial_body = partial.json()
+        partial_ids = [
+            r["id"]
+            for r in partial_body.get("registrations", partial_body.get("items", []))
+        ]
+        assert (
+            reg_id not in partial_ids
+        ), f"partial 不應包含 total=0 的超繳列 {reg_id}; got: {partial_body}"
+
+        # sanity：該列應落在 overpaid 篩選
+        overpaid = client.get("/api/activity/registrations?payment_status=overpaid")
+        overpaid_ids = [
+            r["id"]
+            for r in overpaid.json().get(
+                "registrations", overpaid.json().get("items", [])
+            )
+        ]
+        assert reg_id in overpaid_ids

@@ -37,6 +37,11 @@ from utils.auth import require_parent_role
 
 from ._dependencies import get_parent_db
 from ._shared import _assert_student_owned, _get_parent_student_ids
+from api.activity._shared import (
+    _calc_total_amount,
+    _check_registration_open,
+    _derive_payment_status,
+)
 
 router = APIRouter(prefix="/activity", tags=["parent-activity"])
 
@@ -113,6 +118,11 @@ def _registration_summary(session, reg: ActivityRegistration) -> dict:
         .filter(RegistrationCourse.registration_id == reg.id)
         .all()
     )
+    # ④ 直接回傳金額口徑，前端不再自行加總（避免漏扣已繳、誤計候補課程、漏算用品）。
+    # total_amount 只計 enrolled 課程 + 用品（候補不計），與 _derive_payment_status /
+    # 後台 / 公開端口徑一致。
+    paid_amount = reg.paid_amount or 0
+    total_amount = _calc_total_amount(session, reg.id)
     return {
         "id": reg.id,
         "student_id": reg.student_id,
@@ -120,7 +130,10 @@ def _registration_summary(session, reg: ActivityRegistration) -> dict:
         "school_year": reg.school_year,
         "semester": reg.semester,
         "is_paid": bool(reg.is_paid),
-        "paid_amount": reg.paid_amount or 0,
+        "paid_amount": paid_amount,
+        "total_amount": total_amount,
+        "outstanding_amount": max(total_amount - paid_amount, 0),
+        "payment_status": _derive_payment_status(paid_amount, total_amount),
         "match_status": reg.match_status,
         "pending_review": bool(reg.pending_review),
         "courses": [
@@ -173,6 +186,10 @@ def register_courses(
     """登入版報名：student_id 必為自己小孩、parent_phone 自動從 Guardian 帶入。"""
     if not payload.course_ids and not payload.supply_ids:
         raise HTTPException(status_code=400, detail="至少需選擇一門課程或一項用品")
+
+    # ② 登入家長報名同樣受報名開放時間限制（比照公開端 public_register）。
+    # 否則後台關閉報名 / 已截止後，登入家長仍可直接打 API 繞過時段。
+    _check_registration_open(session)
 
     user_id = current_user["user_id"]
     _assert_student_owned(session, user_id, payload.student_id, for_write=True)
@@ -228,21 +245,32 @@ def register_courses(
     session.add(reg)
     session.flush()
 
-    # 加入課程：依容量決定 enrolled / waitlist。容量檢查同樣需用 admin-bypass
-    # SECURITY DEFINER function 取真實 count（RLS 隔離下只看自己會誤判沒滿）
-    for course_id in payload.course_ids:
-        # F1：限定同學期課程，避免把舊學期 active 課程掛到新學期報名（對齊公開/後台端）。
-        # 學期不符即視為查無此課，沿用既有「找不到課程」400 分支。
-        course = (
-            session.query(ActivityCourse)
+    # ① 對本次報名涉及的課程列加行鎖（with_for_update），與公開端 public_register
+    # 相同的鎖定策略：序列化「讀容量 → 判 enrolled/waitlist → 寫入」，避免並發報名
+    # 同時讀到最後名額都寫成 enrolled 造成超賣。一次以 id 排序整批鎖定（而非逐課
+    # 迴圈鎖），避免兩個請求以不同順序鎖多課程互等的死結。SQLite 下 FOR UPDATE
+    # 為 no-op（同 public_register），真正序列化由 PostgreSQL 行鎖提供。
+    # F1：限定同學期課程，避免把舊學期 active 課程掛到新學期報名（對齊公開/後台端）。
+    locked_courses: dict[int, ActivityCourse] = {}
+    if payload.course_ids:
+        locked_courses = {
+            c.id: c
+            for c in session.query(ActivityCourse)
             .filter(
-                ActivityCourse.id == course_id,
+                ActivityCourse.id.in_(sorted(payload.course_ids)),
                 ActivityCourse.is_active == True,
                 ActivityCourse.school_year == payload.school_year,
                 ActivityCourse.semester == payload.semester,
             )
-            .first()
-        )
+            .with_for_update()
+            .all()
+        }
+
+    # 加入課程：依容量決定 enrolled / waitlist。容量檢查同樣需用 admin-bypass
+    # SECURITY DEFINER function 取真實 count（RLS 隔離下只看自己會誤判沒滿）
+    for course_id in payload.course_ids:
+        # 學期不符 / 不存在即視為查無此課，沿用既有「找不到課程」400 分支。
+        course = locked_courses.get(course_id)
         if course is None:
             raise HTTPException(status_code=400, detail=f"找不到課程 id={course_id}")
         enrolled_count = int(
