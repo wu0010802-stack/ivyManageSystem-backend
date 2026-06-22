@@ -88,6 +88,7 @@ from services.activity_payment_guards import (  # noqa: E402, F401
     require_approve_for_high_price,
     require_approve_for_large_refund,
     require_approve_for_cumulative_refund,
+    require_approve_for_refund_diff,
 )
 
 

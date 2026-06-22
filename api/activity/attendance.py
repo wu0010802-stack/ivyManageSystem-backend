@@ -138,6 +138,7 @@ def list_sessions(
 )
 def create_session(
     body: SessionCreate,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """建立場次（同課程同日重複則 400）
@@ -171,6 +172,21 @@ def create_session(
             session.rollback()
             raise HTTPException(status_code=400, detail="該課程在此日期已有場次")
         session.refresh(sess)
+        # AuditMiddleware 不涵蓋 /api/activity/attendance/*（見 delete_session 註解），
+        # 故顯式留稽核：誰建了哪課哪日的場次。
+        write_explicit_audit(
+            request,
+            action="CREATE",
+            entity_type="activity_session",
+            entity_id=str(sess.id),
+            summary=f"建立才藝場次：「{course.name}」{sess.session_date.isoformat()}",
+            changes={
+                "course_id": sess.course_id,
+                "course_name": course.name,
+                "session_date": sess.session_date.isoformat(),
+                "operator": current_user.get("username", ""),
+            },
+        )
         return {
             "id": sess.id,
             "course_id": sess.course_id,
@@ -191,6 +207,7 @@ def create_session(
 )
 def create_sessions_batch(
     body: SessionBatchCreate,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """依「每週上課星期」在日期範圍內批次建立場次（取代逐堂手動新增十幾二十次）。
@@ -262,6 +279,30 @@ def create_sessions_batch(
             except IntegrityError:
                 skipped += 1
         session.commit()
+
+        # AuditMiddleware 不涵蓋 /api/activity/attendance/*，顯式留稽核：
+        # 批次一次最多 60 場，需記誰、哪課、日期範圍、建立/跳過筆數。
+        write_explicit_audit(
+            request,
+            action="CREATE",
+            entity_type="activity_session",
+            entity_id=str(course.id),
+            summary=(
+                f"批次建立才藝場次：「{course.name}」"
+                f"{body.start_date.isoformat()}~{body.end_date.isoformat()} "
+                f"共 {len(created_dates)} 場（跳過 {skipped}）"
+            ),
+            changes={
+                "course_id": course.id,
+                "course_name": course.name,
+                "weekday": weekday,
+                "start_date": body.start_date.isoformat(),
+                "end_date": body.end_date.isoformat(),
+                "created_count": len(created_dates),
+                "skipped_existing": skipped,
+                "operator": username,
+            },
+        )
 
         return {
             "course_id": course.id,
@@ -389,6 +430,7 @@ def get_session_detail(
 )
 def export_session_attendance(
     session_id: int,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """匯出場次點名記錄（Excel）"""
@@ -403,6 +445,28 @@ def export_session_attendance(
             raise HTTPException(status_code=404, detail="找不到場次")
 
         data = _build_session_detail_response(session, sess)
+
+        # 批次 PII 下載（學生姓名/班級全名單）須留稽核軌跡；AuditMiddleware
+        # 不涵蓋 /api/activity/attendance/*，故顯式 write_explicit_audit。
+        # 註：輸出欄位（姓名/班級）與互動端 get_session_detail 一致、不含學生 FK，
+        # 故沿用 ACTIVITY_READ 不另做 scope 遮罩（與螢幕端同口徑）。
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="activity_session",
+            entity_id=str(session_id),
+            summary=(
+                f"匯出才藝點名（Excel）：「{data['course_name']}」"
+                f"{data['session_date']}（{data['total']} 名學生）"
+            ),
+            changes={
+                "course_id": sess.course_id,
+                "session_date": data["session_date"],
+                "student_count": data["total"],
+                "format": "xlsx",
+                "operator": current_user.get("username", ""),
+            },
+        )
 
         wb = openpyxl.Workbook()
         ws = SafeWorksheet(wb.active)
@@ -440,6 +504,7 @@ def export_session_attendance(
 )
 def print_session_roll_pdf(
     session_id: int,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """產生場次點名單 PDF（瀏覽器原生 PDF viewer 可直接列印）。"""
@@ -453,6 +518,24 @@ def print_session_roll_pdf(
         if not sess:
             raise HTTPException(status_code=404, detail="找不到場次")
         data = _build_session_detail_response(session, sess)
+        # 批次 PII 下載須留稽核（同 export，dedup=False 保留每次列印軌跡）。
+        write_explicit_audit(
+            request,
+            action="EXPORT",
+            entity_type="activity_session",
+            entity_id=str(session_id),
+            summary=(
+                f"列印才藝點名單（PDF）：「{data['course_name']}」"
+                f"{data['session_date']}（{data['total']} 名學生）"
+            ),
+            changes={
+                "course_id": sess.course_id,
+                "session_date": data["session_date"],
+                "student_count": data["total"],
+                "format": "pdf",
+                "operator": current_user.get("username", ""),
+            },
+        )
         pdf_bytes = generate_attendance_roll_pdf(session_data=data)
         filename = f"點名單_{data['course_name']}_{data['session_date']}.pdf"
         return StreamingResponse(

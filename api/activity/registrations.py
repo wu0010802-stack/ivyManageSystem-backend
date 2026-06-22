@@ -79,6 +79,7 @@ from ._shared import (
     require_refund_reason,
     require_approve_for_large_refund,
     require_approve_for_cumulative_refund,
+    require_approve_for_refund_diff,
     TAIPEI_TZ,
     today_taipei,
 )
@@ -819,6 +820,17 @@ def delete_registration(
                 paid_before,
                 current_user,
                 label="刪除報名自動沖帳累積退費總額",
+            )
+            # 偏離建議值閘：整筆刪除＝退全部已繳，與整 reg 的 calculator 建議退費
+            # 比對；與 POS / writeoff 退費閘對齊（fail-fast，刪除前先擋）。
+            suggested_total = build_refund_suggestion(session, registration_id)[
+                "total_suggested_amount"
+            ]
+            require_approve_for_refund_diff(
+                diff=abs(paid_before - suggested_total),
+                current_user=current_user,
+                suggested_total=suggested_total,
+                actual_total=paid_before,
             )
 
         activity_service.delete_registration(

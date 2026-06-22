@@ -25,6 +25,7 @@ _CACHE_KEY_AVAILABILITY = "all"
 _CACHE_TTL_AVAILABILITY = 10  # seconds — advisory display only, true overbooking guard is register with_for_update
 
 from utils.errors import raise_safe_500
+from utils.audit import write_explicit_audit
 
 _POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _POSTER_MODULE = "activity_posters"
@@ -1272,6 +1273,7 @@ def public_confirm_promotion(
     registration_id: int,
     course_id: int,
     body: _PromotionActionPayload,
+    request: Request,
     _: None = Depends(_public_confirm_limiter),
 ):
     """家長確認接受候補轉正（三欄驗證）。
@@ -1321,6 +1323,22 @@ def public_confirm_promotion(
         )
         session.commit()
         _invalidate_after_registration_mutation(session)
+        # 家長端候補轉正影響名額/收費；AuditMiddleware 未涵蓋此 public 子路由，
+        # 顯式留稽核（含 IP），對齊 /public/update 的軌跡可一起篩。
+        write_explicit_audit(
+            request,
+            action="UPDATE",
+            entity_type="activity_registration",
+            entity_id=str(registration_id),
+            summary=f"家長確認候補轉正：「{course_name}」（{student_name}）",
+            changes={
+                "course_id": course_id,
+                "course_name": course_name,
+                "student_name": student_name,
+                "actor": "parent",
+                "event": "confirm_promotion",
+            },
+        )
         return {"message": f"已確認升為正式：{course_name}"}
     except HTTPException:
         session.rollback()
@@ -1343,6 +1361,7 @@ def public_decline_promotion(
     registration_id: int,
     course_id: int,
     body: _PromotionActionPayload,
+    request: Request,
     _: None = Depends(_public_confirm_limiter),
 ):
     """家長放棄候補轉正（三欄驗證）。該課程報名會被刪除，遞補下一位。"""
@@ -1373,6 +1392,21 @@ def public_decline_promotion(
             raise
         session.commit()
         _invalidate_after_registration_mutation(session)
+        # 放棄會刪除該課程報名、釋出名額給下一位候補，更需留軌跡（含 IP）。
+        write_explicit_audit(
+            request,
+            action="DELETE",
+            entity_type="activity_registration",
+            entity_id=str(registration_id),
+            summary=f"家長放棄候補轉正（釋出名額）：「{course_name}」（{student_name}）",
+            changes={
+                "course_id": course_id,
+                "course_name": course_name,
+                "student_name": student_name,
+                "actor": "parent",
+                "event": "decline_promotion",
+            },
+        )
         return {"message": f"已放棄升正式：{course_name}"}
     except HTTPException:
         session.rollback()
