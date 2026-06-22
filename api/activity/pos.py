@@ -1519,6 +1519,7 @@ def pos_semester_reconciliation(
         # 彙總器
         agg_total_amount = 0
         agg_paid_amount = 0
+        agg_outstanding_amount = 0
         agg_approved_paid = 0
         agg_pending_paid = 0
         agg_offline_paid = 0
@@ -1590,6 +1591,7 @@ def pos_semester_reconciliation(
 
             agg_total_amount += total
             agg_paid_amount += paid
+            agg_outstanding_amount += owed
             agg_approved_paid += approved_net
             agg_pending_paid += pending_net
             agg_offline_paid += offline_paid
@@ -1630,7 +1632,7 @@ def pos_semester_reconciliation(
                 "registration_count": len(items),
                 "total_amount": agg_total_amount,
                 "paid_amount": agg_paid_amount,
-                "outstanding_amount": max(0, agg_total_amount - agg_paid_amount),
+                "outstanding_amount": agg_outstanding_amount,
                 "approved_paid_amount": agg_approved_paid,
                 "pending_paid_amount": agg_pending_paid,
                 "offline_paid_amount": agg_offline_paid,
