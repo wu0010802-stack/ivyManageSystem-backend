@@ -45,6 +45,16 @@ from api.activity._shared import (
 
 router = APIRouter(prefix="/activity", tags=["parent-activity"])
 
+# Finding 6（2026-06-22）：capacity=NULL 視為 30（與 _attach_courses /
+# registrations_items / 公開端等 5 處 `capacity if not None else 30` 慣例一致）。
+# 原本家長端用 `capacity or 0` 把 NULL→0，導致歷史 NULL 容量課程全顯額滿、
+# 報名一律進候補。注意 0 與 None 語意不同：明確 0 表示真的不開放名額，須保留。
+DEFAULT_COURSE_CAPACITY = 30
+
+
+def _effective_capacity(capacity: Optional[int]) -> int:
+    return DEFAULT_COURSE_CAPACITY if capacity is None else capacity
+
 
 class RegisterPayload(BaseModel):
     student_id: int = Field(..., gt=0)
@@ -103,7 +113,7 @@ def list_courses(
             "description": c.description,
             "video_url": c.video_url,
             "enrolled_count": enrolled_counts.get(c.id, 0),
-            "is_full": enrolled_counts.get(c.id, 0) >= (c.capacity or 0),
+            "is_full": enrolled_counts.get(c.id, 0) >= _effective_capacity(c.capacity),
         }
         for c in courses
     ]
@@ -277,7 +287,7 @@ def register_courses(
             session.execute(func.public_count_enrolled(course_id).select()).scalar()
             or 0
         )
-        if enrolled_count < (course.capacity or 0):
+        if enrolled_count < _effective_capacity(course.capacity):
             status = "enrolled"
         elif course.allow_waitlist:
             status = "waitlist"
