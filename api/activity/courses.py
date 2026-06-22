@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     get_session,
@@ -326,8 +327,9 @@ def copy_courses_from_previous(
                     )
                     session.add(new_course)
                     session.flush()
-            except Exception:
-                # savepoint 已自動回滾，視同「已存在」跳過
+            except IntegrityError:
+                # savepoint 已自動回滾，視同「已存在」跳過（只捕 unique 衝突）
+                # 其他非 IntegrityError 例外應往外傳播，由外層 except→raise_safe_500 處理
                 skipped += 1
                 continue
             created_ids.append(new_course.id)

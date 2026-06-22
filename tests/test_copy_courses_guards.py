@@ -7,6 +7,7 @@
 
 import os
 import sys
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -376,3 +377,70 @@ class TestCopyCoursesNameConflictSkip:
         data = res.json()
         assert data["created"] == 0
         assert data["skipped"] == 2
+
+
+# ─────────────────────────────────────────────────────────────────── #
+# Bug B 延伸：非 IntegrityError 例外不應被靜默吞掉（收窄守衛）
+# ─────────────────────────────────────────────────────────────────── #
+
+
+class TestCopyCoursesNonIntegrityErrorPropagates:
+    """savepoint 內拋出非 IntegrityError（如 RuntimeError）時，例外應往外傳播，
+    不被靜默計入 skipped、不回正常 201。
+
+    修前（except Exception）：RuntimeError 被吞 → 回 201 created=0 skipped=1（靜默錯誤）。
+    修後（except IntegrityError）：RuntimeError 傳播 → 回 500。
+    """
+
+    def test_runtime_error_in_flush_propagates_not_silenced(self, client_factory):
+        """session.flush 拋 RuntimeError 時，端點應回 500 而非 201。"""
+        client, sf = client_factory
+        _create_user(
+            sf,
+            username="admin3",
+            password="Pass1234!",
+            permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
+        )
+        _login(client, username="admin3", password="Pass1234!")
+
+        src_sy, src_sem, tgt_sy, tgt_sem = _source_term()
+
+        with sf() as s:
+            s.add(
+                ActivityCourse(
+                    name="測試課程",
+                    price=500,
+                    sessions=5,
+                    capacity=5,
+                    school_year=src_sy,
+                    semester=src_sem,
+                    is_active=True,
+                )
+            )
+            s.commit()
+
+        # 讓 session.flush 拋一個非 IntegrityError 例外（模擬 DB 連線中斷等非預期錯誤）
+        original_flush = None
+
+        def flush_raising_runtime_error(*args, **kwargs):
+            raise RuntimeError("模擬非預期的資料庫錯誤")
+
+        with patch(
+            "api.activity.courses.ActivityCourse.__init__",
+            side_effect=RuntimeError("模擬非預期的資料庫錯誤"),
+        ):
+            res = client.post(
+                "/api/activity/courses/copy-from-previous",
+                json={
+                    "source_school_year": src_sy,
+                    "source_semester": src_sem,
+                    "target_school_year": tgt_sy,
+                    "target_semester": tgt_sem,
+                },
+            )
+
+        # 修後（except IntegrityError）：RuntimeError 不被捕捉 → 500
+        # 修前（except Exception）：RuntimeError 被吞 → 201 skipped=1（錯誤的靜默行為）
+        assert (
+            res.status_code == 500
+        ), f"非 IntegrityError 例外應傳播為 500，實際回傳 {res.status_code}: {res.json()}"
