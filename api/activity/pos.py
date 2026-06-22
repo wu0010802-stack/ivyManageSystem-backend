@@ -335,6 +335,37 @@ def _has_any_record_for_key(session, idempotency_key: str) -> bool:
     )
 
 
+def _receipt_content_signature(session, record: ActivityPaymentRecord) -> tuple:
+    """重建命中收據的內容簽章，供冪等 replay 前的內容守衛比對。
+
+    回傳 (frozenset[(registration_id, amount)], type, payment_date)，只計未作廢
+    紀錄（代表這張收據「目前生效」的內容）。一張收據可含多筆 registration（多
+    item），故 item 集合要涵蓋同 receipt_no 的全部有效紀錄，不能只看 hit 單筆。
+    舊紀錄無 receipt_no 時退回 hit 單筆。
+    """
+    receipt_no = record.receipt_no
+    recs = []
+    if receipt_no:
+        recs = (
+            session.query(ActivityPaymentRecord)
+            .filter(
+                ActivityPaymentRecord.receipt_no == receipt_no,
+                ActivityPaymentRecord.voided_at.is_(None),
+            )
+            .all()
+        )
+    if not recs:
+        recs = [record]
+    items = frozenset((r.registration_id, r.amount) for r in recs)
+    return (items, record.type, record.payment_date)
+
+
+def _request_content_signature(body: "POSCheckoutRequest") -> tuple:
+    """本次 checkout request 的內容簽章，與 _receipt_content_signature 同形狀。"""
+    items = frozenset((it.registration_id, it.amount) for it in body.items)
+    return (items, body.type, body.payment_date)
+
+
 # 無 idempotency_key 時的短窗去重視窗（秒）。官方 UI 一律帶 key，靠 DB 全域
 # UNIQUE 擋重送；但外部呼叫端（curl / 腳本 / 前端 bug）若漏帶 key，advisory
 # lock 只「序列化」兩筆相同退費/繳費，兩筆仍會各自 INSERT → 重複出帳。
@@ -675,6 +706,27 @@ def pos_checkout(
         if body.idempotency_key:
             existing = _find_idempotent_hit(session, body.idempotency_key)
             if existing is not None:
+                # 內容守衛：同 key 必須對應同一張收據內容（項目集合/金額/付款
+                # 類型/付款日期）。否則使用者在網路丟回應後改了金額再用同一把
+                # key 重送，會收到舊收據而新交易不建立 → 帳實不符。對齊 sibling
+                # add_registration_payment / fees refund 的上下文守衛語意。
+                if _request_content_signature(body) != _receipt_content_signature(
+                    session, existing
+                ):
+                    logger.warning(
+                        "POS checkout idempotent key content mismatch: "
+                        "key=%s operator=%s",
+                        body.idempotency_key,
+                        operator,
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "idempotency_key 已用於不同內容的收據"
+                            "（項目/金額/付款類型/付款日期不符）；"
+                            "若需建立新交易，請使用新的 idempotency_key 重送"
+                        ),
+                    )
                 replay = _parse_receipt_response_from_record(session, existing)
                 if replay is not None:
                     logger.info(
