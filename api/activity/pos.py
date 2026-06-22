@@ -220,18 +220,28 @@ def _parse_receipt_response_from_record(
         receipt_no = m.group(1)
 
     # 該收據對應的所有付款記錄（同 receipt_no 代表一張收據）
-    # 用欄位 + index 查詢；不再依賴 notes LIKE 以免受使用者備註污染
+    # 用欄位 + index 查詢；不再依賴 notes LIKE 以免受使用者備註污染。
+    # 一律排除已作廢（voided_at IS NOT NULL）紀錄：重建收據用於 replay / 重印，
+    # 若把已作廢付款重新加總，會印出含已作廢金額的「有效」收據（與 daily 對帳、
+    # finance report 等其他流水查詢一致皆濾 voided）。整張作廢 → same_recs 為空
+    # → 回 None，呼叫端（print 端點 / replay）據此回 404 / 不 replay。
     same_recs = (
         session.query(ActivityPaymentRecord)
-        .filter(ActivityPaymentRecord.receipt_no == receipt_no)
+        .filter(
+            ActivityPaymentRecord.receipt_no == receipt_no,
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
         .order_by(ActivityPaymentRecord.id.asc())
         .all()
     )
-    # Fallback：舊資料尚未 backfill receipt_no 時，回退到 notes 比對
+    # Fallback：舊資料尚未 backfill receipt_no 時，回退到 notes 比對（同樣濾 voided）
     if not same_recs:
         same_recs = (
             session.query(ActivityPaymentRecord)
-            .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+            .filter(
+                ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"),
+                ActivityPaymentRecord.voided_at.is_(None),
+            )
             .order_by(ActivityPaymentRecord.id.asc())
             .all()
         )
@@ -335,6 +345,37 @@ def _has_any_record_for_key(session, idempotency_key: str) -> bool:
     )
 
 
+def _receipt_content_signature(session, record: ActivityPaymentRecord) -> tuple:
+    """重建命中收據的內容簽章，供冪等 replay 前的內容守衛比對。
+
+    回傳 (frozenset[(registration_id, amount)], type, payment_date)，只計未作廢
+    紀錄（代表這張收據「目前生效」的內容）。一張收據可含多筆 registration（多
+    item），故 item 集合要涵蓋同 receipt_no 的全部有效紀錄，不能只看 hit 單筆。
+    舊紀錄無 receipt_no 時退回 hit 單筆。
+    """
+    receipt_no = record.receipt_no
+    recs = []
+    if receipt_no:
+        recs = (
+            session.query(ActivityPaymentRecord)
+            .filter(
+                ActivityPaymentRecord.receipt_no == receipt_no,
+                ActivityPaymentRecord.voided_at.is_(None),
+            )
+            .all()
+        )
+    if not recs:
+        recs = [record]
+    items = frozenset((r.registration_id, r.amount) for r in recs)
+    return (items, record.type, record.payment_date)
+
+
+def _request_content_signature(body: "POSCheckoutRequest") -> tuple:
+    """本次 checkout request 的內容簽章，與 _receipt_content_signature 同形狀。"""
+    items = frozenset((it.registration_id, it.amount) for it in body.items)
+    return (items, body.type, body.payment_date)
+
+
 # 無 idempotency_key 時的短窗去重視窗（秒）。官方 UI 一律帶 key，靠 DB 全域
 # UNIQUE 擋重送；但外部呼叫端（curl / 腳本 / 前端 bug）若漏帶 key，advisory
 # lock 只「序列化」兩筆相同退費/繳費，兩筆仍會各自 INSERT → 重複出帳。
@@ -417,6 +458,13 @@ def print_pos_receipt_pdf(
         receipt = _parse_receipt_response_from_record(session, anchor)
         if receipt is None:
             raise HTTPException(status_code=404, detail="找不到此收據")
+        # operator 遮罩：與 /pos/recent-transactions 同口徑——僅 ACTIVITY_PAYMENT_APPROVE
+        # 才見真實經手人，否則遮成 [已遮罩]，避免只持 ACTIVITY_READ 的低權限員工
+        # 透過 PDF 端點繞過列表遮罩取得「誰收的款」。遮罩只加在此 read 端點層，
+        # 不放進 _parse_receipt_response_from_record（該函式亦供 checkout replay
+        # 共用，操作者本人需見自己的名字）。
+        if not has_finance_approve(current_user):
+            receipt["operator"] = "[已遮罩]"
         # 補印標記
         receipt["is_reprint"] = True
 
@@ -622,10 +670,19 @@ def outstanding_by_student(
 
 
 def _lock_regs(session, reg_ids: list):
-    """對 registration 取得行級鎖。SQLite 不支援 FOR UPDATE，在測試時自動降級。"""
-    query = session.query(ActivityRegistration).filter(
-        ActivityRegistration.id.in_(reg_ids),
-        ActivityRegistration.is_active.is_(True),
+    """對 registration 取得行級鎖。SQLite 不支援 FOR UPDATE，在測試時自動降級。
+
+    order_by(id)：以 id 升冪取 row lock，與離園同步 sync 一致，使全系統 row-lock
+    取鎖序確定一致，杜絕「同一學生多筆 reg 同時被 checkout 與離園 sync 鎖到、兩邊
+    取鎖序相反」的 row-vs-row deadlock。
+    """
+    query = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.id.in_(reg_ids),
+            ActivityRegistration.is_active.is_(True),
+        )
+        .order_by(ActivityRegistration.id)
     )
     try:
         # PostgreSQL / MySQL：row-level lock
@@ -675,6 +732,27 @@ def pos_checkout(
         if body.idempotency_key:
             existing = _find_idempotent_hit(session, body.idempotency_key)
             if existing is not None:
+                # 內容守衛：同 key 必須對應同一張收據內容（項目集合/金額/付款
+                # 類型/付款日期）。否則使用者在網路丟回應後改了金額再用同一把
+                # key 重送，會收到舊收據而新交易不建立 → 帳實不符。對齊 sibling
+                # add_registration_payment / fees refund 的上下文守衛語意。
+                if _request_content_signature(body) != _receipt_content_signature(
+                    session, existing
+                ):
+                    logger.warning(
+                        "POS checkout idempotent key content mismatch: "
+                        "key=%s operator=%s",
+                        body.idempotency_key,
+                        operator,
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "idempotency_key 已用於不同內容的收據"
+                            "（項目/金額/付款類型/付款日期不符）；"
+                            "若需建立新交易，請使用新的 idempotency_key 重送"
+                        ),
+                    )
                 replay = _parse_receipt_response_from_record(session, existing)
                 if replay is not None:
                     logger.info(

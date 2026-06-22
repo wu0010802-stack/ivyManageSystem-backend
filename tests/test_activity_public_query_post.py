@@ -219,3 +219,59 @@ class TestPublicQueryMethodChanged:
             json={"name": "王小明", "birthday": "2020-05-10"},
         )
         assert res.status_code == 422
+
+
+class TestPublicQueryTermDeterministic:
+    """#5：多筆跨學期 active 報名時，三欄查詢應 deterministic 取最新學期那筆。
+
+    同一學生同家長手機可在不同學期各有一筆 active 報名（partial unique index
+    per-term 允許）。原查詢無 order_by → 任意取 DB 預設順序第一筆（通常最舊）。
+    """
+
+    def test_multiple_active_terms_returns_newest(self, query_post_client):
+        client, sf = query_post_client
+        from utils.academic import resolve_current_academic_term
+
+        sy, sem = resolve_current_academic_term()
+        with sf() as s:
+            # 舊學期先建（id 較小）
+            old = ActivityRegistration(
+                student_name="陳小華",
+                birthday="2019-03-03",
+                parent_phone="0987654321",
+                is_active=True,
+                school_year=sy - 1,
+                semester=sem,
+                match_status="matched",
+                paid_amount=0,
+            )
+            s.add(old)
+            s.flush()
+            new = ActivityRegistration(
+                student_name="陳小華",
+                birthday="2019-03-03",
+                parent_phone="0987654321",
+                is_active=True,
+                school_year=sy,
+                semester=sem,
+                match_status="matched",
+                paid_amount=0,
+            )
+            s.add(new)
+            s.flush()
+            s.commit()
+            old_id, new_id = old.id, new.id
+        assert old_id < new_id  # 前置：舊學期 id 較小（驗證修前會取到它）
+
+        res = client.post(
+            "/api/activity/public/query",
+            json={
+                "name": "陳小華",
+                "birthday": "2019-03-03",
+                "parent_phone": "0987654321",
+            },
+        )
+        assert res.status_code == 200, res.text
+        assert (
+            res.json()["id"] == new_id
+        ), "多筆跨學期 active 報名應 deterministic 取最新學期（修前依 DB 預設順序取最舊）"

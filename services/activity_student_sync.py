@@ -21,6 +21,8 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
+from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import CompileError
 
 from models.database import (
     ActivityPaymentRecord,
@@ -39,6 +41,27 @@ logger = logging.getLogger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 SYSTEM_RECONCILE_METHOD = "系統補齊"
+
+
+def _term_current_and_future(sy: int, sem: int):
+    """「當前學期及之後」的篩選條件。
+
+    school_year / semester 皆為 Integer（民國學年 / 1=上 2=下），可直接排序比較。
+    用於學生離園：未來學期 active 報名也須一併取消，避免續佔名額或被候補/付款
+    流程處理（歷史學期則保留供報表追溯，故用 >= 而非全部）。
+
+    註：school_year/semester 為 nullable，NULL-term 的 active 報名會被本條件靜默
+    排除（與改動前 ``== sy AND == sem`` 行為一致，非本次回歸）。實務上正常報名流程
+    一律帶當前學期，NULL-term 屬異常資料；若日後出現 NULL-term 已繳費 active 報名，
+    離園不會自動沖帳，需另行盤查。
+    """
+    return or_(
+        ActivityRegistration.school_year > sy,
+        and_(
+            ActivityRegistration.school_year == sy,
+            ActivityRegistration.semester >= sem,
+        ),
+    )
 
 
 def _match_student_id(session, name: str, birthday: str) -> Optional[int]:
@@ -161,7 +184,11 @@ def sync_registrations_on_student_deactivate(
     """學生畢業 / 退學 / 刪除時，軟刪該生當前學期啟用中 ActivityRegistration。
 
     - 把 is_active 設為 False；保留原 match_status（供後台稽核）
-    - 只處理當前學期（歷史學期的報名維持原狀，仍可供報表追溯）
+    - 處理當前學期「及之後」（含未來學期 active 報名，避免續佔名額或被候補/
+      付款流程處理）；歷史學期報名維持原狀，仍可供報表追溯
+    - row lock（FOR UPDATE）+ populate_existing 取鎖內最新 paid_amount，與並發
+      POS 收款序列化，杜絕用 stale 值覆寫（lost update）。鎖序：daily-close
+      advisory 先、row lock 後（全 caller 統一，避免 deadlock）
     - **若 paid_amount > 0**：自動寫一筆「系統補齊」退費沖帳紀錄並清零，
       並以 logger.warning 留痕提醒管理員處理實體退款；避免幽靈金額留存
     - **金流守衛**：若有任何 paid_amount > 0 且呼叫者未具 ACTIVITY_PAYMENT_APPROVE
@@ -172,21 +199,55 @@ def sync_registrations_on_student_deactivate(
     - 回傳影響筆數
     """
     sy, sem = resolve_current_academic_term()
-
-    regs = (
-        session.query(ActivityRegistration)
-        .filter(
-            ActivityRegistration.student_id == student_id,
-            ActivityRegistration.is_active.is_(True),
-            ActivityRegistration.school_year == sy,
-            ActivityRegistration.semester == sem,
-        )
-        .all()
-    )
     today = datetime.now(TAIPEI_TZ).date()
-    has_paid = any((r.paid_amount or 0) > 0 for r in regs)
-    if has_paid:
+
+    base_filter = (
+        ActivityRegistration.student_id == student_id,
+        ActivityRegistration.is_active.is_(True),
+        _term_current_and_future(sy, sem),
+    )
+
+    # ── 鎖序協議（全 caller 統一）：daily-close advisory 先、row lock 後 ──
+    # POS checkout 走 advisory(payment_date) → row lock。本路徑若先 row lock 再取
+    # advisory 會鎖序倒置 deadlock。故先「無鎖預讀」判斷本批是否有已繳費以決定是否
+    # 取 advisory；刻意用純量 SUM 預讀、不載入 ORM 物件，使後續 populate_existing 的
+    # FOR UPDATE 成為這些 reg 的（強制刷新）載入，取得鎖內最新值。
+    prelim_paid_total = (
+        session.query(func.coalesce(func.sum(ActivityRegistration.paid_amount), 0))
+        .filter(*base_filter)
+        .scalar()
+    ) or 0
+    prelim_has_paid = prelim_paid_total > 0
+    if prelim_has_paid:
         _require_daily_close_unlocked(session, today)
+
+    # ── row lock（advisory 之後）+ populate_existing：取得鎖內最新 paid_amount ──
+    # 不加 populate_existing 時，若 reg 已在 session identity-map（同步流程先前讀過），
+    # 查詢會回傳 stale 物件 → 自動沖帳用舊值覆寫並發 POS 已寫入的 paid_amount（lost
+    # update）。SQLite 測試環境不支援 FOR UPDATE，降級為無鎖但仍刷新。
+    # order_by(id)：與 POS `_lock_regs` 一致以 id 升冪取 row lock，使全系統 row-lock
+    # 取鎖序確定一致，杜絕「同一學生多筆 reg 同時被 POS checkout 與離園 sync 鎖到、
+    # 兩邊取鎖序相反」的 row-vs-row deadlock。
+    reg_query = (
+        session.query(ActivityRegistration)
+        .filter(*base_filter)
+        .order_by(ActivityRegistration.id)
+    )
+    try:
+        regs = reg_query.populate_existing().with_for_update().all()
+    except (CompileError, NotImplementedError):
+        regs = reg_query.populate_existing().all()
+
+    has_paid = any((r.paid_amount or 0) > 0 for r in regs)
+    if has_paid and not prelim_has_paid:
+        # 預讀無付款、取得 row lock 後卻出現付款（並發 POS 收款落在預讀與取鎖之間）。
+        # 此刻尚未持 daily-close advisory，不可在 row lock 後補取（鎖序倒置 deadlock）。
+        # 轉 409 要求重試：重試時預讀會看到付款 → 先取 advisory 再走完整流程。
+        raise HTTPException(
+            status_code=409,
+            detail="偵測到並發才藝收款，請稍候重試離園/刪除操作",
+        )
+    if has_paid:
         if current_user is not None and not has_payment_approve(current_user):
             paid_total = sum(r.paid_amount or 0 for r in regs)
             raise HTTPException(

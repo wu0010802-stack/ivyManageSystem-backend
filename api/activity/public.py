@@ -428,12 +428,20 @@ def public_query_registration(
         normalized_phone = _normalize_phone(body.parent_phone)
         # 先抓 (name, birthday) 候選（同姓同生日通常極少），再統一在 Python 端
         # 比對 normalize 後的 phone；無論是否匹配都走相同程式路徑，壓低時序差。
+        # order_by 讓多筆跨學期 active 報名（同名同生日同手機可在不同學期各一筆，
+        # partition unique index per-term 允許）的取捨 deterministic：取最新學期，
+        # 避免依 DB 預設順序任意取到舊學期那筆。
         candidates = (
             session.query(ActivityRegistration)
             .filter(
                 ActivityRegistration.student_name == body.name,
                 ActivityRegistration.birthday == body.birthday,
                 ActivityRegistration.is_active.is_(True),
+            )
+            .order_by(
+                ActivityRegistration.school_year.desc(),
+                ActivityRegistration.semester.desc(),
+                ActivityRegistration.id.desc(),
             )
             .all()
         )

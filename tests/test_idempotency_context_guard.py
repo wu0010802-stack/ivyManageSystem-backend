@@ -404,3 +404,127 @@ class TestFeeRefundIdempotency:
         second = client.post(f"/api/fees/records/{rec_id}/refund", json=body)
         assert second.status_code == 201, second.text
         assert second.json().get("idempotent_replay") is True
+
+
+# ══════════════════════════════════════════════════════════════════════
+# activity POS checkout（多項目收據冪等內容守衛）
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestPosCheckoutIdempotency:
+    """POS /checkout 的冪等 replay 必須核對請求內容（金額/付款類型/付款日期/項目集合）。
+
+    Bug（2026-06-22 review）：原本命中 idempotency_key 即直接回舊收據，完全不比對
+    請求內容。網路丟回應後使用者改金額再用同一把 key 重送，會收到舊收據而新交易
+    不建立 → 帳實不符。對齊 sibling add_registration_payment / fees refund 的守衛。
+    """
+
+    @staticmethod
+    def _checkout(client, items, *, key, payment_date=None, type_="payment"):
+        return client.post(
+            "/api/activity/pos/checkout",
+            json={
+                "items": items,
+                "payment_method": "現金",
+                "payment_date": payment_date or date.today().isoformat(),
+                "type": type_,
+                "idempotency_key": key,
+            },
+        )
+
+    def test_pos_same_key_same_content_replays(self, idem_client):
+        """同 key 同內容 → replay 回舊收據，不雙扣。"""
+        client, sf = idem_client
+        with sf() as s:
+            _admin(s)
+            reg = _setup_activity_reg(s, paid_amount=0)
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+        items = [{"registration_id": reg_id, "amount": 500}]
+        first = self._checkout(client, items, key="pos-replay-k")
+        assert first.status_code == 201, first.text
+        second = self._checkout(client, items, key="pos-replay-k")
+        assert second.status_code == 201, second.text
+        assert second.json().get("idempotent_replay") is True
+        with sf() as s:
+            recs = (
+                s.query(ActivityPaymentRecord).filter_by(registration_id=reg_id).all()
+            )
+            assert len(recs) == 1, "不應雙扣"
+
+    def test_pos_same_key_different_amount_returns_409(self, idem_client):
+        """同 key 但金額不同 → 409（避免回舊收據掩蓋新金額未入帳）。"""
+        client, sf = idem_client
+        with sf() as s:
+            _admin(s)
+            reg = _setup_activity_reg(s, paid_amount=0)
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+        first = self._checkout(
+            client, [{"registration_id": reg_id, "amount": 500}], key="pos-amt-k"
+        )
+        assert first.status_code == 201, first.text
+        second = self._checkout(
+            client, [{"registration_id": reg_id, "amount": 800}], key="pos-amt-k"
+        )
+        assert second.status_code == 409, second.text
+        with sf() as s:
+            recs = (
+                s.query(ActivityPaymentRecord).filter_by(registration_id=reg_id).all()
+            )
+            assert len(recs) == 1, "不應因內容不符而建立新紀錄"
+
+    def test_pos_same_key_different_payment_date_returns_409(self, idem_client):
+        """同 key 但付款日期不同 → 409。"""
+        client, sf = idem_client
+        with sf() as s:
+            _admin(s)
+            reg = _setup_activity_reg(s, paid_amount=0)
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+        from datetime import timedelta
+
+        items = [{"registration_id": reg_id, "amount": 500}]
+        first = self._checkout(
+            client, items, key="pos-date-k", payment_date=date.today().isoformat()
+        )
+        assert first.status_code == 201, first.text
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        second = self._checkout(client, items, key="pos-date-k", payment_date=yesterday)
+        assert second.status_code == 409, second.text
+
+    def test_pos_multi_item_same_key_changed_item_returns_409(self, idem_client):
+        """多項目收據：同 key 但其中一筆金額被改 → 409，不靜默吞掉差異。"""
+        client, sf = idem_client
+        with sf() as s:
+            _admin(s)
+            r1 = _setup_activity_reg(s, student_name="甲", paid_amount=0)
+            r2 = _setup_activity_reg(s, student_name="乙", paid_amount=0)
+            s.commit()
+            r1_id, r2_id = r1.id, r2.id
+
+        assert _login(client).status_code == 200
+        first = self._checkout(
+            client,
+            [
+                {"registration_id": r1_id, "amount": 500},
+                {"registration_id": r2_id, "amount": 300},
+            ],
+            key="pos-multi-k",
+        )
+        assert first.status_code == 201, first.text
+        second = self._checkout(
+            client,
+            [
+                {"registration_id": r1_id, "amount": 500},
+                {"registration_id": r2_id, "amount": 999},  # 改了第二筆
+            ],
+            key="pos-multi-k",
+        )
+        assert second.status_code == 409, second.text
