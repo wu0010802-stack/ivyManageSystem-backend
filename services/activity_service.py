@@ -441,8 +441,19 @@ class ActivityService:
 
         學期感知：課程本身即按學期建檔（uq_activity_course_name_term），
         以課程學期欄位過濾即可同時限定場次與出席記錄。
+
+        只計「有效報名」的點名，口徑對齊 _build_session_detail_response：
+          - ActivityRegistration.is_active IS True
+          - ActivityRegistration.match_status != 'rejected'
+          - RegistrationCourse.status == 'enrolled'
+        排除軟刪/駁回的孤兒點名，避免儀表板出席率與詳情頁不一致。
         """
-        from models.activity import ActivitySession, ActivityAttendance
+        from models.activity import (
+            ActivitySession,
+            ActivityAttendance,
+            ActivityRegistration,
+            RegistrationCourse,
+        )
 
         rows = (
             session.query(
@@ -461,6 +472,19 @@ class ActivityService:
             .join(ActivitySession, ActivityCourse.id == ActivitySession.course_id)
             .join(
                 ActivityAttendance, ActivitySession.id == ActivityAttendance.session_id
+            )
+            .join(
+                ActivityRegistration,
+                ActivityRegistration.id == ActivityAttendance.registration_id,
+            )
+            .join(
+                RegistrationCourse,
+                (RegistrationCourse.registration_id == ActivityRegistration.id)
+                & (RegistrationCourse.status == "enrolled"),
+            )
+            .filter(
+                ActivityRegistration.is_active.is_(True),
+                ActivityRegistration.match_status != "rejected",
             )
             .group_by(ActivityCourse.name)
             .all()
