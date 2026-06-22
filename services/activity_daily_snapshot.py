@@ -124,6 +124,13 @@ def compute_daily_snapshot(session, target_date: date) -> dict:
         method_key: data["payment"] - data["refund"]
         for method_key, data in by_method_map.items()
     }
+    # 毛流量：payment gross + refund gross（不相減）。
+    # 供日結簽核現金盤點門檻判斷用：即使退款把淨額壓到門檻以下，
+    # 抽屜仍有大量現金流動，仍應強制盤點。
+    by_method_gross_flow = {
+        method_key: data["payment"] + data["refund"]
+        for method_key, data in by_method_map.items()
+    }
 
     return {
         "date": target_date.isoformat(),
@@ -135,4 +142,5 @@ def compute_daily_snapshot(session, target_date: date) -> dict:
         "transaction_count": payment_count + refund_count,
         "by_method": by_method_list,
         "by_method_net": by_method_net,
+        "by_method_gross_flow": by_method_gross_flow,
     }

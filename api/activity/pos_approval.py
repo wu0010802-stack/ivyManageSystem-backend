@@ -324,17 +324,24 @@ def approve_daily_close(
         snap = compute_daily_snapshot(session, target)
         by_method_net = snap["by_method_net"]
         cash_snapshot = int(by_method_net.get(_CASH_METHOD_KEY, 0))
+        # 毛流量（payment gross + refund gross）：退款會把淨額壓低，但抽屜仍有
+        # 大量現金流動（例如收 10,000 + 退 8,000 → 淨額僅 2,000，但毛流量 18,000）。
+        # 門檻守衛改用毛流量，確保高流量日不因退款繞過強制盤點。
+        cash_gross_flow = int(
+            snap.get("by_method_gross_flow", {}).get(_CASH_METHOD_KEY, 0)
+        )
 
-        # 盤點門檻守衛：預期現金 ≥ 3,000 必填 actual_cash_count
-        # Why: 小金額日子免盤點降低操作疲勞；大金額日子強迫對齊以避免簽核盲簽
+        # 盤點門檻守衛：現金毛流量 ≥ 3,000 必填 actual_cash_count
+        # Why: 小金額日子免盤點降低操作疲勞；大金額日子強迫對齊以避免簽核盲簽；
+        #      改用毛流量以防退款壓低淨額後繞過門檻
         if (
-            cash_snapshot >= _CASH_COUNT_REQUIRED_THRESHOLD
+            cash_gross_flow >= _CASH_COUNT_REQUIRED_THRESHOLD
             and body.actual_cash_count is None
         ):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"當日預期現金 NT${cash_snapshot:,} ≥ "
+                    f"當日現金毛流量 NT${cash_gross_flow:,} ≥ "
                     f"NT${_CASH_COUNT_REQUIRED_THRESHOLD:,}，必須填寫實際現金盤點金額"
                 ),
             )
