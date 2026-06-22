@@ -228,6 +228,7 @@ def admin_create_registration(
             student_name=body.name,
             birthday=body.birthday,
             class_name=classroom.name,
+            classroom_id=classroom.id,
             email=body.email or None,
             remark=body.remark or None,
             school_year=sy,
@@ -662,9 +663,16 @@ def update_registration_basic(
         if (reg.class_name or "") != classroom.name:
             diffs.append(f"班級：{reg.class_name or '—'} → {classroom.name}")
             reg.class_name = classroom.name
+        # classroom_id 一律與解析出的班級對齊（含自癒 legacy NULL 與轉班後 stale）：
+        # 教師端 portal 以 classroom_id FK 篩選班級報名（避免字串比對在轉班後失準），
+        # 僅更新 class_name 快照會讓此報名在教師端可見性漂移。
+        reg.classroom_id = classroom.id
         new_email = body.email or None
         if (reg.email or None) != new_email:
-            diffs.append(f"Email：{reg.email or '—'} → {new_email or '—'}")
+            # 不寫明文 email：異動紀錄 description 僅需 ACTIVITY_READ 即可讀，寫完整
+            # email 會繞過 GUARDIANS_READ 的家長 Email 遮罩。只記「已變更」供審計，
+            # 不洩漏新舊地址值。
+            diffs.append("Email 已變更")
             reg.email = new_email
 
         # 姓名+生日變更時重新匹配 student_id
