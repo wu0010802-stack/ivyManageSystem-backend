@@ -141,3 +141,63 @@ def test_duplicate_ids_processed_once(test_db_session):
     result = _call([ids[0], ids[0]])
     assert result["graduated_count"] == 1
     assert test_db_session.query(StudentChangeLog).count() == 1
+
+
+# ── 單筆 sync 拒絕（金流簽核 / 並發）→ skip 該生不整批中止 ──────────────────
+
+_HR_NO_APPROVE = {
+    "user_id": 2,
+    "username": "hr1",
+    "permission_names": ["STUDENTS_WRITE"],  # 無 ACTIVITY_PAYMENT_APPROVE
+    "role": "hr",  # unrestricted role（過 require_unrestricted_role）
+}
+
+
+def _seed_paid_activity_reg(session, student_id):
+    """為學生掛一筆當前學期、已繳費（paid_amount>0）的 active 才藝報名。"""
+    from models.database import ActivityRegistration
+    from utils.academic import resolve_current_academic_term
+
+    sy, sem = resolve_current_academic_term()
+    reg = ActivityRegistration(
+        student_name="付款生",
+        school_year=sy,
+        semester=sem,
+        student_id=student_id,
+        is_active=True,
+        paid_amount=500,
+        match_status="matched",
+        pending_review=False,
+    )
+    session.add(reg)
+    session.flush()
+    return reg.id
+
+
+def test_sync_403_skips_that_student_not_whole_batch(test_db_session):
+    """某生有已繳費才藝報名、操作者無 ACTIVITY_PAYMENT_APPROVE → sync 回 403。
+    應 skip 該生並續跑其餘（非整批中止），其餘學生正常畢業。"""
+    ids = _seed(test_db_session, n=2)
+    a, b = ids[0], ids[1]
+    _seed_paid_activity_reg(test_db_session, a)
+    test_db_session.commit()
+
+    item = StudentBulkGraduate(
+        student_ids=[a, b],
+        graduation_date="2026-06-30",
+        status="已畢業",
+        reason=None,
+        notes=None,
+    )
+    result = _run(bulk_graduate_students(item=item, current_user=_HR_NO_APPROVE))
+
+    # A 被 skip（金流簽核權限），B 正常畢業——非整批 403 中止
+    assert result["graduated_count"] == 1
+    assert result["succeeded_ids"] == [b]
+    reasons = {s["student_id"]: s["reason"] for s in result["skipped"]}
+    assert a in reasons, result["skipped"]
+    assert "簽核" in reasons[a] or "ACTIVITY_PAYMENT_APPROVE" in reasons[a]
+
+    test_db_session.expire_all()
+    assert test_db_session.query(Student).get(a).is_active is True, "A 不應被畢業"
+    assert test_db_session.query(Student).get(b).is_active is False, "B 應正常畢業"
