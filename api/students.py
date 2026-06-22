@@ -1437,10 +1437,15 @@ async def bulk_graduate_students(
 ):
     """批次畢業/轉出（整班學年末一次處理，取代逐一開 dialog 點 N 次）。
 
-    有效在讀學生原子處理（單一交易）；找不到 / 已非在讀 / 離園日早於入學日者列入
-    skipped 不影響其餘。對齊單筆 graduate_student 副作用：set_lifecycle_status（PII
-    retention 戳記，不可繞過）+ StudentChangeLog + 才藝報名軟刪 + 接送/請假取消 +
-    發放月薪資 stale。限 admin/hr/supervisor（require_unrestricted_role）。
+    每生包在 SAVEPOINT 獨立處理（單一外層交易，最後一次 commit）：找不到 / 已非在讀
+    / 離園日早於入學日 / 才藝報名 sync 拒絕（金流簽核 403、並發 409）者列入 skipped
+    並 rollback 該生變更，不影響其餘。對齊單筆 graduate_student 副作用：
+    set_lifecycle_status（PII retention 戳記，不可繞過）+ StudentChangeLog + 才藝報名
+    軟刪 + 接送/請假取消 + 發放月薪資 stale。限 admin/hr/supervisor
+    （require_unrestricted_role）。
+
+    注意：有已繳費才藝報名的學生需操作者具 ACTIVITY_PAYMENT_APPROVE 才會自動沖帳
+    畢業，否則該生被 skip（其餘正常畢業），請改由具該權限者或先個別處理退款。
     """
     require_unrestricted_role(current_user, action_label="批次畢業/離園")
     if not item.student_ids:
@@ -1489,42 +1494,58 @@ async def bulk_graduate_students(
                 skipped.append({"student_id": sid, "reason": "離園日期早於入學日期"})
                 continue
 
-            # commit 前取消進行中接送/請假（broadcast 後置；rollback 則不 broadcast）
-            dismissal_broadcasts.extend(
-                _cancel_active_dismissal_calls(session, student)
-            )
-            _cancel_pending_student_leaves(session, student)
+            # 每生包在 SAVEPOINT：才藝報名 sync 若拒絕（金流簽核 403 / 並發 409）即
+            # rollback 該生全部變更（含接送/請假取消）並列入 skipped 續跑其餘，避免
+            # 單筆 policy/transient 失敗中止整批。broadcast 後置且 per-student 暫存：
+            # 僅 savepoint 成功才送，rollback 的學生不 broadcast。
+            student_broadcasts: list[dict] = []
+            try:
+                with session.begin_nested():
+                    student_broadcasts = _cancel_active_dismissal_calls(
+                        session, student
+                    )
+                    _cancel_pending_student_leaves(session, student)
 
-            student.graduation_date = graduation_date
-            student.status = item.status
-            student.is_active = False
-            set_lifecycle_status(
-                session,
-                student,
-                lifecycle,
-                actor_user_id=operator_id,
-                audit=False,
-                reason=item.reason,
-            )
-            session.add(
-                StudentChangeLog(
-                    student_id=student.id,
-                    school_year=school_year,
-                    semester=semester,
-                    event_type=event_type,
-                    event_date=graduation_date,
-                    classroom_id=student.classroom_id,
-                    from_classroom_id=(
-                        student.classroom_id if item.status == "已轉出" else None
-                    ),
-                    reason=item.reason,
-                    notes=item.notes,
-                    recorded_by=operator_id,
-                )
-            )
-            sync_registrations_on_student_deactivate(
-                session, student.id, current_user=current_user
-            )
+                    student.graduation_date = graduation_date
+                    student.status = item.status
+                    student.is_active = False
+                    set_lifecycle_status(
+                        session,
+                        student,
+                        lifecycle,
+                        actor_user_id=operator_id,
+                        audit=False,
+                        reason=item.reason,
+                    )
+                    session.add(
+                        StudentChangeLog(
+                            student_id=student.id,
+                            school_year=school_year,
+                            semester=semester,
+                            event_type=event_type,
+                            event_date=graduation_date,
+                            classroom_id=student.classroom_id,
+                            from_classroom_id=(
+                                student.classroom_id
+                                if item.status == "已轉出"
+                                else None
+                            ),
+                            reason=item.reason,
+                            notes=item.notes,
+                            recorded_by=operator_id,
+                        )
+                    )
+                    sync_registrations_on_student_deactivate(
+                        session, student.id, current_user=current_user
+                    )
+            except HTTPException as exc:
+                # sync 金流簽核(403) / 並發(409) 等拒絕：savepoint 已 rollback 該生變更
+                # → 不 broadcast、列入 skipped、續跑其餘（不整批中止）。
+                skipped.append({"student_id": sid, "reason": str(exc.detail)})
+                logger.warning("批次離園略過 student_id=%s：%s", sid, exc.detail)
+                continue
+            # savepoint 成功才送該生 broadcast + 計入成功
+            dismissal_broadcasts.extend(student_broadcasts)
             succeeded_ids.append(student.id)
 
         # 在籍人數變動 → 標記發放月節慶/超額未封存薪資 stale（事件日同批一次即可）

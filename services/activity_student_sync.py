@@ -43,19 +43,18 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 SYSTEM_RECONCILE_METHOD = "系統補齊"
 
 
-def _term_current_and_future(sy: int, sem: int):
-    """「當前學期及之後」的篩選條件。
+def _deactivate_term_filter(sy: int, sem: int):
+    """學生離園時要取消的 active 報名學期條件：當前學期「及之後」+ NULL-term。
 
     school_year / semester 皆為 Integer（民國學年 / 1=上 2=下），可直接排序比較。
-    用於學生離園：未來學期 active 報名也須一併取消，避免續佔名額或被候補/付款
-    流程處理（歷史學期則保留供報表追溯，故用 >= 而非全部）。
-
-    註：school_year/semester 為 nullable，NULL-term 的 active 報名會被本條件靜默
-    排除（與改動前 ``== sy AND == sem`` 行為一致，非本次回歸）。實務上正常報名流程
-    一律帶當前學期，NULL-term 屬異常資料；若日後出現 NULL-term 已繳費 active 報名，
-    離園不會自動沖帳，需另行盤查。
+    - 未來學期 active 報名一併取消，避免續佔名額或被候補/付款流程處理；
+    - 歷史學期（嚴格早於當前）保留供報表追溯，故用 >= 而非全部；
+    - NULL-term（school_year/semester 為 NULL）屬異常資料，正常報名流程一律帶當前
+      學期；但 NULL-term 的已繳費 active 報名若不取消，離園不會自動沖帳 → 幽靈金額/
+      名額殘留，故一併納入軟刪（杜絕無人沖帳的幽靈報名）。
     """
     return or_(
+        ActivityRegistration.school_year.is_(None),
         ActivityRegistration.school_year > sy,
         and_(
             ActivityRegistration.school_year == sy,
@@ -184,8 +183,9 @@ def sync_registrations_on_student_deactivate(
     """學生畢業 / 退學 / 刪除時，軟刪該生當前學期啟用中 ActivityRegistration。
 
     - 把 is_active 設為 False；保留原 match_status（供後台稽核）
-    - 處理當前學期「及之後」（含未來學期 active 報名，避免續佔名額或被候補/
-      付款流程處理）；歷史學期報名維持原狀，仍可供報表追溯
+    - 處理當前學期「及之後」+ NULL-term（含未來學期 active 報名，避免續佔名額或
+      被候補/付款流程處理；NULL-term 異常報名一併沖帳避免幽靈金額）；歷史學期報名
+      維持原狀，仍可供報表追溯。詳見 _deactivate_term_filter
     - row lock（FOR UPDATE）+ populate_existing 取鎖內最新 paid_amount，與並發
       POS 收款序列化，杜絕用 stale 值覆寫（lost update）。鎖序：daily-close
       advisory 先、row lock 後（全 caller 統一，避免 deadlock）
@@ -204,7 +204,7 @@ def sync_registrations_on_student_deactivate(
     base_filter = (
         ActivityRegistration.student_id == student_id,
         ActivityRegistration.is_active.is_(True),
-        _term_current_and_future(sy, sem),
+        _deactivate_term_filter(sy, sem),
     )
 
     # ── 鎖序協議（全 caller 統一）：daily-close advisory 先、row lock 後 ──

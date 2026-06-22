@@ -113,6 +113,9 @@ def run_auto_graduation(effective_date: Optional[date] = None) -> dict:
     session = get_session()
     succeeded = 0
     failed: list[dict] = []
+    # 已畢業但才藝報名 sync 失敗者（如並發 409）：學年末本應畢業故仍計 succeeded，
+    # 但 sync 失敗不可靜默吞掉——記於此供監控/人工沖帳跟進，避免幽靈未沖帳金額。
+    sync_failed: list[dict] = []
     try:
         with try_scheduler_lock(
             session,
@@ -151,9 +154,16 @@ def run_auto_graduation(effective_date: Optional[date] = None) -> dict:
                         )
 
                         sync_registrations_on_student_deactivate(session, student.id)
-                    except Exception:
-                        logger.exception(
-                            "自動畢業同步才藝報名失敗 student_id=%s", student.id
+                    except Exception as sync_exc:
+                        # 不靜默吞掉：學生仍畢業，但 sync 失敗記入 sync_failed 供跟進。
+                        # 降為 warning（避免與 wrapper throttle 重複觸發 Sentry ERROR）。
+                        sync_failed.append(
+                            {"student_id": student.id, "reason": str(sync_exc)}
+                        )
+                        logger.warning(
+                            "自動畢業：學生 %s 已畢業但才藝報名同步失敗（待人工沖帳）：%s",
+                            student.id,
+                            sync_exc,
                         )
                     succeeded += 1
                 except LifecycleTransitionError as exc:
@@ -173,6 +183,7 @@ def run_auto_graduation(effective_date: Optional[date] = None) -> dict:
         "effective_date": effective_date.isoformat(),
         "succeeded": succeeded,
         "failed": failed,
+        "sync_failed": sync_failed,
         "total_candidates": succeeded + len(failed),
     }
     logger.warning("自動畢業完成：%s", result)

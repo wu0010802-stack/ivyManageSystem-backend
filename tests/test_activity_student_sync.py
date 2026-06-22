@@ -298,6 +298,48 @@ class TestDeactivateTermScope:
         ), "未來學期 active 報名應一併軟刪（修前漏刪）"
         assert active[ids["past"]] is True, "歷史學期報名應保留供追溯"
 
+    def test_deactivate_cancels_null_term_active_reg(self, sqlite_session):
+        """異常資料：NULL-term（school_year/semester 為 NULL）的 active 報名也應在
+        離園時取消，避免幽靈名額/未沖帳金額殘留（修前被學期條件靜默排除）。"""
+        from models.database import ActivityRegistration, Classroom, Student
+        from services import activity_student_sync as ass
+
+        _engine, session = sqlite_session
+        classroom = Classroom(name="班N", is_active=True)
+        session.add(classroom)
+        session.flush()
+        student = Student(
+            student_id="ST-null",
+            name="無期生",
+            birthday=date(2020, 1, 1),
+            classroom_id=classroom.id,
+            is_active=True,
+        )
+        session.add(student)
+        session.flush()
+        reg = ActivityRegistration(
+            student_name="無期生",
+            class_name="班N",
+            classroom_id=classroom.id,
+            school_year=None,
+            semester=None,
+            student_id=student.id,
+            is_active=True,
+            paid_amount=0,
+            match_status="matched",
+            pending_review=False,
+        )
+        session.add(reg)
+        session.flush()
+        reg_id = reg.id
+        session.commit()
+
+        ass.sync_registrations_on_student_deactivate(session, student.id)
+        session.commit()
+        session.expire_all()
+        after = session.query(ActivityRegistration).get(reg_id)
+        assert after.is_active is False, "NULL-term active 報名應被軟刪（修前漏刪）"
+
 
 class TestDeactivateRereadsPaidUnderLock:
     """離園同步自動沖帳必須用『鎖內重讀』的 paid_amount，而非同步流程早先讀到的舊值。
