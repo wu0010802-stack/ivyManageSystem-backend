@@ -279,6 +279,7 @@ def add_registration_supply(
 def remove_registration_supply(
     registration_id: int,
     supply_record_id: int,
+    request: Request,
     force_refund: bool = Query(
         False,
         description="移除用品後若出現超繳，需顯式帶 true 才允許移除並自動寫退費沖帳紀錄",
@@ -418,6 +419,21 @@ def remove_registration_supply(
         # 自動沖帳可能寫 refund，需一併失效 finance-summary / monthly-pnl 快取
         _invalidate_finance_summary_cache()
         final_paid = reg.paid_amount or 0
+        # URL 尾段為 supply_record_id，覆寫為 registration_id 以便依報名 ID 彙整稽核事件
+        # （比照 withdraw_course 的相同處理）
+        request.state.audit_entity_id = str(registration_id)
+        request.state.audit_summary = (
+            f"移除用品：{reg.student_name} 的「{supply_name}」"
+        )
+        request.state.audit_changes = {
+            "student_name": reg.student_name,
+            "supply_record_id": supply_record_id,
+            "supply_name": supply_name,
+            "force_refund": force_refund,
+            "refund_needed": refund_needed,
+            "paid_amount_after": final_paid,
+            "total_amount_after": new_total,
+        }
         return {
             "message": f"已移除用品「{supply_name}」",
             "total_amount": new_total,

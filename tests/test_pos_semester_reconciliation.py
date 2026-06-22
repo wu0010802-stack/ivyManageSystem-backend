@@ -659,6 +659,48 @@ def test_voided_payment_and_refund_do_not_affect_buckets(pos_client):
 # ── _net_reconciliation_buckets 純函式測試 ───────────────────────────────
 
 
+def test_totals_outstanding_per_reg_clamp(pos_client):
+    """P2 修補：totals.outstanding_amount 應為逐筆 clamp 後加總，
+    而非「先彙總再 clamp」。
+
+    場景：A 溢繳（total=1000/paid=1500）+ B 欠款（total=1000/paid=0）。
+    - 先彙總再 clamp：max(0, 2000-1500) = 500  ← 低估（bug 前行為）
+    - 逐筆 clamp 後加總：max(0,1000-1500)+max(0,1000-0) = 0+1000 = 1000  ← 正確
+    """
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        # 溢繳報名：paid > total
+        reg_a = _setup_reg(
+            s,
+            student_name="溢繳甲",
+            course_price=1000,
+            paid_amount=1500,
+            is_paid=True,
+            course_name="美術",
+        )
+        # 欠款報名：paid=0 < total=1000
+        reg_b = _setup_reg(
+            s,
+            student_name="欠款乙",
+            course_price=1000,
+            paid_amount=0,
+            is_paid=False,
+            course_name="勞作",
+        )
+        s.commit()
+
+    assert _login(client).status_code == 200
+    res = _get(client)
+    assert res.status_code == 200, res.text
+    totals = res.json()["totals"]
+    # 逐筆 clamp 加總：0（溢繳不計欠款）+ 1000（欠款全額）= 1000
+    assert totals["outstanding_amount"] == 1000, (
+        f"expected 1000 (逐筆 clamp 加總), got {totals['outstanding_amount']} "
+        f"（若為 500 代表仍走先彙總再 clamp 的 bug）"
+    )
+
+
 def test_net_buckets_excess_guard_pure():
     """excess>0 資料不一致守衛：歷史手改 paid_amount 低於 POS 軋差總額時，
     依序壓低 pending（未簽核較不權威）再壓 approved，維持不變式

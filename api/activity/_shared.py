@@ -951,26 +951,72 @@ def query_valid_session_registrations(
     return query.all()
 
 
+def _build_valid_attendance_agg_query(db_session, *, session_ids):
+    """回傳只計「有效報名」點名的聚合查詢（GROUP BY session_id）。
+
+    有效報名口徑與 _build_session_detail_response 完全對齊：
+      - ActivityRegistration.is_active IS True
+      - ActivityRegistration.match_status != 'rejected'
+      - RegistrationCourse.status == 'enrolled'
+      - student_id 為 None（校外生）或對應 Student.is_active IS True（在籍）
+
+    排除已軟刪（is_active=False）、被駁回（rejected）、或底層學生已離校的孤兒點名 row，
+    確保列表/儀表板統計與詳情頁一致，不因孤兒膨脹。
+    """
+    from models.database import Student
+
+    return (
+        db_session.query(
+            ActivityAttendance.session_id,
+            func.count(ActivityAttendance.id).label("recorded"),
+            func.sum(case((ActivityAttendance.is_present.is_(True), 1), else_=0)).label(
+                "present"
+            ),
+        )
+        .join(
+            ActivityRegistration,
+            ActivityRegistration.id == ActivityAttendance.registration_id,
+        )
+        .join(
+            ActivitySession,
+            ActivitySession.id == ActivityAttendance.session_id,
+        )
+        .join(
+            RegistrationCourse,
+            (RegistrationCourse.registration_id == ActivityRegistration.id)
+            & (RegistrationCourse.course_id == ActivitySession.course_id)
+            & (RegistrationCourse.status == "enrolled"),
+        )
+        .outerjoin(Student, Student.id == ActivityRegistration.student_id)
+        .filter(
+            ActivityAttendance.session_id.in_(session_ids),
+            ActivityRegistration.is_active.is_(True),
+            ActivityRegistration.match_status != "rejected",
+            # 若 student_id 為 None（校外生），或對應 Student 尚啟用，都保留
+            or_(
+                ActivityRegistration.student_id.is_(None),
+                Student.is_active.is_(True),
+            ),
+        )
+        .group_by(ActivityAttendance.session_id)
+    )
+
+
 def build_session_rows_with_stats(db_session, rows) -> list:
     """給定已查出的場次 row（需含 .id/.course_id/.session_date/.notes/.created_by/
     .created_at/.course_name），補上整堂出席統計（recorded_count/present_count）並組成
     dict 列表。admin list_sessions 與 portal portal_list_sessions 共用，避免統計邏輯 drift。
+
+    只計「有效報名」的點名（is_active=True、match_status!='rejected'、
+    RegistrationCourse.status='enrolled'），排除孤兒點名，對齊
+    _build_session_detail_response 口徑。
     """
     session_ids = [r.id for r in rows]
     attendance_stats: dict = {}
     if session_ids:
-        agg_rows = (
-            db_session.query(
-                ActivityAttendance.session_id,
-                func.count(ActivityAttendance.id).label("recorded"),
-                func.sum(
-                    case((ActivityAttendance.is_present.is_(True), 1), else_=0)
-                ).label("present"),
-            )
-            .filter(ActivityAttendance.session_id.in_(session_ids))
-            .group_by(ActivityAttendance.session_id)
-            .all()
-        )
+        agg_rows = _build_valid_attendance_agg_query(
+            db_session, session_ids=session_ids
+        ).all()
         attendance_stats = {
             row.session_id: {"recorded": row.recorded, "present": row.present or 0}
             for row in agg_rows
