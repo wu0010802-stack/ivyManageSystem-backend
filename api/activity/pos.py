@@ -220,18 +220,28 @@ def _parse_receipt_response_from_record(
         receipt_no = m.group(1)
 
     # 該收據對應的所有付款記錄（同 receipt_no 代表一張收據）
-    # 用欄位 + index 查詢；不再依賴 notes LIKE 以免受使用者備註污染
+    # 用欄位 + index 查詢；不再依賴 notes LIKE 以免受使用者備註污染。
+    # 一律排除已作廢（voided_at IS NOT NULL）紀錄：重建收據用於 replay / 重印，
+    # 若把已作廢付款重新加總，會印出含已作廢金額的「有效」收據（與 daily 對帳、
+    # finance report 等其他流水查詢一致皆濾 voided）。整張作廢 → same_recs 為空
+    # → 回 None，呼叫端（print 端點 / replay）據此回 404 / 不 replay。
     same_recs = (
         session.query(ActivityPaymentRecord)
-        .filter(ActivityPaymentRecord.receipt_no == receipt_no)
+        .filter(
+            ActivityPaymentRecord.receipt_no == receipt_no,
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
         .order_by(ActivityPaymentRecord.id.asc())
         .all()
     )
-    # Fallback：舊資料尚未 backfill receipt_no 時，回退到 notes 比對
+    # Fallback：舊資料尚未 backfill receipt_no 時，回退到 notes 比對（同樣濾 voided）
     if not same_recs:
         same_recs = (
             session.query(ActivityPaymentRecord)
-            .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+            .filter(
+                ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"),
+                ActivityPaymentRecord.voided_at.is_(None),
+            )
             .order_by(ActivityPaymentRecord.id.asc())
             .all()
         )
