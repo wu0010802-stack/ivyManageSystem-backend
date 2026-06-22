@@ -225,3 +225,125 @@ class TestDeactivateTriggersWaitlistPromotion:
         ), "甲生離園軟刪後，名額應自動遞補乙生候補（修前仍為 waitlist）"
         assert rc_b.promoted_at is not None
         assert rc_b.confirm_deadline is not None
+
+
+def _seed_regs_across_terms(session):
+    """同一學生在 過去 / 當前 / 未來 學期各一筆 active 報名。
+
+    回 (student_id, {"past": id, "current": id, "future": id})。
+    past = (當前學年-1)，future = (當前學年+1)，與 sem 值無關皆嚴格早於/晚於當前。
+    """
+    from models.database import ActivityRegistration, Classroom, Student
+    from utils.academic import resolve_current_academic_term
+
+    classroom = Classroom(name="班T", is_active=True)
+    session.add(classroom)
+    session.flush()
+    student = Student(
+        student_id="ST-term",
+        name="期生",
+        birthday=date(2020, 1, 1),
+        classroom_id=classroom.id,
+        is_active=True,
+    )
+    session.add(student)
+    session.flush()
+
+    sy, sem = resolve_current_academic_term()
+    terms = {"past": (sy - 1, sem), "current": (sy, sem), "future": (sy + 1, sem)}
+    ids: dict[str, int] = {}
+    for label, (y, s) in terms.items():
+        r = ActivityRegistration(
+            student_name="期生",
+            class_name="班T",
+            classroom_id=classroom.id,
+            school_year=y,
+            semester=s,
+            student_id=student.id,
+            is_active=True,
+            paid_amount=0,
+            match_status="matched",
+            pending_review=False,
+        )
+        session.add(r)
+        session.flush()
+        ids[label] = r.id
+    session.commit()
+    return student.id, ids
+
+
+class TestDeactivateTermScope:
+    """學生離園應取消「當前學期及之後」的 active 報名，歷史學期保留供追溯。"""
+
+    def test_deactivate_cancels_current_and_future_keeps_past(self, sqlite_session):
+        from models.database import ActivityRegistration
+        from services import activity_student_sync as ass
+
+        _engine, session = sqlite_session
+        student_id, ids = _seed_regs_across_terms(session)
+
+        ass.sync_registrations_on_student_deactivate(session, student_id)
+        session.commit()
+        session.expire_all()
+
+        active = {
+            r.id: r.is_active
+            for r in session.query(ActivityRegistration)
+            .filter(ActivityRegistration.id.in_(list(ids.values())))
+            .all()
+        }
+        assert active[ids["current"]] is False, "當前學期應被軟刪"
+        assert (
+            active[ids["future"]] is False
+        ), "未來學期 active 報名應一併軟刪（修前漏刪）"
+        assert active[ids["past"]] is True, "歷史學期報名應保留供追溯"
+
+
+class TestDeactivateRereadsPaidUnderLock:
+    """離園同步自動沖帳必須用『鎖內重讀』的 paid_amount，而非同步流程早先讀到的舊值。
+
+    模擬並發 POS 收款：同步流程先把 reg 載入 session（paid=0），之後 DB 被外帶
+    更新為 3000（raw SQL，不同步 ORM 物件 → identity-map 物件維持 stale 0）。
+    修前：deactivate 用 stale 0 → 不寫沖帳，幽靈付款 3000 留存。
+    修後：populate_existing 重讀 → 寫 3000 自動沖帳。
+    """
+
+    def test_deactivate_uses_fresh_paid_amount(self, sqlite_session):
+        from sqlalchemy import text
+
+        from models.database import ActivityPaymentRecord, ActivityRegistration
+        from services import activity_student_sync as ass
+
+        _engine, session = sqlite_session
+        student_id, reg_ids = _seed_three_regs(session)
+        target = reg_ids[0]
+
+        # 同步流程「先讀到 paid=0」：載入 identity map
+        reg = session.get(ActivityRegistration, target)
+        assert (reg.paid_amount or 0) == 0
+
+        # 並發 POS 收款：DB 外帶更新（raw SQL 不同步 ORM；物件仍 stale）
+        session.execute(
+            text("UPDATE activity_registrations SET paid_amount=3000 WHERE id=:i"),
+            {"i": target},
+        )
+        assert (reg.paid_amount or 0) == 0, "前置條件：identity-map 物件仍為舊值"
+
+        ass.sync_registrations_on_student_deactivate(session, student_id)
+        session.flush()
+
+        refund = (
+            session.query(ActivityPaymentRecord)
+            .filter(
+                ActivityPaymentRecord.registration_id == target,
+                ActivityPaymentRecord.type == "refund",
+            )
+            .first()
+        )
+        assert (
+            refund is not None
+        ), "鎖內應重讀到 3000 並寫自動沖帳退費（修前用 stale 0 不寫）"
+        assert refund.amount == 3000
+        session.expire_all()
+        reg_after = session.get(ActivityRegistration, target)
+        assert (reg_after.paid_amount or 0) == 0, "沖帳後 paid_amount 應歸零"
