@@ -149,29 +149,31 @@ async def upload_activity_poster(
         if not settings:
             settings = ActivityRegistrationSettings()
             session.add(settings)
-        # 刪掉前一張避免儲存空間無限長大
         old = settings.poster_url
-        if old:
-            # 從舊 URL 反推檔名（兩種來源：/api/activity/public/poster/<file> 或 https://.../<file>）
-            old_name = old.rsplit("/", 1)[-1].split("?", 1)[0]
-            # 只允許刪 hex + 已知副檔名，防穿越
-            if (
-                Path(old_name).suffix.lower() in _POSTER_ALLOWED_EXT
-                and len(old_name) < 80
-            ):
-                try:
-                    backend.delete(_POSTER_MODULE, old_name)
-                except Exception as e:
-                    logger.warning("刪除舊海報失敗：%s", e)
         settings.poster_url = poster_url
         session.commit()
         logger.info("活動海報已更新：%s", stored_name)
-        return {"message": "海報已更新", "poster_url": poster_url}
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
     finally:
         session.close()
+
+    # Finding 7（2026-06-22）：舊檔的刪除須在 DB commit 成功「之後」。
+    # 原本順序是「刪舊檔 → commit」，commit 失敗時 DB rollback 回舊 poster_url，
+    # 但舊檔已被刪 → 現有海報永久失效、新檔成孤兒。改成 commit 成功才刪舊檔：
+    # commit 失敗時舊檔完好（上面已 raise 不會走到這），新檔變孤兒（較輕代價）。
+    if old and old != poster_url:
+        # 從舊 URL 反推檔名（兩種來源：/api/activity/public/poster/<file> 或 https://.../<file>）
+        old_name = old.rsplit("/", 1)[-1].split("?", 1)[0]
+        # 只允許刪 hex + 已知副檔名，防穿越
+        if Path(old_name).suffix.lower() in _POSTER_ALLOWED_EXT and len(old_name) < 80:
+            try:
+                backend.delete(_POSTER_MODULE, old_name)
+            except Exception as e:
+                logger.warning("刪除舊海報失敗：%s", e)
+
+    return {"message": "海報已更新", "poster_url": poster_url}
 
 
 @router.get("/changes", response_model=ActivityRegistrationChangeListOut)
