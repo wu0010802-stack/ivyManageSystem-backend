@@ -1464,11 +1464,20 @@ def pos_semester_reconciliation(
         # 否則這些流水（多為軟刪除後的系統沖帳）會從學期對帳總表消失，
         # 跟日結 snapshot 對不起來。
         active_ids = {r.id for r in active_regs}
+        # 重用 _build_registration_filter_query 套用相同的 payment_status /
+        # classroom_name 篩選（include_inactive=True 不擋 is_active，再以下方
+        # 條件收斂到 inactive）。否則 payment_status=unpaid 對帳時，有付款紀錄的
+        # inactive 報名（依定義 paid>0、非 unpaid）會被無條件納入而污染 totals。
         inactive_with_records = (
-            session.query(ActivityRegistration)
+            _build_registration_filter_query(
+                session,
+                school_year=sy,
+                semester=sem,
+                classroom_name=classroom_name,
+                payment_status=payment_status,
+                include_inactive=True,
+            )
             .filter(
-                ActivityRegistration.school_year == sy,
-                ActivityRegistration.semester == sem,
                 ActivityRegistration.is_active.is_(False),
                 ActivityRegistration.id.in_(
                     session.query(ActivityPaymentRecord.registration_id)

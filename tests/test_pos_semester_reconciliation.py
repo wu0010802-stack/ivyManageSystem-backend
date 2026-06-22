@@ -700,3 +700,51 @@ def test_net_buckets_excess_guard_pure():
         pending_refund=0,
         paid=-50,
     ) == (0, 0, 0)
+
+
+# ── E2：payment_status 篩選須同樣套用於 inactive-with-records 分支 ──────────
+
+
+def test_inactive_branch_respects_payment_status_filter(pos_client):
+    """payment_status=unpaid 對帳時，有付款紀錄的 inactive 報名（paid>0、非
+    unpaid）不應被納入，否則污染 totals。修正前 inactive 分支忽略 payment_status。"""
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        # 主動未繳：total=2000、paid=0 → unpaid
+        active_unpaid = _setup_reg(s, student_name="未繳生", paid_amount=0)
+        # 已繳但已軟刪、且仍有非作廢付款紀錄：paid=2000==total → 'paid'，非 unpaid
+        inactive_paid = _setup_reg(
+            s, student_name="已繳離場生", paid_amount=2000, is_paid=True
+        )
+        inactive_paid.is_active = False
+        s.flush()
+        _add_payment(s, reg_id=inactive_paid.id, amount=2000, payment_date=date.today())
+        s.commit()
+        active_id, inactive_id = active_unpaid.id, inactive_paid.id
+
+    _login(client)
+    data = _get(client, payment_status="unpaid").json()
+    ids = {it["id"] for it in data["items"]}
+    assert active_id in ids, "主動未繳應落 unpaid 篩選"
+    assert inactive_id not in ids, "已繳的 inactive 報名不應出現在 unpaid 篩選"
+
+
+def test_inactive_branch_included_when_no_payment_status_filter(pos_client):
+    """無 payment_status 篩選時，inactive-with-records 仍須納入（對帳預設視圖不變）。"""
+    client, sf = pos_client
+    with sf() as s:
+        _create_admin(s)
+        inactive_paid = _setup_reg(
+            s, student_name="已繳離場生", paid_amount=2000, is_paid=True
+        )
+        inactive_paid.is_active = False
+        s.flush()
+        _add_payment(s, reg_id=inactive_paid.id, amount=2000, payment_date=date.today())
+        s.commit()
+        inactive_id = inactive_paid.id
+
+    _login(client)
+    data = _get(client).json()  # 無 payment_status
+    ids = {it["id"] for it in data["items"]}
+    assert inactive_id in ids, "無篩選時 inactive-with-records 應仍納入對帳"
