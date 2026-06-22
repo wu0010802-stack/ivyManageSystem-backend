@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from models.database import (
@@ -274,10 +274,18 @@ def export_payment_report(
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,
     classroom_name: Optional[str] = None,
+    include_inactive: bool = Query(
+        False,
+        description="納入已軟刪（is_active=False）報名，供財務查核刪除/退款後的歷史帳務",
+    ),
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
     _: None = Depends(_export_limiter),
 ):
-    """匯出繳費帳務報表（兩個工作表：繳費總覽 + 繳費明細）"""
+    """匯出繳費帳務報表（兩個工作表：繳費總覽 + 繳費明細）
+
+    include_inactive：預設 False（維持只含 active 的現狀）；財務需查核刪除並退款後的
+    歷史帳務時可帶 true 納入軟刪報名（#5）。
+    """
     import openpyxl
     from openpyxl.styles import Font, Alignment, PatternFill
 
@@ -295,6 +303,7 @@ def export_payment_report(
             payment_status=payment_status,
             course_id=course_id,
             classroom_name=classroom_name,
+            include_inactive=include_inactive,
         )
         total_count = q.count()
         if total_count > MAX_EXPORT_ROWS:

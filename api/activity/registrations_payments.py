@@ -235,15 +235,16 @@ def get_registration_payments(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
-    """取得報名的繳費／退費明細記錄（含 voided 軟刪紀錄，標示 is_voided）"""
+    """取得報名的繳費／退費明細記錄（含 voided 軟刪紀錄，標示 is_voided）
+
+    以 registration_id 取資料，不要求 is_active：軟刪（is_active=False）報名的繳費/
+    退費沖帳歷史仍需供財務查核（#5）。已知 id 即查得，無額外曝險（仍需 ACTIVITY_READ）。
+    """
     session = get_session()
     try:
         reg = (
             session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active.is_(True),
-            )
+            .filter(ActivityRegistration.id == registration_id)
             .first()
         )
         if not reg:
