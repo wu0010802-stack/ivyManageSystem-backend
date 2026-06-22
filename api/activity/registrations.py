@@ -668,7 +668,10 @@ def update_registration_basic(
         reg.classroom_id = classroom.id
         new_email = body.email or None
         if (reg.email or None) != new_email:
-            diffs.append(f"Email：{reg.email or '—'} → {new_email or '—'}")
+            # 不寫明文 email：異動紀錄 description 僅需 ACTIVITY_READ 即可讀，寫完整
+            # email 會繞過 GUARDIANS_READ 的家長 Email 遮罩。只記「已變更」供審計，
+            # 不洩漏新舊地址值。
+            diffs.append("Email 已變更")
             reg.email = new_email
 
         # 姓名+生日變更時重新匹配 student_id
