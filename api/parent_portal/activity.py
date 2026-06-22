@@ -33,6 +33,7 @@ from services.business_errors.parent import (
     StudentNotFound,
 )
 from utils.academic import resolve_academic_term_filters
+from utils.advisory_lock import acquire_activity_registration_lock
 from utils.auth import require_parent_role
 from services.activity_query_token import _generate_query_token, _hash_query_token
 from utils.taipei_time import now_taipei_naive
@@ -209,6 +210,19 @@ def register_courses(
     student = session.query(Student).filter(Student.id == payload.student_id).first()
     if student is None:
         raise StudentNotFound("找不到學生")
+
+    # L2：以「同學生身分 + 學期」序列化並發報名的 check-then-insert。DB partial
+    # unique 鍵含 parent_phone 不含 student_id，兩位不同 Guardian（phone 不同）並發
+    # 替同一學生報名會雙雙通過下方 existing 檢查、index 也攔不住 → 長出兩筆有效
+    # 報名（容量重複佔用、在籍灌水）。比照 admin match 取報名 advisory lock；
+    # SQLite no-op，真正序列化由 PostgreSQL pg_advisory_xact_lock 提供。
+    acquire_activity_registration_lock(
+        session,
+        student_name=student.name,
+        birthday=(student.birthday.isoformat() if student.birthday else ""),
+        school_year=payload.school_year,
+        semester=payload.semester,
+    )
 
     # 防同學期重複報名
     existing = (
