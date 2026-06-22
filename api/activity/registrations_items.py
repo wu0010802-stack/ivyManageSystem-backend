@@ -50,8 +50,10 @@ from ._shared import (
     require_refund_reason,
     require_approve_for_large_refund,
     require_approve_for_cumulative_refund,
+    require_approve_for_refund_diff,
     today_taipei,
 )
+from services.activity_refund_query import build_refund_suggestion
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -361,6 +363,14 @@ def remove_registration_supply(
                 current_user,
                 label="移除用品自動沖帳累積退費總額",
             )
+            # 偏離建議值閘：用品依 calculator 規則「一律不退」（建議退 0），故任何
+            # 自動沖帳金額即等同偏離量；與 POS / writeoff 退費閘對齊（fail-fast）。
+            require_approve_for_refund_diff(
+                diff=preview_refund,
+                current_user=current_user,
+                suggested_total=0,
+                actual_total=preview_refund,
+            )
 
         session.delete(rs)
         session.flush()
@@ -519,6 +529,31 @@ def withdraw_course(
                 preview_refund,
                 current_user,
                 label="退課自動沖帳累積退費總額",
+            )
+            # 偏離建議值閘：取該課程在 calculator 規則下的建議退費（session-based）
+            # 與實退（preview_refund）比對，與 POS / writeoff 退費閘對齊。於
+            # delete(rc) 前計算——此時課程仍 enrolled，suggestion 仍含此項。
+            _items = build_refund_suggestion(session, registration_id)["items"]
+            _course_item = next(
+                (
+                    it
+                    for it in _items
+                    if it["type"] == "course" and it["target_id"] == course_id
+                ),
+                None,
+            )
+            if _course_item is None:
+                suggested_for_course = 0
+            elif _course_item["suggested_amount"] is None:
+                # NULL sessions → calculator 採全退 fallback（amount_due）
+                suggested_for_course = _course_item["amount_due"]
+            else:
+                suggested_for_course = _course_item["suggested_amount"]
+            require_approve_for_refund_diff(
+                diff=abs(preview_refund - suggested_for_course),
+                current_user=current_user,
+                suggested_total=suggested_for_course,
+                actual_total=preview_refund,
             )
 
         session.delete(rc)
