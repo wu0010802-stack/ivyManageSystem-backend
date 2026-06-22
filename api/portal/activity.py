@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 from models.database import get_session, Classroom
 from models.activity import (
@@ -19,6 +19,7 @@ from models.activity import (
     ActivityAttendance,
     RegistrationCourse,
 )
+from utils.academic import resolve_current_academic_term
 from utils.auth import get_current_user
 from ._shared import _get_employee
 from api.activity._shared import (
@@ -61,13 +62,19 @@ def get_portal_activity_registrations(
         class_names = [c.name for c in classrooms]
         classroom_ids = [c.id for c in classrooms]
 
-        # 查詢班級內學生的報名資料（以 classroom_id FK 比對，避免字串比對在轉班後失準）
+        # 查詢班級內學生的報名資料（以 classroom_id FK 比對，避免字串比對在轉班後失準）。
+        # 限當前學期：學期輪替不會讓舊報名失效（is_active 永久為 True），未加學期
+        # 條件會把歷史學期 active 報名混入當前報名/候補/繳費統計（對齊 admin 端
+        # resolve_academic_term_filters 預設取當前學期的口徑）。
+        sy, sem = resolve_current_academic_term()
         regs = (
             session.query(ActivityRegistration)
             .filter(
                 ActivityRegistration.classroom_id.in_(classroom_ids),
                 ActivityRegistration.is_active.is_(True),
                 ActivityRegistration.match_status != "rejected",
+                ActivityRegistration.school_year == sy,
+                ActivityRegistration.semester == sem,
             )
             .order_by(
                 ActivityRegistration.class_name, ActivityRegistration.student_name
@@ -94,18 +101,38 @@ def get_portal_activity_registrations(
                 .all()
             )
 
-            # 計算候補排位（依課程分組，按 rc_id 排序）
-            waitlist_rows: dict[int, list] = defaultdict(list)
-            for row in rc_rows:
-                if row.status == "waitlist":
-                    waitlist_rows[row.course_id].append(row.rc_id)
-
-            # rc_id → position
-            waitlist_position_map: dict[int, int] = {}
-            for course_id, rc_ids in waitlist_rows.items():
-                sorted_ids = sorted(rc_ids)
-                for pos, rc_id in enumerate(sorted_ids, start=1):
-                    waitlist_position_map[rc_id] = pos
+            # 計算候補排位：必須以「全校同課程」真實順位計算，不能只在自班 rc_rows
+            # 內 enumerate（那會把跨班候補生排除，自班順位塌縮成 1,2,3…，與 admin /
+            # 家長端用的全校 window function 口徑不一致）。course_id 本身綁定學期，
+            # 故 partition_by(course_id) 天然學期隔離。對齊 _shared 全校候補順位算法。
+            waitlist_course_ids = {
+                row.course_id for row in rc_rows if row.status == "waitlist"
+            }
+            waitlist_position_map: dict[int, int] = {}  # rc_id → 全校順位
+            if waitlist_course_ids:
+                pos_subq = (
+                    session.query(
+                        RegistrationCourse.id.label("rc_id"),
+                        func.row_number()
+                        .over(
+                            partition_by=RegistrationCourse.course_id,
+                            order_by=RegistrationCourse.id,
+                        )
+                        .label("position"),
+                    )
+                    .join(
+                        ActivityRegistration,
+                        RegistrationCourse.registration_id == ActivityRegistration.id,
+                    )
+                    .filter(
+                        RegistrationCourse.course_id.in_(list(waitlist_course_ids)),
+                        RegistrationCourse.status == "waitlist",
+                        ActivityRegistration.is_active.is_(True),
+                    )
+                    .subquery()
+                )
+                for row in session.query(pos_subq).all():
+                    waitlist_position_map[row.rc_id] = row.position
 
             for row in rc_rows:
                 entry = {
