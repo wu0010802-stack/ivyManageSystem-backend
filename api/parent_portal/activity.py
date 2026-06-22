@@ -59,6 +59,82 @@ def _effective_capacity(capacity: Optional[int]) -> int:
     return DEFAULT_COURSE_CAPACITY if capacity is None else capacity
 
 
+def _fmt_time(t) -> Optional[str]:
+    """Time → "HH:MM"（對齊公開端 /public/courses 序列化；None 維持 None）。"""
+    return t.strftime("%H:%M") if t else None
+
+
+# --- Response schema（補契約：原本這些端點回裸 dict，OpenAPI 無具名 schema → 前端
+# codegen 只能拿到 unknown。宣告 response_model 後前端自動下放真型別。欄位順序/名稱
+# 與既有 dict 完全對齊，FastAPI 依此驗證/序列化，不改變 wire shape）---
+class ParentCourseItemOut(BaseModel):
+    id: int
+    name: str
+    price: Optional[int] = None
+    sessions: Optional[int] = None
+    capacity: Optional[int] = None
+    school_year: Optional[int] = None
+    semester: Optional[int] = None
+    allow_waitlist: bool
+    description: Optional[str] = None
+    video_url: Optional[str] = None
+    enrolled_count: int
+    is_full: bool
+    # Phase 3 適齡 + 結構化時段（前台 advisory：不適齡/衝堂警告，不阻擋報名）。
+    # 資料早已在 model（models/activity.py:62-66）；公開端已暴露，本批補家長端。
+    min_age_months: Optional[int] = None
+    max_age_months: Optional[int] = None
+    meeting_weekday: Optional[int] = None  # 0=Mon..6=Sun
+    meeting_start_time: Optional[str] = None  # "HH:MM"
+    meeting_end_time: Optional[str] = None  # "HH:MM"
+
+
+class ParentCourseListOut(BaseModel):
+    items: list[ParentCourseItemOut]
+    total: int
+
+
+class RegistrationCourseOut(BaseModel):
+    registration_course_id: int
+    course_id: int
+    course_name: str
+    status: str
+    price_snapshot: Optional[int] = None
+    promoted_at: Optional[str] = None
+    confirm_deadline: Optional[str] = None
+    # 衝堂偵測用：前端比對已報名課程 vs 目錄課程的 weekday+time。
+    meeting_weekday: Optional[int] = None
+    meeting_start_time: Optional[str] = None
+    meeting_end_time: Optional[str] = None
+
+
+class RegistrationSummaryOut(BaseModel):
+    id: int
+    student_id: Optional[int] = None
+    student_name: Optional[str] = None
+    school_year: Optional[int] = None
+    semester: Optional[int] = None
+    is_paid: bool
+    paid_amount: int
+    total_amount: int
+    outstanding_amount: int
+    payment_status: str
+    match_status: Optional[str] = None
+    pending_review: bool
+    courses: list[RegistrationCourseOut]
+
+
+class MyRegistrationsOut(BaseModel):
+    items: list[RegistrationSummaryOut]
+    total: int
+
+
+class RegisterOut(RegistrationSummaryOut):
+    # #2：明文 query token 僅報名 response 回傳一次（DB 只存 hash），供前端組
+    # 「管理我的報名」公開連結。
+    query_token: str
+
+
 class RegisterPayload(BaseModel):
     student_id: int = Field(..., gt=0)
     school_year: int = Field(..., ge=100, le=200)  # 民國
@@ -74,7 +150,7 @@ class RegisterPayload(BaseModel):
         return list(dict.fromkeys(v))
 
 
-@router.get("/courses")
+@router.get("/courses", response_model=ParentCourseListOut)
 def list_courses(
     school_year: Optional[int] = Query(None),
     semester: Optional[int] = Query(None, ge=1, le=2),
@@ -117,6 +193,12 @@ def list_courses(
             "video_url": c.video_url,
             "enrolled_count": enrolled_counts.get(c.id, 0),
             "is_full": enrolled_counts.get(c.id, 0) >= _effective_capacity(c.capacity),
+            # Phase 3 適齡 + 結構化時段（前台 advisory）；對齊公開端 /public/courses。
+            "min_age_months": c.min_age_months,
+            "max_age_months": c.max_age_months,
+            "meeting_weekday": c.meeting_weekday,
+            "meeting_start_time": _fmt_time(c.meeting_start_time),
+            "meeting_end_time": _fmt_time(c.meeting_end_time),
         }
         for c in courses
     ]
@@ -160,13 +242,17 @@ def _registration_summary(session, reg: ActivityRegistration) -> dict:
                 "confirm_deadline": (
                     rc.confirm_deadline.isoformat() if rc.confirm_deadline else None
                 ),
+                # 衝堂偵測：帶課程時段，前端比對已報名 vs 目錄課程。
+                "meeting_weekday": c.meeting_weekday,
+                "meeting_start_time": _fmt_time(c.meeting_start_time),
+                "meeting_end_time": _fmt_time(c.meeting_end_time),
             }
             for rc, c in courses
         ],
     }
 
 
-@router.get("/my-registrations")
+@router.get("/my-registrations", response_model=MyRegistrationsOut)
 def my_registrations(
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
@@ -190,7 +276,7 @@ def my_registrations(
     }
 
 
-@router.post("/register", status_code=201)
+@router.post("/register", status_code=201, response_model=RegisterOut)
 def register_courses(
     payload: RegisterPayload,
     current_user: dict = Depends(require_parent_role()),
