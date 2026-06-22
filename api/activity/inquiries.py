@@ -15,12 +15,14 @@ from utils.errors import raise_safe_500
 from utils.permissions import Permission
 
 from ._shared import _not_found, _invalidate_activity_dashboard_caches, InquiryReply
+from schemas._common import DeleteResultOut
+from schemas.activity_admin import InquiryListOut
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/inquiries")
+@router.get("/inquiries", response_model=InquiryListOut)
 def get_inquiries(
     is_read: bool = None,
     skip: int = Query(0, ge=0),
@@ -62,7 +64,7 @@ def get_inquiries(
         session.close()
 
 
-@router.put("/inquiries/{inquiry_id}/read")
+@router.put("/inquiries/{inquiry_id}/read", response_model=DeleteResultOut)
 def mark_inquiry_read(
     inquiry_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -88,7 +90,7 @@ def mark_inquiry_read(
         session.close()
 
 
-@router.put("/inquiries/{inquiry_id}/reply")
+@router.put("/inquiries/{inquiry_id}/reply", response_model=DeleteResultOut)
 def reply_inquiry(
     inquiry_id: int,
     body: InquiryReply,
@@ -117,7 +119,7 @@ def reply_inquiry(
         session.close()
 
 
-@router.delete("/inquiries/{inquiry_id}")
+@router.delete("/inquiries/{inquiry_id}", response_model=DeleteResultOut)
 def delete_inquiry(
     inquiry_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
