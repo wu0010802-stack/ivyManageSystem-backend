@@ -54,12 +54,21 @@ from ._shared import (
     today_taipei,
 )
 from services.activity_refund_query import build_refund_suggestion
+from schemas.activity_admin import (
+    AddCourseResultOut,
+    AddSupplyResultOut,
+    RemoveItemResultOut,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/registrations/{registration_id}/courses", status_code=201)
+@router.post(
+    "/registrations/{registration_id}/courses",
+    status_code=201,
+    response_model=AddCourseResultOut,
+)
 def add_registration_course(
     registration_id: int,
     body: AddCourseRequest,
@@ -182,7 +191,11 @@ def add_registration_course(
         session.close()
 
 
-@router.post("/registrations/{registration_id}/supplies", status_code=201)
+@router.post(
+    "/registrations/{registration_id}/supplies",
+    status_code=201,
+    response_model=AddSupplyResultOut,
+)
 def add_registration_supply(
     registration_id: int,
     body: AddSupplyRequest,
@@ -275,7 +288,10 @@ def add_registration_supply(
         session.close()
 
 
-@router.delete("/registrations/{registration_id}/supplies/{supply_record_id}")
+@router.delete(
+    "/registrations/{registration_id}/supplies/{supply_record_id}",
+    response_model=RemoveItemResultOut,
+)
 def remove_registration_supply(
     registration_id: int,
     supply_record_id: int,
@@ -451,7 +467,10 @@ def remove_registration_supply(
         session.close()
 
 
-@router.delete("/registrations/{registration_id}/courses/{course_id}")
+@router.delete(
+    "/registrations/{registration_id}/courses/{course_id}",
+    response_model=RemoveItemResultOut,
+)
 def withdraw_course(
     registration_id: int,
     course_id: int,

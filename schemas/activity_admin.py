@@ -1660,3 +1660,99 @@ class ActivityDashboardTableOut(IvyBaseModel):
     grand_total: ActivityDashboardGrandTotalOut
     school_year: int
     semester: int
+
+
+# ── Quick Win B（2026-06-22）：補裸 dict 端點的 response_model ────────────
+# 這些 admin 端點原回裸 dict → OpenAPI 無具名 schema → 前端 codegen 只能拿到
+# unknown（且多在金流/報名異動最該有契約處）。下列 Out 欄位與既有 return dict
+# 完全對齊，IvyBaseModel 保留 codegen 型別、不改 wire shape。{message}-only 回應
+# 直接重用 schemas._common.DeleteResultOut，不在此重複定義。
+
+
+# inquiries.py（家長提問）
+class InquiryItemOut(IvyBaseModel):
+    id: int
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    question: Optional[str] = None
+    is_read: bool
+    reply: Optional[str] = None
+    replied_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class InquiryListOut(IvyBaseModel):
+    items: list[InquiryItemOut]
+    total: int
+    unread_count: int
+
+
+# registrations_items.py（報名項目增刪）
+class AddCourseResultOut(IvyBaseModel):
+    message: str
+    status: str  # enrolled / waitlist
+    total_amount: int
+    paid_amount: int
+    outstanding_amount: int
+    payment_status: str
+
+
+class AddSupplyResultOut(IvyBaseModel):
+    message: str
+    id: int
+    total_amount: int
+    paid_amount: int
+    outstanding_amount: int
+    payment_status: str
+
+
+class RemoveItemResultOut(IvyBaseModel):
+    """退課 / 退用品共用：含退費金額（force_refund 時 > 0，否則 0）。"""
+
+    message: str
+    total_amount: int
+    paid_amount: int
+    refunded_amount: int
+    payment_status: str
+
+
+# registrations_payments.py（繳退費）
+class PaymentRecordItemOut(IvyBaseModel):
+    id: int
+    type: str  # payment / refund
+    amount: int
+    payment_date: Optional[str] = None
+    payment_method: str
+    notes: str
+    operator: Optional[str] = None  # 無 ACTIVITY_PAYMENT_APPROVE 時遮罩為 None/遮罩字串
+    created_at: Optional[str] = None
+    is_voided: bool
+    voided_at: Optional[str] = None
+    voided_by: Optional[str] = None
+    void_reason: str
+
+
+class PaymentListOut(IvyBaseModel):
+    total_amount: int
+    paid_amount: int
+    payment_status: str
+    records: list[PaymentRecordItemOut]
+
+
+class PaymentMutationOut(IvyBaseModel):
+    """新增繳/退費回應（含冪等 replay 路徑，三條 return 同形）。paid_amount 取
+    reg.paid_amount 直值，以 Optional 兜底避免極端 None 觸發 ResponseValidationError。"""
+
+    message: str
+    paid_amount: Optional[int] = None
+    payment_status: str
+
+
+class PaymentVoidResultOut(PaymentMutationOut):
+    voided_at: Optional[str] = None
+
+
+# registrations_static.py（批次付款）
+class BatchPaymentResultOut(IvyBaseModel):
+    message: str
+    updated: int

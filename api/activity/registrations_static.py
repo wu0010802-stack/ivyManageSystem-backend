@@ -28,6 +28,7 @@ from services.activity_service import activity_service
 from utils.errors import raise_safe_500
 from utils.excel_utils import SafeWorksheet
 from utils.auth import require_staff_permission
+from schemas.activity_admin import BatchPaymentResultOut
 from utils.permissions import Permission
 from utils.rate_limit import create_limiter
 from utils.finance_guards import require_finance_approve
@@ -76,7 +77,7 @@ _batch_payment_limiter = _batch_payment_limiter_instance.as_dependency()
 MAX_EXPORT_ROWS = 5000
 
 
-@router.put("/registrations/batch-payment")
+@router.put("/registrations/batch-payment", response_model=BatchPaymentResultOut)
 def batch_update_payment(
     body: BatchPaymentUpdate,
     _rl=Depends(_batch_payment_limiter),

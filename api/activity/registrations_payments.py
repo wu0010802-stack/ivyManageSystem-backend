@@ -56,12 +56,18 @@ from ._shared import (
     _require_daily_close_unlocked,
     today_taipei,
 )
+from schemas._common import DeleteResultOut
+from schemas.activity_admin import (
+    PaymentListOut,
+    PaymentMutationOut,
+    PaymentVoidResultOut,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.put("/registrations/{registration_id}/payment")
+@router.put("/registrations/{registration_id}/payment", response_model=DeleteResultOut)
 def update_payment(
     registration_id: int,
     body: PaymentUpdate,
@@ -230,7 +236,7 @@ def update_payment(
         session.close()
 
 
-@router.get("/registrations/{registration_id}/payments")
+@router.get("/registrations/{registration_id}/payments", response_model=PaymentListOut)
 def get_registration_payments(
     registration_id: int,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
@@ -290,7 +296,11 @@ def get_registration_payments(
 _IDEMPOTENCY_WINDOW_SECONDS = 600
 
 
-@router.post("/registrations/{registration_id}/payments", status_code=201)
+@router.post(
+    "/registrations/{registration_id}/payments",
+    status_code=201,
+    response_model=PaymentMutationOut,
+)
 def add_registration_payment(
     registration_id: int,
     body: AddPaymentRequest,
@@ -595,7 +605,10 @@ def add_registration_payment(
         session.close()
 
 
-@router.delete("/registrations/{registration_id}/payments/{payment_id}")
+@router.delete(
+    "/registrations/{registration_id}/payments/{payment_id}",
+    response_model=PaymentVoidResultOut,
+)
 def delete_registration_payment(
     registration_id: int,
     payment_id: int,
