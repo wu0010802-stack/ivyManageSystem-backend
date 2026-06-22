@@ -622,15 +622,36 @@ def batch_update_attendance(
                 if existing.student_id is None:
                     existing.student_id = reg_student_map.get(item.registration_id)
             else:
-                att = ActivityAttendance(
-                    session_id=session_id,
-                    registration_id=item.registration_id,
-                    student_id=reg_student_map.get(item.registration_id),
-                    is_present=item.is_present,
-                    notes=item.notes or "",
-                    recorded_by=operator,
-                )
-                session.add(att)
+                # savepoint：併發請求已先 commit 同一 (session_id, registration_id)
+                # 時，撞 uq_activity_attendance_session_reg → savepoint 自動回滾，
+                # 不毀外層整批。改為重查後更新（對齊 sessions/batch begin_nested 寫法）。
+                try:
+                    with session.begin_nested():
+                        att = ActivityAttendance(
+                            session_id=session_id,
+                            registration_id=item.registration_id,
+                            student_id=reg_student_map.get(item.registration_id),
+                            is_present=item.is_present,
+                            notes=item.notes or "",
+                            recorded_by=operator,
+                        )
+                        session.add(att)
+                        session.flush()
+                except IntegrityError:
+                    # 另一請求已併發插入同 (session_id, registration_id)；改為更新該列
+                    existing = (
+                        session.query(ActivityAttendance)
+                        .filter_by(
+                            session_id=session_id,
+                            registration_id=item.registration_id,
+                        )
+                        .one()
+                    )
+                    existing.is_present = item.is_present
+                    existing.notes = item.notes or ""
+                    existing.recorded_by = operator
+                    if existing.student_id is None:
+                        existing.student_id = reg_student_map.get(item.registration_id)
 
         session.commit()
         applied = sum(1 for item in records if item.registration_id in valid_reg_ids)
