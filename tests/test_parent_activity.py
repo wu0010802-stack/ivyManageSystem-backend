@@ -869,3 +869,83 @@ class TestRegisterPayloadDedupesIds:
         )
         assert p.course_ids == [7, 8]
         assert p.supply_ids == []
+
+
+class TestCapacityAndCountFixes:
+    """Finding 4/6（2026-06-22）：家長端容量計數與 NULL 容量處理。"""
+
+    def test_null_capacity_course_not_full(self, activity_client):
+        """Finding 6：capacity=NULL 的歷史課程應視為 30（其餘端口徑），
+        不可用 `capacity or 0` 把 NULL→0 而全顯額滿。"""
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, _, _ = _setup_family(session)
+            course = _create_course(session, name="無上限課", capacity=30)
+            # 模型 default=30 只在 INSERT 套用；既 flush 後改 None 再 commit
+            # 會發 UPDATE SET capacity=NULL，重現歷史 NULL 資料。
+            course.capacity = None
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get(
+            "/api/parent/activity/courses",
+            params={"school_year": 115, "semester": 1},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        course = next(i for i in resp.json()["items"] if i["name"] == "無上限課")
+        assert course["capacity"] is None
+        assert course["is_full"] is False
+
+    def test_effective_capacity_treats_null_as_default(self):
+        """Finding 6：抽出的純函式——NULL→30（對齊全模組 else 30 慣例），
+        明確 0 維持 0（真的不開放名額），其餘原值。報名端（line 280）與
+        is_full（line 106）共用此函式。"""
+        from api.parent_portal.activity import _effective_capacity
+
+        assert _effective_capacity(None) == 30
+        assert _effective_capacity(0) == 0
+        assert _effective_capacity(5) == 5
+
+    def test_rejected_registration_not_counted_as_enrolled(self, activity_client):
+        """Finding 4：被拒絕（is_active=False）報名的 RC 仍是 enrolled，
+        但 public_count_enrolled 不應計入，否則家長端誤判額滿並錯放候補。"""
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, _, _ = _setup_family(session)
+            course = _create_course(
+                session, name="容量一", capacity=1, allow_waitlist=True
+            )
+            session.flush()
+            cid = course.id
+            # 一筆被拒絕報名：is_active=False，但 RC 狀態仍是 enrolled
+            rejected = ActivityRegistration(
+                student_name="離園生",
+                birthday="2020-01-01",
+                is_active=False,
+                match_status="rejected",
+                school_year=115,
+                semester=1,
+            )
+            session.add(rejected)
+            session.flush()
+            session.add(
+                RegistrationCourse(
+                    registration_id=rejected.id,
+                    course_id=cid,
+                    status="enrolled",
+                    price_snapshot=2000,
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get(
+            "/api/parent/activity/courses",
+            params={"school_year": 115, "semester": 1},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        course = next(i for i in resp.json()["items"] if i["name"] == "容量一")
+        assert course["enrolled_count"] == 0, "被拒絕報名不應計入佔位"
+        assert course["is_full"] is False

@@ -37,10 +37,15 @@ def register_sqlite_parent_rls_udfs(engine: Engine) -> None:
         def _public_count_enrolled(course_id):
             cur = dbapi_conn.cursor()
             try:
+                # Finding 4（2026-06-22）：JOIN activity_registrations 篩 is_active，
+                # 排除被拒絕/離園（is_active=False）報名遺留的 enrolled RC，
+                # 與 PG migration actvcnt01 及公開端 enrolled_count_map 口徑一致。
                 cur.execute(
-                    "SELECT count(*) FROM registration_courses "
-                    "WHERE course_id = ? "
-                    "AND status IN ('enrolled', 'promoted_pending')",
+                    "SELECT count(*) FROM registration_courses rc "
+                    "JOIN activity_registrations ar ON ar.id = rc.registration_id "
+                    "WHERE rc.course_id = ? "
+                    "AND rc.status IN ('enrolled', 'promoted_pending') "
+                    "AND ar.is_active = 1",
                     (course_id,),
                 )
                 row = cur.fetchone()

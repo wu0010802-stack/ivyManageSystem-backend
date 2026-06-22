@@ -141,8 +141,11 @@ def get_public_registration_time(request: Request, response: Response):
     try:
         settings = session.query(ActivityRegistrationSettings).first()
         if not settings:
+            # Finding 1（2026-06-22）：無 settings 列時 _check_registration_open
+            # 放行報名（業主裁：維持放行）。此處須回 is_open=True 與其一致，
+            # 否則 UI 顯示關閉但 API 實際開放，可繞過前台直接報名。
             payload = {
-                "is_open": False,
+                "is_open": True,
                 "open_at": None,
                 "close_at": None,
                 **{k: None for k in _PUBLIC_DISPLAY_FIELDS},
@@ -612,27 +615,14 @@ def public_register(
             # 未驗證身分（含枚舉攻擊者）：silent-success，不寫 DB、不洩漏存在性
             return _silent_success_response
 
-        # Soft dedup：同 parent_phone + 學期若已有 pending 筆，擋重複送件
-        # （避免家長錯字重送產生一堆 pending）
-        pending_dup = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.parent_phone == body.parent_phone,
-                ActivityRegistration.pending_review.is_(True),
-                ActivityRegistration.is_active.is_(True),
-                ActivityRegistration.school_year == sy,
-                ActivityRegistration.semester == sem,
-            )
-            .first()
-        )
-        if pending_dup:
-            if is_matched_for_dup_check:
-                raise HTTPException(
-                    status_code=400,
-                    detail="您的報名仍在確認中，如需補件請直接聯繫校方",
-                )
-            # 未驗證身分：silent-success（同樣保留 soft-dedup：DB 不再多寫一筆）
-            return _silent_success_response
+        # Finding 2（2026-06-22）：原本此處還有一段 phone-only soft-dedup
+        # （同 parent_phone + 學期若已有任一 pending 即擋），會把「手足共用家長
+        # 電話」的第二個孩子（不同 name/birthday）誤判重複而靜默丟棄（silent-success
+        # 假成功、DB 沒寫入）。業主裁：手足應可各自報名。
+        # 加上 name+birthday 後，此 dedup 與上方 `existing` 檢查（name+birthday+
+        # phone+學期、is_active 含 pending）完全重疊變死碼，故整段移除——同一學生
+        # 重送一律由 `existing` 攔下（已驗證身分→400、未驗證→silent-success），
+        # 不同學生（手足）則正常各自寫入。氾濫送件仍由 register rate limiter 控制。
 
         # 班級來源：匹配成功以 Student.classroom 為準（覆蓋家長自選），
         # 失敗則保留家長輸入字串作為審核參考。
