@@ -607,7 +607,7 @@ def outstanding_by_student(
         )
 
         result_groups = []
-        for (student_name, birthday), group_regs in groups.items():
+        for idx, ((student_name, birthday), group_regs) in enumerate(groups.items()):
             group_terminal = pii_allowed is not None and any(
                 reg.student_id in terminal_ids for reg in group_regs
             )
@@ -643,11 +643,16 @@ def outstanding_by_student(
                     }
                 )
             class_name = group_regs[-1].class_name or ""
+            # student_key：前端 Vue :key 聚合鍵，必須在同一回應內唯一。
+            # can_see_student=True（admin / 自班）：帶明文生日，維持既有格式。
+            # can_see_student=False（遮罩）：改用列舉索引取代生日，避免 PII 外洩。
+            if can_see_student:
+                student_key = f"{student_name}|{birthday}"
+            else:
+                student_key = f"{student_name}|{idx}"
             result_groups.append(
                 {
-                    # student_key 含 birthday 用於前端聚合鍵；非 STUDENTS_READ 持有者
-                    # 雖看不到 birthday 欄位本身，但 key 仍以 student_name 為主可用。
-                    "student_key": f"{student_name}|{birthday}",
+                    "student_key": student_key,
                     "student_name": student_name,
                     "birthday": (birthday or "") if can_see_student else None,
                     "class_name": class_name,
