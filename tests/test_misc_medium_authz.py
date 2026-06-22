@@ -368,7 +368,12 @@ def _f030_register_payload(
 
 
 class TestF030_PublicRegisterEnumeration:
-    """existing / pending_dup 檢查需在三欄身分驗證後才會 raise 400。"""
+    """existing 重複檢查需在三欄身分驗證後才會 raise 400（未驗證者一律統一回應）。
+
+    註：原 phone-only pending_dup 路徑已於 Finding 2（2026-06-22）移除（會誤丟手足），
+    列舉防護改由「所有 unmatched 情況行為統一」保證，見
+    test_same_phone_different_identity_indistinguishable_from_fresh。
+    """
 
     def test_unauthenticated_probe_with_invalid_identity_returns_generic_message(
         self, f030_client
@@ -396,25 +401,25 @@ class TestF030_PublicRegisterEnumeration:
         with sf() as s:
             assert s.query(ActivityRegistration).count() == 1
 
-    def test_pending_dup_phone_probe_returns_silent_success(self, f030_client):
-        """pending_dup 路徑：用同 phone + 不同 (name, birthday) 探測現有 pending 報名。
+    def test_same_phone_different_identity_indistinguishable_from_fresh(
+        self, f030_client
+    ):
+        """同 phone + 不同 (name, birthday) 是合法手足（Finding 2，2026-06-22），
+        應正常各自報名——原本的 phone-only soft-dedup 會把第二個孩子靜默丟棄。
 
-        舊版會回 400「您的報名仍在確認中」洩漏電話存在性；修補後 unmatched 探測
-        應 silent-success（201），且 DB 不增筆。
+        F-030 列舉防護仍成立：以「受害者電話」（已有 pending）報名 vs 以「全新電話」
+        報名得到無法區分的回應（皆 201 + 中性訊息），攻擊者無法藉此判斷某電話是否
+        已在系統內有報名。差別只在 DB 各寫入一筆（手足/新家庭），由 partial unique
+        index + rate limit + 至少一項守衛約束濫用。
         """
         client, sf = f030_client
         with sf() as s:
             from utils.academic import resolve_current_academic_term
 
             sy, sem = resolve_current_academic_term()
-            # 不建學生 → unmatched；先建立一筆 pending 報名
+            # 不建學生 → unmatched；先建立一筆既有 pending 報名（受害者電話）
             s.add(
-                Classroom(
-                    name="大象班",
-                    is_active=True,
-                    school_year=sy,
-                    semester=sem,
-                )
+                Classroom(name="大象班", is_active=True, school_year=sy, semester=sem)
             )
             s.add(
                 ActivityCourse(
@@ -441,18 +446,32 @@ class TestF030_PublicRegisterEnumeration:
                 )
             )
             s.commit()
-        # 同 phone + 不同 (name, birthday) → unmatched（無 Student 對應）
-        res = client.post(
+
+        # ① 用「受害者電話」0912345678 + 不同身分（手足）報名
+        res_victim = client.post(
             "/api/activity/public/register",
-            json=_f030_register_payload(name="李小華", birthday="2021-01-01"),
+            json=_f030_register_payload(
+                name="李小華", birthday="2021-01-01", phone="0912345678"
+            ),
         )
-        # 修補後：unmatched 探測 → silent-success
-        assert res.status_code == 201, res.text
-        body = res.json()
-        assert body["id"] == 0
-        # DB 不應從 1 筆變成 2 筆（dedup 守住）
+        # ② 用「全新電話」0988888888 + 不同身分報名
+        res_fresh = client.post(
+            "/api/activity/public/register",
+            json=_f030_register_payload(
+                name="陳小美", birthday="2021-02-02", phone="0988888888"
+            ),
+        )
+
+        # 列舉防護：兩者回應無法區分（status + 中性訊息形狀一致）
+        assert res_victim.status_code == 201, res_victim.text
+        assert res_fresh.status_code == 201, res_fresh.text
+        assert "已送出" in res_victim.json()["message"]
+        assert "已送出" in res_fresh.json()["message"]
+        assert "已有" not in res_victim.json()["message"]
+
+        # 兩筆都應寫入（手足/新家庭各自一筆）：原 1 + 2 = 3
         with sf() as s:
-            assert s.query(ActivityRegistration).count() == 1
+            assert s.query(ActivityRegistration).count() == 3
 
     def test_verified_parent_with_existing_registration_400(self, f030_client):
         """已驗證身分（matched）+ 已有有效報名 → 仍回 400 明確訊息（保留 UX）。"""

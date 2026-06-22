@@ -18,7 +18,7 @@ import re
 from datetime import date, datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from schemas._base import IvyBaseModel
 from utils.taipei_time import TAIPEI_TZ
@@ -142,7 +142,7 @@ class PublicRegistrationPayload(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=50)
     birthday: str
-    class_: str = Field(..., min_length=1, alias="class")
+    class_: str = Field(..., min_length=1, max_length=50, alias="class")
     parent_phone: str = Field(..., min_length=8, max_length=30)
     courses: list[PublicCourseItem] = Field(..., max_length=20)
     supplies: list[PublicSupplyItem] = Field(default=[], max_length=20)
@@ -169,6 +169,14 @@ class PublicRegistrationPayload(BaseModel):
     def normalize_parent_phone(cls, v):
         return _validate_tw_mobile(v)
 
+    @model_validator(mode="after")
+    def _require_at_least_one_item(self):
+        # Finding 5（2026-06-22）：courses 只有 max_length、supplies 預設 []，
+        # 原本可建立完全空白報名污染審核佇列。比照家長端守衛：至少一項。
+        if not self.courses and not self.supplies:
+            raise ValueError("至少需選擇一門課程或一項用品")
+        return self
+
 
 class PublicUpdatePayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -176,7 +184,7 @@ class PublicUpdatePayload(BaseModel):
     id: int
     name: str = Field(..., min_length=1, max_length=50)
     birthday: str
-    class_: str = Field(..., min_length=1, alias="class")
+    class_: str = Field(..., min_length=1, max_length=50, alias="class")
     parent_phone: str = Field(..., min_length=8, max_length=30)
     # 選填：家長換號碼。提供時以 parent_phone（舊號）做身份驗證，
     # 通過後 reg.parent_phone 改為 new_parent_phone。
@@ -213,6 +221,11 @@ class PublicUpdatePayload(BaseModel):
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
         return _validate_tw_mobile(v)
+
+    # 注意：Finding 5 的「至少一項」守衛只套在 register（PublicRegistrationPayload），
+    # 不套在 update——清空課程是既有合法流程（觸發退費，見
+    # test_activity_public_update_refund_guard），且 update 不會新建 pending 列/
+    # 觸發電話 dedup，與 finding 5「建立空白報名污染審核佇列」的情境無關。
 
 
 # ─── 公開端點 response_model（Phase 3.5） ─────────────────────────────────

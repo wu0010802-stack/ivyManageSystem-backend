@@ -171,7 +171,9 @@ def test_register_with_honeypot_does_not_persist(client):
         "birthday": "2020-05-01",
         "class": "中班",
         "parent_phone": "0912345678",
-        "courses": [],
+        # Finding 5（2026-06-22）後 register 需至少一項；honeypot silent-reject
+        # 在課程查詢前先觸發，故課程是否實際存在不影響本測試。
+        "courses": [{"name": "圍棋"}],
         "supplies": [],
         "_hp": "robot",
     }

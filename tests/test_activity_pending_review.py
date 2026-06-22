@@ -230,12 +230,18 @@ class TestPublicRegisterMatching:
         ):
             assert forbidden not in body, f"response leaked {forbidden}"
 
-    def test_soft_dedup_blocks_duplicate_pending_same_phone(self, pending_client):
-        """同 parent_phone + 同學期已有 pending 時，第二筆不應落 DB（soft dedup）。
+    def test_exact_duplicate_child_deduped_same_phone(self, pending_client):
+        """同一學生（同 name+birthday+phone）重送仍只留一筆。
 
-        F-030 修補後，未驗證身分（with_student=False → unmatched）的潛在攻擊者
-        路徑改回 silent-success（201 + 中性訊息）以避免存在性 oracle，但 dedup
-        保證 DB 仍只有一筆 pending（不能讓攻擊者 / 錯字家長堆出大量 pending）。
+        F-030 後，未驗證身分（with_student=False → unmatched）的重送走
+        silent-success（201 + 中性訊息）以避免存在性 oracle；同一學生由 `existing`
+        檢查攔下，DB 不多寫。
+
+        Finding 2（2026-06-22）：原本還有 phone-only soft-dedup 會連帶把「手足
+        共用電話」的第二個孩子靜默丟棄（見 test_siblings_same_phone_both_saved，
+        在 test_activity_public_review_2026_06_22.py）。該段已移除，dedup 改由
+        name+birthday+phone 的 `existing` 檢查負責——故此測試改送「完全相同」的
+        payload 驗證重送去重不退化。
         """
         client, sf = pending_client
         with sf() as s:
@@ -246,16 +252,16 @@ class TestPublicRegisterMatching:
             json=_public_register_payload(),
         )
         assert r1.status_code == 201
-        # 改個名字但用同手機 → 觸發 pending_dup soft-dedup。
+        # 完全相同的重送（同 name+birthday+phone）→ existing 攔下，
         # 未驗證身分 → silent-success（201），DB 不應多寫一筆。
         r2 = client.post(
             "/api/activity/public/register",
-            json=_public_register_payload(name="王大明"),
+            json=_public_register_payload(),
         )
         assert r2.status_code == 201
         with sf() as s:
             count = s.query(ActivityRegistration).count()
-        assert count == 1, f"soft dedup 應保留只有 1 筆，實際 {count}"
+        assert count == 1, f"完全相同的重送應 dedup 成一筆，實際 {count}"
 
 
 class TestPublicQueryPrivacy:
