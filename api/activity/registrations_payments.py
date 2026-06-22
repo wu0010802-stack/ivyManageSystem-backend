@@ -386,6 +386,7 @@ def add_registration_payment(
                 body.type,
                 body.amount,
                 current_user.get("username", ""),
+                body.payment_date,
             )
             if dup is not None:
                 total_amount = _calc_total_amount(session, registration_id)

@@ -390,16 +390,19 @@ def _recent_duplicate_payment(
     type_,
     amount,
     operator,
+    payment_date,
     window_seconds=_NO_KEY_DEDUP_WINDOW_SECONDS,
 ):
     """無 idempotency_key 時的短窗去重：回最近 window 內同
-    (reg, type, amount, operator) 的有效紀錄（排除 voided），代表疑似重送。
-    None 表示可建立。
+    (reg, type, amount, operator, payment_date) 的有效紀錄（排除 voided），
+    代表疑似重送。None 表示可建立。
 
-    Why 用 (reg, type, amount, operator) 四元組 + 60s 窗：官方 UI 帶 key 不走
-    此路；無 key 的「同 reg、同 type、同額、同操作者、60 秒內」幾乎必然是重送
-    （網路重試 / 連點兩下），合法的第二筆同額退費極罕見且操作者可稍候再送。
-    寧可保守去重以杜絕金流重複出帳。
+    Why 用 (reg, type, amount, operator, payment_date) 五元組 + 60s 窗：官方 UI
+    帶 key 不走此路；無 key 的「同 reg、同 type、同額、同操作者、同帳務日、60
+    秒內」幾乎必然是重送（網路重試 / 連點兩下）。網路重試重送的是同一份 payload，
+    payment_date 必然相同 → 納入比對不削弱重送防護；但同操作員短時間內補登「不同
+    帳務日」的同額付款是合法的兩筆（例如一次補昨天、一次補今天），不可被誤判為
+    replay 吞掉（Finding 5）。寧可保守去重杜絕金流重複出帳，但去重鍵須含帳務日。
 
     必須在 _lock_registration / _lock_regs 取鎖之後呼叫：鎖把同 reg 的並發請求
     序列化，第二筆進來時第一筆已 commit/flush 可見，查詢才能命中 → 序列化轉去重。
@@ -412,6 +415,7 @@ def _recent_duplicate_payment(
             ActivityPaymentRecord.type == type_,
             ActivityPaymentRecord.amount == amount,
             ActivityPaymentRecord.operator == operator,
+            ActivityPaymentRecord.payment_date == payment_date,
             ActivityPaymentRecord.voided_at.is_(None),
             ActivityPaymentRecord.created_at >= cutoff,
         )
@@ -835,6 +839,7 @@ def pos_checkout(
                 body.type,
                 first_item.amount,
                 operator,
+                body.payment_date,
             )
             if dup is not None:
                 replay = _parse_receipt_response_from_record(session, dup)
