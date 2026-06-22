@@ -670,10 +670,19 @@ def outstanding_by_student(
 
 
 def _lock_regs(session, reg_ids: list):
-    """對 registration 取得行級鎖。SQLite 不支援 FOR UPDATE，在測試時自動降級。"""
-    query = session.query(ActivityRegistration).filter(
-        ActivityRegistration.id.in_(reg_ids),
-        ActivityRegistration.is_active.is_(True),
+    """對 registration 取得行級鎖。SQLite 不支援 FOR UPDATE，在測試時自動降級。
+
+    order_by(id)：以 id 升冪取 row lock，與離園同步 sync 一致，使全系統 row-lock
+    取鎖序確定一致，杜絕「同一學生多筆 reg 同時被 checkout 與離園 sync 鎖到、兩邊
+    取鎖序相反」的 row-vs-row deadlock。
+    """
+    query = (
+        session.query(ActivityRegistration)
+        .filter(
+            ActivityRegistration.id.in_(reg_ids),
+            ActivityRegistration.is_active.is_(True),
+        )
+        .order_by(ActivityRegistration.id)
     )
     try:
         # PostgreSQL / MySQL：row-level lock

@@ -49,6 +49,11 @@ def _term_current_and_future(sy: int, sem: int):
     school_year / semester 皆為 Integer（民國學年 / 1=上 2=下），可直接排序比較。
     用於學生離園：未來學期 active 報名也須一併取消，避免續佔名額或被候補/付款
     流程處理（歷史學期則保留供報表追溯，故用 >= 而非全部）。
+
+    註：school_year/semester 為 nullable，NULL-term 的 active 報名會被本條件靜默
+    排除（與改動前 ``== sy AND == sem`` 行為一致，非本次回歸）。實務上正常報名流程
+    一律帶當前學期，NULL-term 屬異常資料；若日後出現 NULL-term 已繳費 active 報名，
+    離園不會自動沖帳，需另行盤查。
     """
     return or_(
         ActivityRegistration.school_year > sy,
@@ -220,7 +225,14 @@ def sync_registrations_on_student_deactivate(
     # 不加 populate_existing 時，若 reg 已在 session identity-map（同步流程先前讀過），
     # 查詢會回傳 stale 物件 → 自動沖帳用舊值覆寫並發 POS 已寫入的 paid_amount（lost
     # update）。SQLite 測試環境不支援 FOR UPDATE，降級為無鎖但仍刷新。
-    reg_query = session.query(ActivityRegistration).filter(*base_filter)
+    # order_by(id)：與 POS `_lock_regs` 一致以 id 升冪取 row lock，使全系統 row-lock
+    # 取鎖序確定一致，杜絕「同一學生多筆 reg 同時被 POS checkout 與離園 sync 鎖到、
+    # 兩邊取鎖序相反」的 row-vs-row deadlock。
+    reg_query = (
+        session.query(ActivityRegistration)
+        .filter(*base_filter)
+        .order_by(ActivityRegistration.id)
+    )
     try:
         regs = reg_query.populate_existing().with_for_update().all()
     except (CompileError, NotImplementedError):
