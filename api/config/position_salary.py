@@ -111,6 +111,36 @@ class PositionSalarySyncRequest(BaseModel):
     )
 
 
+class PositionSalaryOut(BaseModel):
+    """GET /position-salary 回傳（無資料時為完整預設物件，非 {}）。
+
+    薪資欄位底層為 Money（process_result_value → float）；歷史上「無資料」
+    預設路徑回 int、「有資料」路徑回 float，wire format 不一致。加 response_model
+    後一律正規化為 float，前端（el-input-number / JS number）無感。
+    director/principal 可為 NULL；id 在無資料預設物件為 None；version 防 legacy
+    空值以 Optional 接 None。
+    """
+
+    id: Optional[int] = None
+    head_teacher_a: Optional[float] = None
+    head_teacher_b: Optional[float] = None
+    head_teacher_c: Optional[float] = None
+    assistant_teacher_a: Optional[float] = None
+    assistant_teacher_b: Optional[float] = None
+    assistant_teacher_c: Optional[float] = None
+    admin_staff: Optional[float] = None
+    english_teacher: Optional[float] = None
+    art_teacher: Optional[float] = None
+    designer: Optional[float] = None
+    nurse: Optional[float] = None
+    driver: Optional[float] = None
+    kitchen_staff: Optional[float] = None
+    director: Optional[float] = None
+    principal: Optional[float] = None
+    version: Optional[int] = None
+    changed_by: Optional[str] = None
+
+
 def _resolve_grade(emp) -> str:
     """決定員工等級（a/b/c）。
     優先用 bonus_grade 欄位；若未設定則依職稱推算：
@@ -186,7 +216,7 @@ def _get_standard_salary(config_row, key: str):
     return float(raw) if raw is not None else None
 
 
-@router.get("/position-salary")
+@router.get("/position-salary", response_model=PositionSalaryOut)
 def get_position_salary(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
