@@ -191,6 +191,74 @@ class TestListCoursesScheduleAgeFields:
         assert item["meeting_end_time"] is None
 
 
+class TestEffectiveCapacity:
+    """Finding 5：NULL capacity 課程的家長端 capacity 應回 effective 值（NULL→30）。
+
+    is_full 已用 _effective_capacity（NULL→30）判定，但回傳的 capacity 仍是 raw
+    c.capacity（None）→ 前端 `enrolled_count/capacity` 顯示 "5/null"。應與 is_full
+    口徑一致回 effective 值。型別仍 Optional[int]（不改 wire shape / schema）。
+    """
+
+    def test_null_capacity_returns_effective_30(self, activity_client):
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _ = _setup_family(session)
+            course = ActivityCourse(
+                name="無上限課",
+                price=1000,
+                school_year=115,
+                semester=1,
+                is_active=True,
+            )
+            session.add(course)
+            session.flush()
+            # ⚠ ActivityCourse.capacity column default=30：INSERT 時帶 None 會被
+            # default 覆寫成 30，測不到 NULL。INSERT 後改 UPDATE 設 NULL 才會持久化
+            # 真正的 NULL（default 只在 INSERT 套用）。
+            course.capacity = None
+            session.flush()
+            assert course.capacity is None
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get(
+            "/api/parent/activity/courses",
+            params={"school_year": 115, "semester": 1},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert (
+            item["capacity"] == 30
+        ), "NULL capacity 應回 effective 值 30（與 is_full 一致）"
+
+    def test_explicit_capacity_unchanged(self, activity_client):
+        # 有明確容量的課程 capacity 維持原值，不被 effective 邏輯影響。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _ = _setup_family(session)
+            session.add(
+                ActivityCourse(
+                    name="限額課",
+                    price=1000,
+                    capacity=12,
+                    school_year=115,
+                    semester=1,
+                    is_active=True,
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get(
+            "/api/parent/activity/courses",
+            params={"school_year": 115, "semester": 1},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["items"][0]["capacity"] == 12
+
+
 class TestMyRegistrationsScheduleFields:
     def test_my_registrations_course_block_includes_schedule(self, activity_client):
         # 衝堂偵測需要：my-registrations 每門課帶 weekday/time，前端才能比對

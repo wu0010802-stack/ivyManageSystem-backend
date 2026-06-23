@@ -927,8 +927,12 @@ class TestCapacityAndCountFixes:
     """Finding 4/6（2026-06-22）：家長端容量計數與 NULL 容量處理。"""
 
     def test_null_capacity_course_not_full(self, activity_client):
-        """Finding 6：capacity=NULL 的歷史課程應視為 30（其餘端口徑），
-        不可用 `capacity or 0` 把 NULL→0 而全顯額滿。"""
+        """Finding 6 + Finding 5：capacity=NULL 的歷史課程應視為 30（其餘端口徑），
+        不可用 `capacity or 0` 把 NULL→0 而全顯額滿。
+
+        Finding 5（2026-06-23）：回傳的 capacity 亦改為 effective 值（NULL→30），
+        與 is_full 口徑一致；原本只修 is_full、capacity 仍回 raw NULL → 前端顯示
+        "enrolled/null"。故此處 capacity 斷言由 None 改為 30。"""
         client, session_factory = activity_client
         with session_factory() as session:
             user, _, _, _ = _setup_family(session)
@@ -946,7 +950,7 @@ class TestCapacityAndCountFixes:
         )
         assert resp.status_code == 200
         course = next(i for i in resp.json()["items"] if i["name"] == "無上限課")
-        assert course["capacity"] is None
+        assert course["capacity"] == 30, "NULL capacity 回 effective 值（Finding 5）"
         assert course["is_full"] is False
 
     def test_effective_capacity_treats_null_as_default(self):
