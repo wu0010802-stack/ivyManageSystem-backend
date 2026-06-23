@@ -118,7 +118,9 @@ def create_portal_incident(
                 description=payload.description,
                 action_taken=payload.action_taken,
                 parent_notified=payload.parent_notified,
-                parent_notified_at=now_taipei_naive() if payload.parent_notified else None,
+                parent_notified_at=(
+                    now_taipei_naive() if payload.parent_notified else None
+                ),
                 recorded_by=current_user.get("user_id"),
             )
             session.add(incident)
@@ -126,8 +128,8 @@ def create_portal_incident(
             session.refresh(incident)
 
             logger.info(
-                "教師新增學生事件紀錄：emp=%s student_id=%d type=%s",
-                emp.name,
+                "教師新增學生事件紀錄：emp_id=%d student_id=%d type=%s",
+                emp.id,
                 payload.student_id,
                 payload.incident_type,
             )

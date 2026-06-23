@@ -182,8 +182,8 @@ def batch_save_class_attendance(
         session.commit()
         invalidate_student_attendance_report_caches(session)
         logger.info(
-            "教師學生點名儲存：emp=%s classroom_id=%d date=%s count=%d",
-            emp.name,
+            "教師學生點名儲存：emp_id=%d classroom_id=%d date=%s count=%d",
+            emp.id,
             payload.classroom_id,
             payload.date,
             len(payload.entries),
@@ -276,8 +276,8 @@ def export_my_class_attendance(
         _write_class_sheet(SafeWorksheet(ws_raw), report_data, year, month)
 
         logger.info(
-            "教師匯出學生出席月報：emp=%s classroom_id=%d year=%d month=%d",
-            emp.name,
+            "教師匯出學生出席月報：emp_id=%d classroom_id=%d year=%d month=%d",
+            emp.id,
             classroom_id,
             year,
             month,

@@ -208,7 +208,7 @@ def send_to_line_user_sync(line_user_id: str, event_type: str, context: dict) ->
         logger.warning(
             "send_to_line_user_sync 失敗 event=%s user=%s: %s",
             event_type,
-            line_user_id,
+            line_user_id[:8] if line_user_id else "",
             exc,
         )
         return False
@@ -367,7 +367,7 @@ def _fan_out(evt: PendingEvent) -> None:
                         logger.info(
                             "LINE consent denied，skip 並記 consent_denied event=%s user=%s",
                             evt.event_type,
-                            evt.recipient_user_id,
+                            evt.recipient_user_id[:8] if evt.recipient_user_id else "",
                         )
                         failed.append({"channel": "line", "error": "consent_denied"})
                         continue
