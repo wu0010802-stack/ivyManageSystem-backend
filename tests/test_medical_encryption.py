@@ -142,7 +142,7 @@ def test_is_encrypted_false_for_none_empty():
 def test_encrypt_raises_when_key_missing(monkeypatch):
     """key 未設定（settings 任何來源皆無）→ encrypt_medical raise RuntimeError。
 
-    註：不能只刪 os.environ——本機 dev `.env` 仍提供 key 且 pydantic Settings
+    註：不能只清環境變數——本機 dev `.env` 仍提供 key 且 pydantic Settings
     會讀該檔，故直接 patch medical_encryption.get_settings 隔離所有來源，
     使 CI（無 .env）與本機（有 .env）行為一致。
     """

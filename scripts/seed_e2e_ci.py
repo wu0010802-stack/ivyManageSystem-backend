@@ -13,7 +13,7 @@ critical-path smoke 所需的最小資料：
 冪等：以工號（Employee.employee_id）與 username 為鍵 upsert，重複執行只補缺/
 重設密碼，不會重複建。
 
-**不用 os.getenv**（ci.yml config-gate 禁 scripts/ 讀 env；改 argparse 收參數）。
+**不直讀環境變數**（ci.yml config-gate 禁 scripts/ 讀 env；改 argparse 收參數）。
 target 員工的 PK id 印到 stdout 最後一行 `E2E_TEST_EMPLOYEE_ID=<id>`，由 workflow
 的 shell 捕捉寫進 $GITHUB_ENV，供 globalSetup 讀。
 

@@ -134,7 +134,9 @@ def _config_from_args(args: argparse.Namespace) -> SeedConfig:
 
     from .calendar import current_term
 
-    today = _date.fromisoformat(args.today) if args.today else _date.today()
+    today = (
+        _date.fromisoformat(args.today) if args.today else _date.today()  # noqa: DTZ011
+    )
     year = args.year if args.year is not None else current_term(today)[0]
     return SeedConfig(
         academic_year=year,
