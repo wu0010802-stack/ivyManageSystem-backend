@@ -458,7 +458,15 @@ def update_course(
         for k, v in update_data.items():
             setattr(course, k, v)
 
-        session.commit()
+        # 改名競態：查重 SELECT 與 commit 間另一請求把別筆改成同名，後到者
+        # commit 撞 partial unique index `uq_activity_course_name_term`。比照
+        # create 端捕 IntegrityError 轉乾淨 400（與 L415 查到時早退一致），
+        # 避免落入下方 generic except → raise_safe_500（500）。
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise _duplicate_name("課程")
         _invalidate_activity_dashboard_caches(session)
         return {"message": "課程更新成功"}
     except HTTPException:

@@ -180,3 +180,88 @@ class TestConcurrentDuplicateName:
             )
         assert res.status_code == 400, res.text
         assert "名稱已存在" in res.json()["detail"]
+
+
+def _force_dup_check_miss_after_load(entity, *, keep_first=1):
+    """update 版 race 模擬：update 端對 `entity` 先 `.first()` 載入目標（必須回真實
+    物件，否則 404），再 `.first()` 查重。讓前 `keep_first` 次該 entity 的 `.first()`
+    走真實實作（載入），之後回 None（查重在 race 窗口看不到衝突者）→ 走到 commit
+    撞 unique index。其他 entity（如 auth User）一律委派真實實作。
+    """
+    real_first = Query.first
+    state = {"seen": 0}
+
+    def fake_first(self):
+        is_entity = entity in {
+            ent["entity"] for ent in self.column_descriptions if ent.get("entity")
+        }
+        if is_entity:
+            state["seen"] += 1
+            if state["seen"] > keep_first:
+                return None
+        return real_first(self)
+
+    return patch.object(Query, "first", autospec=True, side_effect=fake_first)
+
+
+def _seed_course(sf, *, name, sy=SY, sem=SEM):
+    with sf() as s:
+        course = ActivityCourse(
+            name=name,
+            price=300,
+            capacity=30,
+            school_year=sy,
+            semester=sem,
+            is_active=True,
+        )
+        s.add(course)
+        s.commit()
+        return course.id
+
+
+def _seed_supply(sf, *, name, sy=SY, sem=SEM):
+    with sf() as s:
+        supply = ActivitySupply(
+            name=name, price=300, school_year=sy, semester=sem, is_active=True
+        )
+        s.add(supply)
+        s.commit()
+        return supply.id
+
+
+class TestUpdateConcurrentDuplicateName:
+    """update 改名同名競態：查重 SELECT 在 race 窗口 miss → commit 撞 partial unique
+    index。修前 update 端 commit 無 except IntegrityError → raise_safe_500（500）；
+    修後比照 create 轉乾淨 400「名稱已存在」。"""
+
+    def test_update_course_concurrent_duplicate_returns_clean_400(self, admin_client):
+        c, sf = admin_client
+        _seed_admin(sf)
+        _login(c)
+        # 既有衝突者「新名」（active、同學期）+ 待更新課程「舊名」
+        _seed_course(sf, name="新名")
+        target_id = _seed_course(sf, name="舊名")
+
+        # 查重在 race 窗口看不到「新名」→ 走到 commit；load 仍取真實 target
+        with _force_dup_check_miss_after_load(ActivityCourse, keep_first=1):
+            res = c.put(
+                f"/api/activity/courses/{target_id}",
+                json={"name": "新名"},
+            )
+        assert res.status_code == 400, res.text
+        assert "名稱已存在" in res.json()["detail"]
+
+    def test_update_supply_concurrent_duplicate_returns_clean_400(self, admin_client):
+        c, sf = admin_client
+        _seed_admin(sf)
+        _login(c)
+        _seed_supply(sf, name="新名")
+        target_id = _seed_supply(sf, name="舊名")
+
+        with _force_dup_check_miss_after_load(ActivitySupply, keep_first=1):
+            res = c.put(
+                f"/api/activity/supplies/{target_id}",
+                json={"name": "新名"},
+            )
+        assert res.status_code == 400, res.text
+        assert "名稱已存在" in res.json()["detail"]
