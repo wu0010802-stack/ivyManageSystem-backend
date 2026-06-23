@@ -81,10 +81,10 @@ def add_registration_course(
     """
     session = get_session()
     try:
-        reg = _lock_registration(session, registration_id)
-        if not reg:
-            raise _not_found("報名資料")
-
+        # 鎖序協議：先鎖 ActivityCourse、再鎖 registration（course →
+        # registration_course），與 confirm/decline/promote/_auto_promote/withdraw_course
+        # 一致；避免與家長端 confirm/decline 並發處理同一 (reg, course) 時 PostgreSQL
+        # ABBA 鎖序反轉死鎖（原本先鎖 reg、後鎖 course，與那些路徑相反）。
         course = (
             session.query(ActivityCourse)
             .filter(
@@ -96,6 +96,29 @@ def add_registration_course(
         )
         if not course:
             raise _not_found("課程")
+
+        reg = _lock_registration(session, registration_id)
+        if not reg:
+            raise _not_found("報名資料")
+
+        # 終態學生守衛（2026-06-23 audit / P1）：已離校/畢業/轉出（Student.is_active=False）
+        # 但仍有 active 報名的學生，後台追加課程會長出「幽靈 enrolled」——佔容量、產生欠款，
+        # 卻因 Student.is_active=False 被點名名冊/統計（session-detail 聚合）排除。對齊
+        # confirm_waitlist_promotion / promote_waitlist / _auto_promote_first_waitlist /
+        # restore 既有終態守衛。student_id 為 NULL（校外/未匹配）無終態概念，略過。
+        if reg.student_id is not None:
+            from models.classroom import Student
+
+            student_active = (
+                session.query(Student.is_active)
+                .filter(Student.id == reg.student_id)
+                .scalar()
+            )
+            if student_active is False:
+                raise HTTPException(
+                    status_code=400,
+                    detail="該生已離校／畢業／轉出，無法追加課程",
+                )
 
         # 不允許跨學期追加
         if course.school_year != reg.school_year or course.semester != reg.semester:
@@ -501,6 +524,17 @@ def withdraw_course(
         if force_refund:
             acquire_activity_daily_close_lock(session, today)
 
+        # 鎖序協議（接 advisory 之後）：先鎖 ActivityCourse、再鎖 registration、
+        # 再鎖 RegistrationCourse（course → registration_course），與
+        # confirm/decline/promote/_auto_promote 一致；避免與家長端 confirm/decline 並發
+        # 處理同一 (reg, course) 時 PostgreSQL ABBA 鎖序反轉死鎖（原本先鎖 reg、course
+        # 鎖延後到 _auto_promote_first_waitlist 內才取，與那些路徑相反）。course 不存在
+        # （罕見 hard-delete）時無列可鎖，照舊容忍（course_name 退回以 id 字串顯示）。
+        from models.database import ActivityCourse as AC
+        from models.database import RegistrationCourse as RC
+
+        course = session.query(AC).filter(AC.id == course_id).with_for_update().first()
+
         reg = (
             session.query(ActivityRegistration)
             .filter(
@@ -513,22 +547,18 @@ def withdraw_course(
         if not reg:
             raise _not_found("報名資料")
 
-        from models.database import RegistrationCourse as RC
-
         rc = (
             session.query(RC)
             .filter(
                 RC.registration_id == registration_id,
                 RC.course_id == course_id,
             )
+            .with_for_update()
             .first()
         )
         if not rc:
             raise _not_found("課程報名項目")
 
-        from models.database import ActivityCourse as AC
-
-        course = session.query(AC).filter(AC.id == course_id).first()
         course_name = course.name if course else str(course_id)
         was_enrolled = rc.status == "enrolled"
         # enrolled 與 promoted_pending 都佔容量，刪除後都應嘗試遞補下一位候補
