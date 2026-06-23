@@ -229,7 +229,14 @@ def create_course(
             instructor_name=body.instructor_name,
         )
         session.add(course)
-        session.commit()
+        # 並發同名：兩請求 SELECT 都查不到 → 都 add，後到者撞 partial unique index
+        # `uq_activity_course_name_term`。捕 IntegrityError 轉乾淨 400（與序列同名
+        # 走 L211 早退一致），避免落入 generic except → raise_safe_500（500）。
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise _duplicate_name("課程")
         _invalidate_activity_dashboard_caches(session)
         return {
             "message": "課程新增成功",

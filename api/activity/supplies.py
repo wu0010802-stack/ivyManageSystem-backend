@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     get_session,
@@ -111,7 +112,14 @@ def create_supply(
             semester=sem,
         )
         session.add(supply)
-        session.commit()
+        # 並發同名：兩請求 SELECT 都查不到 → 都 add，後到者撞 partial unique index
+        # `uq_activity_supply_name_term`。捕 IntegrityError 轉乾淨 400（與序列同名
+        # 走 L105 早退一致），避免落入 generic except → raise_safe_500（500）。
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise _duplicate_name("用品")
         _invalidate_activity_dashboard_caches(session)
         return {
             "message": "用品新增成功",
