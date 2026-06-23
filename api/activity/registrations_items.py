@@ -593,7 +593,12 @@ def withdraw_course(
                 current_user=current_user,
                 suggested_total=suggested_for_course,
                 actual_total=preview_refund,
-                suggestion=_full_sugg,
+                # per-course 粒度：只看被退那門課自己的 sessions 狀態，
+                # 避免同報名其他課 sessions IS NULL 誤擋本課（可算、diff=0）。
+                suggestion={
+                    "needs_manual_review": _course_item is not None
+                    and _course_item.get("suggested_amount") is None
+                },
             )
 
         session.delete(rc)
