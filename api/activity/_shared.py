@@ -458,7 +458,11 @@ def _build_public_query_payload(session, reg) -> dict:
         "payment_status": _derive_payment_status(paid_amount, total_amount),
         "remark": reg.remark or "",
         "courses": courses,
-        "supplies": [sp.name for rs, sp in rs_rows],
+        # code review P2：回 {name, price}，price 為 price_snapshot（非目前 DB 價），
+        # 讓前端退費預警對既有用品用 snapshot 估算、與後端 diff 保價一致。
+        "supplies": [
+            {"name": sp.name, "price": rs.price_snapshot} for rs, sp in rs_rows
+        ],
         "field_state": field_state,
         # 樂觀鎖 token：前端持有，回傳給 /public/update 的 if_unmodified_since。
         # 後端原樣字串比較，不 parse；/public/update 結尾顯式 bump 確保 row 一定 dirty。

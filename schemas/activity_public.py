@@ -303,6 +303,19 @@ class PublicRegistrationCourseOut(IvyBaseModel):
     confirm_deadline: Optional[str] = None
 
 
+class PublicRegistrationSupplyOut(IvyBaseModel):
+    """/public/query 與 /public/update 的 supplies[] 單筆。
+
+    code review P2：原本只回用品名稱（list[str]），前端「儲存前退費預警」對既有用品
+    無從取得當初的 price_snapshot，只能用目前 option 價估算 → 後台調價後誤判退費擋存。
+    改回 {name, price}，price 為報名當下的 price_snapshot，讓前端對既有用品用 snapshot、
+    新增用品才用目前價，與後端 diff 更新（保留未變更用品原 row/price_snapshot）對齊。
+    """
+
+    name: str
+    price: int
+
+
 class PublicFieldStateOut(IvyBaseModel):
     """前端 UI hint：班級欄位可改/不可改的衍生狀態。"""
 
@@ -327,7 +340,7 @@ class PublicRegistrationDetailOut(IvyBaseModel):
     payment_status: str
     remark: str
     courses: list[PublicRegistrationCourseOut]
-    supplies: list[str]
+    supplies: list[PublicRegistrationSupplyOut]
     field_state: PublicFieldStateOut
     updated_at: Optional[str] = None
     message: Optional[str] = None
