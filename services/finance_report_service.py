@@ -32,10 +32,13 @@ from models.monthly_fixed_cost import (
 )
 from models.salary import SalaryRecord
 from models.vendor_payment import VendorPayment
+from utils.rounding import round_half_up
 
 
 def _month_totals_from(rows) -> dict[int, int]:
-    return {int(m): int(a or 0) for m, a in rows if m is not None}
+    # qa-loop #10：金額彙總一律 round_half_up（與 api/reports.py 同口徑、PG NUMERIC 標準），
+    # 不用 int() 朝零截斷——VendorPayment.amount 等 Numeric(12,2) 月加總的小數會被系統性少計。
+    return {int(m): round_half_up(a) for m, a in rows if m is not None}
 
 
 def _year_range(year: int) -> tuple[date, date]:
@@ -192,10 +195,10 @@ def get_salary_expense_by_month(
     out: dict[int, dict[str, int]] = {}
     for m, gross, fest, ot_bonus, ulp, li, hi, pen in rows:
         out[int(m)] = {
-            "employee_gross": int(
+            "employee_gross": round_half_up(
                 (gross or 0) + (fest or 0) + (ot_bonus or 0) + (ulp or 0)
             ),
-            "employer_benefit": int((li or 0) + (hi or 0) + (pen or 0)),
+            "employer_benefit": round_half_up((li or 0) + (hi or 0) + (pen or 0)),
         }
     return out
 
@@ -355,7 +358,9 @@ def get_insured_employee_count_by_month(session: Session, year: int) -> dict[int
 
     判定條件：
     - `hire_date <= 該月最後一天`（含當月入職）
-    - `resign_date IS NULL OR resign_date > 該月第一天`（含當月離職）
+    - `resign_date IS NULL OR resign_date >= 該月第一天`（含當月離職；resign_date
+      為最後在職日，1 號離職者當月仍投保至少一天故計入。對齊 api/gov_reports /
+      api/salary 的「當月在職」慣例與 hire 端含端點口徑，qa-loop #11）
     - `labor_insured_salary > 0`（NULL 或 0 不計入；prod 上有些 employee
       labor_insured_salary 為 NULL，沿用 insurance_salary_level，本切片從嚴
       只認真正有設 labor_insured_salary 的列，與「投保人數」字面意義一致）
@@ -375,12 +380,12 @@ def get_insured_employee_count_by_month(session: Session, year: int) -> dict[int
     out: dict[int, int] = {}
     for m in range(1, 13):
         month_first, month_end_exclusive = _month_range(year, m)
-        # 條件：hire_date < month_end_exclusive AND (resign_date IS NULL OR resign_date > month_first)
+        # 條件：hire_date < month_end_exclusive AND (resign_date IS NULL OR resign_date >= month_first)
         out[m] = sum(
             1
             for hire_date, resign_date in rows
             if hire_date < month_end_exclusive
-            and (resign_date is None or resign_date > month_first)
+            and (resign_date is None or resign_date >= month_first)
         )
     return out
 
@@ -443,14 +448,14 @@ def get_salary_breakdown_by_month(
         pen,
     ) in rows:
         out[int(m)] = {
-            "gross_salary": int(gross or 0),
-            "festival_bonus": int(festival or 0),
-            "overtime_bonus": int(ot_bonus or 0),
-            "overtime_pay": int(ot_pay or 0),
-            "supervisor_dividend": int(sup_div or 0),
-            "labor_insurance_employer": int(li or 0),
-            "health_insurance_employer": int(hi or 0),
-            "pension_employer": int(pen or 0),
+            "gross_salary": round_half_up(gross or 0),
+            "festival_bonus": round_half_up(festival or 0),
+            "overtime_bonus": round_half_up(ot_bonus or 0),
+            "overtime_pay": round_half_up(ot_pay or 0),
+            "supervisor_dividend": round_half_up(sup_div or 0),
+            "labor_insurance_employer": round_half_up(li or 0),
+            "health_insurance_employer": round_half_up(hi or 0),
+            "pension_employer": round_half_up(pen or 0),
         }
     return out
 
@@ -525,15 +530,15 @@ def get_salary_breakdown_by_month_with_role(
         # 員工 employee_type 預期只有 regular/hourly；防禦性：未知值歸入 regular。
         role_key = "hourly" if emp_type == "hourly" else "regular"
         bucket = month_dict[role_key]
-        bucket["gross_salary"] += int(gross or 0)
-        bucket["festival_bonus"] += int(festival or 0)
-        bucket["overtime_bonus"] += int(ot_bonus or 0)
-        bucket["overtime_pay"] += int(ot_pay or 0)
-        bucket["supervisor_dividend"] += int(sup_div or 0)
-        bucket["labor_insurance_employer"] += int(li or 0)
-        bucket["health_insurance_employer"] += int(hi or 0)
-        bucket["pension_employer"] += int(pen or 0)
-        bucket["unused_leave_payout"] += int(ulp or 0)
+        bucket["gross_salary"] += round_half_up(gross or 0)
+        bucket["festival_bonus"] += round_half_up(festival or 0)
+        bucket["overtime_bonus"] += round_half_up(ot_bonus or 0)
+        bucket["overtime_pay"] += round_half_up(ot_pay or 0)
+        bucket["supervisor_dividend"] += round_half_up(sup_div or 0)
+        bucket["labor_insurance_employer"] += round_half_up(li or 0)
+        bucket["health_insurance_employer"] += round_half_up(hi or 0)
+        bucket["pension_employer"] += round_half_up(pen or 0)
+        bucket["unused_leave_payout"] += round_half_up(ulp or 0)
     return out
 
 
@@ -690,7 +695,7 @@ def get_tuition_detail(session: Session, year: int, month: int) -> list[dict]:
                 "student_name": record.student_name,
                 "classroom_name": record.classroom_name,
                 "fee_item_name": record.fee_item_name,
-                "amount": int(payment.amount or 0),
+                "amount": round_half_up(payment.amount or 0),
                 "payment_method": payment.payment_method,
             }
         )
@@ -707,7 +712,7 @@ def get_tuition_detail(session: Session, year: int, month: int) -> list[dict]:
             {
                 "kind": "refund",
                 "date": _iso(r.refunded_at.date() if r.refunded_at else None),
-                "amount": int(r.amount or 0),
+                "amount": round_half_up(r.amount or 0),
                 "reason": r.reason,
                 "refunded_by": r.refunded_by,
             }
@@ -741,7 +746,7 @@ def get_activity_detail(session: Session, year: int, month: int) -> list[dict]:
                 "date": _iso(rec.payment_date),
                 "registration_id": rec.registration_id,
                 "student_name": getattr(reg, "student_name", None) if reg else None,
-                "amount": int(rec.amount or 0),
+                "amount": round_half_up(rec.amount or 0),
                 "payment_method": rec.payment_method,
                 "operator": rec.operator,
                 "receipt_no": rec.receipt_no,
@@ -765,15 +770,15 @@ def get_salary_detail(session: Session, year: int, month: int) -> list[dict]:
     )
     result = []
     for rec, emp in rows:
-        gross = int(rec.gross_salary or 0)
-        festival = int(rec.festival_bonus or 0)
-        overtime_bonus = int(rec.overtime_bonus or 0)
+        gross = round_half_up(rec.gross_salary or 0)
+        festival = round_half_up(rec.festival_bonus or 0)
+        overtime_bonus = round_half_up(rec.overtime_bonus or 0)
         employer = (
-            int(rec.labor_insurance_employer or 0)
-            + int(rec.health_insurance_employer or 0)
-            + int(rec.pension_employer or 0)
+            round_half_up(rec.labor_insurance_employer or 0)
+            + round_half_up(rec.health_insurance_employer or 0)
+            + round_half_up(rec.pension_employer or 0)
         )
-        unused_leave = int(rec.unused_leave_payout or 0)
+        unused_leave = round_half_up(rec.unused_leave_payout or 0)
         # 對齊月摘要 get_salary_expense_by_month：employee_gross = gross + festival + overtime
         # + unused_leave_payout。supervisor_dividend 已含於 gross_salary，不再重複加。
         real_cost = gross + festival + overtime_bonus + unused_leave + employer
@@ -784,7 +789,7 @@ def get_salary_detail(session: Session, year: int, month: int) -> list[dict]:
                 "gross_salary": gross,
                 "festival_bonus": festival,
                 "overtime_bonus": overtime_bonus,
-                "net_salary": int(rec.net_salary or 0),
+                "net_salary": round_half_up(rec.net_salary or 0),
                 "employer_benefit": employer,
                 "real_cost": real_cost,
                 "is_finalized": bool(rec.is_finalized),
@@ -810,7 +815,7 @@ def get_vendor_payment_detail(session: Session, year: int, month: int) -> list[d
             "id": r.id,
             "date": _iso(r.payment_date),
             "vendor_name": r.vendor_name,
-            "amount": int(r.amount or 0),
+            "amount": round_half_up(r.amount or 0),
             "payment_method": r.payment_method,
             "description": r.description,
             "invoice_number": r.invoice_number,

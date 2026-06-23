@@ -900,8 +900,9 @@ class TestInsuredEmployeeCountByMonth:
         # 7-12 月：A + D = 2
         assert [out[m] for m in range(7, 13)] == [2] * 6
 
-    def test_resign_on_first_of_month_excluded_that_month(self, fin_client):
-        """resign_date == 月初當天 → 該月不計入（條件為 resign_date > month_first）。"""
+    def test_resign_on_first_of_month_included_that_month(self, fin_client):
+        """resign_date == 月初當天 → 該月仍計入（qa-loop #11：resign_date 為最後在職日，
+        1 號離職者當月投保≥1 天，條件 resign_date >= month_first，對齊 gov_reports/salary）。"""
         _, sf = fin_client
         with sf() as s:
             s.add(
@@ -921,8 +922,8 @@ class TestInsuredEmployeeCountByMonth:
             out = svc.get_insured_employee_count_by_month(s, 2026)
         assert out[1] == 1
         assert out[2] == 1
-        assert out[3] == 0  # 3/1 不 > 3/1
-        assert out[4] == 0
+        assert out[3] == 1  # 3/1 離職、最後在職日當月、投保≥1 天 → 計入（qa-loop #11）
+        assert out[4] == 0  # 3/1 < 4/1 → 4 月已不在職
 
     def test_empty_returns_all_zero(self, fin_client):
         _, sf = fin_client
