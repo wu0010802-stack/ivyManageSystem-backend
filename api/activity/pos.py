@@ -1567,6 +1567,13 @@ def pos_semester_reconciliation(
             classroom_name=classroom_name,
             payment_status=payment_status,
         )
+        # no_payment 等價於 coalesce(paid_amount,0) <= 0（見下方 approval 判定
+        # 首條分支）。直接下推 SQL 收斂母體，省去撈全部 active reg 再 Python 逐筆
+        # 丟棄；同時讓 total_active 與 2000 截斷對 no_payment 視圖精準（否則符合者
+        # 可能落在截斷邊界外被靜默丟棄）。其餘三態需逐筆比對 payment_records 與
+        # closed_dates，無法純 SQL 下推，維持 Python 後過濾。
+        if approval_status == "no_payment":
+            q = q.filter(func.coalesce(ActivityRegistration.paid_amount, 0) <= 0)
         # M3：limit 防爆保留，但超限不可無聲截斷——先 count 總數，超限時
         # 標 truncated 讓對帳者知道總表不完整（與 outstanding-by-student 一致）。
         total_active = q.count()
