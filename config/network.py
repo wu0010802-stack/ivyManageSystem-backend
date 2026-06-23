@@ -19,3 +19,17 @@ class NetworkSettings(BaseSettings):
     cookie_samesite: str = "strict"
     school_wifi_ips: CsvList = []
     rate_limit_backend: str = "memory"
+
+    # 家長公開報名端 per-IP 限流（max_calls / window_seconds）。
+    # 可經 env 在上線尖峰「免改碼」調整（改 Zeabur Service Variables + 重啟即生效），
+    # 不必 push 後端——配合報名視窗內的部署凍結紀律。
+    # 預設值針對「校園 / 社區 / 電信 CGNAT 共用同一出口公網 IP」放寬：原 register 5/min
+    # 在多位家長共用一個 NAT 出口時會互相擠掉額度（穩定度稽核 2026-06-23 P2）。
+    # ⚠ 真正防超賣靠 register 的 with_for_update 行鎖 + IntegrityError，放寬限流不損正確性。
+    # register 與 public_update 共用此額度。
+    activity_register_rate_max: int = 20  # env: ACTIVITY_REGISTER_RATE_MAX（原 5）
+    activity_register_rate_window: int = 60  # env: ACTIVITY_REGISTER_RATE_WINDOW
+    activity_query_rate_max: int = 30  # env: ACTIVITY_QUERY_RATE_MAX（原 10）
+    activity_query_rate_window: int = 60  # env: ACTIVITY_QUERY_RATE_WINDOW
+    activity_inquiry_rate_max: int = 10  # env: ACTIVITY_INQUIRY_RATE_MAX（原 3）
+    activity_inquiry_rate_window: int = 60  # env: ACTIVITY_INQUIRY_RATE_WINDOW

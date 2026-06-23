@@ -54,6 +54,7 @@ from models.database import (
 )
 from services.activity_service import activity_service
 from utils.rate_limit import create_limiter
+from config import settings
 
 from schemas.activity_public import (
     PublicRegistrationTimeOut,
@@ -100,17 +101,20 @@ from utils.academic import resolve_academic_term_filters
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 公開端 per-IP 限流額度自 settings.network 讀取（env 可調，預設見 config/network.py）。
+# 放寬預設是為了容忍校園/社區/CGNAT 共用出口 IP 的多位家長（穩定度稽核 2026-06-23）；
+# 上線尖峰可改 Zeabur 環境變數 + 重啟調整，免 push 後端。
 _public_query_limiter_instance = create_limiter(
-    max_calls=10,
-    window_seconds=60,
+    max_calls=settings.network.activity_query_rate_max,
+    window_seconds=settings.network.activity_query_rate_window,
     name="activity_public_query",
     error_detail="查詢過於頻繁，請稍後再試",
 )
 _public_query_limiter = _public_query_limiter_instance.as_dependency()
 
 _public_register_limiter_instance = create_limiter(
-    max_calls=5,
-    window_seconds=60,
+    max_calls=settings.network.activity_register_rate_max,
+    window_seconds=settings.network.activity_register_rate_window,
     name="activity_public_register",
     error_detail="提交過於頻繁，請稍後再試",
 )
@@ -118,8 +122,8 @@ _public_register_limiter = _public_register_limiter_instance.as_dependency()
 
 # 家長提問：相較報名放寬一些，避免誤擋連續補充問題
 _public_inquiry_limiter_instance = create_limiter(
-    max_calls=3,
-    window_seconds=60,
+    max_calls=settings.network.activity_inquiry_rate_max,
+    window_seconds=settings.network.activity_inquiry_rate_window,
     name="activity_public_inquiry",
     error_detail="提交過於頻繁，請稍後再試",
 )
