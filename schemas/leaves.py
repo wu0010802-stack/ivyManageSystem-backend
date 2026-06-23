@@ -31,8 +31,8 @@ class LeaveUpdateResultOut(IvyBaseModel):
     reset_to_pending: Optional[bool] = None
     # 改動已核准假單觸發薪資重算；重算失敗時回降級警告（prod 設於 except，
     # 須在 schema 宣告否則被 response_model 序列化剝掉）。
-    salary_recalculated: Optional[bool] = None
-    salary_warning: Optional[str] = None
+    salary_recalculated: Optional[bool] = None  # pii-allow: bool 重算旗標，非薪資金額
+    salary_warning: Optional[str] = None  # pii-allow: str 警告訊息，非薪資金額
 
 
 class LeaveApproveResultOut(IvyBaseModel):
@@ -42,8 +42,8 @@ class LeaveApproveResultOut(IvyBaseModel):
     warning: Optional[str] = None
     # 核准/退審觸發薪資重算；重算失敗時回降級警告（prod 設於 except，須在 schema
     # 宣告否則被 response_model 序列化剝掉）。
-    salary_recalculated: Optional[bool] = None
-    salary_warning: Optional[str] = None
+    salary_recalculated: Optional[bool] = None  # pii-allow: bool 重算旗標，非薪資金額
+    salary_warning: Optional[str] = None  # pii-allow: str 警告訊息，非薪資金額
 
 
 class LeaveDeleteResultOut(IvyBaseModel):
@@ -54,8 +54,8 @@ class LeaveDeleteResultOut(IvyBaseModel):
     """
 
     message: str
-    salary_recalculated: Optional[bool] = None
-    salary_warning: Optional[str] = None
+    salary_recalculated: Optional[bool] = None  # pii-allow: bool 重算旗標，非薪資金額
+    salary_warning: Optional[str] = None  # pii-allow: str 警告訊息，非薪資金額
 
 
 # Backward-compat re-export — moved to schemas._common for cross-router reuse.

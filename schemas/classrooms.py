@@ -119,7 +119,9 @@ class ClassroomDetailStudentOut(IvyBaseModel):
     medication: Optional[str] = (
         None  # pii-allow: 健康欄位（router 端依 STUDENTS_HEALTH_READ 遮罩）
     )
-    special_needs: Optional[str] = None
+    special_needs: Optional[str] = (
+        None  # pii-allow: 特殊需求（router 端依 STUDENTS_HEALTH_READ 遮罩）
+    )
 
 
 class ClassroomDetailOut(IvyBaseModel):

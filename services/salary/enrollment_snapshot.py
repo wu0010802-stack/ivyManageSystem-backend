@@ -15,6 +15,7 @@ from services.student_enrollment import (
     classroom_student_count_map,
     count_students_active_on,
 )
+from utils.rounding import round_half_up
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +153,9 @@ def _compute_daily_weighted_counts(session, year: int, month: int):
             class_days[current_class] += (active_end - seg_start).days + 1
 
     return {
-        "school": round(school_days / days_in_month, 1),
+        "school": round_half_up(school_days / days_in_month, 1),
         "classes": {
-            cid: round(days / days_in_month, 1)
+            cid: round_half_up(days / days_in_month, 1)
             for cid, days in class_days.items()
             if days > 0
         },

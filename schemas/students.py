@@ -78,7 +78,9 @@ class StudentListItemOut(IvyBaseModel):
     status_tag: Optional[str] = None
     allergy: Optional[str] = None  # pii-allow: 過敏（health 敏感）
     medication: Optional[str] = None  # pii-allow: 用藥（health 敏感）
-    special_needs: Optional[str] = None
+    special_needs: Optional[str] = (
+        None  # pii-allow: 特殊需求（health 敏感，router 端依權限遮罩）
+    )
     emergency_contact_name: Optional[str] = None  # pii-allow: 緊急聯絡人姓名
     emergency_contact_phone: Optional[str] = None  # pii-allow: 緊急聯絡人電話
     emergency_contact_relation: Optional[str] = (
@@ -122,7 +124,9 @@ class StudentDetailOut(IvyBaseModel):
     notes: Optional[str] = None
     allergy: Optional[str] = None  # pii-allow: 過敏（health 敏感）
     medication: Optional[str] = None  # pii-allow: 用藥（health 敏感）
-    special_needs: Optional[str] = None
+    special_needs: Optional[str] = (
+        None  # pii-allow: 特殊需求（health 敏感，router 端依權限遮罩）
+    )
     emergency_contact_name: Optional[str] = None  # pii-allow: 緊急聯絡人姓名
     emergency_contact_phone: Optional[str] = None  # pii-allow: 緊急聯絡人電話
     emergency_contact_relation: Optional[str] = (

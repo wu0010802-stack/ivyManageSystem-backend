@@ -1708,7 +1708,9 @@ class ActivityDashboardTableOut(IvyBaseModel):
 class InquiryItemOut(IvyBaseModel):
     id: int
     name: Optional[str] = None
-    phone: Optional[str] = None
+    phone: Optional[str] = (
+        None  # pii-allow: 業主裁定 inquiry 聯絡電話保留明碼（公開報名查詢需回傳）
+    )
     question: Optional[str] = None
     is_read: bool
     reply: Optional[str] = None

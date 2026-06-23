@@ -346,7 +346,7 @@ class PublicRegistrationDetailOut(IvyBaseModel):
     message: Optional[str] = None
     # 資安 #5（2026-06-17）：此報名是否有 query_token（=破壞性 mutation 需帶 token）。
     # 前端用於「三欄載入（無 token）」時把 token-bearing 報名顯示為唯讀。
-    query_token_required: bool = False
+    query_token_required: bool = False  # pii-allow: bool 旗標，非 token 值
 
 
 class PublicRegisterResultOut(IvyBaseModel):
