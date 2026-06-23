@@ -314,16 +314,27 @@ class TestAttendanceFiltersInvalidRegs:
 
 
 class TestInquiryRateLimit:
-    def test_fourth_request_within_window_returns_429(self, client):
+    def test_request_over_inquiry_limit_within_window_returns_429(self, client):
+        """超過 inquiry 視窗內限額的下一筆 → 429（端點層級行為）。
+
+        限額自 d29f73e5（NAT 友善放寬）改為 config 驅動（預設 10，原 3），故動態
+        讀限流器 max_calls 而非硬編，避免改 config 後測試漂移。config 值與 wiring
+        另由 test_activity_public_rate_limit_config 覆蓋；此處驗端點實際擋。
+        """
         c, _ = client
+        import api.activity.public as public_mod
+
+        limit = public_mod._public_inquiry_limiter_instance.max_calls
         payload = {
             "name": "家長",
             "phone": "0912345678",
             "question": "請問有什麼課程？",
         }
-        for _ in range(3):
+        # 視窗內前 `limit` 筆允許
+        for _ in range(limit):
             res = c.post("/api/activity/public/inquiries", json=payload)
             assert res.status_code == 201, res.text
+        # 第 limit+1 筆超出 → 429
         res = c.post("/api/activity/public/inquiries", json=payload)
         assert res.status_code == 429
 
