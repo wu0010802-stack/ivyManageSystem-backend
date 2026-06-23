@@ -336,17 +336,22 @@ def add_registration_payment(
                     ),
                 )
             if hit is not None:
-                # 上下文一致才 replay；不一致視為 key 誤用
+                # 上下文一致才 replay；不一致視為 key 誤用。payment_date 也納入比對：
+                # 同 key 但不同帳務日是不同交易（補登昨天 vs 今天），若漏比會把第二
+                # 筆當 replay 沿用舊紀錄 → 日結/報表記到舊日期錯帳。對齊 POS checkout
+                # 的內容簽章（_request_content_signature 含 payment_date）。
                 if (
                     hit.registration_id != registration_id
                     or hit.type != body.type
                     or hit.amount != body.amount
+                    or hit.payment_date != body.payment_date
                 ):
                     raise HTTPException(
                         status_code=409,
                         detail=(
                             f"idempotency_key 已用於 registration {hit.registration_id} "
-                            f"（{hit.type} NT${hit.amount}），不可重複用於本請求"
+                            f"（{hit.type} NT${hit.amount} on {hit.payment_date}），"
+                            "不可重複用於本請求；若為不同交易請改用新 key"
                         ),
                     )
                 reg_hit = (

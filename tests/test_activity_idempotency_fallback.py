@@ -294,6 +294,58 @@ class TestAddRegistrationPaymentNoKeyDedup:
             reg = s.query(ActivityRegistration).get(reg_id)
             assert reg.paid_amount == 500
 
+    def test_with_key_different_payment_date_rejected(self, idk_client):
+        """Finding (P1)：帶 idempotency_key 的單筆繳費，同 key/reg/type/amount 但
+        payment_date 不同時，不可被當 replay 沿用舊紀錄（會把不同日交易記到舊日期，
+        日結/報表錯帳）。應對齊 POS checkout 的內容簽章（含 payment_date）→ 同 key
+        不同內容回 409，要求換 key 重送。
+
+        修前 → context 守衛只比 reg/type/amount，第二筆（不同日）回 201 replay，
+        DB 只 1 筆且日期停在第一筆。
+        修後 → 回 409，DB 仍只 1 筆（第一筆，日期正確、未被覆寫）。"""
+        from datetime import timedelta
+
+        client, sf = idk_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, paid_amount=0)
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        base = {
+            "type": "payment",
+            "amount": 500,
+            "payment_method": "現金",
+            "notes": "",
+            "idempotency_key": "REG-PAY-DATEGUARD-0001",
+        }
+        res1 = client.post(
+            f"/api/activity/registrations/{reg_id}/payments",
+            json={**base, "payment_date": yesterday.isoformat()},
+        )
+        assert res1.status_code == 201, res1.text
+        # 同 key、同額、不同日 → 視為 key 誤用（內容不符），回 409
+        res2 = client.post(
+            f"/api/activity/registrations/{reg_id}/payments",
+            json={**base, "payment_date": today.isoformat()},
+        )
+        assert res2.status_code == 409, res2.text
+
+        with sf() as s:
+            payments = (
+                s.query(ActivityPaymentRecord)
+                .filter(ActivityPaymentRecord.registration_id == reg_id)
+                .all()
+            )
+            assert len(payments) == 1, f"應只建立第一筆，實際 {len(payments)} 筆"
+            assert (
+                payments[0].payment_date == yesterday
+            ), "第一筆日期應保持，不可被第二筆覆寫"
+
     def test_different_amount_without_key_not_deduped(self, idk_client):
         """無 key 但金額不同的兩筆繳費是合法的兩筆，不可被誤殺。"""
         client, sf = idk_client
