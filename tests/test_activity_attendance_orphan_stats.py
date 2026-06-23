@@ -36,6 +36,7 @@ from models.classroom import Student
 from api.activity._shared import (
     _build_session_detail_response,
     build_session_rows_with_stats,
+    query_valid_session_registrations,
 )
 from services.activity_service import ActivityService
 
@@ -615,3 +616,82 @@ class TestStudentInactiveExcluded:
             row["present_count"] == 1
         ), f"present_count={row['present_count']}，校外生（student_id=None）應照常計入"
         assert row["recorded_count"] == 1
+
+
+# ── (P1) 寫入路徑 query_valid_session_registrations 排除離校生 ─────────────────
+
+
+class TestQueryValidWriteExcludesInactiveStudent:
+    """寫入路徑 query_valid_session_registrations 排除底層 Student.is_active=False 的報名。
+
+    缺陷（code review P1）：admin 批次點名（attendance.py）與 portal 點名
+    （portal/activity.py）都用 query_valid_session_registrations 驗有效報名，但該
+    helper 只檢查 registration/course 狀態，沒有 join Student.is_active。roster
+    （_build_session_detail_response）與統計（_build_valid_attendance_agg_query）卻
+    都排除離校生 → 若舊資料/同步漏網讓離校生仍有 active 報名，點名 API 可寫入
+    「畫面看不到、統計也不算」的孤兒 attendance row。
+
+    修正：寫入路徑補上與讀取側相同的
+        outerjoin(Student) + or_(student_id IS None, Student.is_active IS True)，
+    保留「enrolled 與 promoted_pending 皆算佔位」的刻意不對稱。
+    """
+
+    def test_inactive_student_excluded_from_valid_write(self, session):
+        """離校生（Student.is_active=False）的報名不應被視為有效寫入目標。
+
+        修前：query_valid_session_registrations 回傳含離校生 reg → 可寫孤兒。
+        修後：只回在籍生 reg。
+        """
+        course = _make_course(session, name="寫入離校測試")
+
+        st_active = _make_student(session, name="在籍寫", is_active=True)
+        reg_active = _make_reg(session, name="在籍寫", student_id=st_active.id)
+        _enroll(session, reg_active.id, course.id)
+
+        st_inactive = _make_student(session, name="離校寫", is_active=False)
+        reg_inactive = _make_reg(session, name="離校寫", student_id=st_inactive.id)
+        _enroll(session, reg_inactive.id, course.id)
+        session.commit()
+
+        valid = query_valid_session_registrations(
+            session, course.id, [reg_active.id, reg_inactive.id]
+        )
+        valid_ids = {row[0] for row in valid}
+
+        assert reg_active.id in valid_ids, "在籍生報名應為有效寫入目標"
+        assert reg_inactive.id not in valid_ids, (
+            "離校生（Student.is_active=False）的報名仍被視為有效寫入目標 → "
+            "可寫入畫面看不到、統計也不算的孤兒點名 row"
+        )
+
+    def test_external_student_none_id_still_valid_for_write(self, session):
+        """校外生（student_id=None）的報名仍可寫入（不被 is_active 守衛誤排）。"""
+        course = _make_course(session, name="寫入校外測試")
+        reg_external = _make_reg(session, name="校外寫", student_id=None)
+        _enroll(session, reg_external.id, course.id)
+        session.commit()
+
+        valid = query_valid_session_registrations(session, course.id, [reg_external.id])
+        assert {row[0] for row in valid} == {reg_external.id}
+
+    def test_promoted_pending_active_student_still_valid(self, session):
+        """保留刻意不對稱：promoted_pending（候補晉升佔位）+ 在籍生 仍可寫入。"""
+        course = _make_course(session, name="寫入候補在籍測試")
+        st = _make_student(session, name="候補在籍", is_active=True)
+        reg = _make_reg(session, name="候補在籍", student_id=st.id)
+        _enroll(session, reg.id, course.id, status="promoted_pending")
+        session.commit()
+
+        valid = query_valid_session_registrations(session, course.id, [reg.id])
+        assert {row[0] for row in valid} == {reg.id}
+
+    def test_promoted_pending_inactive_student_excluded(self, session):
+        """promoted_pending 佔位但底層學生已離校 → 仍排除（is_active 守衛獨立於狀態不對稱）。"""
+        course = _make_course(session, name="寫入候補離校測試")
+        st = _make_student(session, name="候補離校", is_active=False)
+        reg = _make_reg(session, name="候補離校", student_id=st.id)
+        _enroll(session, reg.id, course.id, status="promoted_pending")
+        session.commit()
+
+        valid = query_valid_session_registrations(session, course.id, [reg.id])
+        assert {row[0] for row in valid} == set()
