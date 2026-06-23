@@ -830,6 +830,20 @@ def restore_registration(
         reg.match_status = "pending"
         reg.pending_review = True
 
+        # code review #1（High）：reject 清掉 query_token_hash/issued_at，restore 卻不
+        # 重發 → _parent_mutation_identity_ok 把 NULL hash 當「無 token 舊報名」退回
+        # 姓名+生日+電話三欄弱驗證，等於把 token 時代（資安 #5 強驗證）的報名被拒→
+        # 復原後永久降級。restore 時重新產生 token_hash（業主裁定：不回明文）——公開
+        # 破壞性 mutation 的三欄路徑即失效；明文無人持有故此筆對公開 mutation 關閉，
+        # 家長改走登入家長端或由後台管理。
+        from services.activity_query_token import (
+            _generate_query_token,
+            _hash_query_token,
+        )
+
+        reg.query_token_hash = _hash_query_token(_generate_query_token())
+        reg.query_token_issued_at = now_taipei_naive()
+
         # 容量重檢（Task A4 超賣修正）：被拒報名的 RegistrationCourse 列在 reject
         # 時並未清掉（仍掛 enrolled/promoted_pending），且被拒期間名額可能已被其他
         # 報名遞補。直接翻 is_active=True 會讓占容量數超過 capacity（超賣）。
