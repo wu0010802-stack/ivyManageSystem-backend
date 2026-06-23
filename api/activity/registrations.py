@@ -34,6 +34,7 @@ from models.database import (
     User,
 )
 from services.activity_service import activity_service
+from utils.activity_constants import OCCUPYING_STATUSES
 from services.activity_refund_query import build_refund_suggestion
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
@@ -216,7 +217,7 @@ def admin_create_registration(
                 )
                 .filter(
                     RegistrationCourse.course_id.in_(_reg_course_ids),
-                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                    RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
                     ActivityRegistration.is_active.is_(True),
                 )
                 .group_by(RegistrationCourse.course_id)

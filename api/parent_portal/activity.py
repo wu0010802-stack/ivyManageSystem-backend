@@ -38,6 +38,7 @@ from utils.advisory_lock import acquire_activity_registration_lock
 from utils.auth import require_parent_role
 from services.activity_query_token import _generate_query_token, _hash_query_token
 from utils.taipei_time import now_taipei_naive
+from utils.activity_constants import OCCUPYING_STATUSES, effective_capacity
 
 from ._dependencies import get_parent_db
 from models.parent_db import register_parent_post_commit
@@ -51,15 +52,9 @@ from api.activity._shared import (
 
 router = APIRouter(prefix="/activity", tags=["parent-activity"])
 
-# Finding 6（2026-06-22）：capacity=NULL 視為 30（與 _attach_courses /
-# registrations_items / 公開端等 5 處 `capacity if not None else 30` 慣例一致）。
-# 原本家長端用 `capacity or 0` 把 NULL→0，導致歷史 NULL 容量課程全顯額滿、
-# 報名一律進候補。注意 0 與 None 語意不同：明確 0 表示真的不開放名額，須保留。
-DEFAULT_COURSE_CAPACITY = 30
-
-
-def _effective_capacity(capacity: Optional[int]) -> int:
-    return DEFAULT_COURSE_CAPACITY if capacity is None else capacity
+# capacity=NULL 視為 30（0 與 None 語意不同：明確 0 表示不開放名額須保留）。
+# 收斂到 utils.activity_constants.effective_capacity 單一來源（取代原家長端
+# 自有的 DEFAULT_COURSE_CAPACITY + _effective_capacity）。
 
 
 def _fmt_time(t) -> Optional[str]:
@@ -210,17 +205,17 @@ def list_courses(
             "name": c.name,
             "price": c.price,
             "sessions": c.sessions,
-            # Finding 5：回 effective 值（NULL→30），與 is_full 的 _effective_capacity
+            # Finding 5：回 effective 值（NULL→30），與 is_full 的 effective_capacity
             # 口徑一致；否則 NULL 容量課前端顯示 "enrolled/null"。型別仍 Optional[int]，
             # 不改 wire shape / OpenAPI schema。
-            "capacity": _effective_capacity(c.capacity),
+            "capacity": effective_capacity(c),
             "school_year": c.school_year,
             "semester": c.semester,
             "allow_waitlist": bool(c.allow_waitlist),
             "description": c.description,
             "video_url": c.video_url,
             "enrolled_count": enrolled_counts.get(c.id, 0),
-            "is_full": enrolled_counts.get(c.id, 0) >= _effective_capacity(c.capacity),
+            "is_full": enrolled_counts.get(c.id, 0) >= effective_capacity(c),
             # Phase 3 適齡 + 結構化時段（前台 advisory）；對齊公開端 /public/courses。
             "min_age_months": c.min_age_months,
             "max_age_months": c.max_age_months,
@@ -348,7 +343,7 @@ def upcoming_sessions(
         .filter(
             ActivityRegistration.student_id.in_(student_ids),
             ActivityRegistration.is_active == True,
-            RegistrationCourse.status.in_(("enrolled", "promoted_pending")),
+            RegistrationCourse.status.in_(OCCUPYING_STATUSES),
             ActivitySession.session_date >= today,
             ActivitySession.session_date <= end,
         )
@@ -494,7 +489,7 @@ def register_courses(
             session.execute(func.public_count_enrolled(course_id).select()).scalar()
             or 0
         )
-        if enrolled_count < _effective_capacity(course.capacity):
+        if enrolled_count < effective_capacity(course):
             status = "enrolled"
         elif course.allow_waitlist:
             status = "waitlist"

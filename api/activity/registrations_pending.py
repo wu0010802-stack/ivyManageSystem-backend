@@ -27,6 +27,7 @@ from models.database import (
     RegistrationCourse,
 )
 from services.activity_service import activity_service, OCCUPYING_STATUSES
+from utils.activity_constants import effective_capacity
 from utils.advisory_lock import acquire_activity_registration_lock
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
@@ -925,7 +926,7 @@ def restore_registration(
             session.query(RegistrationCourse)
             .filter(
                 RegistrationCourse.registration_id == reg.id,
-                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
             )
             .all()
         )
@@ -960,7 +961,7 @@ def restore_registration(
                 session.delete(rc)
                 continue
             # 未設容量上限沿用 _attach_courses 慣例：None → 30
-            capacity = course.capacity if course.capacity is not None else 30
+            capacity = effective_capacity(course)
             # 占容量 = 其他「有效報名」的 enrolled + promoted_pending（排除本筆 reg）
             occupying = (
                 session.query(func.count(RegistrationCourse.id))
@@ -970,7 +971,7 @@ def restore_registration(
                 )
                 .filter(
                     RegistrationCourse.course_id == rc.course_id,
-                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                    RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
                     ActivityRegistration.is_active.is_(True),
                     RegistrationCourse.registration_id != reg.id,
                 )

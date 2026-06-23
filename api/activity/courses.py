@@ -16,6 +16,7 @@ from models.database import (
 )
 from sqlalchemy import func
 from services.activity_service import activity_service
+from utils.activity_constants import effective_capacity
 from utils.academic import resolve_academic_term_filters, resolve_current_academic_term
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
@@ -105,7 +106,7 @@ def get_courses(
             enrolled = enrolled_map.get(c.id, 0)
             waitlist = waitlist_map.get(c.id, 0)
             promoted_pending = promoted_pending_map.get(c.id, 0)
-            capacity = c.capacity if c.capacity is not None else 30
+            capacity = effective_capacity(c)
             # remaining 以佔容量（enrolled + promoted_pending）為準
             occupying = enrolled + promoted_pending
             items.append(

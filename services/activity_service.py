@@ -15,25 +15,17 @@ from utils.advisory_lock import acquire_activity_daily_close_lock
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
-def _now_taipei_naive() -> datetime:
-    """候補狀態機與 confirm_deadline 用的「當下」。
+from utils.taipei_time import now_taipei_naive
+from utils.activity_constants import (
+    OCCUPYING_STATUSES,
+    DEFAULT_COURSE_CAPACITY,
+    effective_capacity,
+)
 
-    Why: 原本多處 now_taipei_naive()在 UTC 部署下會與家長端顯示的台灣時間差 8h，
-    造成 LINE 通知 deadline 錯亂、逾期判定也差一個 timezone。RegistrationCourse
-    相關欄位都是 naive DateTime，統一用台灣時間的 naive 表示。
-    """
-    return datetime.now(TAIPEI_TZ).replace(tzinfo=None)
-
-
-# 候補升正式的「佔位」狀態集合：enrolled + promoted_pending 皆佔容量，
-# 決定「還有無名額」時務必 IN 兩者；統計/出席/收入等語意只算 enrolled。
-OCCUPYING_STATUSES = ("enrolled", "promoted_pending")
-
-# ActivityCourse.capacity 欄位 nullable（models/activity.py 為 default=30，僅
-# ORM insert 套用，DB 既有/歷史列可為 NULL）。容量計算一律把 NULL 視為 30，
-# 對齊全系統慣例（api/parent_portal/activity.DEFAULT_COURSE_CAPACITY 等 7 處
-# `capacity if not None else 30`）。就近於 services 層定義，避免反向依賴 api 層。
-DEFAULT_COURSE_CAPACITY = 30
+# 候補狀態機與 confirm_deadline 用的「當下」（台灣時區 naive）。
+# 收斂到 utils.taipei_time 單一來源；保留 _now_taipei_naive 別名供既有測試 import
+# 與本檔內部沿用（候補逾期/提醒/promote 皆需台灣時間 naive 比對）。
+_now_taipei_naive = now_taipei_naive
 
 
 from config import get_settings
@@ -866,9 +858,7 @@ class ActivityService:
             .filter(RegistrationCourse.id != rc.id)
             .count()
         )
-        capacity = (
-            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
-        )
+        capacity = effective_capacity(course)
         if occupying_others >= capacity:
             raise ValueError("課程容量已滿，無法升為正式")
 
@@ -1365,9 +1355,7 @@ class ActivityService:
             .filter(RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)))
             .count()
         )
-        capacity = (
-            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
-        )
+        capacity = effective_capacity(course)
         if occupying >= capacity:
             return  # 仍滿（有其他 promoted_pending 佔位），不升
 
@@ -1526,9 +1514,7 @@ class ActivityService:
         occupying_count = self.count_occupying_registrations(session, course_id)
         # P2-3（2026-06-23 audit）：NULL capacity 一律視為 DEFAULT_COURSE_CAPACITY（30），
         # 與全系統容量閘口徑一致（原本用 999 會讓 NULL-capacity 課程容量閘形同虛設）。
-        capacity = (
-            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
-        )
+        capacity = effective_capacity(course)
         has_vacancy = occupying_count < capacity
         return capacity, occupying_count, has_vacancy
 

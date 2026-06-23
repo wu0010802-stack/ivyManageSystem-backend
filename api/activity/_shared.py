@@ -70,6 +70,8 @@ from utils.activity_constants import (  # noqa: E402
     MIN_REFUND_REASON_LENGTH,
     MIN_VOID_REASON_LENGTH,
     PAYMENT_DATE_BACK_LIMIT_DAYS,
+    OCCUPYING_STATUSES,
+    effective_capacity,
 )
 
 # 系統補齊標記：用於 batch/update_payment 與退課自動沖帳。
@@ -595,7 +597,7 @@ def _check_registration_open(session) -> None:
         return
     if not settings.is_open:
         raise HTTPException(status_code=400, detail="報名尚未開放")
-    now = datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+    now = now_taipei_naive()
     open_at = _parse_settings_iso(settings.open_at)
     close_at = _parse_settings_iso(settings.close_at)
     if open_at and now < open_at:
@@ -622,7 +624,7 @@ def _attach_courses(
         if not course:
             raise _item_not_found_in_list("課程", course_item.name)
         occupying_count = enrolled_count_map.get(course.id, 0)
-        capacity = course.capacity if course.capacity is not None else 30
+        capacity = effective_capacity(course)
         if occupying_count < capacity:
             status = "enrolled"
         elif course.allow_waitlist:
@@ -998,7 +1000,7 @@ def query_valid_session_registrations(
             ActivityRegistration.is_active.is_(True),
             ActivityRegistration.match_status != "rejected",
             RegistrationCourse.course_id == course_id,
-            RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+            RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
             # 對齊讀取側（_build_session_detail_response /
             # _build_valid_attendance_agg_query）：底層學生已離校
             # （Student.is_active=False）的報名不可被寫入點名，否則長出畫面看不到、

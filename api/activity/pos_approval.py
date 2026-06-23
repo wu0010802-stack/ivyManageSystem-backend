@@ -816,7 +816,7 @@ def list_pos_unlock_events(
     時間倒序，限 200 筆；ApprovalLog 為 source of truth。
     供老闆/簽核者隨時查看異常解鎖記錄，補強稽核獨立性。
     """
-    cutoff = datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(days=days)
+    cutoff = now_taipei_naive() - timedelta(days=days)
     session = get_session()
     try:
         rows = (
@@ -880,9 +880,7 @@ def list_operator_activity(
     operator 字串以 user=null 回傳，前端以紅色標記提醒（已停用 / 共用殘留）。
     voided 紀錄排除；按總筆數倒序，限 100 筆。
     """
-    cutoff_date = (
-        datetime.now(TAIPEI_TZ).replace(tzinfo=None) - timedelta(days=days)
-    ).date()
+    cutoff_date = (now_taipei_naive() - timedelta(days=days)).date()
     payment_count_expr = func.sum(
         case((ActivityPaymentRecord.type == "payment", 1), else_=0)
     )

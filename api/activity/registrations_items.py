@@ -30,6 +30,7 @@ from models.database import (
     ActivityAttendance,
 )
 from services.activity_service import activity_service
+from utils.activity_constants import OCCUPYING_STATUSES, effective_capacity
 from utils.advisory_lock import acquire_activity_daily_close_lock
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
@@ -122,13 +123,13 @@ def add_registration_course(
             )
             .filter(
                 RegistrationCourse.course_id == course.id,
-                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
                 ActivityRegistration.is_active.is_(True),
             )
             .scalar()
             or 0
         )
-        capacity = course.capacity if course.capacity is not None else 30
+        capacity = effective_capacity(course)
         if enrolled_count < capacity:
             status = "enrolled"
         elif course.allow_waitlist:
@@ -532,7 +533,7 @@ def withdraw_course(
         course_name = course.name if course else str(course_id)
         was_enrolled = rc.status == "enrolled"
         # enrolled 與 promoted_pending 都佔容量，刪除後都應嘗試遞補下一位候補
-        was_occupying = rc.status in ("enrolled", "promoted_pending")
+        was_occupying = rc.status in OCCUPYING_STATUSES
 
         # 先估算退課後的 total 用於 409 預檢；實際退費金額在 flush 後以 new_total 重算
         paid_amount = reg.paid_amount or 0
