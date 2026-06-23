@@ -1,8 +1,10 @@
 """Portal 才藝自包含端點補 response_model（雜項，2026-06-23）。
 
 registrations / batch-records 原回裸 dict → OpenAPI 無具名 schema → 前端 codegen
-unknown（C 波在 PortalActivityView 留 TODO cast）。本批為兩個**自包含**端點宣告
-response_model（sessions list/detail 走與 admin 共用的 helper，留待共用建模）。
+unknown（C 波在 PortalActivityView 留 TODO cast）。本批為自包含端點宣告
+response_model；sessions list/detail（走與 admin 共用的 helper）於 2026-06-23
+優化時直接重用 admin 的 ActivitySessionListItemOut / ActivitySessionDetailOut，
+一併納入本守衛。
 
 shape 正確性由既有 portal 測試守護；此檔僅鎖定 response_model 已宣告，防再漂移成裸 dict。
 """
@@ -19,6 +21,8 @@ from api.portal.activity import router
 EXPECTED = [
     ("/activity/registrations", "GET"),
     ("/activity/attendance/sessions/{session_id}/records", "PUT"),
+    ("/activity/attendance/sessions", "GET"),
+    ("/activity/attendance/sessions/{session_id}", "GET"),
 ]
 
 

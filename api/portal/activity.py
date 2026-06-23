@@ -29,16 +29,20 @@ from api.activity._shared import (
     query_valid_session_registrations,
     resolve_student_pii_scope,
 )
+from schemas.activity_admin import (
+    ActivitySessionListItemOut,
+    ActivitySessionDetailOut,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-# --- Response schema（補契約：原回裸 dict → OpenAPI 無具名 schema → 前端 codegen unknown。
-# 僅針對自包含端點 registrations / batch；sessions list/detail 走共用 helper
-# build_session_rows_with_stats / _build_session_detail_response，與 admin 共用其輸出，
-# 形式化需連動 admin、留待共用 helper 建模時一併處理）---
+# --- Response schema（補契約：原回裸 dict → OpenAPI 無具名 schema → 前端 codegen unknown）。
+# sessions list/detail 走共用 helper（build_session_rows_with_stats /
+# _build_session_detail_response），輸出形狀與 admin 端一致，故直接重用 admin 的
+# ActivitySessionListItemOut / ActivitySessionDetailOut（見下方 response_model）---
 class PortalRegistrationCourseOut(BaseModel):
     course_name: str
     status: str
@@ -238,7 +242,10 @@ class PortalBatchAttendanceUpdate(BaseModel):
     records: List[PortalAttendanceRecordItem] = Field(..., min_length=1, max_length=500)
 
 
-@router.get("/activity/attendance/sessions")
+@router.get(
+    "/activity/attendance/sessions",
+    response_model=list[ActivitySessionListItemOut],
+)
 def portal_list_sessions(
     course_id: Optional[int] = None,
     start_date: Optional[date] = None,
@@ -280,7 +287,10 @@ def portal_list_sessions(
         session.close()
 
 
-@router.get("/activity/attendance/sessions/{session_id}")
+@router.get(
+    "/activity/attendance/sessions/{session_id}",
+    response_model=ActivitySessionDetailOut,
+)
 def portal_get_session_detail(
     session_id: int,
     group_by: Optional[str] = None,
