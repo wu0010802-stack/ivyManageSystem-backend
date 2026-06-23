@@ -1004,14 +1004,15 @@ class TestCapacityAndCountFixes:
         assert course["is_full"] is False
 
     def test_effective_capacity_treats_null_as_default(self):
-        """Finding 6：抽出的純函式——NULL→30（對齊全模組 else 30 慣例），
-        明確 0 維持 0（真的不開放名額），其餘原值。報名端（line 280）與
-        is_full（line 106）共用此函式。"""
-        from api.parent_portal.activity import _effective_capacity
+        """Finding 6 + 2026-06-23 口徑收斂：NULL→30（對齊全模組慣例），
+        明確 0 維持 0（真的不開放名額），其餘原值。家長端報名與 is_full 共用
+        utils.activity_constants.effective_capacity 單一來源（物件簽名）。"""
+        from types import SimpleNamespace
+        from api.parent_portal.activity import effective_capacity
 
-        assert _effective_capacity(None) == 30
-        assert _effective_capacity(0) == 0
-        assert _effective_capacity(5) == 5
+        assert effective_capacity(SimpleNamespace(capacity=None)) == 30
+        assert effective_capacity(SimpleNamespace(capacity=0)) == 0
+        assert effective_capacity(SimpleNamespace(capacity=5)) == 5
 
     def test_rejected_registration_not_counted_as_enrolled(self, activity_client):
         """Finding 4：被拒絕（is_active=False）報名的 RC 仍是 enrolled，
@@ -1055,3 +1056,64 @@ class TestCapacityAndCountFixes:
         course = next(i for i in resp.json()["items"] if i["name"] == "容量一")
         assert course["enrolled_count"] == 0, "被拒絕報名不應計入佔位"
         assert course["is_full"] is False
+
+
+class TestActivityBootstrap:
+    """GET /parent/activity/bootstrap 聚合：4 區塊須與對應單支端點輸出一致。"""
+
+    def test_bootstrap_aggregates_match_single_endpoints(self, activity_client):
+        from utils.academic import resolve_current_academic_term
+
+        cur_sy, cur_sem = resolve_current_academic_term()
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            course = _create_course(
+                session, name="美術", school_year=cur_sy, semester=cur_sem
+            )
+            reg = ActivityRegistration(
+                student_name=student.name,
+                is_active=True,
+                school_year=cur_sy,
+                semester=cur_sem,
+                student_id=student.id,
+                parent_phone="0911",
+                pending_review=False,
+                match_status="manual",
+            )
+            session.add(reg)
+            session.flush()
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=course.price,
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        cookies = {"access_token": token}
+        boot = client.get("/api/parent/activity/bootstrap", cookies=cookies)
+        assert boot.status_code == 200, boot.text
+        data = boot.json()
+        assert set(data) == {
+            "registration_time",
+            "courses",
+            "registrations",
+            "upcoming_sessions",
+        }
+
+        # 各區塊與對應單支端點完全一致（bootstrap 直接重用同 handler 邏輯）
+        courses = client.get("/api/parent/activity/courses", cookies=cookies)
+        regs = client.get("/api/parent/activity/my-registrations", cookies=cookies)
+        upcoming = client.get("/api/parent/activity/upcoming-sessions", cookies=cookies)
+        assert data["courses"] == courses.json()
+        assert data["registrations"] == regs.json()
+        assert data["upcoming_sessions"] == upcoming.json()
+
+        # 實際有資料 + registration_time 為公開設定 payload dict
+        assert data["courses"]["total"] >= 1
+        assert data["registrations"]["total"] == 1
+        assert isinstance(data["registration_time"], dict)

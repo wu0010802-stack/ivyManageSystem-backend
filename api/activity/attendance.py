@@ -32,6 +32,7 @@ from api.activity._shared import (
     build_session_rows_with_stats,
     query_valid_session_registrations,
     resolve_student_pii_scope,
+    _invalidate_activity_dashboard_caches,
 )
 from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
 from schemas.activity_admin import (
@@ -363,6 +364,8 @@ def delete_session(
 
         session.delete(sess)
         session.commit()
+        # 刪場次連帶移除其出席紀錄 → 失效 dashboard 快取（含出席率聚合）。
+        _invalidate_activity_dashboard_caches(session)
 
         write_explicit_audit(
             request,
@@ -664,6 +667,9 @@ def batch_update_attendance(
                         existing.student_id = reg_student_map.get(item.registration_id)
 
         session.commit()
+        # 點名異動改變出席率聚合 → 失效 dashboard 快取（含新納入的
+        # activity_stats_attendance），否則出席率會 stale 到 TTL。
+        _invalidate_activity_dashboard_caches(session)
         applied = sum(1 for item in records if item.registration_id in valid_reg_ids)
         return {"ok": True, "updated": applied, "skipped": len(skipped)}
     finally:

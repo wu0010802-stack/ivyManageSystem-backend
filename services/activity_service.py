@@ -15,25 +15,17 @@ from utils.advisory_lock import acquire_activity_daily_close_lock
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
-def _now_taipei_naive() -> datetime:
-    """候補狀態機與 confirm_deadline 用的「當下」。
+from utils.taipei_time import now_taipei_naive
+from utils.activity_constants import (
+    OCCUPYING_STATUSES,
+    DEFAULT_COURSE_CAPACITY,
+    effective_capacity,
+)
 
-    Why: 原本多處 now_taipei_naive()在 UTC 部署下會與家長端顯示的台灣時間差 8h，
-    造成 LINE 通知 deadline 錯亂、逾期判定也差一個 timezone。RegistrationCourse
-    相關欄位都是 naive DateTime，統一用台灣時間的 naive 表示。
-    """
-    return datetime.now(TAIPEI_TZ).replace(tzinfo=None)
-
-
-# 候補升正式的「佔位」狀態集合：enrolled + promoted_pending 皆佔容量，
-# 決定「還有無名額」時務必 IN 兩者；統計/出席/收入等語意只算 enrolled。
-OCCUPYING_STATUSES = ("enrolled", "promoted_pending")
-
-# ActivityCourse.capacity 欄位 nullable（models/activity.py 為 default=30，僅
-# ORM insert 套用，DB 既有/歷史列可為 NULL）。容量計算一律把 NULL 視為 30，
-# 對齊全系統慣例（api/parent_portal/activity.DEFAULT_COURSE_CAPACITY 等 7 處
-# `capacity if not None else 30`）。就近於 services 層定義，避免反向依賴 api 層。
-DEFAULT_COURSE_CAPACITY = 30
+# 候補狀態機與 confirm_deadline 用的「當下」（台灣時區 naive）。
+# 收斂到 utils.taipei_time 單一來源；保留 _now_taipei_naive 別名供既有測試 import
+# 與本檔內部沿用（候補逾期/提醒/promote 皆需台灣時間 naive 比對）。
+_now_taipei_naive = now_taipei_naive
 
 
 from config import get_settings
@@ -75,10 +67,12 @@ ACTIVITY_SUMMARY_CACHE_CATEGORIES = ("activity_stats_summary",)
 ACTIVITY_DASHBOARD_CACHE_CATEGORIES = (
     "activity_stats_summary",
     "activity_stats_charts",
+    "activity_stats_attendance",
     "activity_dashboard_table",
 )
 ACTIVITY_STATS_SUMMARY_CACHE_TTL_SECONDS = 300
 ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS = 600
+ACTIVITY_STATS_ATTENDANCE_CACHE_TTL_SECONDS = 600
 ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS = 1800
 
 
@@ -120,6 +114,48 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
     from utils.permissions import list_active_user_ids_with_permission
 
     return list_active_user_ids_with_permission(session, perm)
+
+
+def _course_name_map(session, course_ids) -> dict[int, str]:
+    """批次取回 {course_id: name}，供 sweep 三迴圈取代逐列 ActivityCourse 查詢。
+
+    避免每筆候補各發一次 course name 查詢的 N+1（背景排程常駐負載）。
+    """
+    ids = {cid for cid in course_ids if cid is not None}
+    if not ids:
+        return {}
+    rows = (
+        session.query(ActivityCourse.id, ActivityCourse.name)
+        .filter(ActivityCourse.id.in_(ids))
+        .all()
+    )
+    return {cid: name for cid, name in rows}
+
+
+def _notify_parents(session, reg_id: int, event_type: str, context: dict) -> bool:
+    """Fan-out 通知給該報名所有家長 user_id；fail-soft，回傳 enqueue 是否成功。
+
+    收斂 sweep（逾期/T-6h/T-24h）與 auto-promote 多處重複的「解析家長 →
+    逐 uid enqueue → try/except 告警」樣板。source_entity 固定為
+    registration_course / reg_id（與原各站點一致）。
+    """
+    try:
+        from services.notification import dispatch
+
+        parent_uids = _resolve_parent_user_ids_for_registration(session, reg_id)
+        for puid in parent_uids:
+            dispatch.enqueue(
+                session=session,
+                event_type=event_type,
+                recipient_user_id=puid,
+                context=context,
+                source_entity_type="registration_course",
+                source_entity_id=reg_id,
+            )
+        return True
+    except Exception:
+        logger.exception("%s enqueue 失敗 reg=%s", event_type, reg_id)
+        return False
 
 
 class ActivityService:
@@ -447,11 +483,42 @@ class ActivityService:
                 force_refresh=force_refresh,
             ),
             "attendance_stats": self.get_attendance_stats(
-                session, school_year=school_year, semester=semester
+                session,
+                school_year=school_year,
+                semester=semester,
+                force_refresh=force_refresh,
             ),
         }
 
-    def get_attendance_stats(self, session, *, school_year: int, semester: int) -> dict:
+    def get_attendance_stats(
+        self,
+        session,
+        *,
+        school_year: int,
+        semester: int,
+        force_refresh: bool = False,
+    ) -> dict:
+        """課程出席率統計（report_cache 包覆，與 summary/charts 快取策略一致）。
+
+        實際聚合在 _compute_attendance_stats（最重的一塊：跨 session×attendance×
+        registration×course×student 的 join+GROUP BY）。⚠ 點名儲存
+        （api/activity/attendance.batch_update_attendance）須呼叫
+        invalidate_dashboard_caches 失效本快取，否則出席率會 stale 到 TTL。
+        """
+        return report_cache_service.get_or_build(
+            session,
+            category="activity_stats_attendance",
+            ttl_seconds=ACTIVITY_STATS_ATTENDANCE_CACHE_TTL_SECONDS,
+            params={"school_year": school_year, "semester": semester},
+            force_refresh=force_refresh,
+            builder=lambda: self._compute_attendance_stats(
+                session, school_year, semester
+            ),
+        )
+
+    def _compute_attendance_stats(
+        self, session, school_year: int, semester: int
+    ) -> dict:
         """取得課程出席率統計（SQL 直接 GROUP BY 課程，省去 Python 端二次聚合）。
 
         學期感知：課程本身即按學期建檔（uq_activity_course_name_term），
@@ -866,9 +933,7 @@ class ActivityService:
             .filter(RegistrationCourse.id != rc.id)
             .count()
         )
-        capacity = (
-            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
-        )
+        capacity = effective_capacity(course)
         if occupying_others >= capacity:
             raise ValueError("課程容量已滿，無法升為正式")
 
@@ -1036,13 +1101,11 @@ class ActivityService:
         expired_count = 0
         # 計數而非 set：同課多筆同時過期需呼叫 N 次遞補，否則會少補位
         expired_per_course: dict[int, int] = {}
+        course_name_map = _course_name_map(
+            session, [rc.course_id for rc, _ in expired_rows]
+        )
         for rc, student_name in expired_rows:
-            course = (
-                session.query(ActivityCourse)
-                .filter(ActivityCourse.id == rc.course_id)
-                .first()
-            )
-            course_name = course.name if course else f"course_{rc.course_id}"
+            course_name = course_name_map.get(rc.course_id, f"course_{rc.course_id}")
             reg_id = rc.registration_id
             course_id = rc.course_id
             session.delete(rc)
@@ -1058,27 +1121,16 @@ class ActivityService:
             expired_per_course[course_id] = expired_per_course.get(course_id, 0) + 1
 
             # 通知家長：候補轉正逾期。fail-soft（無 guardian 時跳過 enqueue）
-            try:
-                from services.notification import dispatch
-
-                parent_uids = _resolve_parent_user_ids_for_registration(session, reg_id)
-                for puid in parent_uids:
-                    dispatch.enqueue(
-                        session=session,
-                        event_type="activity.waitlist_expired",
-                        recipient_user_id=puid,
-                        context={
-                            "student_name": student_name or str(reg_id),
-                            "course_name": course_name,
-                            "course_id": course_id,
-                        },
-                        source_entity_type="registration_course",
-                        source_entity_id=reg_id,
-                    )
-            except Exception:
-                logger.exception(
-                    "activity.waitlist_expired enqueue 失敗 reg=%s", reg_id
-                )
+            _notify_parents(
+                session,
+                reg_id,
+                "activity.waitlist_expired",
+                {
+                    "student_name": student_name or str(reg_id),
+                    "course_name": course_name,
+                    "course_id": course_id,
+                },
+            )
             expired_count += 1
 
         # 釋出 N 個位子 → 嘗試遞補 N 次（超過候補數時內層容量閘讓多餘呼叫變 no-op）
@@ -1107,49 +1159,27 @@ class ActivityService:
             .all()
         )
         final_reminded_count = 0
+        course_name_map = _course_name_map(
+            session, [rc.course_id for rc, _ in final_reminder_rows]
+        )
         for rc, student_name in final_reminder_rows:
-            course = (
-                session.query(ActivityCourse)
-                .filter(ActivityCourse.id == rc.course_id)
-                .first()
-            )
-            course_name = course.name if course else f"course_{rc.course_id}"
-            # 通知家長：T-6h 最後提醒。dispatch.enqueue 成功註冊即寫戳記
-            # （fire-and-forget；LINE 實際送達由 dispatch._fan_out 內部處理，
-            # caller 拿不到 ACK；推送失敗下輪不重推，trade-off 見 PR description）
-            success = False
-            try:
-                from services.notification import dispatch
-
-                parent_uids = _resolve_parent_user_ids_for_registration(
-                    session, rc.registration_id
-                )
-                for puid in parent_uids:
-                    dispatch.enqueue(
-                        session=session,
-                        event_type="activity.waitlist_final_reminder",
-                        recipient_user_id=puid,
-                        context={
-                            "student_name": student_name or str(rc.registration_id),
-                            "course_name": course_name,
-                            "course_id": rc.course_id,
-                            "deadline": (
-                                rc.confirm_deadline.isoformat()
-                                if rc.confirm_deadline
-                                else None
-                            ),
-                        },
-                        source_entity_type="registration_course",
-                        source_entity_id=rc.registration_id,
-                    )
-                success = True
-            except Exception:
-                logger.exception(
-                    "activity.waitlist_final_reminder enqueue 失敗 reg=%s course=%s",
-                    rc.registration_id,
-                    rc.course_id,
-                )
-            if success:
+            course_name = course_name_map.get(rc.course_id, f"course_{rc.course_id}")
+            # 通知家長：T-6h 最後提醒。enqueue 成功即寫戳記（fire-and-forget；
+            # LINE 實際送達由 dispatch._fan_out 內部處理，caller 拿不到 ACK；
+            # 推送失敗下輪不重推，trade-off 見 PR description）。
+            if _notify_parents(
+                session,
+                rc.registration_id,
+                "activity.waitlist_final_reminder",
+                {
+                    "student_name": student_name or str(rc.registration_id),
+                    "course_name": course_name,
+                    "course_id": rc.course_id,
+                    "deadline": (
+                        rc.confirm_deadline.isoformat() if rc.confirm_deadline else None
+                    ),
+                },
+            ):
                 rc.final_reminder_sent_at = now
                 final_reminded_count += 1
 
@@ -1178,47 +1208,25 @@ class ActivityService:
             .all()
         )
         reminded_count = 0
+        course_name_map = _course_name_map(
+            session, [rc.course_id for rc, _ in reminder_rows]
+        )
         for rc, student_name in reminder_rows:
-            course = (
-                session.query(ActivityCourse)
-                .filter(ActivityCourse.id == rc.course_id)
-                .first()
-            )
-            course_name = course.name if course else f"course_{rc.course_id}"
+            course_name = course_name_map.get(rc.course_id, f"course_{rc.course_id}")
             # 通知家長：T-24h 一般提醒（同 final_reminder 邏輯）
-            success = False
-            try:
-                from services.notification import dispatch
-
-                parent_uids = _resolve_parent_user_ids_for_registration(
-                    session, rc.registration_id
-                )
-                for puid in parent_uids:
-                    dispatch.enqueue(
-                        session=session,
-                        event_type="activity.waitlist_reminder",
-                        recipient_user_id=puid,
-                        context={
-                            "student_name": student_name or str(rc.registration_id),
-                            "course_name": course_name,
-                            "course_id": rc.course_id,
-                            "deadline": (
-                                rc.confirm_deadline.isoformat()
-                                if rc.confirm_deadline
-                                else None
-                            ),
-                        },
-                        source_entity_type="registration_course",
-                        source_entity_id=rc.registration_id,
-                    )
-                success = True
-            except Exception:
-                logger.exception(
-                    "activity.waitlist_reminder enqueue 失敗 reg=%s course=%s",
-                    rc.registration_id,
-                    rc.course_id,
-                )
-            if success:
+            if _notify_parents(
+                session,
+                rc.registration_id,
+                "activity.waitlist_reminder",
+                {
+                    "student_name": student_name or str(rc.registration_id),
+                    "course_name": course_name,
+                    "course_id": rc.course_id,
+                    "deadline": (
+                        rc.confirm_deadline.isoformat() if rc.confirm_deadline else None
+                    ),
+                },
+            ):
                 rc.reminder_sent_at = now
                 reminded_count += 1
 
@@ -1365,9 +1373,7 @@ class ActivityService:
             .filter(RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)))
             .count()
         )
-        capacity = (
-            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
-        )
+        capacity = effective_capacity(course)
         if occupying >= capacity:
             return  # 仍滿（有其他 promoted_pending 佔位），不升
 
@@ -1458,32 +1464,17 @@ class ActivityService:
         # 都推家長（_resolve_parent_user_ids_for_registration）；修補原本只推 staff、
         # 啟動 48h 確認時鐘那則通知漏發家長的缺口。複用 waitlist_reminder event
         # （升位即第一次「請確認」提醒；T-24h/T-6h 仍會臨期再提醒，家長端 deep_link）。
-        try:
-            from services.notification import dispatch
-
-            parent_uids = _resolve_parent_user_ids_for_registration(
-                session, rc.registration_id
-            )
-            for puid in parent_uids:
-                dispatch.enqueue(
-                    session=session,
-                    event_type="activity.waitlist_reminder",
-                    recipient_user_id=puid,
-                    context={
-                        "student_name": student_name or str(rc.registration_id),
-                        "course_name": course.name,
-                        "course_id": course_id,
-                        "deadline": deadline.isoformat() if deadline else None,
-                    },
-                    source_entity_type="registration_course",
-                    source_entity_id=rc.registration_id,
-                )
-        except Exception:
-            logger.exception(
-                "活動候補升正式家長通知 enqueue 失敗 reg=%s course=%s",
-                rc.registration_id,
-                course_id,
-            )
+        _notify_parents(
+            session,
+            rc.registration_id,
+            "activity.waitlist_reminder",
+            {
+                "student_name": student_name or str(rc.registration_id),
+                "course_name": course.name,
+                "course_id": course_id,
+                "deadline": deadline.isoformat() if deadline else None,
+            },
+        )
 
     # ------------------------------------------------------------------ #
     # 記錄修改紀錄
@@ -1526,9 +1517,7 @@ class ActivityService:
         occupying_count = self.count_occupying_registrations(session, course_id)
         # P2-3（2026-06-23 audit）：NULL capacity 一律視為 DEFAULT_COURSE_CAPACITY（30），
         # 與全系統容量閘口徑一致（原本用 999 會讓 NULL-capacity 課程容量閘形同虛設）。
-        capacity = (
-            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
-        )
+        capacity = effective_capacity(course)
         has_vacancy = occupying_count < capacity
         return capacity, occupying_count, has_vacancy
 

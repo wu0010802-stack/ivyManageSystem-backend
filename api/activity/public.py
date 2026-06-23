@@ -7,6 +7,7 @@ import logging
 import random
 from datetime import datetime
 from utils.taipei_time import now_taipei_naive
+from utils.activity_constants import OCCUPYING_STATUSES, effective_capacity
 from pathlib import Path
 
 import hashlib
@@ -384,7 +385,7 @@ def _compute_availability(session) -> dict:
             )
             .filter(
                 RegistrationCourse.course_id.in_(course_ids),
-                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
                 ActivityRegistration.is_active.is_(True),
             )
             .group_by(RegistrationCourse.course_id)
@@ -396,7 +397,7 @@ def _compute_availability(session) -> dict:
     availability = {}
     for course in courses:
         enrolled = enrolled_map.get(course.id, 0)
-        capacity = course.capacity if course.capacity is not None else 30
+        capacity = effective_capacity(course)
         remaining = capacity - enrolled
         if remaining <= 0:
             availability[course.name] = -1 if not course.allow_waitlist else 0
@@ -829,7 +830,7 @@ def public_register(
                 )
                 .filter(
                     RegistrationCourse.course_id.in_(_reg_course_ids),
-                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                    RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
                     ActivityRegistration.is_active.is_(True),
                 )
                 .group_by(RegistrationCourse.course_id)
@@ -1092,7 +1093,7 @@ def public_update_registration(
             for (cid,) in session.query(RegistrationCourse.course_id)
             .filter(
                 RegistrationCourse.registration_id == reg.id,
-                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
             )
             .all()
         }
@@ -1220,7 +1221,7 @@ def public_update_registration(
                 )
                 .filter(
                     RegistrationCourse.course_id.in_(_upd_course_ids),
-                    RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                    RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
                     ActivityRegistration.is_active.is_(True),
                     ActivityRegistration.id != reg.id,
                 )
@@ -1245,7 +1246,7 @@ def public_update_registration(
             for (cid,) in session.query(RegistrationCourse.course_id)
             .filter(
                 RegistrationCourse.registration_id == reg.id,
-                RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
             )
             .all()
         }

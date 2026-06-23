@@ -68,6 +68,24 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
         .all()
     )
 
+    # 一次 GROUP BY 取回該 reg 各課程的 T_served（出席堂數），消除原本 loop 內
+    # 逐課一次 COUNT 的 N+1（此 helper 被 POS 退費 verify 共用、且在持鎖路徑內，
+    # 往返放大會拉長鎖持有時間）。缺 key → 0，與原 `.scalar() or 0` 等價。
+    served_by_course = {
+        course_id: count
+        for course_id, count in (
+            session.query(ActivitySession.course_id, func.count(ActivityAttendance.id))
+            .select_from(ActivityAttendance)
+            .join(ActivitySession, ActivitySession.id == ActivityAttendance.session_id)
+            .filter(
+                ActivityAttendance.registration_id == reg_id,
+                ActivityAttendance.is_present.is_(True),
+            )
+            .group_by(ActivitySession.course_id)
+            .all()
+        )
+    }
+
     for rc, course in course_rows:
         amount_due = int(rc.price_snapshot or 0)
         total_amount_due += amount_due
@@ -96,16 +114,7 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
             total_suggested += amount_due
             continue
 
-        T_served = (
-            session.query(func.count(ActivityAttendance.id))
-            .join(ActivitySession, ActivitySession.id == ActivityAttendance.session_id)
-            .filter(
-                ActivityAttendance.registration_id == reg_id,
-                ActivitySession.course_id == course.id,
-                ActivityAttendance.is_present.is_(True),
-            )
-            .scalar()
-        ) or 0
+        T_served = served_by_course.get(course.id, 0)
 
         result = calc_course_refund(
             amount_due=amount_due,

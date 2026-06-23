@@ -395,6 +395,26 @@ class AdminRegistrationPayload(BaseModel):
         return v.strip() if isinstance(v, str) else v
 
 
+class RefundCalcPayload(BaseModel):
+    """退費計算稽核明細（calc_method 對應的形狀）。
+
+    取代原裸 dict（OpenAPI additionalProperties:true → 前端 Record<string,
+    unknown>）。course 比例法欄位較全；supply（不退）/未知總堂數法只有共同的
+    amount_due + formula，其餘留 None。三種 calc_method 皆無此外的鍵，故以
+    全欄位聯集 + Optional 即可結構化覆蓋。
+    """
+
+    # 三種 calc_method 共同欄位
+    amount_due: int
+    formula: str
+    # 僅 activity_course_ratio（按出席堂數三段比例）才有
+    T_total: Optional[int] = None
+    T_served: Optional[int] = None
+    served_ratio: Optional[float] = None
+    ratio_band: Optional[str] = None
+    refund_ratio: Optional[str] = None
+
+
 class RefundSuggestionItem(BaseModel):
     """單一退費 item（course 或 supply）建議值。spec §7。"""
 
@@ -405,7 +425,7 @@ class RefundSuggestionItem(BaseModel):
     # NULL sessions 時為 None；前端應 fallback 顯示為「無法計算，建議全退」
     suggested_amount: Optional[int] = Field(None, description="None=無法計算")
     calc_method: str
-    calc_payload: dict
+    calc_payload: RefundCalcPayload
     warnings: list[str] = Field(default_factory=list)
 
 

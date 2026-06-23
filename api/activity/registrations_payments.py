@@ -40,7 +40,7 @@ from ._shared import (
     VoidPaymentRequest,
     SYSTEM_RECONCILE_METHOD,
     MIN_REFUND_REASON_LENGTH,
-    TAIPEI_TZ,
+    now_taipei_naive,
     _not_found,
     _calc_total_amount,
     _compute_is_paid,
@@ -689,7 +689,7 @@ def delete_registration_payment(
             _require_daily_close_unlocked(session, payment.payment_date)
 
         operator = current_user.get("username", "")
-        now = datetime.now(TAIPEI_TZ).replace(tzinfo=None)
+        now = now_taipei_naive()
         payment.voided_at = now
         payment.voided_by = operator
         payment.void_reason = body.reason

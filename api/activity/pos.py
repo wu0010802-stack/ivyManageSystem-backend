@@ -776,6 +776,115 @@ def _lock_regs(session, reg_ids: list):
     # OperationalError（真 DB 錯誤 / lock timeout / 連線中斷）上拋，不降級
 
 
+def _idempotent_replay(session, body, existing, operator, *, source: str):
+    """同 idempotency_key 命中既有非作廢紀錄時的內容守衛 + replay。
+
+    收斂 pos_checkout 原本「前置守衛」與「except IntegrityError race」兩處各寫
+    一份、易漂移的核心邏輯：content-signature 比對不符 → 409；可解析回應 →
+    回放原收據 dict；existing 找到但無可解析回應 → 回 None（caller 各自決定
+    fall-through / re-raise）。source 僅供 log 區分來源（prefront / unique_race），
+    不影響行為；兩處 409 detail 完全一致。
+
+    ⚠ 不在此檢查 voided-key reuse（_has_any_record_for_key）——其放置在前置為
+    `elif existing is None`、在 except 為 existing 區塊之後且接 re-raise，兩處外層
+    控制流不同，刻意留在各 call site 以精確保留語意。
+    """
+    if _request_content_signature(body) != _receipt_content_signature(
+        session, existing
+    ):
+        logger.warning(
+            "POS checkout idempotent content mismatch (%s): key=%s operator=%s",
+            source,
+            body.idempotency_key,
+            operator,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "idempotency_key 已用於不同內容的收據"
+                "（項目/金額/付款類型/付款日期不符）；"
+                "若需建立新交易，請使用新的 idempotency_key 重送"
+            ),
+        )
+    replay = _parse_receipt_response_from_record(session, existing)
+    if replay is not None:
+        logger.info(
+            "POS checkout idempotent replay (%s): key=%s operator=%s",
+            source,
+            body.idempotency_key,
+            operator,
+        )
+        return replay
+    return None
+
+
+def _run_post_lock_refund_guards(session, body, reg_ids, current_user) -> dict:
+    """退費路徑在行級鎖之後的兩道簽核閘，回傳退費稽核 context（非退費回 {}）。
+
+    第二道：每 reg 累積退費簽核（鎖後查 prior_refunded，避免併發小額退費各自看到
+    相同舊累積值；封死同 reg 連開多張小收據繞過第一道收據合計門檻的拆單）。
+    第三道：實退 vs server-side 建議值偏離簽核（spec §8.1，員工算錯/多退私吞）。
+    須在 _lock_regs 之後呼叫；第一道（收據合計）與退費 advisory lock 仍在 caller。
+    """
+    if body.type != "refund":
+        return {}
+
+    # 第二道：累積退費簽核
+    prior_rows = (
+        session.query(
+            ActivityPaymentRecord.registration_id,
+            func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
+        )
+        .filter(
+            ActivityPaymentRecord.registration_id.in_(reg_ids),
+            ActivityPaymentRecord.type == "refund",
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
+        .group_by(ActivityPaymentRecord.registration_id)
+        .all()
+    )
+    prior_refund_map = {rid: int(amt or 0) for rid, amt in prior_rows}
+    for item in body.items:
+        cumulative = prior_refund_map.get(item.registration_id, 0) + int(item.amount)
+        require_approve_for_large_refund(
+            cumulative,
+            current_user,
+            label=f"報名 {item.registration_id} 累積退費總額",
+        )
+
+    # 第三道：實退 vs 建議值偏離簽核
+    actual_by_reg = {it.registration_id: it.amount for it in body.items}
+    suggested_by_reg: dict[int, int] = {}
+    suggestion_details: list[dict] = []
+    for rid in actual_by_reg:
+        suggestion = build_refund_suggestion(session, rid)
+        suggested_by_reg[rid] = suggestion["total_suggested_amount"]
+        suggestion_details.append(suggestion)
+
+    total_actual = sum(actual_by_reg.values())
+    total_suggested = sum(suggested_by_reg.values())
+    diff = sum(abs(actual_by_reg[rid] - suggested_by_reg[rid]) for rid in actual_by_reg)
+    # 若任一 reg 課程 sessions IS NULL → merged suggestion 標 needs_manual_review
+    _merged_suggestion = {
+        "needs_manual_review": any(
+            s.get("needs_manual_review") for s in suggestion_details
+        )
+    }
+    require_approve_for_refund_diff(
+        diff=diff,
+        current_user=current_user,
+        suggested_total=total_suggested,
+        actual_total=total_actual,
+        suggestion=_merged_suggestion,
+    )
+    return {
+        "suggested_total": total_suggested,
+        "actual_total": total_actual,
+        "diff": diff,
+        "suggestion_details": suggestion_details,
+    }
+
+
 @router.post("/pos/checkout", status_code=201, response_model=PosCheckoutOut)
 def pos_checkout(
     body: POSCheckoutRequest,
@@ -815,34 +924,13 @@ def pos_checkout(
         if body.idempotency_key:
             existing = _find_idempotent_hit(session, body.idempotency_key)
             if existing is not None:
-                # 內容守衛：同 key 必須對應同一張收據內容（項目集合/金額/付款
-                # 類型/付款日期）。否則使用者在網路丟回應後改了金額再用同一把
-                # key 重送，會收到舊收據而新交易不建立 → 帳實不符。對齊 sibling
-                # add_registration_payment / fees refund 的上下文守衛語意。
-                if _request_content_signature(body) != _receipt_content_signature(
-                    session, existing
-                ):
-                    logger.warning(
-                        "POS checkout idempotent key content mismatch: "
-                        "key=%s operator=%s",
-                        body.idempotency_key,
-                        operator,
-                    )
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "idempotency_key 已用於不同內容的收據"
-                            "（項目/金額/付款類型/付款日期不符）；"
-                            "若需建立新交易，請使用新的 idempotency_key 重送"
-                        ),
-                    )
-                replay = _parse_receipt_response_from_record(session, existing)
+                # 內容守衛 + replay 收斂到 _idempotent_replay（與下方 UNIQUE race
+                # except 共用同一份，消除兩處易漂移實作）。existing 找到但無可解析
+                # 回應 → 回 None，fall-through 走正常出帳（與原行為一致）。
+                replay = _idempotent_replay(
+                    session, body, existing, operator, source="prefront"
+                )
                 if replay is not None:
-                    logger.info(
-                        "POS checkout idempotent replay: key=%s operator=%s",
-                        body.idempotency_key,
-                        operator,
-                    )
                     return replay
             elif _has_any_record_for_key(session, body.idempotency_key):
                 # spec C5：key 存在但所有對應紀錄都被 voided；不可 replay 已作廢交易
@@ -925,75 +1013,11 @@ def pos_checkout(
                     )
                     return replay
 
-        # ── 第二道：每 reg 累積退費簽核（須在 _lock_regs 之後）─────────
-        # 鎖之後才查 prior_refunded，避免兩個併發小額退費各自看到相同舊累積值；
-        # 並且封死「同 registration 連開多張小收據繞過第一道收據合計門檻」的拆單路徑。
-        # Why: 第一道（收據合計）只擋同收據內金額大；同 reg 用兩張小收據之間沒有檢查。
-        if body.type == "refund":
-            prior_rows = (
-                session.query(
-                    ActivityPaymentRecord.registration_id,
-                    func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
-                )
-                .filter(
-                    ActivityPaymentRecord.registration_id.in_(reg_ids),
-                    ActivityPaymentRecord.type == "refund",
-                    ActivityPaymentRecord.voided_at.is_(None),
-                )
-                .group_by(ActivityPaymentRecord.registration_id)
-                .all()
-            )
-            prior_refund_map = {rid: int(amt or 0) for rid, amt in prior_rows}
-            for item in body.items:
-                cumulative = prior_refund_map.get(item.registration_id, 0) + int(
-                    item.amount
-                )
-                require_approve_for_large_refund(
-                    cumulative,
-                    current_user,
-                    label=f"報名 {item.registration_id} 累積退費總額",
-                )
-
-        # ── 第三道：實退 vs 建議值偏離簽核 (spec §8.1) ───────────────
-        # Why: 員工算錯 / 多退私吞。重算 server-side suggestion 與 body 比對；
-        # 偏離總額 > NT$100 需 ACTIVITY_PAYMENT_APPROVE 權限。
-        # 注意：多 reg 同收據用 sum(abs(per-reg-diff)) 避免方向抵消漏網。
-        _refund_audit_context: dict = {}
-        if body.type == "refund":
-            actual_by_reg = {it.registration_id: it.amount for it in body.items}
-            suggested_by_reg: dict[int, int] = {}
-            suggestion_details: list[dict] = []
-            for rid in actual_by_reg:
-                suggestion = build_refund_suggestion(session, rid)
-                suggested_by_reg[rid] = suggestion["total_suggested_amount"]
-                suggestion_details.append(suggestion)
-
-            total_actual = sum(actual_by_reg.values())
-            total_suggested = sum(suggested_by_reg.values())
-            diff = sum(
-                abs(actual_by_reg[rid] - suggested_by_reg[rid]) for rid in actual_by_reg
-            )
-
-            # 若任一 reg 課程 sessions IS NULL → merged suggestion 標 needs_manual_review
-            _merged_suggestion = {
-                "needs_manual_review": any(
-                    s.get("needs_manual_review") for s in suggestion_details
-                )
-            }
-            require_approve_for_refund_diff(
-                diff=diff,
-                current_user=current_user,
-                suggested_total=total_suggested,
-                actual_total=total_actual,
-                suggestion=_merged_suggestion,
-            )
-
-            _refund_audit_context = {
-                "suggested_total": total_suggested,
-                "actual_total": total_actual,
-                "diff": diff,
-                "suggestion_details": suggestion_details,
-            }
+        # ── 退費鎖後兩道簽核閘（第二道累積 + 第三道實退偏離）；非退費回 {} ──
+        # 第一道（收據合計）與退費 advisory lock 已在上方鎖前處理。
+        _refund_audit_context = _run_post_lock_refund_guards(
+            session, body, reg_ids, current_user
+        )
 
         total_map = _batch_calc_total_amounts(session, reg_ids)
         course_map = _fetch_reg_course_details(session, reg_ids)
@@ -1129,35 +1153,12 @@ def pos_checkout(
             if body.idempotency_key and "idempotency_key" in str(e.orig).lower():
                 existing = _find_idempotent_hit(session, body.idempotency_key)
                 if existing is not None:
-                    # 內容守衛：與前置 replay 守衛（見上方 _request_content_signature
-                    # 比對）對齊。並發 race 下兩筆同 key 但內容不同時，loser 撞
-                    # UNIQUE 後若直接 replay winner 的收據，會誤判自己（不同
-                    # 項目/金額/類型/日期）的收/退款已成功 → 帳實不符。內容不符
-                    # 回 409，要求換 key 重送。
-                    if _request_content_signature(body) != _receipt_content_signature(
-                        session, existing
-                    ):
-                        logger.warning(
-                            "POS checkout UNIQUE race content mismatch: "
-                            "key=%s operator=%s",
-                            body.idempotency_key,
-                            operator,
-                        )
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                "idempotency_key 已用於不同內容的收據"
-                                "（項目/金額/付款類型/付款日期不符）；"
-                                "若需建立新交易，請使用新的 idempotency_key 重送"
-                            ),
-                        )
-                    replay = _parse_receipt_response_from_record(session, existing)
+                    # 內容守衛 + replay 與前置共用 _idempotent_replay。replay None →
+                    # 落到下方 voided/has_any_record 檢查、最終 re-raise（保留原語意）。
+                    replay = _idempotent_replay(
+                        session, body, existing, operator, source="unique_race"
+                    )
                     if replay is not None:
-                        logger.info(
-                            "POS checkout idempotent replay via UNIQUE: key=%s operator=%s",
-                            body.idempotency_key,
-                            operator,
-                        )
                         return replay
                 # spec C5：voided 過濾後 None 但 UNIQUE 衝突 → key 命中但全 voided
                 # 不可繼續 replay；回 409 同前置守衛語意
@@ -1567,6 +1568,13 @@ def pos_semester_reconciliation(
             classroom_name=classroom_name,
             payment_status=payment_status,
         )
+        # no_payment 等價於 coalesce(paid_amount,0) <= 0（見下方 approval 判定
+        # 首條分支）。直接下推 SQL 收斂母體，省去撈全部 active reg 再 Python 逐筆
+        # 丟棄；同時讓 total_active 與 2000 截斷對 no_payment 視圖精準（否則符合者
+        # 可能落在截斷邊界外被靜默丟棄）。其餘三態需逐筆比對 payment_records 與
+        # closed_dates，無法純 SQL 下推，維持 Python 後過濾。
+        if approval_status == "no_payment":
+            q = q.filter(func.coalesce(ActivityRegistration.paid_amount, 0) <= 0)
         # M3：limit 防爆保留，但超限不可無聲截斷——先 count 總數，超限時
         # 標 truncated 讓對帳者知道總表不完整（與 outstanding-by-student 一致）。
         total_active = q.count()

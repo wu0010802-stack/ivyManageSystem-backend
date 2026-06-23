@@ -39,3 +39,26 @@ ACTIVITY_REFUND_DIFF_THRESHOLD = 100
 # 年級才藝達標獎金（分數）：年級報名達標率 >= 設定 target_pct 時給予的獎金分數。
 # 前端 src/constants/activity.ts FULL_ATTENDANCE_BONUS 須與此值一致（dashboard 顯示比對用）。
 GRADE_TARGET_BONUS = 1000
+
+# 候補升正式的「佔位」狀態集合：enrolled + promoted_pending 皆佔容量，
+# 決定「還有無名額」時務必 IN 兩者；統計/出席/收入等語意只算 enrolled。
+# 單一來源：services / api/activity / api/parent_portal 一律 import 此常數，
+# 不再各處 inline `["enrolled", "promoted_pending"]`（漏掉 promoted_pending 會超發候補）。
+OCCUPYING_STATUSES = ("enrolled", "promoted_pending")
+
+# ActivityCourse.capacity 欄位 nullable（models 為 default=30，僅 ORM insert 套用，
+# DB 既有/歷史列可為 NULL）。容量計算一律把 NULL 視為 30。單一來源，取代散落各處的
+# `capacity if not None else 30` 與第二份常數定義（api/parent_portal/activity 等）。
+DEFAULT_COURSE_CAPACITY = 30
+
+
+def effective_capacity(course) -> int:
+    """課程有效容量：capacity 為 NULL 時回 DEFAULT_COURSE_CAPACITY（30）。
+
+    Why: capacity 欄位 nullable，DB 歷史列可能為 NULL；「還有無名額」的判定
+    一律把 NULL 視為 30。把這條口徑收斂成單一函式，避免任一站點漏改而漂移
+    （2026-06-23 audit P2-3 即因某站點誤用 999 致容量閘形同虛設）。
+
+    course: 任何具 `.capacity` 屬性的物件（ActivityCourse / 具同名欄位的 row）。
+    """
+    return course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
