@@ -304,6 +304,11 @@ def _fill_salary_record(
     salary_record.version = (salary_record.version or 0) + 1
 
 
+# qa-loop #5：區分「未提供預載 record（single → 即時 query）」與「bulk 預載但無既有
+# record（None → 已知無、免 query）」的哨兵；不可用 None 當預設（None 是合法的「無 record」值）。
+_PREFETCH_UNSET = object()
+
+
 class SalaryEngine:
     """薪資計算引擎"""
 
@@ -2964,7 +2969,13 @@ class SalaryEngine:
         }
 
     def _bonus_total_with_manual_overrides(
-        self, session, employee_id: int, year: int, month: int, breakdown
+        self,
+        session,
+        employee_id: int,
+        year: int,
+        month: int,
+        breakdown,
+        record=_PREFETCH_UNSET,
     ):
         """C9：二代健保補充保費基底用「覆寫感知」的獎金總額計算。
 
@@ -2973,19 +2984,26 @@ class SalaryEngine:
         breakdown 仍是引擎重算值（record 覆寫值僅在 _fill_salary_record 保留），補充保費
         基底會用非覆寫值計算而失準。無 record 或無相關覆寫時回 None（caller 退回原
         breakdown 基底，行為位元不變）。
+
+        qa-loop #5：bulk 路徑已預載既有 record（salary_record_by_emp），經 record= 傳入
+        即免每位員工重查 SalaryRecord（N+1）；single 路徑不傳（哨兵）→ 即時 query。
+        record=None 代表預載已確認「無既有 record」，亦不再 query。
         """
         from models.database import SalaryRecord
         from services.salary.supplementary_premium import BONUS_FIELDS_FOR_YTD
 
-        rec = (
-            session.query(SalaryRecord)
-            .filter(
-                SalaryRecord.employee_id == employee_id,
-                SalaryRecord.salary_year == year,
-                SalaryRecord.salary_month == month,
+        if record is _PREFETCH_UNSET:
+            rec = (
+                session.query(SalaryRecord)
+                .filter(
+                    SalaryRecord.employee_id == employee_id,
+                    SalaryRecord.salary_year == year,
+                    SalaryRecord.salary_month == month,
+                )
+                .first()
             )
-            .first()
-        )
+        else:
+            rec = record
         overrides = set(rec.manual_overrides or []) if rec is not None else set()
         if not overrides & set(BONUS_FIELDS_FOR_YTD):
             return None
@@ -3017,6 +3035,7 @@ class SalaryEngine:
         absent_count: int,
         absence_deduction_amount: float,
         ytd_before: float | None = None,
+        prefetched_record=_PREFETCH_UNSET,
     ):
         """single 與 bulk 共用的「計算尾段」：懲處扣減 → calculate_salary →
         二代健保補充保費 → 曠職扣款 → net + 守衛，回傳 breakdown（不 persist）。
@@ -3060,7 +3079,7 @@ class SalaryEngine:
         # C9：補充保費基底用覆寫感知總額（manual_overrides 內 5 個獎金欄位用 record
         # 持久化覆寫值）。無覆寫時回 None → 函式退回原 breakdown 基底，行為不變。
         bonus_total_override = self._bonus_total_with_manual_overrides(
-            session, emp.id, year, month, breakdown
+            session, emp.id, year, month, breakdown, record=prefetched_record
         )
         apply_bonus_supplementary_to_breakdown(
             session,
@@ -3994,6 +4013,8 @@ class SalaryEngine:
             absent_count=absent_count,
             absence_deduction_amount=absence_deduction_amount,
             ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
+            # qa-loop #5：傳預載既有 record，免 _bonus_total_with_manual_overrides 每人重查。
+            prefetched_record=_existing_rec,
         )
 
         # ── SalaryRecord upsert（延後至外層 commit）

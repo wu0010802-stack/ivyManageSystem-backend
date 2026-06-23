@@ -286,3 +286,61 @@ def test_bulk_does_not_invoke_per_employee_n_plus_1(salary_engine_db, monkeypatc
         assert (
             spy.call_count == 0
         ), f"{label} 仍被逐人呼叫 {spy.call_count} 次（N+1 未消除）"
+
+
+def test_bonus_total_uses_prefetched_record_without_querying(salary_engine_db):
+    """qa-loop #5：傳入預載 record 時 _bonus_total_with_manual_overrides 不得再 query
+    SalaryRecord（bulk N+1 消除）。以「query 即報錯」的 session 證明未查 DB。"""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    engine, _ = salary_engine_db
+    bad_session = MagicMock()
+    bad_session.query.side_effect = AssertionError(
+        "傳入預載 record 時不應再 query SalaryRecord（N+1 未消除）"
+    )
+    rec = SimpleNamespace(
+        manual_overrides=["festival_bonus"],
+        festival_bonus=5000,
+        overtime_bonus=999,
+        performance_bonus=0,
+        special_bonus=0,
+        supervisor_dividend=0,
+    )
+    breakdown = SimpleNamespace(
+        festival_bonus=3000,
+        overtime_bonus=200,
+        performance_bonus=100,
+        special_bonus=0,
+        supervisor_dividend=0,
+    )
+    # festival 在 overrides → 用 rec(5000)；其餘用 breakdown(200+100+0+0=300) → 5300
+    result = engine._bonus_total_with_manual_overrides(
+        bad_session, 1, 2026, 2, breakdown, record=rec
+    )
+    assert result == 5300
+    bad_session.query.assert_not_called()
+
+
+def test_bonus_total_prefetched_none_skips_query(salary_engine_db):
+    """qa-loop #5：record=None（預載已確認無既有 record）時亦不 query，直接回 None。"""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    engine, _ = salary_engine_db
+    bad_session = MagicMock()
+    bad_session.query.side_effect = AssertionError(
+        "record=None（預載已知無）時不應 query"
+    )
+    breakdown = SimpleNamespace(
+        festival_bonus=3000,
+        overtime_bonus=0,
+        performance_bonus=0,
+        special_bonus=0,
+        supervisor_dividend=0,
+    )
+    result = engine._bonus_total_with_manual_overrides(
+        bad_session, 1, 2026, 2, breakdown, record=None
+    )
+    assert result is None
+    bad_session.query.assert_not_called()
