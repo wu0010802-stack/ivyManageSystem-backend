@@ -222,6 +222,16 @@ class ActivityRegistration(Base):
             postgresql_where=text("is_active = TRUE"),
             sqlite_where=text("is_active = 1"),
         ),
+        # 值域兜底（actcons01）：match_status 為 code-level MatchStatus enum 的 6 值，
+        # 但欄位為裸 String，DB 端原無約束。任何繞過 service 的寫入（migration
+        # backfill / 手動 SQL / 未來新端點忘了用 enum）寫進非法值會讓大量
+        # status.in_/== 過濾默默漏算 → 難排查的資料污染。NULL 由 IN 放行（default
+        # unmatched，歷史列若 NULL 不擋）。
+        CheckConstraint(
+            "match_status IN "
+            "('unmatched','matched','pending','rejected','manual','forced')",
+            name="ck_activity_registrations_match_status",
+        ),
     )
 
 
@@ -264,6 +274,13 @@ class RegistrationCourse(Base):
         Index("ix_reg_courses_waitlist_order", "course_id", "status", "id"),
         # 排程掃描待確認過期用
         Index("ix_reg_courses_pending_deadline", "status", "confirm_deadline"),
+        # 值域兜底（actcons01）：status 為 RegistrationCourseStatus enum 三值；裸
+        # String 無 DB 約束，非法值會讓佔容量判定（status.in_(OCCUPYING_STATUSES)）
+        # 默默漏算 → 超賣。NOT NULL + default enrolled，故無 NULL 分支。
+        CheckConstraint(
+            "status IN ('enrolled','waitlist','promoted_pending')",
+            name="ck_registration_courses_status",
+        ),
     )
 
 
