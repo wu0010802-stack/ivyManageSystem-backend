@@ -661,13 +661,13 @@ def _recompute_settlement_special_total(
     事後改動轉帳金額（caller add_special_bonus 已守住，這裡為 defense-in-depth：
     import_excel 等批次 path 也走此口徑）。
     """
-    total = (
-        session.query(SpecialBonusItem)
-        .filter_by(year_end_cycle_id=cycle_id, employee_id=employee_id)
-        .with_entities(SpecialBonusItem.amount)
-        .all()
+    # qa-loop #1（2026-06-23）：與 canonical build_settlements 同口徑套 excel-wins 去重，
+    # 避免 Excel 列 + 同型 auto 列雙計 → settlement.total_amount 灌大 → 轉帳名冊多發。
+    from services.year_end.settlement_builder import compute_special_bonus_total_by_emp
+
+    total_sum = compute_special_bonus_total_by_emp(session, cycle_id).get(
+        int(employee_id), Decimal("0")
     )
-    total_sum = sum((row.amount for row in total), Decimal("0"))
     s = (
         session.query(YearEndSettlement)
         .filter_by(year_end_cycle_id=cycle_id, employee_id=employee_id)

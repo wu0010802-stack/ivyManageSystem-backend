@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from models.appraisal import (
@@ -265,9 +265,10 @@ def _recompute_draft_settlement_total(
     """generate/void 改動 SpecialBonusItem 後，同步重算對應 DRAFT settlement 的
     special_bonus_total / total_amount（#1，2026-06-16）。
 
-    口徑：special_bonus_total = SUM(該員工該 cycle 全部 SpecialBonusItem.amount)；
-    total_amount = payable_amount + special_bonus_total（比照 api/year_end
-    `_recompute_settlement_special_total` 與 settlement_builder step6）。
+    口徑：special_bonus_total = compute_special_bonus_total_by_emp（excel-wins 去重，
+    有 Excel 列即排除同型 auto 列）；total_amount = payable_amount + special_bonus_total。
+    與 build_settlements / api `_recompute_settlement_special_total` 同口徑（qa-loop #1，
+    2026-06-23：舊版裸 SUM 會把 Excel+auto 同型雙計 → total_amount 多發）。
 
     只動 DRAFT settlement：
     - settlement 不存在 → no-op（建立 settlement 時會主動回算既有 special bonus）。
@@ -285,13 +286,13 @@ def _recompute_draft_settlement_total(
         return
     if settlement.status != YearEndSettlementStatus.DRAFT:
         return
-    total_sum = db.scalar(
-        select(func.coalesce(func.sum(SpecialBonusItem.amount), 0)).where(
-            SpecialBonusItem.year_end_cycle_id == year_end_cycle_id,
-            SpecialBonusItem.employee_id == employee_id,
-        )
+    # qa-loop #1（2026-06-23）：與 canonical build_settlements 同口徑套 excel-wins 去重，
+    # 避免 Excel 列 + 同型 auto 列雙計 → settlement.total_amount 灌大 → 轉帳名冊多發。
+    from services.year_end.settlement_builder import compute_special_bonus_total_by_emp
+
+    total_sum = compute_special_bonus_total_by_emp(db, year_end_cycle_id).get(
+        int(employee_id), Decimal("0")
     )
-    total_sum = Decimal(str(total_sum))
     settlement.special_bonus_total = total_sum
     settlement.total_amount = settlement.payable_amount + total_sum
 
