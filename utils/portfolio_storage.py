@@ -185,7 +185,15 @@ class LocalStorage:
 
         file_id = uuid.uuid4().hex
         original_key = str(dir_rel / f"{file_id}{ext}").replace("\\", "/")
-        self.absolute_path(original_key).write_bytes(content)
+        # P2-4（2026-06-23 資安掃描）：原檔落盤前清洗 EXIF/GPS，避免下載端點原樣回傳
+        # iPhone HEIC/JPEG 的位置個資。strip 對非清洗格式（如 .gif）no-op；此為 10 個
+        # 附件 caller 共用的單點防線，確保原檔不洩漏 metadata。
+        original_content = content
+        if is_image_extension(ext):
+            from utils.image_sanitize import strip_image_metadata
+
+            original_content = strip_image_metadata(content, ext)
+        self.absolute_path(original_key).write_bytes(original_content)
 
         display_key: Optional[str] = None
         thumb_key: Optional[str] = None

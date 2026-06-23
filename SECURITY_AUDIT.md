@@ -579,7 +579,7 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 | 項目 | 評估 |
 |------|------|
 | 標準 OWASP 8 類別（authz 覆蓋 / IDOR / injection / XSS / secret / 上傳 / CSRF / mass-assignment） | ✅ L7 逐項追 call chain，0 High/Medium 真陽性 |
-| 18 個檔案上傳端點 | ✅ 一致經 magic-bytes + 白名單 + 大小 + EXIF strip + 檔名 sanitize |
+| 18 個檔案上傳端點 | ⚠→✅ magic-bytes + 白名單 + 大小 + 檔名 sanitize 一致；EXIF strip 原僅 jpg/jpeg/png/webp，HEIC/HEIF 原檔曾 raw 落盤保留 iPhone GPS（P2-4，2026-06-23 全系統資安掃描發現本列舊述過度）。**已修**：納入 image_sanitize（heic/heif 重 encode HEIF 去 EXIF）+ put_attachment 原檔落盤前單點清洗（覆蓋 10 caller）。`.gif` 容器無標準 EXIF GPS sub-IFD（威脅趨零）不處理 |
 | 薪資金流計算正確性 + 授權 | ✅ 無 P0；補充保費/考核年終/進位/proration/N+1/portal 自助薪資 IDOR 全過 |
 | `breakdown.supplementary_health_employee` / `appraisal_year_end_bonus` | ✅ 已落地 column（CLAUDE.md #11 的「未 persist」前提已過時，待更新文件） |
 | PII denylist + 權限字串集合前後端同步 | ✅ 逐 token 比對零差異（除 RA-L13 雙端對稱漏） |

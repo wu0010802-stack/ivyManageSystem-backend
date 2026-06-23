@@ -93,11 +93,26 @@ def test_strip_passes_through_pdf_unchanged():
     assert out == pdf
 
 
-def test_strip_passes_through_heic_unchanged():
-    # v1 不處理 HEIC，直接回原 content
-    heic_bytes = b"\x00\x00\x00\x20ftypheic"
-    out = strip_image_metadata(heic_bytes, ".heic")
-    assert out == heic_bytes
+def test_strip_removes_exif_from_heic():
+    """P2-4（2026-06-23 資安掃描）：HEIC/HEIF 原檔曾 raw 落盤保留 EXIF/GPS，
+    現納入清洗（需 libheif；無則 skip）。"""
+    pillow_heif = pytest.importorskip("pillow_heif")
+    pillow_heif.register_heif_opener()
+    src = Image.new("RGB", (30, 30), color=(10, 20, 30))
+    exif = src.getexif()
+    exif[ExifBase.Make.value] = "TestPhone"
+    exif[ExifBase.Model.value] = "GPSCam"
+    buf = io.BytesIO()
+    src.save(buf, format="HEIF", exif=exif)
+    original = buf.getvalue()
+    assert ExifBase.Make.value in _exif_keys(original), "fixture 應含 Make"
+
+    cleaned = strip_image_metadata(original, ".heic")
+
+    assert ExifBase.Make.value not in _exif_keys(cleaned)
+    assert ExifBase.Model.value not in _exif_keys(cleaned)
+    # 清洗後仍為合法可解碼影像
+    Image.open(io.BytesIO(cleaned)).load()
 
 
 def test_strip_passes_through_gif_unchanged():
@@ -176,8 +191,16 @@ def test_image_extensions_to_sanitize_constant_is_lowercase_with_dot():
     for ext in IMAGE_EXTENSIONS_TO_SANITIZE:
         assert ext.startswith(".")
         assert ext == ext.lower()
-    # 預期 4 個 v1 ext
-    assert IMAGE_EXTENSIONS_TO_SANITIZE == {".jpg", ".jpeg", ".png", ".webp"}
+    # P2-4：納入 heic/heif（iPhone 主力格式、GPS 實威脅，libheif 可靠 transcode）；
+    # gif 容器不支援標準 EXIF GPS IFD（威脅趨零）且 strip 動畫有丟幀風險，維持不處理。
+    assert IMAGE_EXTENSIONS_TO_SANITIZE == {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".heic",
+        ".heif",
+    }
 
 
 # ── 大小寫 ext robustness ──

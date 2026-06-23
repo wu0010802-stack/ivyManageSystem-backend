@@ -26,12 +26,37 @@ from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
-# 第一版支援清洗的副檔名集合（小寫含點）。
-# HEIC/HEIF/GIF 第一版不處理：HEIC 走 portfolio variants transcode 為 JPG 等同 strip；
-# GIF 罕見 GPS tag 不在主要威脅面。列為 follow-up。
+# 支援清洗的副檔名集合（小寫含點）。
+# P2-4（2026-06-23 資安掃描）：納入 .heic/.heif —— 原以為「HEIC 走 portfolio variants
+# transcode 為 JPG 等同 strip」，但原檔仍 raw 落盤、下載端點原樣回傳，保留 iPhone GPS。
+# 需 libheif（pillow-heif）；透過 _ensure_heif_opener 延遲註冊。
+# .gif 不納入：GIF 容器不支援標準 EXIF GPS sub-IFD（威脅趨零），且動畫 GIF 重 encode
+# 有丟幀回歸風險，維持不處理。
 IMAGE_EXTENSIONS_TO_SANITIZE: frozenset[str] = frozenset(
-    {".jpg", ".jpeg", ".png", ".webp"}
+    {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 )
+
+
+_HEIF_OPENER_REGISTERED = False
+
+
+def _ensure_heif_opener() -> bool:
+    """延遲註冊 pillow-heif HEIF opener（幂等）。回傳是否可用。
+
+    image_sanitize 為獨立純函式模組，不保證 portfolio_storage 已 import 並註冊
+    opener；自行 lazy register，確保 file_upload 入口等非 portfolio 路徑也能解 HEIC。
+    """
+    global _HEIF_OPENER_REGISTERED
+    if _HEIF_OPENER_REGISTERED:
+        return True
+    try:
+        import pillow_heif  # type: ignore
+
+        pillow_heif.register_heif_opener()
+        _HEIF_OPENER_REGISTERED = True
+        return True
+    except Exception:  # pragma: no cover — 部署環境無 libheif
+        return False
 
 
 def strip_image_metadata(content: bytes, ext: str) -> bytes:
@@ -55,6 +80,13 @@ def strip_image_metadata(content: bytes, ext: str) -> bytes:
     if ext_lower not in IMAGE_EXTENSIONS_TO_SANITIZE:
         return content
 
+    # HEIC/HEIF 需 libheif 解碼；無則保守拒絕（不 raw 通過，避免 EXIF 洩漏）。
+    if ext_lower in (".heic", ".heif") and not _ensure_heif_opener():
+        raise HTTPException(
+            status_code=400,
+            detail="伺服器未支援 HEIC/HEIF（缺 libheif），請改用 JPG/PNG 上傳",
+        )
+
     try:
         image = Image.open(io.BytesIO(content))
         image.load()
@@ -71,6 +103,11 @@ def strip_image_metadata(content: bytes, ext: str) -> bytes:
 
     # 把 Orientation tag 套到像素 → 丟掉 EXIF（含 GPS / Make / Model / Software / DateTime）
     image = ImageOps.exif_transpose(image)
+
+    # 清除殘留在 image.info 的 metadata：部分 encoder（特別是 pillow_heif 的 HEIF）會
+    # 從 image.info 自動帶回 exif，導致重 encode 仍保留 GPS。顯式清空確保丟棄。
+    for _meta_key in ("exif", "xmp", "icc_profile"):
+        image.info.pop(_meta_key, None)
 
     # 重 encode 為 BytesIO，不寫 EXIF/XMP/IPTC/ICC profile
     out = io.BytesIO()
@@ -94,6 +131,14 @@ def strip_image_metadata(content: bytes, ext: str) -> bytes:
     elif ext_lower == ".webp":
         fmt = "WebP"
         save_kwargs = {"quality": 85}
+    elif ext_lower in (".heic", ".heif"):
+        # 重 encode 為 HEIF（保持格式與副檔名一致），丟棄 EXIF/GPS。
+        fmt = "HEIF"
+        save_kwargs = {"quality": 95}
+        if image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+        elif image.mode not in ("RGB", "L"):
+            image = image.convert("RGB")
     else:
         # 不會到這（IMAGE_EXTENSIONS_TO_SANITIZE 已 guard）
         return content
