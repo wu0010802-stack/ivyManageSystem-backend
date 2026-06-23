@@ -510,7 +510,10 @@ def _seed_salary_record(s):
         pension_employer=1800,
         net_salary=37000,
         total_deduction=5000,
-        is_finalized=False,
+        # 財報明細只認封存且非待重算的薪資（_finalized_salary_conditions）；F-031 遮罩
+        # 測試需 detail/export 實際回傳此列，故 seed 為已封存、非 stale。
+        is_finalized=True,
+        needs_recalc=False,
     )
     s.add(rec)
     s.flush()

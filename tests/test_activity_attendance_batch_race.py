@@ -60,7 +60,7 @@ from models.activity import (
     ActivitySession,
     RegistrationCourse,
 )
-from models.database import get_session  # noqa: F401
+from models.database import get_session, Employee  # noqa: F401
 from api.activity import router as activity_router
 from api.portal.activity import router as portal_router
 from api.auth import _account_failures, _ip_attempts
@@ -115,7 +115,20 @@ def _setup_scene(sf):
     """建立課程、報名、場次，回傳 (course_id, session_id, reg_id)。"""
     sy, sem = resolve_current_academic_term()
     with sf() as s:
-        _create_admin(s, permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"])
+        admin = _create_admin(s, permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"])
+        # Portal 端點 _get_employee 要求登入者有關聯 employee
+        # （current_user["employee_id"]）；建 Employee 並 link，否則教師端
+        # portal_batch_update_attendance 會 403「此帳號無關聯員工資料」。
+        emp = Employee(
+            employee_id="PT-ATT-1",
+            name="點名老師",
+            base_salary=32000,
+            is_active=True,
+        )
+        s.add(emp)
+        s.flush()
+        admin.employee_id = emp.id
+        s.flush()
         reg = _setup_reg(s, student_name="小明", course_name="圍棋")
         course_id = (
             s.query(ActivityCourse).filter(ActivityCourse.name == "圍棋").first().id

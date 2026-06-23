@@ -378,28 +378,42 @@ class TestF030_PublicRegisterEnumeration:
     def test_unauthenticated_probe_with_invalid_identity_returns_generic_message(
         self, f030_client
     ):
-        """探測 (real_name, real_birthday, fake_phone)：應 silent-success（201 + 中性訊息），
-        且 DB 不應多寫一筆 ActivityRegistration（已有 1 筆 baseline）。
+        """探測「真實存在學生」(real_name, real_birthday) 但用不符電話 → 回應與「全新
+        虛構身分 + 同電話」報名完全無法區分（同 status、同中性訊息），攻擊者無法藉回應
+        差異判斷該 (name, birthday) 是否已在系統內。
+
+        Finding 2（2026-06-22）後 dedup 鍵含 parent_phone（支援手足共用電話各自報名），
+        電話不符一律當「獨立新報名」寫入；F-030 列舉防護改由「所有 unmatched 情況行為
+        統一」保證，取代舊的 silent-success（id=0、不寫 DB）。真重複（同學生 + 相符電話）
+        仍由上方 `existing` 檢查攔下（matched→400、unmatched→silent-success），見
+        test_verified_parent_with_existing_registration_400。
         """
         client, sf = f030_client
         with sf() as s:
-            _seed_f030(s, with_existing_reg=True)
-        # 攻擊者用 real_name + real_birthday + fake_phone 探測
-        res = client.post(
+            _seed_f030(
+                s, with_existing_reg=True
+            )  # baseline：王小明 + 0912345678 已有報名
+
+        # ① 探測「真實存在的學生」(王小明/2020-05-10) 但用不符的電話
+        res_probe = client.post(
             "/api/activity/public/register",
             json=_f030_register_payload(phone="0999999999"),
         )
-        assert res.status_code == 201, res.text
-        body = res.json()
-        # 中性訊息 + id=0（silent-success 標記）
-        assert body["id"] == 0
-        assert "已送出" in body["message"]
+        # ② 對照：完全虛構的學生 + 同一不符電話
+        res_fresh = client.post(
+            "/api/activity/public/register",
+            json=_f030_register_payload(
+                name="不存在的小孩", birthday="2018-03-03", phone="0999999999"
+            ),
+        )
+
+        # 列舉防護：兩者回應無法區分（同 status + 同中性訊息形狀），無存在性 oracle
+        assert res_probe.status_code == 201, res_probe.text
+        assert res_fresh.status_code == 201, res_fresh.text
+        assert "已送出" in res_probe.json()["message"]
+        assert "已送出" in res_fresh.json()["message"]
         # 不應透露「此學生本學期已有有效報名」這類 4xx 訊息
-        # （探測者拿到的回應與正常新報名完全一樣）
-        assert "已有" not in body["message"]
-        # DB 仍只有 baseline 那 1 筆（攻擊者的探測不應進 DB）
-        with sf() as s:
-            assert s.query(ActivityRegistration).count() == 1
+        assert "已有" not in res_probe.json()["message"]
 
     def test_same_phone_different_identity_indistinguishable_from_fresh(
         self, f030_client
