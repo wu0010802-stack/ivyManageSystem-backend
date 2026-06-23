@@ -26,9 +26,10 @@ from models.activity import (
     RegistrationCourse,
     RegistrationSupply,
 )
-from models.database import Guardian, Student
+from models.database import Guardian, Student, get_session
 from services.activity_service import activity_service
 from schemas._common import OkStatusOut
+from schemas.activity_public import PublicRegistrationTimeOut
 from services.business_errors.parent import (
     ParentNotAuthorized,
     StudentNotFound,
@@ -152,6 +153,20 @@ class ParentUpcomingSessionOut(BaseModel):
 class ParentUpcomingSessionsOut(BaseModel):
     items: list[ParentUpcomingSessionOut]
     total: int
+
+
+class ParentActivityBootstrapOut(BaseModel):
+    """GET /parent/activity/bootstrap：家長端首屏一次聚合。
+
+    把 courses + my-registrations + upcoming-sessions + registration-time 四支
+    GET 併成一支，削報名尖峰對單 worker 後端的請求放大（對齊公開端
+    /public/bootstrap）。各區塊 shape 與對應單支端點完全一致。
+    """
+
+    registration_time: PublicRegistrationTimeOut
+    courses: ParentCourseListOut
+    registrations: MyRegistrationsOut
+    upcoming_sessions: ParentUpcomingSessionsOut
 
 
 class RegisterPayload(BaseModel):
@@ -364,6 +379,41 @@ def upcoming_sessions(
         for sess, course, reg in rows
     ]
     return {"items": items, "total": len(items)}
+
+
+@router.get("/bootstrap", response_model=ParentActivityBootstrapOut)
+def activity_bootstrap(
+    days: int = Query(30, ge=1, le=90),
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
+    """家長端首屏聚合：courses + my-registrations + upcoming-sessions +
+    registration-time 一次回，把 4 支 GET 併成 1 支（對齊公開端 /public/bootstrap，
+    削報名尖峰對單 worker 的請求放大）。
+
+    各區塊直接重用既有 handler 函式，口徑與單支端點完全一致；courses 走 parent
+    RLS session（per-parent enrolled count），故無法重用公開端不帶 per-parent count
+    的 builder。registration-time 為全域公開設定（/public/registration-time 無認證
+    即暴露），用普通 session 取，避免依賴 parent RLS 角色對 settings 表的存取權。
+    """
+    from api.activity.public import _build_registration_time_payload
+
+    courses = list_courses(
+        school_year=None, semester=None, current_user=current_user, session=session
+    )
+    registrations = my_registrations(current_user=current_user, session=session)
+    upcoming = upcoming_sessions(days=days, current_user=current_user, session=session)
+    norm_session = get_session()
+    try:
+        registration_time = _build_registration_time_payload(norm_session)
+    finally:
+        norm_session.close()
+    return {
+        "registration_time": registration_time,
+        "courses": courses,
+        "registrations": registrations,
+        "upcoming_sessions": upcoming,
+    }
 
 
 @router.post("/register", status_code=201, response_model=RegisterOut)

@@ -1056,3 +1056,64 @@ class TestCapacityAndCountFixes:
         course = next(i for i in resp.json()["items"] if i["name"] == "容量一")
         assert course["enrolled_count"] == 0, "被拒絕報名不應計入佔位"
         assert course["is_full"] is False
+
+
+class TestActivityBootstrap:
+    """GET /parent/activity/bootstrap 聚合：4 區塊須與對應單支端點輸出一致。"""
+
+    def test_bootstrap_aggregates_match_single_endpoints(self, activity_client):
+        from utils.academic import resolve_current_academic_term
+
+        cur_sy, cur_sem = resolve_current_academic_term()
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            course = _create_course(
+                session, name="美術", school_year=cur_sy, semester=cur_sem
+            )
+            reg = ActivityRegistration(
+                student_name=student.name,
+                is_active=True,
+                school_year=cur_sy,
+                semester=cur_sem,
+                student_id=student.id,
+                parent_phone="0911",
+                pending_review=False,
+                match_status="manual",
+            )
+            session.add(reg)
+            session.flush()
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course.id,
+                    status="enrolled",
+                    price_snapshot=course.price,
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        cookies = {"access_token": token}
+        boot = client.get("/api/parent/activity/bootstrap", cookies=cookies)
+        assert boot.status_code == 200, boot.text
+        data = boot.json()
+        assert set(data) == {
+            "registration_time",
+            "courses",
+            "registrations",
+            "upcoming_sessions",
+        }
+
+        # 各區塊與對應單支端點完全一致（bootstrap 直接重用同 handler 邏輯）
+        courses = client.get("/api/parent/activity/courses", cookies=cookies)
+        regs = client.get("/api/parent/activity/my-registrations", cookies=cookies)
+        upcoming = client.get("/api/parent/activity/upcoming-sessions", cookies=cookies)
+        assert data["courses"] == courses.json()
+        assert data["registrations"] == regs.json()
+        assert data["upcoming_sessions"] == upcoming.json()
+
+        # 實際有資料 + registration_time 為公開設定 payload dict
+        assert data["courses"]["total"] >= 1
+        assert data["registrations"]["total"] == 1
+        assert isinstance(data["registration_time"], dict)
