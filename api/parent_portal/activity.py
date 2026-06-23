@@ -9,7 +9,7 @@ Batch 7 範圍（plan 確認）：
 - 報名繳費歷史（read-only；MVP 不含線上金流，員工 operator 欄位不揭露）
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +21,7 @@ from models.activity import (
     ActivityCourse,
     ActivityPaymentRecord,
     ActivityRegistration,
+    ActivitySession,
     ActivitySupply,
     RegistrationCourse,
     RegistrationSupply,
@@ -133,6 +134,22 @@ class RegisterOut(RegistrationSummaryOut):
     # #2：明文 query token 僅報名 response 回傳一次（DB 只存 hash），供前端組
     # 「管理我的報名」公開連結。
     query_token: str
+
+
+class ParentUpcomingSessionOut(BaseModel):
+    student_id: Optional[int] = None
+    student_name: Optional[str] = None
+    course_id: int
+    course_name: str
+    session_date: str  # ISO date "YYYY-MM-DD"
+    meeting_weekday: Optional[int] = None
+    meeting_start_time: Optional[str] = None  # "HH:MM"
+    meeting_end_time: Optional[str] = None  # "HH:MM"
+
+
+class ParentUpcomingSessionsOut(BaseModel):
+    items: list[ParentUpcomingSessionOut]
+    total: int
 
 
 class RegisterPayload(BaseModel):
@@ -274,6 +291,59 @@ def my_registrations(
         "items": [_registration_summary(session, r) for r in rows],
         "total": len(rows),
     }
+
+
+@router.get("/upcoming-sessions", response_model=ParentUpcomingSessionsOut)
+def upcoming_sessions(
+    days: int = Query(30, ge=1, le=90),
+    current_user: dict = Depends(require_parent_role()),
+    session: Session = Depends(get_parent_db),
+):
+    """家長子女『已佔位』（enrolled / promoted_pending）課程未來 days 天內的場次。
+
+    finding #2：原 hero upcomingCount 固定 0（course response 無起訖日）。正解是查
+    ActivitySession（逐場 session_date），非補 course.start_date（model 無此欄）。
+    前端據此算 upcomingCount（7 天內）與各課『下次上課』。候補課程未佔位故不計；
+    過去場次（session_date < 今日台灣時間）排除。場次無時間欄，時間取自課程。
+    """
+    user_id = current_user["user_id"]
+    _, student_ids = _get_parent_student_ids(session, user_id)
+    if not student_ids:
+        return {"items": [], "total": 0}
+    today = now_taipei_naive().date()
+    end = today + timedelta(days=days)
+    rows = (
+        session.query(ActivitySession, ActivityCourse, ActivityRegistration)
+        .join(ActivityCourse, ActivityCourse.id == ActivitySession.course_id)
+        .join(RegistrationCourse, RegistrationCourse.course_id == ActivityCourse.id)
+        .join(
+            ActivityRegistration,
+            ActivityRegistration.id == RegistrationCourse.registration_id,
+        )
+        .filter(
+            ActivityRegistration.student_id.in_(student_ids),
+            ActivityRegistration.is_active == True,
+            RegistrationCourse.status.in_(("enrolled", "promoted_pending")),
+            ActivitySession.session_date >= today,
+            ActivitySession.session_date <= end,
+        )
+        .order_by(ActivitySession.session_date.asc(), ActivityCourse.name.asc())
+        .all()
+    )
+    items = [
+        {
+            "student_id": reg.student_id,
+            "student_name": reg.student_name,
+            "course_id": course.id,
+            "course_name": course.name,
+            "session_date": sess.session_date.isoformat(),
+            "meeting_weekday": course.meeting_weekday,
+            "meeting_start_time": _fmt_time(course.meeting_start_time),
+            "meeting_end_time": _fmt_time(course.meeting_end_time),
+        }
+        for sess, course, reg in rows
+    ]
+    return {"items": items, "total": len(items)}
 
 
 @router.post("/register", status_code=201, response_model=RegisterOut)
