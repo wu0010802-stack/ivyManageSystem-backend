@@ -109,9 +109,12 @@ def accessible_classroom_ids(
     classrooms = (
         session.query(Classroom.id)
         .filter(
+            # qa-loop #12：過濾已停用班級，與 portal _get_teacher_classroom_ids 對齊，
+            # 避免持 :own_class 的教師經 admin 側 scoped 端點看到停用班級學生。
+            Classroom.is_active == True,  # noqa: E712
             (Classroom.head_teacher_id == emp_id)
             | (Classroom.assistant_teacher_id == emp_id)
-            | (Classroom.art_teacher_id == emp_id)
+            | (Classroom.art_teacher_id == emp_id),
         )
         .all()
     )
