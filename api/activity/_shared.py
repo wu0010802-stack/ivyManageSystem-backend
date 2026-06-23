@@ -788,12 +788,16 @@ def _build_registration_filter_query(
         )
         total_sq = course_total_sq + supply_total_sq
         if payment_status == "paid":
-            # 已繳清：應繳 > 0 且已繳 == 應繳。排除超繳（paid > total）——超繳走
-            # overpaid 篩選，避免同一列同時落入 paid 與 overpaid，並與
-            # _derive_payment_status 的 paid（僅 paid==total）對齊。
+            # 已繳清：應繳 > 0 且已繳 == 應繳。改即時衍生（total_sq）取代持久化
+            # is_paid：原本 paid 走快取、其餘四態走即時 → 同一篩選參數兩種真相來源。
+            # is_paid 為純衍生快取（所有寫入點皆 _compute_is_paid，無 decoupled
+            # override），但 total 變動未回寫 is_paid（如候補轉正抬高 total）即漂移；
+            # 改即時後與 _derive_payment_status / 其餘四態完全對齊，不再讓已欠費的列
+            # 誤列入「已繳清」、也不漏掉 is_paid 快取為 False 的真結清列。超繳走
+            # overpaid，故用 == 而非 >=（同一列不會同時落 paid 與 overpaid）。
             q = q.filter(
-                ActivityRegistration.is_paid.is_(True),
-                ActivityRegistration.paid_amount <= total_sq,
+                total_sq > 0,
+                ActivityRegistration.paid_amount == total_sq,
             )
         elif payment_status == "unpaid":
             # 真正欠款：應繳 > 0 但一毛未繳。total=0 的免繳列改走 no_fee，
