@@ -715,7 +715,10 @@ def _deductions_from_settlement(
         """
         override = calc_meta.get(meta_key)
         if override is not None:
-            return Decimal(str(override))
+            # qa-loop #9：扣項一律 ≤ 0；override 誤填正值（'1000' 而非 '-1000'）會由扣項
+            # 翻成加項 → compute_payable_amount(subtotal+deduction_total) 變大多發。夾為
+            # ≤ 0 防呆（縱深防禦：目前無 endpoint 設此 key，未來開放時防誤填）。
+            return min(Decimal(str(override)), Decimal("0"))
         return auto_value
 
     # 讀回既有（B5 不碰）：leave_late_prev / disciplinary
