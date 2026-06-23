@@ -79,10 +79,15 @@ def make_sqlite_parent_db_override(
     """
 
     def _override() -> Generator[Session, None, None]:
+        from models.parent_db import run_parent_post_commit_callbacks
+
         session = session_factory()
         try:
             yield session
             session.commit()
+            # Mirror build_parent_session_for_user: deferred side effects fire
+            # only after a successful commit (post-commit cache invalidation).
+            run_parent_post_commit_callbacks(session)
         except Exception:
             session.rollback()
             raise

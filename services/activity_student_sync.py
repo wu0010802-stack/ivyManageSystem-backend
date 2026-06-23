@@ -138,6 +138,47 @@ def _match_student_with_parent_phone(
     return (None, None)
 
 
+def find_active_dup_for_student(
+    session,
+    *,
+    student_id: Optional[int],
+    school_year,
+    semester,
+    exclude_reg_id: Optional[int] = None,
+):
+    """回傳同一在籍學生（student_id）同學期已存在的「他筆」active 報名（或 None）。
+
+    不變量：同 (student_id NOT NULL, school_year, semester) 至多一筆 is_active 報名。
+    供各寫入路徑在解析出 non-null student_id、即將綁定前做 check-then-act 守衛。
+
+    為什麼需要（且 DB unique index 擋不住）：
+    `uq_activity_regs_student_term_active` 的鍵是
+    (student_name, birthday, school_year, semester, parent_phone) —— 含 parent_phone、
+    不含 student_id。同一在籍學生有兩支官方電話（Student.parent_phone /
+    Student.emergency_contact_phone）時，_match_student_with_parent_phone 任一支都會
+    解析到同一 student_id，但 parent_phone 不同 → 不撞 unique index、也躲過以 phone
+    為鍵的 existing 去重 → 同 student_id 同學期長出兩筆 active 報名（容量重複佔用、
+    在籍人頭灌水、POS 對帳分裂）。
+
+    呼叫端須先以 ``acquire_activity_registration_lock(name, birthday, term)`` 取得
+    advisory lock 序列化並發（兩支電話的同一學生 name+birthday 相同 → 同一把鎖），
+    再呼叫本函式 check；命中時自行決定 400 / silent-success。
+    student_id 為 None（校外生 / 未匹配）不適用本守衛，回 None。
+    exclude_reg_id：更新既有報名時排除自身。
+    """
+    if student_id is None:
+        return None
+    q = session.query(ActivityRegistration).filter(
+        ActivityRegistration.student_id == student_id,
+        ActivityRegistration.school_year == school_year,
+        ActivityRegistration.semester == semester,
+        ActivityRegistration.is_active.is_(True),
+    )
+    if exclude_reg_id is not None:
+        q = q.filter(ActivityRegistration.id != exclude_reg_id)
+    return q.first()
+
+
 def sync_registrations_on_student_transfer(
     session, student_id: int, new_classroom_id: Optional[int]
 ) -> int:

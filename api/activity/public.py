@@ -94,6 +94,7 @@ from ._shared import (
     _next_session_dates,
     _compute_is_paid,
     _match_student_with_parent_phone,
+    find_active_dup_for_student,
     _normalize_phone,
     _validate_tw_mobile,
     _public_etag_response,
@@ -105,6 +106,7 @@ from ._shared import (
     TAIPEI_TZ,
 )
 from utils.academic import resolve_academic_term_filters
+from utils.advisory_lock import acquire_activity_registration_lock
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -688,6 +690,36 @@ def public_register(
         )
         is_matched_for_dup_check = bool(matched_student_id and matched_classroom_id)
 
+        # P1（2026-06-23 code review）：解析到 student_id 後，以 student_id+學期 守唯一性。
+        # DB unique index 與下方 existing 去重都以 parent_phone 為鍵；同一在籍學生的兩支
+        # 官方電話（parent_phone / emergency_contact_phone）會解析到同一 student_id 但
+        # phone 不同 → 躲過兩者 → 同 student_id 同學期長出兩筆 active 報名（容量重複佔用、
+        # 在籍灌水、POS 對帳分裂）。取報名 advisory lock（name+birthday+term，兩支電話
+        # 的同一學生 name+birthday 相同 → 同一把鎖、與 register/match 同鎖序：advisory
+        # 先、課程列鎖後，不引入 ABBA），再查是否已有他筆 active 報名。回應分流沿用
+        # F-030：已驗身分家長（is_matched_for_dup_check）→ 明確 400；未匹配身分者
+        # student_id 為 None 不進此守衛、不洩漏存在性。
+        if matched_student_id is not None:
+            acquire_activity_registration_lock(
+                session,
+                student_name=body.name,
+                birthday=body.birthday,
+                school_year=sy,
+                semester=sem,
+            )
+            if find_active_dup_for_student(
+                session,
+                student_id=matched_student_id,
+                school_year=sy,
+                semester=sem,
+            ):
+                if is_matched_for_dup_check:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="此學生本學期已有有效報名，請使用修改功能",
+                    )
+                return _silent_success_response
+
         # 重複報名防護（同學期內同學生不可重複）
         # P2-5：dedup 鍵須含 parent_phone，與 DB partial unique index
         # uq_activity_regs_student_term_active 的 (name,birthday,sy,sem,parent_phone)
@@ -959,6 +991,20 @@ def public_update_registration(
                     detail=("資料已被校方更新，請重新整理頁面確認最新狀態後再儲存。"),
                 )
 
+        # P1（2026-06-23 code review）：pending 報名在本次更新可能因改電話 re-match
+        # 綁定 student_id（見下方 pending→matched 轉態）。在鎖課程列前先取報名 advisory
+        # lock（name+birthday+term，與 register/match 同一把鎖序：advisory 先、課程列鎖
+        # 後，不引入 ABBA），讓稍後 re-match 後的 student_id 唯一性檢查能序列化並發。
+        # 已 matched 的報名 student_id 不會在本端點變動，無此風險、不取鎖。
+        if reg.pending_review:
+            acquire_activity_registration_lock(
+                session,
+                student_name=reg.student_name,
+                birthday=reg.birthday,
+                school_year=reg.school_year,
+                semester=reg.semester,
+            )
+
         # 為 audit / RegistrationChange 軌跡保留舊值（在任何寫入前快照）。
         # 課程/用品 diff 只比 name（不含 status）— 避免「候補升正式 / 重存」這類
         # status 轉態被誤讀成「家長退課再加課」。狀態變動由 RegistrationChange
@@ -1002,15 +1048,16 @@ def public_update_registration(
         courses_by_name = (
             {
                 c.name: c
-                for c in session.query(ActivityCourse)
-                .filter(
+                for c in session.query(ActivityCourse).filter(
                     ActivityCourse.name.in_(course_names),
                     ActivityCourse.is_active.is_(True),
                     ActivityCourse.school_year == reg.school_year,
                     ActivityCourse.semester == reg.semester,
                 )
-                .with_for_update()
-                .all()
+                # 以 id 排序固定 FOR UPDATE 列鎖取得順序，消除多課程並發改報名的 ABBA
+                # 死鎖窗口（name.in_ 不保證鎖序）。與 public_register / admin create /
+                # 家長 register 對齊。order_by 須在 with_for_update 前。
+                .order_by(ActivityCourse.id).with_for_update().all()
             }
             if course_names
             else {}
@@ -1140,6 +1187,20 @@ def public_update_registration(
                     .first()
                 )
                 if real:
+                    # P1：綁定 student_id 前查同學生同學期是否已有他筆 active 報名
+                    # （advisory lock 已於本端點開頭對 pending 報名取得）。命中則 400，
+                    # 不讓 pending 經改電話 re-match 繞過唯一性長出第二筆。
+                    if find_active_dup_for_student(
+                        session,
+                        student_id=new_sid,
+                        school_year=reg.school_year,
+                        semester=reg.semester,
+                        exclude_reg_id=reg.id,
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="此學生本學期已有有效報名，請改用既有報名編輯",
+                        )
                     reg.student_id = new_sid
                     reg.classroom_id = new_cid
                     reg.class_name = real.name

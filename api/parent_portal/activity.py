@@ -40,6 +40,7 @@ from services.activity_query_token import _generate_query_token, _hash_query_tok
 from utils.taipei_time import now_taipei_naive
 
 from ._dependencies import get_parent_db
+from models.parent_db import register_parent_post_commit
 from ._shared import _assert_student_owned, _get_parent_student_ids
 from api.activity._shared import (
     _calc_total_amount,
@@ -536,7 +537,13 @@ def register_courses(
     session.flush()
     session.refresh(reg)
     # F4：家長端報名改變 enrolled 集合 → 清 dashboard 快取（原本家長端完全不清）。
-    activity_service.invalidate_dashboard_caches(session)
+    # P2（2026-06-23 code review）：延後到 parent 交易 commit 後才清。家長 handler 不可
+    # commit（RLS），commit 由 get_parent_db dependency 負責；若在此 flush 後即清快取
+    # （report_cache_service 用獨立 session 立即 commit），並發 dashboard 讀取會在本筆
+    # 報名尚未 commit 的窗口內以 pre-commit stale 資料重建快取並續存 TTL(1800s)。
+    register_parent_post_commit(
+        session, lambda: activity_service.invalidate_dashboard_caches(None)
+    )
     # #2：明文 query token 僅此 response 回傳一次（DB 只存 hash），供前端組「管理我的
     # 報名」公開連結；後續查詢/列表不再回傳（無法由 hash 還原）。
     return {**_registration_summary(session, reg), "query_token": plaintext_token}
@@ -610,7 +617,11 @@ def confirm_promotion(
     )
     session.flush()
     # F4：轉正改變 enrolled 集合 → 清 dashboard 快取。
-    activity_service.invalidate_dashboard_caches(session)
+    # P2（2026-06-23 code review）：延後到 parent 交易 commit 後才清（同 register_courses，
+    # 避免在 commit 前清快取造成並發讀者以 stale 資料重建並續存 TTL）。
+    register_parent_post_commit(
+        session, lambda: activity_service.invalidate_dashboard_caches(None)
+    )
     return {"status": "ok"}
 
 

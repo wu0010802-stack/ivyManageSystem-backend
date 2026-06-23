@@ -288,6 +288,7 @@ from schemas.activity_admin import (  # noqa: F401, E402
 from services.activity_student_sync import (  # noqa: F401, E402
     _match_student_id,
     _match_student_with_parent_phone,
+    find_active_dup_for_student,
     sync_registrations_on_student_transfer,
     sync_registrations_on_student_deactivate,
 )

@@ -242,6 +242,39 @@ def _emit_parent_session_metrics(user_id: int, session: Session) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Post-commit callback queue
+# ---------------------------------------------------------------------------
+# Parent handlers MUST NOT call session.commit() (commit drops SET LOCAL → RLS
+# isolation breaks). The commit happens in build_parent_session_for_user's
+# `with session.begin():` block, AFTER the handler returns. Side effects that
+# must observe committed data — e.g. report-cache invalidation — therefore can't
+# run inline in the handler: doing so deletes/recomputes the cache while the
+# parent write is still uncommitted, so a concurrent reader rebuilds the cache
+# from pre-commit (stale) data and re-persists it for the full TTL. Queue such
+# side effects here; they run only if the transaction commits (skipped on
+# rollback). Mirrors the public/admin paths which invalidate AFTER session.commit().
+
+
+def register_parent_post_commit(session: Session, callback) -> None:
+    """Queue a zero-arg callable to run after the parent RLS tx commits."""
+    session.info.setdefault("_post_commit_callbacks", []).append(callback)
+
+
+def run_parent_post_commit_callbacks(session: Session) -> None:
+    """Run + clear queued post-commit callbacks. Best-effort: a failing callback
+    is logged and never propagated (a cache-invalidation glitch must not turn a
+    successful, already-committed parent mutation into a 500)."""
+    callbacks = session.info.get("_post_commit_callbacks") or []
+    # Clear first so a re-entrant/duplicate run can't double-fire.
+    session.info["_post_commit_callbacks"] = []
+    for cb in callbacks:
+        try:
+            cb()
+        except Exception:
+            logger.exception("parent post-commit callback failed (non-fatal)")
+
+
+# ---------------------------------------------------------------------------
 # Generator-style session factory: yields a Session bound to a tx that has
 # `SET LOCAL app.current_user_id = :uid` applied. The yield MUST stay inside
 # the `with session.begin():` block — moving it outside silently breaks RLS
@@ -281,6 +314,10 @@ def build_parent_session_for_user(
                 {"uid": str(user_id)},
             )
             yield session
+        # Tx committed without error → fire deferred side effects (e.g. cache
+        # invalidation) now that the data is durable. Skipped if the `with`
+        # block raised (rolled back), since control jumps to finally.
+        run_parent_post_commit_callbacks(session)
         _emit_parent_session_metrics(user_id, session)
     finally:
         session.close()

@@ -536,7 +536,7 @@ def rematch_registration(
     即使比對仍失敗，編輯的欄位也會保留，避免校方白打一次。
     """
     from models.database import Classroom
-    from ._shared import _match_student_with_parent_phone
+    from ._shared import _match_student_with_parent_phone, find_active_dup_for_student
 
     session = get_session()
     try:
@@ -618,6 +618,33 @@ def rematch_registration(
                 .first()
             )
             if classroom:
+                # P1（2026-06-23 code review）：rematch 解析到 student_id 後守同學生
+                # 同學期唯一性。未改 name/birthday 時上方 advisory（C6）不取、且既有
+                # dup 檢查以 name+birthday 為鍵僅在 field_changed 時跑 → 直接 rematch
+                # （無欄位變更）會讓 pending 綁到已有 active 報名的同學生長出第二筆。
+                # 此處補取同一把報名 advisory（idempotent；reg.student_name 即配對學生
+                # 姓名）+ student_id 檢查。
+                acquire_activity_registration_lock(
+                    session,
+                    student_name=reg.student_name,
+                    birthday=reg.birthday,
+                    school_year=reg.school_year,
+                    semester=reg.semester,
+                )
+                if find_active_dup_for_student(
+                    session,
+                    student_id=sid,
+                    school_year=reg.school_year,
+                    semester=reg.semester,
+                    exclude_reg_id=reg.id,
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "該學生本學期已有一筆有效報名，無法重複匹配；"
+                            "請改用既有報名編輯"
+                        ),
+                    )
                 reg.student_id = sid
                 reg.classroom_id = cid
                 reg.class_name = classroom.name
