@@ -560,6 +560,10 @@ async def upload_attachment(
     session = get_session()
     try:
         row = _load_payment(session, payment_id)
+        # P3-3(b)（2026-06-23 資安掃描）：已簽收（終態）付款不可增刪附件，對齊
+        # update/delete/sign 的 status 守衛，防簽收後抽換/刪除發票佐證（不可否認性）。
+        if row.status != "pending":
+            raise HTTPException(status_code=409, detail="已簽收的付款不可變更附件")
         existing = list(row.attachments or [])
         if len(existing) >= MAX_ATTACHMENTS_PER_PAYMENT:
             raise HTTPException(
@@ -620,6 +624,9 @@ def delete_attachment_endpoint(
     session = get_session()
     try:
         row = _load_payment(session, payment_id)
+        # P3-3(b)：已簽收（終態）付款不可增刪附件（同 upload 守衛）。
+        if row.status != "pending":
+            raise HTTPException(status_code=409, detail="已簽收的付款不可變更附件")
         attachments = list(row.attachments or [])
         kept = [a for a in attachments if a.get("key") != key]
         if len(kept) == len(attachments):

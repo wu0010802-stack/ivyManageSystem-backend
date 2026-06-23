@@ -304,6 +304,77 @@ class TestVendorPaymentDeleteGuard:
         assert body.json()["status"] == "signed"
 
 
+class TestVendorPaymentAttachmentSignedGuard:
+    """P3-3(b)（2026-06-23 資安掃描）：已簽收付款的附件不可增刪（對齊 update/delete
+    簽收守衛，防簽收後抽換/刪除發票佐證、保護不可否認性）。"""
+
+    def _create_pending(self, client, session_factory, username):
+        with session_factory() as session:
+            _make_user(
+                session, username, ["VENDOR_PAYMENT_READ", "VENDOR_PAYMENT_WRITE"]
+            )
+        _login(client, username)
+        res = client.post("/api/vendor-payments", json=_payment_payload())
+        assert res.status_code == 201, res.text
+        return res.json()["id"]
+
+    def _png(self):
+        return base64.b64decode(_png_data_url().split(",", 1)[1])
+
+    def test_cannot_upload_attachment_after_signed(self, client_with_db):
+        client, sf = client_with_db
+        pid = self._create_pending(client, sf, "vp_att_up")
+        # 簽收
+        res = client.post(
+            f"/api/vendor-payments/{pid}/sign",
+            json={"signature_kind": "drawn", "signature_data": _png_data_url()},
+        )
+        assert res.status_code == 200, res.text
+        # 簽收後上傳附件 → 409
+        res = client.post(
+            f"/api/vendor-payments/{pid}/attachments",
+            files={"file": ("inv.png", self._png(), "image/png")},
+        )
+        assert res.status_code == 409, res.text
+
+    def test_cannot_delete_attachment_after_signed(self, client_with_db):
+        client, sf = client_with_db
+        pid = self._create_pending(client, sf, "vp_att_del")
+        # pending 時先上傳成功
+        res = client.post(
+            f"/api/vendor-payments/{pid}/attachments",
+            files={"file": ("inv.png", self._png(), "image/png")},
+        )
+        assert res.status_code == 201, res.text
+        key = res.json()["key"]
+        # 簽收
+        res = client.post(
+            f"/api/vendor-payments/{pid}/sign",
+            json={"signature_kind": "drawn", "signature_data": _png_data_url()},
+        )
+        assert res.status_code == 200, res.text
+        # 簽收後刪附件 → 409
+        res = client.delete(
+            f"/api/vendor-payments/{pid}/attachments", params={"key": key}
+        )
+        assert res.status_code == 409, res.text
+
+    def test_pending_attachment_still_mutable(self, client_with_db):
+        """sanity：pending 狀態附件仍可增刪（守衛不誤傷正常流程）。"""
+        client, sf = client_with_db
+        pid = self._create_pending(client, sf, "vp_att_pending")
+        res = client.post(
+            f"/api/vendor-payments/{pid}/attachments",
+            files={"file": ("inv.png", self._png(), "image/png")},
+        )
+        assert res.status_code == 201, res.text
+        key = res.json()["key"]
+        res = client.delete(
+            f"/api/vendor-payments/{pid}/attachments", params={"key": key}
+        )
+        assert res.status_code == 200, res.text
+
+
 class TestVendorPaymentValidation:
     def test_amount_must_be_non_negative(self, client_with_db):
         client, session_factory = client_with_db
