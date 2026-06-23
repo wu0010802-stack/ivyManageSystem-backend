@@ -163,6 +163,26 @@ class TestPortalActivityEmployeeGuard:
         res = c.get(f"/api/portal/activity/attendance/sessions/{ids['session']}")
         assert res.status_code == 403, res.text
 
+    def test_no_employee_staff_cannot_list_sessions(self, portal_client):
+        """無員工關聯的非家長帳號列場次清單 → 403（修前 200 洩漏全校場次+出席統計）。
+
+        列表端點原只 Depends(get_current_user)，router 層 require_non_parent_role
+        只擋家長；detail/write 已加 _get_employee，list 漏掉。
+        """
+        c, sf = portal_client
+        _seed(sf)
+        _login(c, "no_emp_staff")
+        res = c.get("/api/portal/activity/attendance/sessions")
+        assert res.status_code == 403, res.text
+
+    def test_employee_teacher_can_list_sessions(self, portal_client):
+        """有員工關聯的教師仍可列場次清單 → 200（不誤殺正常教師）。"""
+        c, sf = portal_client
+        _seed(sf)
+        _login(c, "emp_teacher")
+        res = c.get("/api/portal/activity/attendance/sessions")
+        assert res.status_code == 200, res.text
+
     def test_no_employee_staff_cannot_write_attendance(self, portal_client):
         """無員工關聯的非家長帳號改出席 → 403（出席影響退費比例）。"""
         c, sf = portal_client
