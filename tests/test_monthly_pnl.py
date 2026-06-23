@@ -424,6 +424,55 @@ class TestMonthlyPnLAggregator:
             _row(rows, "personnel_expense", "personnel_subtotal")["monthly"][5] == 53700
         )
 
+    def test_aggregator_personnel_includes_unused_leave_payout(self, pnl_client):
+        """特休未休折現須計入人事支出，與財務總覽 employee_gross 口徑一致（不得低估）。
+
+        qa-loop #3：finance_summary 的 get_salary_expense_by_month 把
+        unused_leave_payout 計入 employee_gross（有回歸測試強制），但月度損益表走
+        get_salary_breakdown_by_month_with_role，原 SELECT/role dict 漏撈此欄 →
+        personnel_subtotal / expense_total / net_cashflow 在有特休折現的月份（典型離職月）
+        比 finance_summary 少算整筆 → 兩報表同期對不上、P&L 低估園方現金流出。
+        """
+        _, sf = pnl_client
+        with sf() as s:
+            emp = Employee(
+                employee_id="E_ULP",
+                name="離職員工",
+                base_salary=30000,
+                employee_type="regular",
+                is_active=False,
+            )
+            s.add(emp)
+            s.flush()
+            s.add(
+                SalaryRecord(
+                    employee_id=emp.id,
+                    salary_year=2026,
+                    salary_month=6,
+                    gross_salary=30000,
+                    unused_leave_payout=8000,  # 特休未休折現（離職月）
+                    net_salary=38000,
+                    total_deduction=0,
+                    is_finalized=True,
+                )
+            )
+            s.commit()
+        with sf() as s:
+            data = build_monthly_pnl(s, 2026)
+
+        rows = data["sections"]
+        # personnel_subtotal 須含 ulp：base(30000) + ulp(8000) = 38000（否則低估）
+        assert (
+            _row(rows, "personnel_expense", "personnel_subtotal")["monthly"][5] == 38000
+        ), "人事小計須含特休未休折現 8000（base 30000 + ulp 8000 = 38000），否則與財務總覽對不上"
+        # 新增明細列：特休未休折現，明細加總才對得上 subtotal
+        assert (
+            _row(rows, "personnel_expense", "personnel_unused_leave_payout")["monthly"][
+                5
+            ]
+            == 8000
+        )
+
     def test_aggregator_vendor_payment(self, pnl_client):
         """variable_vendor 取 VendorPayment.amount 不分 status；subtotal 等同 vendor。"""
         _, sf = pnl_client

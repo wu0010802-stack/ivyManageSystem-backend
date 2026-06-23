@@ -481,6 +481,9 @@ def get_salary_breakdown_by_month_with_role(
             func.sum(SalaryRecord.labor_insurance_employer),
             func.sum(SalaryRecord.health_insurance_employer),
             func.sum(SalaryRecord.pension_employer),
+            # qa-loop #3：特休未休折現須與 finance_summary employee_gross 同口徑計入，
+            # 否則月度損益表在有特休折現的月份（離職月）漏算整筆、與財務總覽對不上。
+            func.sum(SalaryRecord.unused_leave_payout),
         )
         .join(Employee, Employee.id == SalaryRecord.employee_id)
         .filter(SalaryRecord.salary_year == year, *_finalized_salary_conditions())
@@ -498,6 +501,7 @@ def get_salary_breakdown_by_month_with_role(
             "labor_insurance_employer": 0,
             "health_insurance_employer": 0,
             "pension_employer": 0,
+            "unused_leave_payout": 0,
         }
 
     out: dict[int, dict[str, dict[str, int]]] = {}
@@ -512,6 +516,7 @@ def get_salary_breakdown_by_month_with_role(
         li,
         hi,
         pen,
+        ulp,
     ) in rows:
         month_dict = out.setdefault(
             int(m),
@@ -528,6 +533,7 @@ def get_salary_breakdown_by_month_with_role(
         bucket["labor_insurance_employer"] += int(li or 0)
         bucket["health_insurance_employer"] += int(hi or 0)
         bucket["pension_employer"] += int(pen or 0)
+        bucket["unused_leave_payout"] += int(ulp or 0)
     return out
 
 

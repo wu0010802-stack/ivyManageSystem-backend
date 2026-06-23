@@ -171,6 +171,8 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
     labor_ins_monthly = _both_roles_field("labor_insurance_employer")
     health_ins_monthly = _both_roles_field("health_insurance_employer")
     pension_monthly = _both_roles_field("pension_employer")
+    # qa-loop #3：特休未休折現須計入人事，與 finance_summary employee_gross 同口徑。
+    unused_leave_payout_monthly = _both_roles_field("unused_leave_payout")
 
     # base = gross − overtime_pay − supervisor_dividend（gross 已含此二者）
     base_salary_monthly = _diff_lists(
@@ -205,6 +207,7 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
             overtime_bonus_monthly,
             overtime_pay_monthly,
             supervisor_dividend_monthly,
+            unused_leave_payout_monthly,
             labor_ins_monthly,
             health_ins_monthly,
             pension_monthly,
@@ -351,6 +354,12 @@ def build_monthly_pnl(session: Session, year: int) -> dict:
                     "其他獎金（主管紅利）",
                     "amount",
                     supervisor_dividend_monthly,
+                ),
+                _row(
+                    "personnel_unused_leave_payout",
+                    "特休未休折現",
+                    "amount",
+                    unused_leave_payout_monthly,
                 ),
                 _row(
                     "personnel_labor_insurance",
