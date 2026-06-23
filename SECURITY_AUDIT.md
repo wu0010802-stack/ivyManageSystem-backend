@@ -612,3 +612,31 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 2. **prod 醫療欄位 at-rest 是否真加密**：backfill script 為手動非 migration，`decrypt_medical` 對明文 legacy passthrough；確認 prod 已跑過 backfill（否則加密層形同未啟用且不報錯）。
 3. **Zeabur edge XFF 行為 + prod `TRUSTED_PROXY_IPS` / `COOKIE_SAMESITE` 實際值**（判定 RA-HIGH-2 / RA-L8）。
 4. **業務確認**：`supervisor_dividend` 納入二代健保補充保費累計（業主 2026-05-26 決策，與健保法定義有爭議）；`rcrgeoconsent01` 回溯視為同意是否站得住（法務）。
+
+---
+
+# 2026-06-23 全系統資安掃描（18 lane 對抗式 workflow，25 confirmed）
+
+## 總評
+
+「全系統 + 對抗式 workflow」掃描：18 lane finder（14 BE + 3 FE + 1 依賴 CVE）→ 3-lens 對抗式驗證（可利用性 / 是否已修 / 機制誤讀，≥2 票 real）→ 48 原始 → **25 confirmed / 23 refuted**。完整報告：workspace `.scratch/security-audit-2026-06-23.md`。P0=0；唯一未認證可直接利用破口為 P1-1（已修）。
+
+## 修補追蹤（9 commit，各自 local main，未 push）
+
+| Finding | 狀態 | 修補 | commit |
+|---------|------|------|--------|
+| P1-1 公開查詢 `/public/query` + `/query-by-token` 讀取側空對空電話繞過 | ✅ 已修 | 提取 `_phone_matches_nonempty`（reg 側 normalize 非 None 且相符），對齊 mutation 側守衛 | BE 05c0c645 |
+| P1-2 / P2-7 `TRUSTED_PROXY_IPS="*"` 限流塌桶 + 驗證步驟死碼 | ✅ 程式已修（部署待設 env）| `warn_if_trusted_proxies_unset` 啟動告警；runbook/checklist 改 curl 驗 bucket key | BE cc75ed77 |
+| P2-9 dompurify ≤3.4.10 CVE 阻斷 CI | ✅ 已修 | 升 3.4.11，production audit 0 | FE 98162701 |
+| P2-4 HEIC/HEIF 原檔 EXIF/GPS 未清洗 | ✅ 已修 | image_sanitize 納入 heic/heif（重 encode HEIF + 清 image.info）；put_attachment 原檔落盤前 strip（單點覆蓋 10 caller）；本檔 :582 誤述已修 | BE 396f012b |
+| P2-5 / P2-6 home/summary + class-hub + medications/today 醫療 §6 留痕缺 + home 過敏遮罩缺 | ✅ 已修 | 三端點補 `emit_batch_medical_access_log`；home/summary 加 `can_view_student_health` 遮罩 | BE ee7a473f |
+| P2-8 WS 連線後不重驗 token | ✅ 已修 | `run_ws_connection` 加 verify 回調 + 周期重驗（≤60s）；contact_book_ws 接入。close_user_connections / dismissal_ws 為 follow-up | BE b045f2aa |
+| P2-2 / P2-3 / P2-10 Sentry value-level PII 漏遮（exception.value / fail_open tag / 自由文字）| ✅ 已修 | `_redact_pii_value` + `_scrub_mapping`/`_scrub_event` 各跑一層；fail_open key/jti hash。前端 sentry.ts value-level 為 follow-up | BE 0aaa4cbb |
+
+## 暫緩（需 spec + 業主裁定）
+
+- **P2-1 管理角色 scope 逐筆學生端點 IDOR**：看似「逐筆補 `code=`」，實為 `resolve_grant` bare=all 語義 + `is_unrestricted` 被 `assert_all_scope`（純 scope）與 `assert_student_access`（role+scope）共用的語義衝突重構，涉 92 caller、改 code 會反轉 principal 行為（破壞 `test_principal_cannot_issue_cross_class`）。需業主裁定權限語義 + 獨立 spec。
+
+## 剩餘加固（T-3，未做）
+
+廠商付款 SoD（自建自簽、無 `created_by != signer` / 大額二簽）+ 已簽收附件未鎖 status；多個未認證公開 GET 端點無 per-IP 限流；`services/official_calendar.py` 跟隨 `resourceDownloadUrl` 二級 SSRF 無 host 白名單；`api/system_config.py` prefix LIKE 萬用字元未轉義；`python-multipart>=0.0.27` 下限過寬（升 ≥0.0.31 + starlette pin）；家長 PII GC 不撤 ParentRefreshToken（RA-MED-7）；LINE id_token replay cache per-worker；parent api sessionStorage 殘留路徑 id。
