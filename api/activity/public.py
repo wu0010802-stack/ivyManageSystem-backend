@@ -14,7 +14,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
@@ -86,6 +86,7 @@ from ._shared import (
     _compute_is_paid,
     _match_student_with_parent_phone,
     _normalize_phone,
+    _validate_tw_mobile,
     _public_etag_response,
     _resolve_class_field_state,
     _build_public_query_payload,
@@ -1212,7 +1213,14 @@ def _parent_mutation_identity_ok(
 
     回傳 bool；caller 自行 raise 統一錯誤碼（不洩漏是哪一項不符）。
     """
-    phone_ok = _normalize_phone(reg.parent_phone) == _normalize_phone(parent_phone)
+    # 空對空守衛（P1-1，2026-06-23 深度 audit）：後台建立的報名 parent_phone 為 NULL，
+    # _normalize_phone(None) → None；攻擊者送 parent_phone="-" 經 strip 後亦為 None，
+    # 舊式 `None == None → True` 會讓只知姓名+生日者繞過身分驗證對 NULL-phone 報名
+    # 執行 decline/confirm。要求「reg 側正規化後非 None 且兩側相符」才視為通過，
+    # 杜絕空對空相等。
+    norm_reg_phone = _normalize_phone(reg.parent_phone)
+    norm_input_phone = _normalize_phone(parent_phone)
+    phone_ok = norm_reg_phone is not None and norm_reg_phone == norm_input_phone
     if reg.query_token_hash is not None:
         if not query_token:
             return False
@@ -1257,6 +1265,15 @@ class _PromotionActionPayload(BaseModel):
     parent_phone: str = Field(..., min_length=1, max_length=30)
     # 資安 #5：有 token 的報名強制帶有效未過期 query_token；舊報名沿用三欄。
     query_token: str | None = Field(None, max_length=256)
+
+    @field_validator("parent_phone", mode="before")
+    @classmethod
+    def _normalize_parent_phone(cls, v):
+        # P1-1（2026-06-23 audit）：對齊 PublicUpdatePayload / PublicRegistrationPayload，
+        # 強制 09xxxxxxxx 格式並拒絕 "-"/空字串等 normalize 後為空的輸入，於 schema 層
+        # 即閉合 confirm/decline 的身分驗證繞過（與 _parent_mutation_identity_ok 的
+        # 空對空守衛雙保險）。
+        return _validate_tw_mobile(v)
 
 
 @router.post(

@@ -1341,6 +1341,11 @@ class PosCheckoutOut(IvyBaseModel):
     created_at: Optional[str] = None
     items: list[PosCheckoutItemResultOut]
     idempotent_replay: Optional[bool] = None
+    # P2-6（2026-06-23 audit）：重印時若該收據有部分 item 已作廢，total 只計有效金額；
+    # has_voided_items=True 時 original_total 為含作廢的原始開立金額，供前端/PDF 標註
+    # 「部分作廢，原始金額 NT$X」。新建 checkout path 兩者為 False/None。
+    has_voided_items: Optional[bool] = None
+    original_total: Optional[int] = None
 
 
 class PosDailySummaryByMethodItemOut(IvyBaseModel):
@@ -1374,6 +1379,10 @@ class PosDailySummaryOut(IvyBaseModel):
     cash_in_drawer: int
     cash_warning: bool
     cash_warning_threshold: int
+    # P2-5（2026-06-23 audit）：該日是否已日結簽核（ActivityPosDailyClose 存在）。
+    # 已簽核日寫入被擋（live≡frozen），前端可據此顯示「已簽核」、必要時切到
+    # reconciliation 凍結值。
+    is_approved: bool = False
 
 
 class PosRecentTransactionItemOut(IvyBaseModel):

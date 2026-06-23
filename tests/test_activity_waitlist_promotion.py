@@ -269,13 +269,23 @@ class TestConfirmPromotionTerminalStudentGuard:
     """
 
     def _setup_pending_for_student(self, session, svc, student):
+        # 模擬「學生在籍時被遞補為待確認（promoted_pending），之後才轉終態」——
+        # confirm 守衛即攔此情境。自 2026-06-23 P2-2 起 _auto_promote_first_waitlist
+        # 會跳過終態學生（不再升位），故不能再靠 delete→auto_promote 把終態學生升上
+        # promoted_pending；改為直接構造該狀態。
+        from datetime import timedelta
+        from services.activity_service import _now_taipei_naive
+
         course = _add_course(session, capacity=1)
         reg_e = _add_reg(session, "在籍")
         _enroll(session, reg_e.id, course.id)
         reg_w = _add_reg(session, "候補")
         reg_w.student_id = student.id
         rc_w = _enroll(session, reg_w.id, course.id, status="waitlist")
-        svc.delete_registration(session, reg_e.id, "admin")
+        svc.delete_registration(session, reg_e.id, "admin")  # 釋出名額
+        # 直接升為待確認（在籍時遞補的等價狀態）
+        rc_w.status = "promoted_pending"
+        rc_w.confirm_deadline = _now_taipei_naive() + timedelta(hours=24)
         session.flush()
         assert rc_w.status == "promoted_pending"
         return reg_w, course, rc_w

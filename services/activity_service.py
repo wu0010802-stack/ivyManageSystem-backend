@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select, case
+from sqlalchemy import func, select, case, or_
 
 from utils.advisory_lock import acquire_activity_daily_close_lock
 
@@ -821,7 +821,11 @@ class ActivityService:
             raise ValueError("課程不存在")
 
         row = (
-            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            session.query(
+                RegistrationCourse,
+                ActivityRegistration.student_name,
+                ActivityRegistration.student_id,
+            )
             .join(
                 ActivityRegistration,
                 RegistrationCourse.registration_id == ActivityRegistration.id,
@@ -837,7 +841,23 @@ class ActivityService:
         )
         if not row:
             raise ValueError("報名課程項目不存在或非候補/待確認狀態")
-        rc, student_name = row
+        rc, student_name, student_id = row
+
+        # P2-2（2026-06-23 audit）：終態學生守衛。已離校/畢業/轉出（Student.is_active=False）
+        # 子女不可手動直升 enrolled，否則長出「幽靈 enrolled」——佔課程容量卻永不出現在
+        # 點名名冊（session-detail 聚合排除 Student.is_active=False）。對齊
+        # confirm_waitlist_promotion 既有的 STUDENT_TERMINAL 守衛（此路徑無 confirm 步驟、
+        # 直接 enrolled，故更需把關）。student_id 為 NULL（校外/未匹配）時無終態概念，略過。
+        if student_id is not None:
+            from models.classroom import Student
+
+            student_active = (
+                session.query(Student.is_active)
+                .filter(Student.id == student_id)
+                .scalar()
+            )
+            if student_active is False:
+                raise ValueError("學生已離校／畢業／轉出，無法升為正式")
 
         # 升 enrolled 的容量閘：需看「非此列」的佔位數（否則 promoted_pending→enrolled 會自我阻擋）
         occupying_others = (
@@ -846,7 +866,9 @@ class ActivityService:
             .filter(RegistrationCourse.id != rc.id)
             .count()
         )
-        capacity = course.capacity if course.capacity is not None else 30
+        capacity = (
+            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
+        )
         if occupying_others >= capacity:
             raise ValueError("課程容量已滿，無法升為正式")
 
@@ -932,6 +954,18 @@ class ActivityService:
         self, session, registration_id: int, course_id: int, operator: str = "parent"
     ) -> tuple[str, str]:
         """家長放棄升正式。刪除該 RegistrationCourse 並自動遞補下一位。"""
+        # P2-4（2026-06-23 audit）：鎖序統一「course → registration_course」，與
+        # promote_waitlist / _auto_promote_first_waitlist 一致（先鎖 ActivityCourse、
+        # 再鎖 RegistrationCourse）。原本先鎖 RC、後在 _auto_promote 內才鎖 course，
+        # 與 promote 端鎖序相反，同課並發理論上可 ABBA 死鎖；先鎖 course 閉合此窗。
+        course = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id == course_id)
+            .with_for_update()
+            .first()
+        )
+        course_name = course.name if course else f"course_{course_id}"
+
         row = (
             session.query(RegistrationCourse, ActivityRegistration.student_name)
             .join(
@@ -954,11 +988,6 @@ class ActivityService:
             raise ValueError("ALREADY_CONFIRMED")
         if rc.status != "promoted_pending":
             raise ValueError("NOT_PENDING")
-
-        course = (
-            session.query(ActivityCourse).filter(ActivityCourse.id == course_id).first()
-        )
-        course_name = course.name if course else f"course_{course_id}"
 
         session.delete(rc)
         self.log_change(
@@ -1331,10 +1360,20 @@ class ActivityService:
             .filter(RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)))
             .count()
         )
-        capacity = course.capacity if course.capacity is not None else 30
+        capacity = (
+            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
+        )
         if occupying >= capacity:
             return  # 仍滿（有其他 promoted_pending 佔位），不升
 
+        # P2-2（2026-06-23 audit）：跳過 student_id 指向已離校（Student.is_active=False）
+        # 學生的候補——升位後家長無法 confirm（會被 STUDENT_TERMINAL 擋）且短期佔位，
+        # 應直接略過、改升下一位在籍/校外候補。用子查詢排除而非 outerjoin Student，
+        # 避免 PostgreSQL「FOR UPDATE 不可套用於 outer join nullable 側」的限制。
+        # student_id 為 NULL（校外）→ 保留（or_ 第一分支）。
+        from models.classroom import Student
+
+        inactive_student_ids = select(Student.id).where(Student.is_active.is_(False))
         row = (
             session.query(RegistrationCourse, ActivityRegistration.student_name)
             .join(
@@ -1345,6 +1384,10 @@ class ActivityService:
                 RegistrationCourse.course_id == course_id,
                 RegistrationCourse.status == "waitlist",
                 ActivityRegistration.is_active.is_(True),
+                or_(
+                    ActivityRegistration.student_id.is_(None),
+                    ActivityRegistration.student_id.not_in(inactive_student_ids),
+                ),
             )
             .order_by(RegistrationCourse.id)
             .with_for_update()
@@ -1476,7 +1519,11 @@ class ActivityService:
             raise ValueError("課程不存在")
 
         occupying_count = self.count_occupying_registrations(session, course_id)
-        capacity = course.capacity if course.capacity is not None else 999
+        # P2-3（2026-06-23 audit）：NULL capacity 一律視為 DEFAULT_COURSE_CAPACITY（30），
+        # 與全系統容量閘口徑一致（原本用 999 會讓 NULL-capacity 課程容量閘形同虛設）。
+        capacity = (
+            course.capacity if course.capacity is not None else DEFAULT_COURSE_CAPACITY
+        )
         has_vacancy = occupying_count < capacity
         return capacity, occupying_count, has_vacancy
 

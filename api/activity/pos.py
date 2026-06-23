@@ -261,6 +261,27 @@ def _parse_receipt_response_from_record(
     supply_map = _fetch_reg_supplies(session, reg_ids)
 
     total_charged = sum(r.amount for r in same_recs)
+
+    # P2-6（2026-06-23 audit）：偵測同 receipt_no 是否有「部分作廢」。total 仍只計
+    # 有效（未作廢）金額以對齊 daily/finance 流水口徑，但額外回 has_voided_items /
+    # original_total（含作廢的原始開立金額），讓收據 PDF 標註「部分作廢，原始金額 NT$X」，
+    # 避免同一收據編號兩次列印金額不同卻無說明而造成客訴困惑。
+    all_recs = (
+        session.query(ActivityPaymentRecord)
+        .filter(ActivityPaymentRecord.receipt_no == receipt_no)
+        .all()
+    )
+    if not all_recs:
+        all_recs = (
+            session.query(ActivityPaymentRecord)
+            .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+            .all()
+        )
+    has_voided_items = any(r.voided_at is not None for r in all_recs)
+    original_total = (
+        sum(r.amount for r in all_recs) if has_voided_items else total_charged
+    )
+
     response_items = []
     for r in same_recs:
         reg = reg_by_id.get(r.registration_id)
@@ -301,6 +322,8 @@ def _parse_receipt_response_from_record(
         ),
         "items": response_items,
         "idempotent_replay": True,
+        "has_voided_items": has_voided_items,
+        "original_total": original_total,
     }
 
 
@@ -967,15 +990,10 @@ def pos_checkout(
                         status_code=400,
                         detail=f"報名 {reg.id}（{reg.student_name}）無應繳金額，無法收款",
                     )
-                # 超收守衛：已繳 + 本次金額不得超過應繳
-                if (reg.paid_amount or 0) + item.amount > total_amount_pre:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"報名 {reg.id}（{reg.student_name}）本次收款 NT${item.amount} "
-                            f"將導致超收（應繳 NT${total_amount_pre}，已繳 NT${reg.paid_amount or 0}）"
-                        ),
-                    )
+                # P2-7（2026-06-23 audit，業主裁示）：放寬超收守衛，與單筆繳費端點
+                # add_registration_payment 口徑一致——overpaid 為系統支援的付款四態之一
+                # （亦可因退費致 total 下降而自然出現），POS 不再硬擋主動超收。
+                # 空報名守衛（上方 total<=0）保留，避免孤兒收款。
 
             # idempotency_key 只落在整張收據的「第一筆」記錄上，其餘為 NULL。
             # Why: ActivityPaymentRecord.idempotency_key 有全域 UNIQUE 約束；
@@ -1212,6 +1230,14 @@ def pos_daily_summary(
         cash_in_drawer = int(snap["by_method_net"].get("現金", 0))
         cash_threshold = _resolve_cash_warning_threshold()
         cash_warning = cash_in_drawer >= cash_threshold
+        # P2-5（2026-06-23 audit）：該日是否已日結簽核。已簽核日寫入被擋（live≡frozen），
+        # 前端據此顯示「已簽核」並可切到 reconciliation 凍結值。
+        is_approved = (
+            session.query(ActivityPosDailyClose.close_date)
+            .filter(ActivityPosDailyClose.close_date == target_date)
+            .first()
+            is not None
+        )
         # 保持既有 response 結構（不含 transaction_count / by_method_net）
         return {
             "date": snap["date"],
@@ -1224,6 +1250,7 @@ def pos_daily_summary(
             "cash_in_drawer": cash_in_drawer,
             "cash_warning": cash_warning,
             "cash_warning_threshold": cash_threshold,
+            "is_approved": is_approved,
         }
     finally:
         session.close()

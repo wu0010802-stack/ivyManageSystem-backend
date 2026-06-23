@@ -23,6 +23,7 @@ from models.activity import (
 )
 from utils.audit import write_explicit_audit
 from utils.auth import get_current_user, require_staff_permission
+from api.activity.registrations_static import _export_limiter
 from utils.excel_utils import SafeWorksheet
 from utils.http_headers import content_disposition
 from utils.permissions import Permission
@@ -426,7 +427,12 @@ def get_session_detail(
 
 @router.get(
     "/sessions/{session_id}/export",
-    dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_READ))],
+    dependencies=[
+        Depends(require_staff_permission(Permission.ACTIVITY_READ)),
+        # P2-1（2026-06-23 audit）：匯出全名單 Excel，掛 _export_limiter（5/60s）
+        # 防高頻重打 openpyxl 生成 + 大量 PII 無限流（對齊 registrations/export）。
+        Depends(_export_limiter),
+    ],
 )
 def export_session_attendance(
     session_id: int,
@@ -500,7 +506,11 @@ def export_session_attendance(
 
 @router.get(
     "/sessions/{session_id}/roll.pdf",
-    dependencies=[Depends(require_staff_permission(Permission.ACTIVITY_READ))],
+    dependencies=[
+        Depends(require_staff_permission(Permission.ACTIVITY_READ)),
+        # P2-1（2026-06-23 audit）：點名單 PDF（reportlab 重生成），掛 _export_limiter。
+        Depends(_export_limiter),
+    ],
 )
 def print_session_roll_pdf(
     session_id: int,

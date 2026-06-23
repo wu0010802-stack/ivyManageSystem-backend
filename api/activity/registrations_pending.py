@@ -843,6 +843,25 @@ def restore_registration(
                 detail="本學期已有同姓名/生日的有效報名，無法復原此筆",
             )
 
+        # P2-2（2026-06-23 audit）：終態學生守衛。matched 在籍生若期間已離校/畢業/轉出
+        # （Student.is_active=False），restore 翻回 active + 保留 enrolled 課程列會長出
+        # 幽靈 enrolled（佔容量、inflate total_enrollments，卻因 Student.is_active=False
+        # 不出現在點名/出席）。對齊 confirm/promote_waitlist/_auto_promote 的終態守衛，
+        # 擋下復原。student_id 為 NULL（校外生）無終態概念，不受影響。
+        if reg.student_id is not None:
+            from models.database import Student
+
+            student_active = (
+                session.query(Student.is_active)
+                .filter(Student.id == reg.student_id)
+                .scalar()
+            )
+            if student_active is False:
+                raise HTTPException(
+                    status_code=400,
+                    detail="該生已離校／畢業／轉出，無法復原其報名為有效狀態",
+                )
+
         reg.is_active = True
         reg.match_status = "pending"
         reg.pending_review = True

@@ -153,6 +153,20 @@ def generate_pos_receipt_pdf(
     _draw_right(c, right_x, y, _fmt_amount(receipt.get("total")), font_size=11)
     y -= 5 * mm
 
+    # P2-6（2026-06-23 audit）：部分作廢標註。重印時若該收據有 item 已作廢，
+    # 合計只計有效金額；補一行說明原始開立金額，避免同收據編號兩次列印金額不同
+    # 卻無說明造成客訴困惑。
+    if receipt.get("has_voided_items"):
+        c.setFont(CJK_FONT_NAME, 8)
+        _draw_text(
+            c,
+            MARGIN_X,
+            y,
+            f"※部分項目已作廢，原始開立 {_fmt_amount(receipt.get('original_total'))}",
+            font_size=8,
+        )
+        y -= 4 * mm
+
     if receipt.get("tendered") is not None:
         c.setFont(CJK_FONT_NAME, 9)
         _draw_text(c, MARGIN_X, y, "實收", font_size=9)

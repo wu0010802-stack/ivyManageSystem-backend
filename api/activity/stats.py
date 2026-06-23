@@ -18,6 +18,7 @@ from utils.auth import require_staff_permission
 from utils.excel_utils import SafeWorksheet
 from utils.permissions import Permission
 from services.activity_service import activity_service
+from api.activity.registrations_static import _export_limiter
 
 router = APIRouter()
 
@@ -98,7 +99,12 @@ def get_dashboard_table(
         session.close()
 
 
-@router.get("/dashboard-table/export")
+@router.get(
+    "/dashboard-table/export",
+    # P2-1（2026-06-23 audit）：多 sheet Excel 匯出，掛 _export_limiter（5/60s）
+    # 防高頻重打 openpyxl 生成（對齊 registrations/export）。
+    dependencies=[Depends(_export_limiter)],
+)
 def export_dashboard_table(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
