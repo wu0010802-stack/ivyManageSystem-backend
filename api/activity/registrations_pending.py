@@ -849,7 +849,14 @@ def restore_registration(
         # 報名遞補。直接翻 is_active=True 會讓占容量數超過 capacity（超賣）。
         # 因此 restore 時重數每門課的占位，超出容量者降為 waitlist。
         from sqlalchemy import func
-        from models.database import ActivityCourse, RegistrationCourse
+        from models.database import (
+            ActivityAttendance,
+            ActivityCourse,
+            ActivitySession,
+            ActivitySupply,
+            RegistrationCourse,
+            RegistrationSupply,
+        )
 
         rc_rows = (
             session.query(RegistrationCourse)
@@ -859,16 +866,37 @@ def restore_registration(
             )
             .all()
         )
-        for rc in rc_rows:
-            course = (
-                session.query(ActivityCourse)
-                .filter(ActivityCourse.id == rc.course_id)
+        # code review #3（Medium）：一次以 id 排序整批鎖定所有相關課程，而非逐課
+        # `with_for_update().first()`。否則兩筆分別含 [A,B]、[B,A] 的並行 restore 會以
+        # 相反順序逐一鎖課程形成 ABBA 循環等待（advisory lock 為 per-student、不同學生
+        # 共用課程時不序列化，擋不住）。對齊 register_courses 的批次鎖策略；SQLite 下
+        # FOR UPDATE 為 no-op，真正序列化由 PostgreSQL 行鎖提供。
+        course_ids = sorted({rc.course_id for rc in rc_rows})
+        locked_courses: dict = {}
+        if course_ids:
+            locked_courses = {
+                c.id: c
+                for c in session.query(ActivityCourse)
+                .filter(ActivityCourse.id.in_(course_ids))
+                .order_by(ActivityCourse.id.asc())
                 .with_for_update()
-                .first()
-            )
-            # 課程不存在或未設容量上限（沿用 _attach_courses 慣例：None → 30）
+                .all()
+            }
+        dropped_course_ids: list = []  # 已剔除（停用）課程，迴圈後一併清考勤
+        for rc in rc_rows:
+            course = locked_courses.get(rc.course_id)
+            # 課程不存在（孤兒列）→ 略過
             if not course:
                 continue
+            # code review #2（High）：被拒期間課程可能被停用（停用守衛只計 active
+            # 報名，故被拒報名的課程可被下架）。直接翻 active 會讓 _calc_total_amount 仍
+            # 把已下架課程列入計費。業主裁定：剔除已停用課程列（對齊 withdraw_course 的
+            # session.delete），不向家長收已下架課程費用。
+            if not course.is_active:
+                dropped_course_ids.append(rc.course_id)
+                session.delete(rc)
+                continue
+            # 未設容量上限沿用 _attach_courses 慣例：None → 30
             capacity = course.capacity if course.capacity is not None else 30
             # 占容量 = 其他「有效報名」的 enrolled + promoted_pending（排除本筆 reg）
             occupying = (
@@ -898,11 +926,42 @@ def restore_registration(
             rc.reminder_sent_at = None
             rc.final_reminder_sent_at = None
 
-        # Bug 1 修正（P2）：rc_rows 迴圈可能把部分課程降為 waitlist，降低了應繳 total。
-        # 但 restore 通篇沒有重算 is_paid，導致 reg.is_paid 停在拒絕前的舊值（例如 True）
-        # → 帳面出現幽靈超繳。其他改課路徑（withdraw_course / add_course / public update）
-        # 一律在改動後重算，restore 補上對齊。
-        # 參照 api/activity/registrations_items.py:143-144 慣例。
+        # code review #2（High）：已停用用品同樣剔除。restore 原本完全不碰用品列，
+        # _calc_total_amount 又無條件加總所有 RegistrationSupply（不論 supply.is_active）→
+        # 家長被收已下架用品費用。比照課程剔除已停用用品列（session.delete）。
+        inactive_supply_rows = (
+            session.query(RegistrationSupply)
+            .join(ActivitySupply, ActivitySupply.id == RegistrationSupply.supply_id)
+            .filter(
+                RegistrationSupply.registration_id == reg.id,
+                ActivitySupply.is_active.is_(False),
+            )
+            .all()
+        )
+        for rs in inactive_supply_rows:
+            session.delete(rs)
+
+        # 剔除停用課程後一併清該課考勤（對齊 withdraw_course 慣例）：ActivityAttendance
+        # FK 掛在 registration + session（非 registration_course），刪 RegistrationCourse
+        # 不會 cascade 清考勤。留孤兒會污染出席統計，且未來此生重報該課時撞
+        # uq_activity_attendance_session_reg。
+        if dropped_course_ids:
+            session_ids_subq = (
+                session.query(ActivitySession.id)
+                .filter(ActivitySession.course_id.in_(dropped_course_ids))
+                .subquery()
+            )
+            session.query(ActivityAttendance).filter(
+                ActivityAttendance.registration_id == reg.id,
+                ActivityAttendance.session_id.in_(session_ids_subq),
+            ).delete(synchronize_session=False)
+
+        # Bug 1 修正（P2）：上述迴圈可能把課程降 waitlist / 剔除停用課程/用品，改變應繳
+        # total。但 restore 原本沒重算 is_paid，導致 reg.is_paid 停在拒絕前的舊值（例如
+        # True）→ 帳面出現幽靈超繳。其他改課路徑（withdraw_course / add_course /
+        # public update）一律在改動後重算，restore 補上對齊。先 flush 讓 _calc_total_amount
+        # 看到剛剛的 delete。參照 api/activity/registrations_items.py:143-144 慣例。
+        session.flush()
         total_amount = _calc_total_amount(session, reg.id)
         reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
 
