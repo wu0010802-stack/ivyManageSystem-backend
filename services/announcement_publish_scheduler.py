@@ -22,7 +22,7 @@ from models.database import (
 
 # 既有家長推播 helper（不重新定義，遵守 DRY）
 from api.announcements import _fire_announcement_push
-from utils.scheduler_observability import scheduler_iteration
+from utils.scheduler_observability import record_rows, scheduler_iteration
 from utils.scheduler_watermark import get_watermark, set_watermark
 
 logger = logging.getLogger(__name__)
@@ -105,13 +105,10 @@ async def run_announcement_publish_scheduler(stop_event: asyncio.Event) -> None:
     """Main loop: 每 check_interval 秒跑一次 tick，持久化 last_dispatched_at。"""
     from models.base import session_scope
     from utils.taipei_time import now_taipei_naive
+    from utils.advisory_lock import try_scheduler_lock
 
     check_interval = get_settings().scheduler.announcement_publish_check_interval
     logger.info("announcement publish scheduler 啟動 (interval=%ss)", check_interval)
-
-    # 從持久化游標 seed（而非 now()）：重啟後回放，補上停機窗口內漏推的公告
-    with session_scope() as session:
-        last_dispatched_at = _initial_watermark(session)
 
     while not stop_event.is_set():
         with scheduler_iteration(
@@ -123,11 +120,21 @@ async def run_announcement_publish_scheduler(stop_event: asyncio.Event) -> None:
             # 會把失敗記成成功（監控全綠卻零推播）。讓例外自然冒泡進
             # scheduler_iteration（與其他 13 個 scheduler 及 offboarding SEC-007 一致），
             # 由它記為失敗、退避上報，loop 於下個 interval 重試整批。
-            # last_dispatched_at 只在 tick 成功時推進；失敗時維持舊值，
-            # 配合 tick 內 set_watermark 回滾，確保失敗窗口下次重試。
             with session_scope() as session:
-                tick(session, now=now, last_dispatched_at=last_dispatched_at)
-            last_dispatched_at = now
+                with try_scheduler_lock(
+                    session,
+                    scheduler_name="announcement_publish",
+                    run_key="singleton",
+                ) as acquired:
+                    if acquired:
+                        # 每次 tick 都從 DB 讀最新 watermark，而非使用 per-process
+                        # local 變數；多 worker 時，未取得鎖的 worker 下輪會看到
+                        # 已推進的游標，不會重推停機窗口公告。
+                        last_dispatched_at = _initial_watermark(session)
+                        dispatched = tick(
+                            session, now=now, last_dispatched_at=last_dispatched_at
+                        )
+                        record_rows("announcement_publish", dispatched)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
         except asyncio.TimeoutError:

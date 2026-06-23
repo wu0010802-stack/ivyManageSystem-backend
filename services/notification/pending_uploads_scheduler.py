@@ -38,6 +38,9 @@ def tick_pending_uploads(now_provider=lambda: datetime.now(timezone.utc)) -> dic
                 PendingUpload.attempts < _MAX_ATTEMPTS,
             )
             .limit(_TICK_LIMIT)
+            # 多 worker 時避免兩個 worker 撈到同批 pending_upload 而重複上傳。
+            # SQLite 測試環境會忽略 FOR UPDATE；PostgreSQL 會用 SKIP LOCKED claim row。
+            .with_for_update(skip_locked=True)
             .all()
         )
         metric["attempted"] = len(rows)

@@ -11,10 +11,11 @@
 | 層級 | 工具 | 用途 | 設定者 |
 |------|------|------|--------|
 | L1 服務存活 | UptimeRobot → `/api/health/ready` | 5 min ping 確認 HTTP 200 + DB 連線 | user 帳號操作 |
+| L1b 排程存活 | UptimeRobot → `/api/health/schedulers` | 5 min ping 確認 scheduler heartbeat 沒有 lag | user 帳號操作 |
 | L2 慢請求即時告警 | RequestLoggingMiddleware → in-memory counter → LINE | 慢請求達 10 次/分鐘 → LINE ops 群組推播；per-path 5 分鐘 cooldown 防 spam | code 自動 |
 | L3 效能 dashboard | Sentry Performance | p50/p75/p95/p99 / endpoint breakdown / span waterfall；事後查詢與趨勢分析 | env 設好即啟用 |
 
-L1 是「服務有沒有活」；L2 是「服務活但慢爆了」即時感知；L3 是「平日基線追蹤 + 事後 root cause」。三層互補。
+L1 是「服務有沒有活」；L1b 是「背景排程有沒有持續跑」；L2 是「服務活但慢爆了」即時感知；L3 是「平日基線追蹤 + 事後 root cause」。三層互補。
 
 ---
 
