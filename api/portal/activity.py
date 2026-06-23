@@ -35,7 +35,46 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/activity/registrations")
+# --- Response schema（補契約：原回裸 dict → OpenAPI 無具名 schema → 前端 codegen unknown。
+# 僅針對自包含端點 registrations / batch；sessions list/detail 走共用 helper
+# build_session_rows_with_stats / _build_session_detail_response，與 admin 共用其輸出，
+# 形式化需連動 admin、留待共用 helper 建模時一併處理）---
+class PortalRegistrationCourseOut(BaseModel):
+    course_name: str
+    status: str
+    waitlist_position: Optional[int] = None
+
+
+class PortalRegistrationItemOut(BaseModel):
+    id: int
+    student_name: Optional[str] = None
+    class_name: Optional[str] = None
+    is_paid: bool
+    courses: List[PortalRegistrationCourseOut]
+    created_at: Optional[str] = None
+
+
+class PortalRegistrationsSummaryOut(BaseModel):
+    total_registrations: int
+    total_enrolled: int
+    total_waitlist: int
+    total_paid: int
+
+
+class PortalRegistrationsOut(BaseModel):
+    classrooms: List[str]
+    registrations: List[PortalRegistrationItemOut]
+    # 無班級資料時的早返回不帶 summary（{classrooms:[],registrations:[]}），故 Optional。
+    summary: Optional[PortalRegistrationsSummaryOut] = None
+
+
+class PortalBatchAttendanceResultOut(BaseModel):
+    ok: bool
+    updated: int
+    skipped: int
+
+
+@router.get("/activity/registrations", response_model=PortalRegistrationsOut)
 def get_portal_activity_registrations(
     current_user: dict = Depends(get_current_user),
 ):
@@ -279,7 +318,10 @@ def portal_get_session_detail(
         session.close()
 
 
-@router.put("/activity/attendance/sessions/{session_id}/records")
+@router.put(
+    "/activity/attendance/sessions/{session_id}/records",
+    response_model=PortalBatchAttendanceResultOut,
+)
 def portal_batch_update_attendance(
     session_id: int,
     body: PortalBatchAttendanceUpdate,
