@@ -15,8 +15,8 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from utils.cache_layer import get_cache
 
@@ -24,7 +24,7 @@ _CACHE_NS_PUBLIC_AVAILABILITY = "public_availability"
 _CACHE_KEY_AVAILABILITY = "all"
 _CACHE_TTL_AVAILABILITY = 10  # seconds — advisory display only, true overbooking guard is register with_for_update
 
-from utils.errors import raise_safe_500
+from utils.errors import raise_safe_500, is_lock_contention_error
 from utils.audit import write_explicit_audit
 
 _POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -128,6 +128,23 @@ _public_inquiry_limiter_instance = create_limiter(
     error_detail="提交過於頻繁，請稍後再試",
 )
 _public_inquiry_limiter = _public_inquiry_limiter_instance.as_dependency()
+
+
+def _set_hot_path_lock_timeout(session) -> None:
+    """報名 / 改報名熱路徑設較短 lock_timeout（per-transaction，SET LOCAL）。
+
+    為什麼：register/update 對熱門課程列下 with_for_update，報名尖峰大量並發搶同一
+    課時會在列鎖上序列化等待；無 lock_timeout 時等待者最久可佔住連線到 statement_timeout
+    (30s)，在僅 20 條的連線池下會放大成 pool 耗盡 → 全 pod 500（穩定度稽核 2026-06-23 P1/P2）。
+    設 3s（< pool_timeout 15s）讓搶不到鎖者快速失敗（55P03）釋放連線，由上層轉成 409
+    「請稍候再試」而非拖垮整池。
+
+    僅作用於「本交易」（SET LOCAL），不影響薪資 / 後台等其他路徑的鎖等待；
+    僅 PostgreSQL 生效，SQLite（單元測試）略過。lock_timeout 值為固定常數、非使用者輸入。
+    """
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        session.execute(text("SET LOCAL lock_timeout = '3s'"))
 
 
 _PUBLIC_DISPLAY_FIELDS = (
@@ -581,6 +598,8 @@ def public_register(
     session = get_session()
     try:
         _check_registration_open(session)
+        # 報名熱路徑短 lock_timeout：搶不到熱門課列鎖時快速失敗釋放連線（見 helper docstring）
+        _set_hot_path_lock_timeout(session)
 
         # 決定學期（未傳則用當前）
         sy, sem = resolve_academic_term_filters(body.school_year, body.semester)
@@ -787,6 +806,20 @@ def public_register(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        # 鎖爭用 / 鎖逾時（55P03 / 40P01）：報名尖峰搶同一熱門課的預期競態。
+        # 回 409 讓家長稍候重試，並用 warning（不噴 Sentry / 不報 500）。
+        session.rollback()
+        if is_lock_contention_error(e):
+            logger.warning(
+                "公開報名鎖爭用快速失敗 pgcode=%s",
+                getattr(getattr(e, "orig", None), "pgcode", None),
+            )
+            raise HTTPException(
+                status_code=409, detail="報名人數眾多，請稍候幾秒再送出一次"
+            )
+        logger.error("公開報名 DB 錯誤：%s", e)
+        raise_safe_500(e)
     except Exception as e:
         session.rollback()
         logger.error("公開報名失敗：%s", e)
@@ -823,6 +856,8 @@ def public_update_registration(
     session = get_session()
     try:
         _check_registration_open(session)
+        # 改報名同樣鎖 reg / 課程列，短 lock_timeout 避免爭用拖垮連線池（見 helper docstring）
+        _set_hot_path_lock_timeout(session)
 
         reg = (
             session.query(ActivityRegistration)
@@ -1189,6 +1224,19 @@ def public_update_registration(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        # 鎖爭用 / 鎖逾時：改報名與報名 / 候補遞補搶同列鎖的預期競態 → 409 稍候重試。
+        session.rollback()
+        if is_lock_contention_error(e):
+            logger.warning(
+                "前台更新報名鎖爭用快速失敗 pgcode=%s",
+                getattr(getattr(e, "orig", None), "pgcode", None),
+            )
+            raise HTTPException(
+                status_code=409, detail="資料處理中，請稍候幾秒再儲存一次"
+            )
+        logger.error("前台更新報名 DB 錯誤：%s", e)
+        raise_safe_500(e)
     except Exception as e:
         session.rollback()
         logger.error("前台更新報名失敗：%s", e)
