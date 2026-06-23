@@ -140,15 +140,27 @@ def test_is_encrypted_false_for_none_empty():
 
 
 def test_encrypt_raises_when_key_missing(monkeypatch):
-    monkeypatch.delenv("MEDICAL_FIELD_ENCRYPTION_KEY", raising=False)
-    from config import get_settings
+    """key 未設定（settings 任何來源皆無）→ encrypt_medical raise RuntimeError。
+
+    註：不能只刪 os.environ——本機 dev `.env` 仍提供 key 且 pydantic Settings
+    會讀該檔，故直接 patch medical_encryption.get_settings 隔離所有來源，
+    使 CI（無 .env）與本機（有 .env）行為一致。
+    """
+    import types
     from utils import medical_encryption
 
-    get_settings.cache_clear()
+    fake_settings = types.SimpleNamespace(
+        medical=types.SimpleNamespace(field_encryption_key="")
+    )
+    monkeypatch.setattr(medical_encryption, "get_settings", lambda: fake_settings)
     medical_encryption._get_fernet.cache_clear()
 
-    with pytest.raises(RuntimeError, match="MEDICAL_FIELD_ENCRYPTION_KEY"):
-        medical_encryption.encrypt_medical("test")
+    try:
+        with pytest.raises(RuntimeError, match="MEDICAL_FIELD_ENCRYPTION_KEY"):
+            medical_encryption.encrypt_medical("test")
+    finally:
+        # 還原 lru_cache，避免污染後續測試（monkeypatch 會自動還原 get_settings）
+        medical_encryption._get_fernet.cache_clear()
 
 
 # ── EncryptedText TypeDecorator basic ──

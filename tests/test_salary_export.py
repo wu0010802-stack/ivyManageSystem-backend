@@ -50,7 +50,17 @@ def salary_export_client(tmp_path):
 
     get_cache().clear_namespace(_CACHE_NS_SALARY_SNAPSHOT)
 
-    init_salary_services(SalaryEngine(load_from_db=False), MagicMock())
+    # insurance_service mock：manual_adjust 改 YTD 獎金欄位時會觸發
+    # _recompute_record_current_supplementary，呼叫 get_bracket / supplementary_health_rate
+    # / health_insured_salary cap。裸 MagicMock 的 float() 預設回 1.0 → 健保投保額被當 1、
+    # 費率被當 100% → 一般測試獎金被整筆當「逾 4 倍投保額」超額課徵，虛灌 total_deduction。
+    # 給足夠高的投保級距 + 法定費率，使測試獎金（遠低於 4×投保額門檻）補充保費 fee=0，
+    # 與 production 真實 InsuranceService 口徑一致（threshold 遠高於一般月獎金）。
+    insurance_mock = MagicMock()
+    insurance_mock.get_bracket.return_value = {"amount": 45800}
+    insurance_mock.supplementary_health_rate = 0.0211
+    insurance_mock.health_max_insured = 45800
+    init_salary_services(SalaryEngine(load_from_db=False), insurance_mock)
 
     app = FastAPI()
     app.include_router(auth_router)

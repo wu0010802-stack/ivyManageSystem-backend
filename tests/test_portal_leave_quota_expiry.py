@@ -88,12 +88,11 @@ class TestLeaveQuotaExpiry:
             patch.object(mod, "_get_employee", return_value=emp),
             patch.object(mod, "_compensatory_balance", return_value=6.0),
             patch.object(mod, "_get_earliest_active_grant", return_value=grant),
-            patch("api.portal.leaves_quota_expiry.date") as mock_date,
+            patch(
+                "api.portal.leaves_quota_expiry.today_taipei",
+                return_value=date(2026, 5, 26),
+            ),
         ):
-            mock_date.today.return_value = date(2026, 5, 26)
-            # side-effect: date(year, month, day) still works normally
-            mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
-
             result = mod.get_my_leave_quota_expiry(
                 session=session,
                 current_user=_portal_user(42),
@@ -125,11 +124,11 @@ class TestLeaveQuotaExpiry:
             patch.object(mod, "_get_employee", return_value=emp),
             patch.object(mod, "_compensatory_balance", return_value=0.0),
             patch.object(mod, "_get_earliest_active_grant", return_value=None),
-            patch("api.portal.leaves_quota_expiry.date") as mock_date,
+            patch(
+                "api.portal.leaves_quota_expiry.today_taipei",
+                return_value=date(2026, 5, 26),
+            ),
         ):
-            mock_date.today.return_value = date(2026, 5, 26)
-            mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
-
             result = mod.get_my_leave_quota_expiry(
                 session=session,
                 current_user=_portal_user(7),
@@ -157,7 +156,10 @@ class TestLeaveQuotaExpiry:
             patch.object(mod, "_get_employee", return_value=emp),
             patch.object(mod, "_compensatory_balance", return_value=4.0),
             patch.object(mod, "_get_earliest_active_grant", return_value=grant),
-            patch("api.portal.leaves_quota_expiry.date") as mock_date,
+            patch(
+                "api.portal.leaves_quota_expiry.today_taipei",
+                return_value=date(2026, 5, 26),
+            ),
         ):
             # today = 2026-05-26; (05,26) > (02,28) → years=26+1=27? No:
             # hire_date 02/29, today 05/26 → 05>02 → years=today.year-hire.year+1? Let's be precise.
@@ -166,8 +168,6 @@ class TestLeaveQuotaExpiry:
             # (today.month, today.day) >= (hire_date.month, hire_date.day)?
             # (5,26) >= (2,29)? 5 > 2 → True → years += 1 → years=27
             # next_anniv year = 2000 + 27 = 2027 → 2027-02-29 → not leap → 2027-02-28
-            mock_date.today.return_value = date(2026, 5, 26)
-            mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
 
             result = mod.get_my_leave_quota_expiry(
                 session=session,
@@ -194,11 +194,11 @@ class TestLeaveQuotaExpiry:
             patch.object(mod, "_get_employee", return_value=emp),
             patch.object(mod, "_compensatory_balance", return_value=0.0),
             patch.object(mod, "_get_earliest_active_grant", return_value=None),
-            patch("api.portal.leaves_quota_expiry.date") as mock_date,
+            patch(
+                "api.portal.leaves_quota_expiry.today_taipei",
+                return_value=date(2026, 5, 26),
+            ),
         ):
-            mock_date.today.return_value = date(2026, 5, 26)
-            mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
-
             result = mod.get_my_leave_quota_expiry(
                 session=session,
                 current_user=_portal_user(55),

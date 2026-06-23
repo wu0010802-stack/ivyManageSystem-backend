@@ -23,24 +23,27 @@ class TestLockRegs:
     def _make_session_and_query(
         self, with_for_update_side_effect, fallback_result=None
     ):
-        """建立 mock session；query chain：.filter().with_for_update().all() 拋例外，
-        fallback .filter().all() 回 fallback_result。"""
-        # 行鎖查詢物件
+        """建立 mock session；query chain：
+        .filter().order_by().with_for_update().all() 拋例外，
+        fallback .filter().order_by().all() 回 fallback_result。
+
+        對齊 _lock_regs：order_by(id) 已插在 with_for_update 之前
+        （row-lock 取鎖序一致，杜絕 row-vs-row deadlock）。
+        """
+        # with_for_update().all() 拋例外
         locked_query = MagicMock()
         locked_query.all.side_effect = with_for_update_side_effect
 
-        # 無鎖查詢物件
-        unlocked_query = MagicMock()
-        unlocked_query.all.return_value = fallback_result or []
-
-        # filter 回傳共用的 filter_query；with_for_update 分叉
-        filter_query = MagicMock()
-        filter_query.with_for_update.return_value = locked_query
-        filter_query.all.return_value = fallback_result or []  # 無鎖路徑
+        # order_by() 後的 query 物件：with_for_update 分叉、fallback 走 query.all()
+        ordered_query = MagicMock()
+        ordered_query.with_for_update.return_value = locked_query
+        ordered_query.all.return_value = fallback_result or []  # 降級無鎖路徑
 
         session = MagicMock()
-        session.query.return_value.filter.return_value = filter_query
-        return session, filter_query
+        session.query.return_value.filter.return_value.order_by.return_value = (
+            ordered_query
+        )
+        return session, ordered_query
 
     # ── OperationalError → 上拋 ──
     def test_lock_regs_operational_error_raises(self):

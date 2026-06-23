@@ -133,6 +133,7 @@ def _setup_reg(
     course_price: int = 5000,
     paid_amount: int = 5000,
     is_paid: bool = True,
+    sessions: int = None,
 ) -> ActivityRegistration:
     from utils.academic import resolve_current_academic_term
 
@@ -144,6 +145,7 @@ def _setup_reg(
         allow_waitlist=True,
         school_year=sy,
         semester=sem,
+        sessions=sessions,
     )
     session.add(course)
     session.flush()
@@ -191,9 +193,12 @@ class TestPOSRefundCumulative:
                 username="cashier",
                 permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
-            # course_price=400 使 sessions=NULL fallback 建議值 = 400，diff=|400-400|=0 ≤ 100
-            # → guard 3 自然通過；本 test 目的是測 guard 2（累積 1200 > 1000 → 403）。
-            reg = _setup_reg(s, paid_amount=5000, is_paid=True, course_price=400)
+            # sessions=10 + course_price=400 + 0 出席 → 建議全退 = 400 = 退費額 → diff=0
+            # → sessions/diff guard 通過（sessions-NULL 強制簽核路徑另有專測，正交）；
+            # 本 test 目的是測累積 guard 2（累積 1200 > 1000 → 403）。
+            reg = _setup_reg(
+                s, paid_amount=5000, is_paid=True, course_price=400, sessions=10
+            )
             s.commit()
             reg_id = reg.id
 
@@ -283,13 +288,17 @@ class TestPOSRefundCumulative:
             _create_user(
                 s,
                 username="cashier2",
-                # course_price=500 supply=0 使 sessions=NULL fallback 建議值 = 500 = 退費金額 → diff=0 ≤ 100 guard 3 自然通過；本 test 目的是驗 guard 2 voided 排除累積邏輯，保留 guard 2 active。
+                # sessions=10 + course_price=500 + 0 出席 → 建議全退 = 500 = 退費額 → diff=0，
+                # sessions/diff guard 自然通過；本 test 目的是驗累積 guard 2 的 voided
+                # 排除邏輯，保留 guard 2 active（sessions-NULL 強制簽核另有專測，正交）。
                 permission_names=[
                     "ACTIVITY_READ",
                     "ACTIVITY_WRITE",
                 ],
             )
-            reg = _setup_reg(s, paid_amount=5000, is_paid=True, course_price=500)
+            reg = _setup_reg(
+                s, paid_amount=5000, is_paid=True, course_price=500, sessions=10
+            )
             # 已 voided 的歷史退費 NT$5000，不應計入累積
             from datetime import datetime
 
