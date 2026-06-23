@@ -55,6 +55,27 @@ def _strip_api_prefix(schema: dict) -> dict:
     return schema
 
 
+def _strip_dev_paths(schema: dict) -> dict:
+    """移除 dev-only 路由（/api/dev/* 與剝 prefix 後可能的 /dev/*）。
+
+    dev 別名 / 除錯端點僅在 ENV=development 由 main.py 掛載，不屬於前端 typed 契約。
+    CI 的 OpenAPI Drift Check 用 ENV=development dump，若不剝這些路由會把它們寫進
+    openapi.json → schema.d.ts，與（刻意排除 dev 的）committed schema.d.ts 永久 drift。
+    """
+    paths = schema.get("paths", {})
+    schema["paths"] = {
+        p: ops
+        for p, ops in paths.items()
+        if not (
+            p == "/dev"
+            or p.startswith("/dev/")
+            or p == "/api/dev"
+            or p.startswith("/api/dev/")
+        )
+    }
+    return schema
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -74,6 +95,9 @@ def main() -> int:
     from main import app  # noqa: WPS433
 
     schema = app.openapi()
+    # dev-only 路由（/api/dev/*）僅 ENV=development 掛載，不屬前端 typed 契約；一律剝除，
+    # 避免 CI（ENV=development）dump 把 /dev/* 污染進 schema.d.ts 造成永久 drift。
+    schema = _strip_dev_paths(schema)
     if not args.keep_api_prefix:
         schema = _strip_api_prefix(schema)
 
