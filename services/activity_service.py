@@ -67,10 +67,12 @@ ACTIVITY_SUMMARY_CACHE_CATEGORIES = ("activity_stats_summary",)
 ACTIVITY_DASHBOARD_CACHE_CATEGORIES = (
     "activity_stats_summary",
     "activity_stats_charts",
+    "activity_stats_attendance",
     "activity_dashboard_table",
 )
 ACTIVITY_STATS_SUMMARY_CACHE_TTL_SECONDS = 300
 ACTIVITY_STATS_CHARTS_CACHE_TTL_SECONDS = 600
+ACTIVITY_STATS_ATTENDANCE_CACHE_TTL_SECONDS = 600
 ACTIVITY_DASHBOARD_TABLE_CACHE_TTL_SECONDS = 1800
 
 
@@ -481,11 +483,42 @@ class ActivityService:
                 force_refresh=force_refresh,
             ),
             "attendance_stats": self.get_attendance_stats(
-                session, school_year=school_year, semester=semester
+                session,
+                school_year=school_year,
+                semester=semester,
+                force_refresh=force_refresh,
             ),
         }
 
-    def get_attendance_stats(self, session, *, school_year: int, semester: int) -> dict:
+    def get_attendance_stats(
+        self,
+        session,
+        *,
+        school_year: int,
+        semester: int,
+        force_refresh: bool = False,
+    ) -> dict:
+        """課程出席率統計（report_cache 包覆，與 summary/charts 快取策略一致）。
+
+        實際聚合在 _compute_attendance_stats（最重的一塊：跨 session×attendance×
+        registration×course×student 的 join+GROUP BY）。⚠ 點名儲存
+        （api/activity/attendance.batch_update_attendance）須呼叫
+        invalidate_dashboard_caches 失效本快取，否則出席率會 stale 到 TTL。
+        """
+        return report_cache_service.get_or_build(
+            session,
+            category="activity_stats_attendance",
+            ttl_seconds=ACTIVITY_STATS_ATTENDANCE_CACHE_TTL_SECONDS,
+            params={"school_year": school_year, "semester": semester},
+            force_refresh=force_refresh,
+            builder=lambda: self._compute_attendance_stats(
+                session, school_year, semester
+            ),
+        )
+
+    def _compute_attendance_stats(
+        self, session, school_year: int, semester: int
+    ) -> dict:
         """取得課程出席率統計（SQL 直接 GROUP BY 課程，省去 Python 端二次聚合）。
 
         學期感知：課程本身即按學期建檔（uq_activity_course_name_term），
