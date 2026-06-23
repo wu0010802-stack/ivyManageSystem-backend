@@ -931,7 +931,17 @@ def restore_registration(
                 .scalar()
             )
             if occupying >= capacity:
-                rc.status = "waitlist"
+                # code review（P2）：滿班時只有「開放候補」的課程可降 waitlist；不開放
+                # 候補者無處可放（對齊 _attach_courses / add_course / parent_portal 滿班且
+                # 不開放候補一律 400 的守衛）。restore 是盡力復原語意，比照上方停用課程
+                # 剔除此列（session.delete + 後續清考勤 + 重算 total），不向家長保留違反
+                # 「不開放候補」設定、且永不會被 promote 的死候補列。業主裁定：剔除該課程列。
+                if course.allow_waitlist:
+                    rc.status = "waitlist"
+                else:
+                    dropped_course_ids.append(rc.course_id)
+                    session.delete(rc)
+                    continue
 
             # Bug 2 修正（P2）：無論容量是否足夠，promoted_pending 列的確認計時欄位
             # 必須清為 None（停錶）。restore 把整筆報名打回 pending_review=True，

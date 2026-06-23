@@ -552,6 +552,13 @@ def outstanding_by_student(
         if overdue_only and filter == "outstanding":
             cutoff = now_taipei_naive() - timedelta(days=OVERDUE_DAYS_THRESHOLD)
             query = query.filter(ActivityRegistration.created_at < cutoff)
+        # code review（P1）：refundable 的「已繳>0」是純欄位條件，可下推進 SQL，讓
+        # count/limit/truncated 對「可退費母體」精準。否則截斷母體為全部 active 報名，
+        # 上限 2000 截斷時排在後面的可退費學生會靜默消失（櫃台看不到待退款）。
+        # outstanding 的應繳 total 為課程+用品衍生值、無法於 SQL 過濾，仍以全部 active
+        # 報名為截斷母體（偏保守、寧可多標 truncated 提示縮小搜尋）。
+        if filter == "refundable":
+            query = query.filter(ActivityRegistration.paid_amount > 0)
         # M3：limit 防爆保留，但超限不可無聲截斷——先 count 總數，超限時
         # 標 truncated 讓前端知道清單不完整（與 semester-reconciliation 一致）。
         total_active = query.count()

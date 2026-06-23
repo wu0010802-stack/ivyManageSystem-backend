@@ -467,6 +467,34 @@ class TestOutstandingByStudent:
         assert "乙生" in names
         assert "丙生" in names
 
+    def test_refundable_total_active_counts_only_paid_population(self, pos_client):
+        """refundable 模式：total_active（截斷母體）應只計 paid>0 的可退費報名。
+
+        修前 total_active 在 outstanding/refundable 過濾前就以全部 active 報名計數，
+        導致退費母體被全 active 報名稀釋——上限 2000 截斷時排在後面的可退費學生會
+        靜默消失，櫃台看不到待退款。修後 paid_amount>0 下推進 SQL，count/limit/
+        truncated 對可退費母體精準。
+        """
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s)
+            _setup_reg(s, student_name="甲生", paid_amount=2000, is_paid=True)  # 可退
+            _setup_reg(s, student_name="乙生", paid_amount=0)  # 未繳→不可退
+            _setup_reg(s, student_name="丙生", paid_amount=500)  # 部分→可退
+            s.commit()
+        assert _login(client).status_code == 200
+
+        res = client.get(
+            "/api/activity/pos/outstanding-by-student?q=生&filter=refundable"
+        )
+        assert res.status_code == 200
+        body = res.json()
+        names = {g["student_name"] for g in body["groups"]}
+        assert names == {"甲生", "丙生"}, names
+        # 截斷母體只算 paid>0（2 筆），不含未繳的乙生 → 不該是 3
+        assert body["total_active"] == 2, body["total_active"]
+        assert body["truncated"] is False
+
     def test_includes_courses_and_supplies(self, pos_client):
         client, sf = pos_client
         with sf() as s:
