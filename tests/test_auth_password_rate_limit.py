@@ -101,6 +101,40 @@ def _login_as(client: TestClient, username: str, password: str) -> str:
     return cookie
 
 
+@pytest.fixture(autouse=True)
+def _freeze_rate_limit_window(monkeypatch):
+    """凍結 utils.rate_limit_db 的時鐘，消除 fixed-window 邊界 straddle 造成的 flaky。
+
+    本檔測試以「同來源 burst N 次 vs 限額」驗 429。限流器用 fixed window（IP 300s /
+    account 900s，floor 對齊）：record_attempt 落 floor(now) bucket，count 卻以
+    now - within_seconds 當 lookback。N 次請求（~秒級）若恰好跨視窗邊界，record 落
+    新 bucket 而 count 的 lookback 把舊 bucket 排除 → undercount → 偶發不觸 429
+    （IP 視窗約 0.7%/run，全套件偶爾紅、單獨/前綴跑卻綠）。凍結 datetime.now 後
+    record 與 count 用同一瞬間，bucket 恆落在 lookback 內，斷言確定性。
+
+    只凍 rate_limit_db 的時鐘（端點 audit/token 等其他 datetime 不受影響）。
+    """
+    import datetime as _dt
+    import utils.rate_limit_db as _rldb
+
+    frozen = _dt.datetime(2026, 6, 1, 12, 0, 0, tzinfo=_dt.timezone.utc)
+
+    class _FrozenDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # 回真正的 datetime（frozen 本身為 stdlib datetime），非子類實例，
+            # 否則 sqlite3 綁定參數會 "type not supported"。
+            return frozen if tz is None else frozen.astimezone(tz)
+
+        @classmethod
+        def fromtimestamp(cls, ts, tz=None):
+            # 同上：回真正的 datetime，避免子類實例流入 SQL window_start 綁定。
+            return _dt.datetime.fromtimestamp(ts, tz)
+
+    monkeypatch.setattr(_rldb, "datetime", _FrozenDateTime)
+    yield
+
+
 # ============ Test 1: change-password user lockout ============
 
 
