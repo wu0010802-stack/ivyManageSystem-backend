@@ -553,11 +553,11 @@ class ActivityPosDailyClose(Base):
     net_total = Column(Integer, nullable=False, default=0)
     transaction_count = Column(Integer, nullable=False, default=0)
     by_method_json = Column(
-        Text,
+        JSON,
         nullable=False,
-        default="{}",
+        default=dict,
         comment=(
-            "分付款方式 JSON {method: net_amount}；"
+            "分付款方式 {method: net_amount}（JSONB；欄名 *_json 為歷史保留）；"
             "目前才藝僅有『現金』與系統內部『系統補齊』，保留結構供未來擴充"
         ),
     )
@@ -599,10 +599,10 @@ class ActivityPosDailyCloseHistory(Base):
     net_total = Column(Integer, nullable=False)
     transaction_count = Column(Integer, nullable=False)
     by_method_json = Column(
-        Text,
+        JSON,
         nullable=False,
-        default="{}",
-        comment="原簽核當下 by_method JSON（結構化保存供日後稽核還原）",
+        default=dict,
+        comment="原簽核當下 by_method（JSONB；結構化保存供日後稽核還原）",
     )
     actual_cash_count = Column(Integer, nullable=True)
     cash_variance = Column(Integer, nullable=True)

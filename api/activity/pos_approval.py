@@ -11,7 +11,6 @@ api/activity/pos_approval.py — 才藝課 POS 日結簽核端點
   GET    /pos/reconciliation           按日對帳（snapshot 或即時）
 """
 
-import json
 import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -127,10 +126,9 @@ def _doc_id_for(d: date) -> int:
 
 
 def _serialize_close(row: ActivityPosDailyClose) -> dict:
-    try:
-        by_method_net = json.loads(row.by_method_json or "{}")
-    except (TypeError, ValueError):
-        by_method_net = {}
+    # by_method_json 為 JSONB column，ORM 已反序列化為 dict；非 dict（NULL/歷史
+    # 異常）一律回 {} 保留原 graceful fallback 語意。
+    by_method_net = row.by_method_json if isinstance(row.by_method_json, dict) else {}
     return {
         "date": row.close_date.isoformat(),
         "is_approved": True,
@@ -365,7 +363,7 @@ def approve_daily_close(
             refund_total=snap["refund_total"],
             net_total=snap["net"],
             transaction_count=snap["transaction_count"],
-            by_method_json=json.dumps(by_method_net, ensure_ascii=False),
+            by_method_json=by_method_net or {},
             actual_cash_count=body.actual_cash_count,
             cash_variance=cash_variance,
         )
@@ -538,7 +536,7 @@ def unlock_daily_close(
                 refund_total=row.refund_total,
                 net_total=row.net_total,
                 transaction_count=row.transaction_count,
-                by_method_json=row.by_method_json or "{}",
+                by_method_json=row.by_method_json or {},
                 actual_cash_count=row.actual_cash_count,
                 cash_variance=row.cash_variance,
                 unlocked_at=now_taipei_naive(),
@@ -978,10 +976,7 @@ def list_pos_close_history(
         )
         snapshots = []
         for r in rows:
-            try:
-                by_method = json.loads(r.by_method_json or "{}")
-            except (TypeError, ValueError):
-                by_method = {}
+            by_method = r.by_method_json if isinstance(r.by_method_json, dict) else {}
             snapshots.append(
                 {
                     "id": r.id,

@@ -63,7 +63,10 @@ def history_client(tmp_path):
     engine.dispose()
 
 
-def _seed_signed_close(sf, *, target, approver_username, by_method='{"現金": 1000}'):
+def _seed_signed_close(sf, *, target, approver_username, by_method=None):
+    # by_method_json 自 actjsonb01 起為 JSONB → 寫 dict（不再是 JSON 字串）。
+    if by_method is None:
+        by_method = {"現金": 1000}
     with sf() as s:
         s.add(
             ActivityPosDailyClose(
@@ -95,7 +98,7 @@ def test_unlock_writes_history_snapshot(history_client):
         sf,
         target=target,
         approver_username="approver_a",
-        by_method='{"現金": 800, "系統補齊": 200}',
+        by_method={"現金": 800, "系統補齊": 200},
     )
 
     assert _login(client, "approver_b").status_code == 200
@@ -124,7 +127,7 @@ def test_unlock_writes_history_snapshot(history_client):
         assert h.refund_total == 0
         assert h.net_total == 1000
         assert h.transaction_count == 1
-        assert h.by_method_json == '{"現金": 800, "系統補齊": 200}'
+        assert h.by_method_json == {"現金": 800, "系統補齊": 200}
         assert h.actual_cash_count == 950
         assert h.cash_variance == -50
         assert h.unlocked_by == "approver_b"
@@ -173,7 +176,7 @@ def test_multiple_unlock_cycles_append_rows(history_client):
 
     # 第一次簽核 + 解鎖
     _seed_signed_close(
-        sf, target=target, approver_username="approver_a", by_method='{"現金": 500}'
+        sf, target=target, approver_username="approver_a", by_method={"現金": 500}
     )
     assert _login(client, "approver_b").status_code == 200
     res = client.request(
@@ -185,7 +188,7 @@ def test_multiple_unlock_cycles_append_rows(history_client):
 
     # 第二次簽核 + 解鎖（不同金額）
     _seed_signed_close(
-        sf, target=target, approver_username="approver_a", by_method='{"現金": 1500}'
+        sf, target=target, approver_username="approver_a", by_method={"現金": 1500}
     )
     res = client.request(
         "DELETE",
@@ -203,8 +206,8 @@ def test_multiple_unlock_cycles_append_rows(history_client):
             .all()
         )
         assert len(rows) == 2
-        assert rows[0].by_method_json == '{"現金": 500}'
-        assert rows[1].by_method_json == '{"現金": 1500}'
+        assert rows[0].by_method_json == {"現金": 500}
+        assert rows[1].by_method_json == {"現金": 1500}
 
 
 def test_history_endpoint_returns_snapshots(history_client):
@@ -219,7 +222,7 @@ def test_history_endpoint_returns_snapshots(history_client):
         sf,
         target=target,
         approver_username="approver_a",
-        by_method='{"現金": 1000, "系統補齊": 200}',
+        by_method={"現金": 1000, "系統補齊": 200},
     )
 
     assert _login(client, "approver_b").status_code == 200
