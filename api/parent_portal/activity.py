@@ -123,6 +123,9 @@ class RegistrationSummaryOut(BaseModel):
     total_amount: int
     outstanding_amount: int
     payment_status: str
+    # 已退費累計（type='refund' 未作廢之和）。供前端區分「退過費歸零」vs「從未繳」
+    # ——兩者 paid_amount 都可能為 0、payment_status 也相同，靠此欄分辨。
+    refunded_amount: int = 0
     match_status: Optional[str] = None
     pending_review: bool
     courses: list[RegistrationCourseOut]
@@ -244,6 +247,17 @@ def _registration_summary(session, reg: ActivityRegistration) -> dict:
     # 後台 / 公開端口徑一致。
     paid_amount = reg.paid_amount or 0
     total_amount = _calc_total_amount(session, reg.id)
+    # 已退費累計：type='refund' 且未作廢之和（amount 恆正，方向由 type 區分）。
+    refunded_amount = int(
+        session.query(func.coalesce(func.sum(ActivityPaymentRecord.amount), 0))
+        .filter(
+            ActivityPaymentRecord.registration_id == reg.id,
+            ActivityPaymentRecord.type == "refund",
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
+        .scalar()
+        or 0
+    )
     return {
         "id": reg.id,
         "student_id": reg.student_id,
@@ -255,6 +269,7 @@ def _registration_summary(session, reg: ActivityRegistration) -> dict:
         "total_amount": total_amount,
         "outstanding_amount": max(total_amount - paid_amount, 0),
         "payment_status": _derive_payment_status(paid_amount, total_amount),
+        "refunded_amount": refunded_amount,
         "match_status": reg.match_status,
         "pending_review": bool(reg.pending_review),
         "courses": [
