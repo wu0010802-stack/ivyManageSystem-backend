@@ -207,6 +207,23 @@ def _reset_settings_cache():
 
 
 @pytest.fixture(autouse=True)
+def _reset_in_memory_rate_limiters():
+    """每個 test 進場前清空所有 in-memory SlidingWindowLimiter 的累積計數。
+
+    module-global 限流器單例（如 api.leaves / api.overtimes 的 _batch_approve_limiter
+    = max_calls=10/60s）的 _timestamps 會在單一 pytest 程序內跨測試累積，key 多為
+    固定 IP "testclient"。未重置時，收集順序在後的測試對 batch-approve / rate-limited
+    端點的請求會被前段測試的累積計數誤擋成 429（端點回 {'detail': '...過於頻繁'}，
+    無 succeeded/failed 陣列）→ 斷言爆。2026-06-23 全套件污染排查根因——單獨跑綠、
+    全套件紅即此。
+    """
+    from utils.rate_limit import reset_in_memory_limiters
+
+    reset_in_memory_limiters()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _mock_hibp_no_match(monkeypatch):
     """所有 test 預設 HIBP 回傳「未命中」，避免端點測試對外發 HTTP。
 

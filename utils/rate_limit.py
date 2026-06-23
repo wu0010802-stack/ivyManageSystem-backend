@@ -25,6 +25,7 @@ In-process sliding-window rate limiter (per IP).
 
 import logging
 import time
+import weakref
 from abc import ABC, abstractmethod
 from collections import defaultdict
 
@@ -34,6 +35,25 @@ from utils.fail_open import capture_fail_open
 from utils.request_ip import get_client_ip
 
 logger = logging.getLogger(__name__)
+
+# in-memory 限流器實例註冊表（WeakSet：實例被 GC 時自動移除，不阻礙回收）。
+# 用途：測試隔離。module-global 限流器單例（如 api.leaves._batch_approve_limiter
+# = max_calls=10/60s）的 _timestamps 會在單一 pytest 程序內跨測試累積（key 多為
+# 固定 IP "testclient"），未重置會讓後段測試的請求被前段測試的累積計數誤擋 429。
+# reset_in_memory_limiters() 由 conftest autouse fixture 於每測試進場前呼叫。
+# production 不呼叫 reset；註冊表僅持弱引用，無額外記憶體成本。
+_IN_MEMORY_LIMITERS: "weakref.WeakSet[SlidingWindowLimiter]" = weakref.WeakSet()
+
+
+def reset_in_memory_limiters() -> None:
+    """清空所有 in-memory SlidingWindowLimiter 的累積計數（測試隔離用）。
+
+    module-global 限流器單例的 _timestamps 在單一 pytest 程序內跨測試累積，
+    未重置會讓後段測試被前段累積計數誤擋 429（見本檔頂部說明 / conftest autouse
+    fixture _reset_in_memory_rate_limiters）。production 不呼叫此函式。
+    """
+    for limiter in list(_IN_MEMORY_LIMITERS):
+        limiter._timestamps.clear()
 
 
 class BaseLimiter(ABC):
@@ -80,6 +100,8 @@ class SlidingWindowLimiter(BaseLimiter):
         self.name = name
         self.error_detail = error_detail
         self._timestamps: dict[str, list[float]] = defaultdict(list)
+        # 註冊到全域表，供測試隔離 reset_in_memory_limiters() 一次清空所有單例。
+        _IN_MEMORY_LIMITERS.add(self)
 
     def check(self, key: str) -> None:
         now = time.time()
