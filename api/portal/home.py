@@ -268,6 +268,31 @@ def get_home_summary(
                 "pending_medications": {},
             }
 
+        # P2-6/P2-5（2026-06-23 資安掃描）：過敏為醫療特種個資。無 STUDENTS_HEALTH_READ
+        # 不得回出（遮罩，對齊 students/classrooms/class-hub）；有權限且實際回出時補
+        # §6 batch 醫療取用稽核（RA-MED-3 修補遺漏的教師首屏批量路徑）。
+        from utils.portfolio_access import (
+            can_view_student_health,
+            emit_batch_medical_access_log,
+        )
+
+        if not can_view_student_health(current_user):
+            batches["allergy_alerts"] = {cid: [] for cid in batches["allergy_alerts"]}
+        else:
+            allergy_student_ids = [
+                alert["student_id"]
+                for alerts in batches["allergy_alerts"].values()
+                for alert in alerts
+            ]
+            if emit_batch_medical_access_log(
+                session,
+                current_user,
+                request,
+                allergy_student_ids,
+                reason="教師首頁過敏彙總（無顯式理由）",
+            ):
+                session.commit()
+
         classroom_cards = [_classroom_card(c, today, batches) for c in classrooms]
 
         # actions：跨站待辦計數

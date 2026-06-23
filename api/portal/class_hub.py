@@ -5,7 +5,7 @@ from datetime import datetime, date as date_cls
 from utils.taipei_time import now_taipei_naive
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -89,6 +89,7 @@ class ClassHubTodayResponse(BaseModel):
 
 @router.get("/class-hub/today", response_model=ClassHubTodayResponse)
 def get_class_hub_today(
+    request: Request,
     current_user: dict = Depends(get_current_user),
     sess: Session = Depends(get_session_dep),
 ) -> ClassHubTodayResponse:
@@ -145,6 +146,18 @@ def get_class_hub_today(
         if has(Permission.STUDENTS_HEALTH_READ)
         else []
     )
+    # P2-5（2026-06-23 資安掃描）：今日用藥批量回出解密醫療內容須補 §6 batch 取用稽核。
+    if medications:
+        from utils.portfolio_access import emit_batch_medical_access_log
+
+        if emit_batch_medical_access_log(
+            sess,
+            current_user,
+            request,
+            [m["student_id"] for m in medications],
+            reason="教師工作台今日用藥（無顯式理由）",
+        ):
+            sess.commit()
     obs_pending = (
         count_observation_pending(
             sess, classroom_id=classroom.id, today=today, roster=roster

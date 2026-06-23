@@ -195,6 +195,18 @@ def list_today_medications(
                 }
             )
 
+        # P2-5（2026-06-23 資安掃描）：實際回出用藥內容須補 §6 batch 取用稽核。
+        from utils.portfolio_access import emit_batch_medical_access_log
+
+        if emit_batch_medical_access_log(
+            session,
+            current_user,
+            request,
+            [o.student_id for o in orders],
+            reason="教師端今日用藥清單（無顯式理由）",
+        ):
+            session.commit()
+
         request.state.audit_summary = "portal.medications.list"
         return {
             "date": today.isoformat(),
