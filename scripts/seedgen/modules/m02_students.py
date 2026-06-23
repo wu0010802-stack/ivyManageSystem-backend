@@ -26,6 +26,8 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timedelta
 
+from utils.taipei_time import now_taipei_naive
+
 from models.classroom import Student
 from models.guardian import Guardian
 from models.parent_binding import GuardianBindingCode
@@ -244,7 +246,7 @@ def seed(ctx: SeedContext) -> None:
     # 少量綁定碼:約每 8 位 guardian 簽發 1 張(未使用、24h 後過期)。
     # created_by 須為合法 User(行政);無 admin 時跳過(FK NOT NULL)。
     if actor_user_id is not None:
-        now = datetime.now()
+        now = now_taipei_naive()
         for guardian in guardians:
             if ctx.rng.random() < 0.125:  # ~1/8
                 raw = f"seed-bind-{guardian.id}-{ctx.rng.randint(0, 10**8)}"
