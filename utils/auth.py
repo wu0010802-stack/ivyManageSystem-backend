@@ -466,6 +466,7 @@ def _resolve_user_auth_fields(
     token_version: int,
     request_path: str,
     impersonated_by: int | None = None,
+    impersonator_token_version: int | None = None,
 ) -> tuple[bool, str]:
     """同步 DB 區塊：依 user_id 查 User、驗證帳號狀態與 token_version。
 
@@ -495,6 +496,15 @@ def _resolve_user_auth_fields(
             if impersonator is None or not impersonator.is_active:
                 raise HTTPException(
                     status_code=401, detail="模擬來源帳號已停用，模擬已終止"
+                )
+            # qa-loop #4（2026-06-23）：對稱於上面的 is_active 檢查，亦驗 impersonator
+            # 現行 token_version。admin 被 reset_password / 改角色權限 / logout-all 後
+            # token_version 遞增（is_active 維持 True），使其先前簽發的模擬 token 即時
+            # 失效（≤15min 窗口收斂）。fail-closed：簽發前的舊模擬 token 無此 claim →
+            # 視為 0，admin 已 bump 者直接拒絕（舊 token 短命、不可刷新，無實質影響）。
+            if (impersonator_token_version or 0) != (impersonator.token_version or 0):
+                raise HTTPException(
+                    status_code=401, detail="模擬來源帳號憑證已失效，模擬已終止"
                 )
         if (
             user.must_change_password
@@ -549,6 +559,7 @@ async def get_current_user(request: Request):
         payload.get("token_version", 0),
         request.url.path,
         payload.get("impersonated_by"),
+        payload.get("impersonator_token_version"),
     )
     payload["must_change_password"] = must_change_password
     payload["username"] = username

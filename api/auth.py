@@ -536,6 +536,9 @@ def impersonate_user(
                 "token_version": target_user.token_version,
                 "impersonated_by": current_user.get("user_id"),
                 "impersonated_by_name": current_user.get("name"),
+                # qa-loop #4：帶入 admin 本人 token_version，使 _resolve_user_auth_fields
+                # 能在模擬期間驗 admin 憑證有效性（reset_password/改權/logout-all 後即時失效）。
+                "impersonator_token_version": current_user.get("token_version", 0),
                 "impersonation_mode": data.mode,
             }
         )
