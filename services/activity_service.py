@@ -890,6 +890,20 @@ class ActivityService:
     ) -> tuple[str, str]:
         """家長確認升正式。狀態必須為 promoted_pending 且未逾期。"""
         now = _now_taipei_naive()
+        # P2（2026-06-23 audit）：鎖序統一「course → registration_course」，與
+        # promote_waitlist / decline_waitlist_promotion / _auto_promote_first_waitlist
+        # 一致（先鎖 ActivityCourse、再鎖 RegistrationCourse）。原本先鎖 RC、後鎖
+        # course，與那三條已統一路徑相反；家長確認與管理員手動升位同時處理同一
+        # (reg, course) 時形成 PostgreSQL ABBA 鎖序反轉死鎖，先鎖 course 閉合此窗。
+        course = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id == course_id)
+            .with_for_update()
+            .first()
+        )
+        if not course:
+            raise ValueError("NOT_FOUND")
+
         row = (
             session.query(
                 RegistrationCourse,
@@ -933,15 +947,6 @@ class ActivityService:
             )
             if student_active is False:
                 raise ValueError("STUDENT_TERMINAL")
-
-        course = (
-            session.query(ActivityCourse)
-            .filter(ActivityCourse.id == course_id)
-            .with_for_update()
-            .first()
-        )
-        if not course:
-            raise ValueError("NOT_FOUND")
 
         rc.status = "enrolled"
         rc.confirm_deadline = None
