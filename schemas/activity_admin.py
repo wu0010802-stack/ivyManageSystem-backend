@@ -84,6 +84,7 @@ class CourseCreate(BaseModel):
     meeting_weekday: Optional[int] = Field(None, ge=0, le=6)
     meeting_start_time: Optional[time] = None
     meeting_end_time: Optional[time] = None
+    instructor_name: Optional[str] = Field(None, max_length=50)
 
     _validate_video_url = field_validator("video_url")(_validate_video_url_scheme)
 
@@ -112,6 +113,7 @@ class CourseUpdate(BaseModel):
     meeting_weekday: Optional[int] = Field(None, ge=0, le=6)
     meeting_start_time: Optional[time] = None
     meeting_end_time: Optional[time] = None
+    instructor_name: Optional[str] = Field(None, max_length=50)
 
     _validate_video_url = field_validator("video_url")(_validate_video_url_scheme)
 
@@ -452,6 +454,7 @@ class CourseListItemOut(IvyBaseModel):
     meeting_weekday: Optional[int] = None
     meeting_start_time: Optional[str] = None
     meeting_end_time: Optional[str] = None
+    instructor_name: Optional[str] = None
     enrolled: int
     promoted_pending: int
     waitlist_count: int
@@ -484,6 +487,7 @@ class CourseDetailOut(IvyBaseModel):
     video_url: str
     allow_waitlist: bool
     description: str
+    instructor_name: Optional[str] = None
 
 
 class CourseCreateResultOut(IvyBaseModel):

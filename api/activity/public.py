@@ -82,6 +82,7 @@ from ._shared import (
     _attach_courses,
     _attach_supplies,
     _calc_total_amount,
+    _next_session_dates,
     _compute_is_paid,
     _match_student_with_parent_phone,
     _normalize_phone,
@@ -220,6 +221,7 @@ def get_public_courses(request: Request, response: Response):
             .order_by(ActivityCourse.id)
             .all()
         )
+        next_session_map = _next_session_dates(session, [c.id for c in courses])
         payload = [
             {
                 "name": c.name,
@@ -238,6 +240,8 @@ def get_public_courses(request: Request, response: Response):
                 "meeting_end_time": (
                     c.meeting_end_time.strftime("%H:%M") if c.meeting_end_time else None
                 ),
+                "instructor_name": c.instructor_name,
+                "next_session_date": next_session_map.get(c.id),
             }
             for c in courses
         ]

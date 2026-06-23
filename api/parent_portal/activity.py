@@ -45,6 +45,7 @@ from api.activity._shared import (
     _calc_total_amount,
     _check_registration_open,
     _derive_payment_status,
+    _next_session_dates,
 )
 
 router = APIRouter(prefix="/activity", tags=["parent-activity"])
@@ -88,6 +89,8 @@ class ParentCourseItemOut(BaseModel):
     meeting_weekday: Optional[int] = None  # 0=Mon..6=Sun
     meeting_start_time: Optional[str] = None  # "HH:MM"
     meeting_end_time: Optional[str] = None  # "HH:MM"
+    instructor_name: Optional[str] = None
+    next_session_date: Optional[str] = None  # 下次上課 ISO date（無排程則 None）
 
 
 class ParentCourseListOut(BaseModel):
@@ -196,6 +199,7 @@ def list_courses(
         )
         for c in courses
     }
+    next_session_map = _next_session_dates(session, [c.id for c in courses])
     items = [
         {
             "id": c.id,
@@ -216,6 +220,8 @@ def list_courses(
             "meeting_weekday": c.meeting_weekday,
             "meeting_start_time": _fmt_time(c.meeting_start_time),
             "meeting_end_time": _fmt_time(c.meeting_end_time),
+            "instructor_name": c.instructor_name,
+            "next_session_date": next_session_map.get(c.id),
         }
         for c in courses
     ]
