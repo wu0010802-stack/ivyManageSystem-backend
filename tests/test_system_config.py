@@ -96,6 +96,23 @@ class TestSystemConfigApi:
         assert payer_name["is_default"] is True
         assert payer_name["config_value"] == "高雄市私立常春藤幼兒園"
 
+    def test_prefix_like_wildcard_escaped_no_substring_match(self, sc_client):
+        """P3-6（2026-06-23 資安掃描）：prefix 含 LIKE 萬用字元（%/_）應字面比對，
+        不退化為子字串匹配（system_config.py:83 未轉義 → %bank% 命中含 bank 的 key）。"""
+        client, session_factory = sc_client
+        _login(client, session_factory)
+        with session_factory() as session:
+            session.add(SystemConfig(config_key="bank_account_no", config_value="x"))
+            session.add(SystemConfig(config_key="salary_has_bank", config_value="y"))
+            session.commit()
+        # prefix="%bank" 修復前 LIKE %bank% 子字串命中 salary_has_bank；
+        # 轉義後字面 "%bank" 前綴 → 無 config_key 以字面 %bank 開頭 → 不命中。
+        res = client.get("/api/system-configs", params={"prefix": "%bank"})
+        assert res.status_code == 200
+        keys = {i["config_key"] for i in res.json()["items"]}
+        assert "salary_has_bank" not in keys, "含 bank 的 key 不應被 %bank 子字串匹配"
+        assert "bank_account_no" not in keys, "非字面 %bank 前綴不應命中"
+
     def test_upsert_creates_new_record(self, sc_client):
         client, session_factory = sc_client
         _login(client, session_factory)

@@ -18,6 +18,7 @@ from models.base import session_scope
 from models.database import SystemConfig
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
+from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 router = APIRouter(prefix="/api", tags=["system-config"])
 
@@ -80,7 +81,12 @@ def list_configs(
     with session_scope() as session:
         q = session.query(SystemConfig)
         if prefix:
-            q = q.filter(SystemConfig.config_key.like(f"{prefix}%"))
+            # P3-6（2026-06-23 資安掃描）：轉義 LIKE 萬用字元（%/_），prefix 字面比對，
+            # 不退化為子字串匹配（對照 audit.py 既有 escape_like_pattern 用法）。
+            safe_prefix = escape_like_pattern(prefix)
+            q = q.filter(
+                SystemConfig.config_key.like(f"{safe_prefix}%", escape=LIKE_ESCAPE_CHAR)
+            )
         existing = {c.config_key: c for c in q.all()}
 
         # 補上 KNOWN_DEFAULTS 中沒有 DB 記錄的（讓前端可看到所有可調項目）
