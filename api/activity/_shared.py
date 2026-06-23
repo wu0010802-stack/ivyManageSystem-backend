@@ -769,6 +769,7 @@ def _build_registration_filter_query(
     match_status: Optional[str] = None,
     include_inactive: bool = False,
     student_id: Optional[int] = None,
+    current_user: Optional[dict] = None,
 ):
     """回傳已套用篩選條件的 SQLAlchemy query，調用方可繼續加 .offset/.limit 或 .all()。
 
@@ -776,6 +777,11 @@ def _build_registration_filter_query(
     include_inactive：rejected 狀態的 registration 會被設為 is_active=False；若要列出
       rejected，需設 include_inactive=True。
     student_id：指定學生 ID 時，僅回傳該學生在校 Student.id 匹配的報名（含跨學期歷史）。
+    current_user：search 是否納入 parent_phone 欄位的家長 PII 把關依據。list 輸出
+      （registrations.py）依 GUARDIANS_READ 遮罩 parent_phone；若 search 無條件比對
+      parent_phone，缺 GUARDIANS_READ 者仍可用部分手機號反查報名是否命中（側信道）。
+      故缺 can_view_guardian_pii 時 search 不含手機欄位。None（未傳）視同無權限，
+      與 students/search（A1）口徑一致。
     """
     q = session.query(ActivityRegistration)
     if not include_inactive:
@@ -789,15 +795,21 @@ def _build_registration_filter_query(
     if match_status:
         q = q.filter(ActivityRegistration.match_status == match_status)
     if search:
+        from utils.portfolio_access import can_view_guardian_pii
+
         # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 全表匹配（對齊 api/audit.py 慣例）
         like = f"%{escape_like_pattern(search)}%"
-        q = q.filter(
-            or_(
-                ActivityRegistration.student_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
-                ActivityRegistration.class_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
-                ActivityRegistration.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR),
+        search_cols = [
+            ActivityRegistration.student_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+            ActivityRegistration.class_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+        ]
+        # A1（registrations 系列）：parent_phone 屬家長 PII，list 輸出依 GUARDIANS_READ
+        # 遮罩；search 同步把關，否則缺權者可用部分手機號反查（側信道）。None 視同無權。
+        if current_user is not None and can_view_guardian_pii(current_user):
+            search_cols.append(
+                ActivityRegistration.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR)
             )
-        )
+        q = q.filter(or_(*search_cols))
     if payment_status in ("paid", "unpaid", "partial", "overpaid", "no_fee"):
         # 這五態都需 total（enrolled 課程 + 用品）做判定，與 _derive_payment_status 對齊
         course_total_sq = (

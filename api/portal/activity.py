@@ -213,6 +213,10 @@ def portal_list_sessions(
     """
     session = get_session()
     try:
+        # Finding 4：router 層 require_non_parent_role 只擋家長；此端點回全校場次清單
+        # 與整堂出席統計，須額外要求 employee 身分（對齊同檔 detail/write 守衛與
+        # require_non_parent_role docstring），擋掉無員工關聯的服務／管理帳號。
+        _get_employee(session, current_user)
         query = session.query(
             ActivitySession.id,
             ActivitySession.course_id,

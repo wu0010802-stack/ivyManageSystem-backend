@@ -206,7 +206,10 @@ def list_courses(
             "name": c.name,
             "price": c.price,
             "sessions": c.sessions,
-            "capacity": c.capacity,
+            # Finding 5：回 effective 值（NULL→30），與 is_full 的 _effective_capacity
+            # 口徑一致；否則 NULL 容量課前端顯示 "enrolled/null"。型別仍 Optional[int]，
+            # 不改 wire shape / OpenAPI schema。
+            "capacity": _effective_capacity(c.capacity),
             "school_year": c.school_year,
             "semester": c.semester,
             "allow_waitlist": bool(c.allow_waitlist),

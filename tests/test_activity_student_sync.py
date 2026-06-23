@@ -340,6 +340,57 @@ class TestDeactivateTermScope:
         after = session.query(ActivityRegistration).get(reg_id)
         assert after.is_active is False, "NULL-term active 報名應被軟刪（修前漏刪）"
 
+    def test_deactivate_cancels_school_year_set_but_semester_null(self, sqlite_session):
+        """partial-null：school_year 有值但 semester 為 NULL 的 active 報名也應軟刪。
+
+        歷史 migration（20260417 add_activity_academic_term）回填用的是
+        `school_year IS NULL OR semester IS NULL`，故 legacy/修復中資料可能只有
+        semester 為 NULL。修前 _deactivate_term_filter 只含 school_year IS NULL，
+        漏掉「sy 有值、sem NULL」這型 → 學生離園後仍 active，殘留幽靈名額/金額。
+        """
+        from models.database import ActivityRegistration, Classroom, Student
+        from services import activity_student_sync as ass
+        from utils.academic import resolve_current_academic_term
+
+        _engine, session = sqlite_session
+        sy, _sem = resolve_current_academic_term()
+        classroom = Classroom(name="班P", is_active=True)
+        session.add(classroom)
+        session.flush()
+        student = Student(
+            student_id="ST-partial",
+            name="半期生",
+            birthday=date(2020, 1, 1),
+            classroom_id=classroom.id,
+            is_active=True,
+        )
+        session.add(student)
+        session.flush()
+        reg = ActivityRegistration(
+            student_name="半期生",
+            class_name="班P",
+            classroom_id=classroom.id,
+            school_year=sy,  # 有值（當前學年）
+            semester=None,  # 但 semester 為 NULL（partial-null）
+            student_id=student.id,
+            is_active=True,
+            paid_amount=0,
+            match_status="matched",
+            pending_review=False,
+        )
+        session.add(reg)
+        session.flush()
+        reg_id = reg.id
+        session.commit()
+
+        ass.sync_registrations_on_student_deactivate(session, student.id)
+        session.commit()
+        session.expire_all()
+        after = session.query(ActivityRegistration).get(reg_id)
+        assert (
+            after.is_active is False
+        ), "school_year 有值但 semester NULL 的 active 報名應被軟刪（修前漏刪）"
+
 
 class TestDeactivateRereadsPaidUnderLock:
     """離園同步自動沖帳必須用『鎖內重讀』的 paid_amount，而非同步流程早先讀到的舊值。

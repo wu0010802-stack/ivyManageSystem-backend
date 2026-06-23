@@ -329,6 +329,7 @@ def get_registrations(
             match_status=match_status,
             include_inactive=include_inactive,
             student_id=student_id,
+            current_user=current_user,
         )
         total = q.count()
         regs = (
