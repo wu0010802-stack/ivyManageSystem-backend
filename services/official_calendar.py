@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import csv
 import io
+import ipaddress
 import logging
 import ssl
 from datetime import date, datetime, timedelta
+from urllib.parse import urlparse
 from utils.taipei_time import now_taipei_naive
 from typing import Any
 
@@ -71,7 +73,49 @@ def _create_official_session() -> requests.Session:
     return session
 
 
+# P3-4（2026-06-23 資安掃描）：download_url 來自 data.gov.tw 回應，屬上游可控輸入。
+# 限政府開放資料網域 + 封鎖私有/loopback/link-local IP，防上游竄改/MITM/DNS 劫持塞
+# 內網 URL 形成二級 SSRF（雲端 metadata / 內網探測）。對齊 recruitment_ivykids_sync。
+_ALLOWED_CALENDAR_HOST_SUFFIXES = ("data.gov.tw", "dgpa.gov.tw")
+
+
+def _is_allowed_calendar_url(url: str) -> bool:
+    """SSRF 防護：僅允許 http(s) + 政府開放資料網域、且非私有/loopback/link-local IP。"""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    # 封鎖私有/loopback/link-local/保留 IP（即使網域白名單被繞過也擋內網）
+    try:
+        ip = ipaddress.ip_address(host)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+    except ValueError:
+        pass  # host 非 IP 字面值（一般網域名稱），續做網域比對
+    return any(
+        host == suf or host.endswith("." + suf)
+        for suf in _ALLOWED_CALENDAR_HOST_SUFFIXES
+    )
+
+
 def _request_with_optional_ssl_fallback(url: str) -> Response:
+    # P3-4：發請求前先驗 URL（SSRF 防護），不允許的 URL 不發出任何請求。
+    if not _is_allowed_calendar_url(url):
+        raise ValueError(f"不允許的官方日曆下載 URL（SSRF 防護）：{url!r}")
     # 不啟用 verify=False；DGPA 主機走 _DgpaSSLAdapter 放寬 X509 strict flag，
     # 其他主機維持嚴格驗證。函式名保留是為了避免改動外部 import。
     with _create_official_session() as session:
