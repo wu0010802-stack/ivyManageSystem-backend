@@ -213,6 +213,7 @@ def export_registrations(
             payment_status=payment_status,
             course_id=course_id,
             classroom_name=classroom_name,
+            current_user=current_user,
         )
         total_count = q.count()
         if total_count > MAX_EXPORT_ROWS:
@@ -310,6 +311,7 @@ def export_payment_report(
             course_id=course_id,
             classroom_name=classroom_name,
             include_inactive=include_inactive,
+            current_user=current_user,
         )
         total_count = q.count()
         if total_count > MAX_EXPORT_ROWS:
