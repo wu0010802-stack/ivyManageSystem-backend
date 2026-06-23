@@ -40,7 +40,9 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
 
     可被 home/summary 等彙總端點重用。
     回傳 {"by_student": [...], "totals": {..., "outstanding_count": N}}。
-    `outstanding_count` 為仍有 outstanding 的 record 筆數，方便首頁顯示「未繳 N 筆」。
+    `outstanding_count` 為折抵後仍有 outstanding 的 (student_id, period) bucket 筆數，
+    方便首頁顯示「未繳 N 筆」。與 totals.outstanding 同源（均在折抵迴圈後從 buckets 計算），
+    全額折抵後兩者皆 0。
     """
     if not student_ids:
         return {"by_student": [], "totals": _empty_summary()}
@@ -60,7 +62,6 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
     # 家長端原本只按 student_id 加總折抵再 overdue-first 扣，會讓 114-2 的折抵先吃掉
     # 114-1 的逾期欠款，低估逾期金額。
     buckets: dict[tuple[int, str], dict] = defaultdict(_empty_totals)
-    outstanding_count = 0
 
     for r in records:
         outstanding = max(0, (r.amount_due or 0) - (r.amount_paid or 0))
@@ -69,7 +70,6 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
         bucket["amount_paid"] += r.amount_paid or 0
         bucket["outstanding"] += outstanding
         if outstanding > 0:
-            outstanding_count += 1
             if r.due_date is not None:
                 if r.due_date < today:
                     bucket["overdue"] += outstanding
@@ -102,6 +102,11 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
             bucket[k] -= take
             remaining -= take
         bucket["amount_due"] = max(0, bucket["amount_due"] - adj)
+
+    # 折抵套用後依 bucket 重算 outstanding_count（計數語意為「仍有欠款的 (student,period) bucket 筆數」）。
+    # 須在折抵迴圈結束後計算，才能與 totals.outstanding 同源一致：
+    # 全額折抵後兩者皆 0，部分折抵後計數仍保留該 bucket。
+    outstanding_count = sum(1 for b in buckets.values() if b["outstanding"] > 0)
 
     # 桶 → 依學生上捲為 by_student，再加總 grand totals
     by_student: dict[int, dict] = defaultdict(_empty_totals)

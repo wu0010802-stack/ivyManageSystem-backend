@@ -180,7 +180,7 @@ class PaymentUpdate(BaseModel):
     refund_reason: Optional[str] = Field(
         None,
         max_length=200,
-        description="當 is_paid=False 時必填，≥ 5 字；留於沖帳紀錄 notes",
+        description=f"當 is_paid=False 時必填，≥ {MIN_REFUND_REASON_LENGTH} 字；留於沖帳紀錄 notes",
     )
     # is_paid=True 補齊路徑（shortfall > 0）時必填：人工收款方式（不可 SYSTEM_RECONCILE_METHOD）
     # 與 ≥5 字原因；handler 端會檢查並在大額時要求 ACTIVITY_PAYMENT_APPROVE。
@@ -196,7 +196,7 @@ class PaymentUpdate(BaseModel):
     payment_reason: Optional[str] = Field(
         None,
         max_length=200,
-        description="is_paid=True 補齊欠費時必填，≥ 5 字；會寫進補齊紀錄 notes",
+        description=f"is_paid=True 補齊欠費時必填，≥ {MIN_REFUND_REASON_LENGTH} 字；會寫進補齊紀錄 notes",
     )
 
 

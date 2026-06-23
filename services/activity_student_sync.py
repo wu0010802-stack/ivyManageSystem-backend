@@ -143,7 +143,7 @@ def sync_registrations_on_student_transfer(
     - 只處理 is_active=True 的報名（rejected / 軟刪除的不動）
     - 只處理當前學期（不回頭改歷史，歷史才藝名單應保持原樣）
     - classroom_id 改寫為 new_classroom_id；class_name 改為新班級的 Classroom.name（當前）
-      若 new_classroom_id 為 None 或查不到班級，只更新 classroom_id，保留原 class_name 字串
+      若 new_classroom_id 為 None 或查不到班級，class_name 一併設為 None，確保兩欄位一致
     - 回傳更新筆數
     """
     sy, sem = resolve_current_academic_term()
@@ -171,8 +171,7 @@ def sync_registrations_on_student_transfer(
 
     for r in regs:
         r.classroom_id = new_classroom_id
-        if new_classroom_name:
-            r.class_name = new_classroom_name
+        r.class_name = new_classroom_name
 
     return len(regs)
 

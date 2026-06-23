@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     get_session,
@@ -275,6 +276,15 @@ def copy_courses_from_previous(
                 "created_ids": [],
             }
 
+        # Bug A 修補：複製前先掃描高價課程，對齊 create_course / update_course 守衛。
+        # 任一來源課程超過門檻且操作者缺 ACTIVITY_PAYMENT_APPROVE → 整批 403。
+        for src in source_courses:
+            require_approve_for_high_price(
+                src.price,
+                current_user,
+                label=f"來源課程「{src.name}」單價",
+            )
+
         existing_names = {
             r[0]
             for r in session.query(ActivityCourse.name)
@@ -292,27 +302,36 @@ def copy_courses_from_previous(
             if src.name in existing_names:
                 skipped += 1
                 continue
-            new_course = ActivityCourse(
-                name=src.name,
-                price=src.price,
-                sessions=src.sessions,
-                capacity=src.capacity,
-                video_url=src.video_url,
-                allow_waitlist=src.allow_waitlist,
-                description=src.description,
-                school_year=body.target_school_year,
-                semester=body.target_semester,
-                is_active=True,
-                # Phase 3 適齡 + 結構化時段也要帶上（與 create_course 對齊；
-                # 漏掉會讓複製出的課程失去前台不適齡/衝堂 advisory 基礎資料）
-                min_age_months=src.min_age_months,
-                max_age_months=src.max_age_months,
-                meeting_weekday=src.meeting_weekday,
-                meeting_start_time=src.meeting_start_time,
-                meeting_end_time=src.meeting_end_time,
-            )
-            session.add(new_course)
-            session.flush()
+            # Bug B 修補：以 savepoint 包覆單筆插入，捕 IntegrityError（並發同名衝突）
+            # → rollback savepoint + skipped，對齊「已存在則跳過」既有語意，避免整批回滾。
+            try:
+                with session.begin_nested():
+                    new_course = ActivityCourse(
+                        name=src.name,
+                        price=src.price,
+                        sessions=src.sessions,
+                        capacity=src.capacity,
+                        video_url=src.video_url,
+                        allow_waitlist=src.allow_waitlist,
+                        description=src.description,
+                        school_year=body.target_school_year,
+                        semester=body.target_semester,
+                        is_active=True,
+                        # Phase 3 適齡 + 結構化時段也要帶上（與 create_course 對齊；
+                        # 漏掉會讓複製出的課程失去前台不適齡/衝堂 advisory 基礎資料）
+                        min_age_months=src.min_age_months,
+                        max_age_months=src.max_age_months,
+                        meeting_weekday=src.meeting_weekday,
+                        meeting_start_time=src.meeting_start_time,
+                        meeting_end_time=src.meeting_end_time,
+                    )
+                    session.add(new_course)
+                    session.flush()
+            except IntegrityError:
+                # savepoint 已自動回滾，視同「已存在」跳過（只捕 unique 衝突）
+                # 其他非 IntegrityError 例外應往外傳播，由外層 except→raise_safe_500 處理
+                skipped += 1
+                continue
             created_ids.append(new_course.id)
 
         session.commit()
