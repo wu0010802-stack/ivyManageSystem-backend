@@ -891,6 +891,56 @@ class TestConfirmPromotion:
         )
         assert resp.status_code == 403
 
+    def test_confirm_promotion_terminal_student_returns_403(self, activity_client):
+        """Finding (P1)：家長對已離校子女確認候補轉正 → 403（service 守衛
+        STUDENT_TERMINAL 映射）。對齊直接報名的終態寫入守衛，且不長出幽靈
+        enrolled（佔容量卻不出現在點名名冊）。"""
+        from models.classroom import LIFECYCLE_WITHDRAWN
+
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            # 子女已退學（終態）：is_active=False + lifecycle_status=withdrawn
+            student.is_active = False
+            student.lifecycle_status = LIFECYCLE_WITHDRAWN
+            course = _create_course(session, name="繪畫")
+            reg = ActivityRegistration(
+                student_name=student.name,
+                is_active=True,
+                school_year=115,
+                semester=1,
+                student_id=student.id,
+                parent_phone="0911",
+                pending_review=False,
+                match_status="manual",
+            )
+            session.add(reg)
+            session.flush()
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course.id,
+                    status="promoted_pending",
+                    price_snapshot=course.price,
+                    promoted_at=datetime.now(),
+                    confirm_deadline=datetime.now() + timedelta(hours=24),
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+            reg_id = reg.id
+            course_id = course.id
+
+        resp = client.post(
+            f"/api/parent/activity/registrations/{reg_id}/confirm-promotion",
+            json={"course_id": course_id},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 403, resp.text
+        with session_factory() as session:
+            rc = session.query(RegistrationCourse).first()
+            assert rc.status == "promoted_pending", "終態守衛須在改 status 前生效"
+
 
 class TestRegisterPayloadDedupesIds:
     """LIFF 報名 payload 內重複 course_ids / supply_ids 在逐筆 insert 時會撞

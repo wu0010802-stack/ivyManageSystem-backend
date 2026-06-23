@@ -1273,6 +1273,7 @@ def public_confirm_promotion(
     """家長確認接受候補轉正（三欄驗證）。
 
     錯誤碼：
+    - 403 STUDENT_TERMINAL：學生已離校/畢業/轉出，不可升為正式
     - 404：查無對應報名（身份驗證失敗）
     - 409 ALREADY_CONFIRMED：已是正式
     - 409 NOT_PENDING：非待確認狀態（可能已逾期或已放棄）
@@ -1305,6 +1306,11 @@ def public_confirm_promotion(
             if code == "EXPIRED":
                 raise HTTPException(
                     status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
+                )
+            if code == "STUDENT_TERMINAL":
+                raise HTTPException(
+                    status_code=403,
+                    detail="此學生已離校，無法升為正式；可繼續查看歷史紀錄",
                 )
             raise
         activity_service.log_change(

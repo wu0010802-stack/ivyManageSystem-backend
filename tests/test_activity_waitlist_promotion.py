@@ -258,6 +258,81 @@ class TestConfirmPromotion:
             svc.confirm_waitlist_promotion(session, reg_w.id, course.id)
 
 
+class TestConfirmPromotionTerminalStudentGuard:
+    """Finding (P1)：已離校/畢業/轉出子女不可被升為正式。
+
+    直接報名走 _assert_student_owned(for_write=True) 已擋終態；但候補確認只看
+    ActivityRegistration.is_active，不 join Student。終態學生被升 enrolled 後會
+    長出「幽靈報名」——佔課程容量，卻永不出現在點名名冊（session-detail 聚合
+    明確排除 Student.is_active=False）。守衛放 service，家長端與公開端 confirm
+    共用同一道。decline 不擋（讓終態學生可放棄佔位、釋出名額）。
+    """
+
+    def _setup_pending_for_student(self, session, svc, student):
+        course = _add_course(session, capacity=1)
+        reg_e = _add_reg(session, "在籍")
+        _enroll(session, reg_e.id, course.id)
+        reg_w = _add_reg(session, "候補")
+        reg_w.student_id = student.id
+        rc_w = _enroll(session, reg_w.id, course.id, status="waitlist")
+        svc.delete_registration(session, reg_e.id, "admin")
+        session.flush()
+        assert rc_w.status == "promoted_pending"
+        return reg_w, course, rc_w
+
+    def test_confirm_blocked_for_terminal_student(self, session, svc):
+        from models.classroom import LIFECYCLE_WITHDRAWN, Student
+
+        student = Student(
+            student_id="S-TERM-001",
+            name="已退學童",
+            lifecycle_status=LIFECYCLE_WITHDRAWN,
+            is_active=False,
+        )
+        session.add(student)
+        session.flush()
+        reg_w, course, rc_w = self._setup_pending_for_student(session, svc, student)
+
+        with pytest.raises(ValueError, match="STUDENT_TERMINAL"):
+            svc.confirm_waitlist_promotion(session, reg_w.id, course.id)
+        # 守衛須在改 status 前生效：rc 仍 promoted_pending，未長出幽靈 enrolled
+        session.refresh(rc_w)
+        assert rc_w.status == "promoted_pending"
+
+    def test_confirm_allowed_for_active_student(self, session, svc):
+        """在籍（is_active=True、非終態）學生正常升正式，守衛不誤殺。"""
+        from models.classroom import LIFECYCLE_ACTIVE, Student
+
+        student = Student(
+            student_id="S-ACTIVE-001",
+            name="在籍童",
+            lifecycle_status=LIFECYCLE_ACTIVE,
+            is_active=True,
+        )
+        session.add(student)
+        session.flush()
+        reg_w, course, rc_w = self._setup_pending_for_student(session, svc, student)
+
+        svc.confirm_waitlist_promotion(session, reg_w.id, course.id)
+        session.flush()
+        assert rc_w.status == "enrolled"
+
+    def test_confirm_allowed_when_no_student_linked(self, session, svc):
+        """student_id 為 NULL（未配對學生）的報名不受終態守衛影響（無學生可判定）。"""
+        course = _add_course(session, capacity=1)
+        reg_e = _add_reg(session, "在籍")
+        _enroll(session, reg_e.id, course.id)
+        reg_w = _add_reg(session, "候補")  # 不設 student_id
+        rc_w = _enroll(session, reg_w.id, course.id, status="waitlist")
+        svc.delete_registration(session, reg_e.id, "admin")
+        session.flush()
+        assert rc_w.status == "promoted_pending"
+
+        svc.confirm_waitlist_promotion(session, reg_w.id, course.id)
+        session.flush()
+        assert rc_w.status == "enrolled"
+
+
 class TestDeclinePromotion:
     def test_decline_deletes_row_and_promotes_next(self, session, svc):
         course = _add_course(session, capacity=1)
