@@ -957,9 +957,12 @@ def query_valid_session_registrations(
 ) -> list:
     """回傳本場次「有效報名」的 (registration_id, student_id) tuple 列表。
 
-    有效 = ActivityRegistration.is_active、match_status != 'rejected'，且確實報了
-    course_id 對應課程（RegistrationCourse.status IN ('enrolled','promoted_pending')）。
+    有效 = ActivityRegistration.is_active、match_status != 'rejected'，確實報了
+    course_id 對應課程（RegistrationCourse.status IN ('enrolled','promoted_pending')），
+    且底層學生仍在籍（student_id 為 None 的校外生，或對應 Student.is_active IS True）。
     供 admin 點名與 portal 點名共用，避免兩處重複定義「有效報名」規則。
+    Student.is_active 守衛與讀取側（_build_session_detail_response /
+    _build_valid_attendance_agg_query）對齊，避免寫入離校生孤兒點名 row。
 
     classroom_ids_filter=None   → 不限班級（管理端 / 開放後的 portal，跨班）。
     classroom_ids_filter=[...]  → 額外限定 ActivityRegistration.classroom_id IN(...)（保留彈性）。
@@ -973,11 +976,17 @@ def query_valid_session_registrations(
     """
     if not registration_ids:
         return []
+    from models.database import Student
+
     query = (
         db_session.query(ActivityRegistration.id, ActivityRegistration.student_id)
         .join(
             RegistrationCourse,
             RegistrationCourse.registration_id == ActivityRegistration.id,
+        )
+        .outerjoin(
+            Student,
+            Student.id == ActivityRegistration.student_id,
         )
         .filter(
             ActivityRegistration.id.in_(registration_ids),
@@ -985,6 +994,14 @@ def query_valid_session_registrations(
             ActivityRegistration.match_status != "rejected",
             RegistrationCourse.course_id == course_id,
             RegistrationCourse.status.in_(["enrolled", "promoted_pending"]),
+            # 對齊讀取側（_build_session_detail_response /
+            # _build_valid_attendance_agg_query）：底層學生已離校
+            # （Student.is_active=False）的報名不可被寫入點名，否則長出畫面看不到、
+            # 統計也不算的孤兒 row。校外生（student_id 為 None）照常保留。
+            or_(
+                ActivityRegistration.student_id.is_(None),
+                Student.is_active.is_(True),
+            ),
         )
     )
     if classroom_ids_filter is not None:
