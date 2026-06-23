@@ -58,7 +58,7 @@ def get_broadcast() -> BroadcastBackend:
     from config import settings
 
     cache = settings.cache
-    if cache.backend == "redis":
+    if cache.effective_broadcast_backend == "redis":
         from utils.broadcast.redis import RedisBackend
 
         return RedisBackend(

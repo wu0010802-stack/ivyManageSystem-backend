@@ -376,17 +376,22 @@ async def app_lifespan(app_instance: FastAPI):
     if settings.core.thread_pool_headroom > 0:
         _limiter.total_tokens = _pool_capacity + settings.core.thread_pool_headroom
     logger.info(
-        "concurrency: db_pool=%d+%d threadpool_tokens=%d cache_backend=%s",
+        "concurrency: db_pool=%d+%d threadpool_tokens=%d cache_backend=%s broadcast_backend=%s",
         settings.core.db_pool_size,
         settings.core.db_pool_max_overflow,
         int(_limiter.total_tokens),
         settings.cache.backend,
+        settings.cache.effective_broadcast_backend,
     )
-    if settings.cache.backend == "memory":
+    if (
+        settings.cache.backend == "memory"
+        or settings.cache.effective_broadcast_backend == "memory"
+    ):
         logger.warning(
             "cache backend = in-process memory：本服務假設【單 uvicorn worker】部署。"
-            "多 worker 會造成各 worker 快取分裂 + 失效無法跨 worker 廣播（consent/config "
-            "讀到不一致值）。若要開 --workers N 須先把 CACHE_BACKEND 切到 redis。"
+            "多 worker 會造成各 worker 快取分裂或 WS 廣播無法跨 worker。"
+            "若要開 --workers N，請設 CACHE_BACKEND=redis 並確認 BROADCAST_BACKEND "
+            "未覆寫為 memory（或顯式設 BROADCAST_BACKEND=redis）。"
         )
 
     # ── 家長端 RLS 上線自檢（系統設計審查 2026-06-14, top#7）──
@@ -420,7 +425,8 @@ async def app_lifespan(app_instance: FastAPI):
             logger.warning("PDF orphan recovery 啟動失敗: %s", e)
             capture_exception(e, level="warning")
 
-    # WS 廣播 backend（memory / redis 由 CACHE_BACKEND 切換）
+    # WS 廣播 backend（memory / redis 由 BROADCAST_BACKEND 切換；
+    # 未設定時向下相容沿用 CACHE_BACKEND）
     from utils.broadcast import get_broadcast as _get_broadcast
 
     _broadcast = _get_broadcast()

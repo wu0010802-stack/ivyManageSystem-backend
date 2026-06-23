@@ -44,6 +44,17 @@ def test_factory_redis_mode(monkeypatch):
     assert backend.__class__.__name__ == "RedisBackend"
 
 
+def test_factory_broadcast_backend_overrides_cache_backend(monkeypatch):
+    monkeypatch.setenv("CACHE_BACKEND", "memory")
+    monkeypatch.setenv("BROADCAST_BACKEND", "redis")
+    monkeypatch.setenv("CACHE_REDIS_URL", "redis://localhost:6379/0")
+    from config import reset_for_tests as cfg_reset
+
+    cfg_reset()
+    backend = get_broadcast()
+    assert backend.__class__.__name__ == "RedisBackend"
+
+
 def test_publish_many_dedupes_channel_keys(monkeypatch):
     """publish_many should dedupe channel keys (no double-push to same ch)."""
     monkeypatch.setenv("CACHE_BACKEND", "memory")

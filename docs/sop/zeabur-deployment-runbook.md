@@ -45,6 +45,9 @@
 | `LINE_LOGIN_CHANNEL_SECRET` | ⭕ | 同上 |
 | `LIFF_ID` | ⭕ | 後端只用於驗證 token；前端另外 bake in build |
 | `RATE_LIMIT_BACKEND` | ❌ | **單 worker 部署免設**（保持預設 `memory`）。詳見 §6 部署模式 |
+| `CACHE_BACKEND` | ❌ | 預設 `memory`；多 worker / 多 instance 時設 `redis`，一般 cache 走 Redis |
+| `BROADCAST_BACKEND` | ❌ | 預設沿用 `CACHE_BACKEND`；只想讓 WebSocket 廣播走 Redis 時可設 `redis` |
+| `CACHE_REDIS_URL` | 條件必設 | `CACHE_BACKEND=redis` 或 `BROADCAST_BACKEND=redis` 時必設 |
 | `IVYKIDS_USERNAME` | ⭕ | 義華官網招生同步（若啟用） |
 | `IVYKIDS_PASSWORD` | ⭕ | 同上 |
 | `IVYKIDS_SYNC_ENABLED` | ⭕ | `true` 開啟同步 |
@@ -150,18 +153,20 @@
 
 ---
 
-## 5. 監控 / 告警（待補）
+## 5. 監控 / 告警
 
-⚠️ 目前無監控告警系統。上線後 P1 待辦：
-- [ ] Sentry 串接（後端 `sentry-sdk[fastapi]`、前端 `@sentry/vue`）
-- [ ] Uptime monitor（UptimeRobot / Healthchecks.io 打 `/health/live`）
-- [ ] LINE 告警 channel（取代 Slack）
+日常監控設定以 `docs/sop/observability.md` 為準，目前包含：
+- L1：UptimeRobot 打 `/api/health/ready`
+- L1b：UptimeRobot 可另打 `/api/health/schedulers` 監控排程 heartbeat lag
+- L2：慢請求累計後透過 LINE ops 群告警
+- L3：Sentry Performance / exception 追蹤
 
-DR backup 失敗會 LINE Notify ops 群；Sentry 啟用後納入監控（見 `ivy-backend/docs/sop/dr-runbook.md` §8）
+DR backup 失敗會 LINE Notify ops 群；DR 細節見 `ivy-backend/docs/sop/dr-runbook.md` §8。
 
 健康檢查端點：
 - `GET /health/live` — 進程活著就 200
-- `GET /health/ready` — DB 可連、migration 在 head 才 200
+- `GET /health/ready` — DB 可連即 200；`?deep=1` 需權限並檢查 LINE / Supabase / DB pool
+- `GET /health/schedulers` — 排程 heartbeat 無 lag 即 200；至少一個 lagging 回 503
 
 ---
 
@@ -181,8 +186,9 @@ DR backup 失敗會 LINE Notify ops 群；Sentry 啟用後納入監控（見 `iv
 
 ⚠️ 若未來改多 worker（`uvicorn --workers N` / `gunicorn -w N`），**必須**：
 1. 設 `RATE_LIMIT_BACKEND=postgres`（讓 SlidingWindowLimiter 切到 PG-backed 版本）
-2. 評估 Supabase connection pool 是否夠（每 worker 一個 pool）
-3. 確認 `services/security_gc_scheduler.py` 等定期任務不會多次啟動
+2. 設 `CACHE_BACKEND=redis`；若只要 WebSocket 跨 worker，至少設 `BROADCAST_BACKEND=redis` + `CACHE_REDIS_URL`
+3. 評估 PostgreSQL connection pool 是否夠（每 worker 一個 pool）
+4. 確認所有 scheduler 都有 advisory lock / row claim / persistent watermark，避免多 worker 重複執行
 
 ### 已知限制 / 待補
 
