@@ -11,7 +11,15 @@ from typing import Any
 
 import sentry_sdk
 
+from utils.sentry_init import _hash_user_id, _redact_pii_value
+
 logger = logging.getLogger(__name__)
+
+# P2-3（2026-06-23 資安掃描）：這些 extra key 的 value 可能是識別子
+# （rate-limit key = username / IP / line_user_id；jti = token id），以 hash 取代
+# 明文進 Sentry tag（保留 grouping、移除直連 PII）。其餘 key（name / scope /
+# namespace 等非 PII context）保留明文但仍跑 value-level 識別子遮罩兜底。
+_FAIL_OPEN_HASH_KEYS = frozenset({"key", "jti"})
 
 
 def capture_fail_open(operation: str, error: Exception, **extra: Any) -> None:
@@ -30,5 +38,8 @@ def capture_fail_open(operation: str, error: Exception, **extra: Any) -> None:
     with sentry_sdk.push_scope() as scope:
         scope.set_tag("fail_open", operation)
         for k, v in extra.items():
-            scope.set_tag(f"fail_open.{k}", str(v))
+            if k in _FAIL_OPEN_HASH_KEYS:
+                scope.set_tag(f"fail_open.{k}", _hash_user_id(str(v)))
+            else:
+                scope.set_tag(f"fail_open.{k}", _redact_pii_value(str(v)))
         sentry_sdk.capture_exception(error)

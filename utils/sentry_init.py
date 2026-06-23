@@ -84,6 +84,28 @@ _PII_KEY_SUBSTRINGS: frozenset[str] = frozenset(
 
 _FILTERED = "[Filtered]"
 
+# P2-2/P2-10（2026-06-23 資安掃描）：value-level 強識別子遮罩（身分證/手機/市話）。
+# key-based denylist 漏掉「自由文字 value」（reason/note/summary）與「DB 例外訊息」
+# （SQLAlchemy [parameters: {...}]）內嵌的識別子；此層補上。正則對齊 utils/audit_redact
+# （單一語意；sentry_init 為底層模組，不反向 import audit_redact 以免循環）。
+_VALUE_TW_ID_RE = re.compile(r"\b[A-Za-z][12A-Da-d]\d{8}\b")  # 身分證 / 居留證
+_VALUE_MOBILE_RE = re.compile(r"\b09\d{8}\b")  # 手機
+_VALUE_LANDLINE_RE = re.compile(r"\b0\d{1,2}-\d{6,8}\b")  # 市話（帶 dash）
+
+
+def _redact_pii_value(text: Any) -> Any:
+    """遮罩自由文字 / 例外訊息中的強識別子（身分證/居留證、手機、帶 dash 市話）。
+
+    非字串原樣回傳。只遮樣式明確的識別子，避免誤遮操作 id / 數字 / 姓名。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    text = _VALUE_TW_ID_RE.sub(_FILTERED, text)
+    text = _VALUE_MOBILE_RE.sub(_FILTERED, text)
+    text = _VALUE_LANDLINE_RE.sub(_FILTERED, text)
+    return text
+
+
 # Exempt：常見被誤判的 system / metric 欄位（substring 匹配；exempt 優先於 denylist）。
 # 起源：denylist 用 substring 匹配是為涵蓋 `employee_phone` / `parent_email` 等延伸欄位，
 # 副作用是 `ip_address`（含 address）、`health_check`（含 health）、`email_template`（含 email）
@@ -153,6 +175,10 @@ def _scrub_mapping(obj: Any) -> Any:
         }
     if isinstance(obj, list):
         return [_scrub_mapping(item) for item in obj]
+    # P2-10：對 string value 跑 value-level 識別子遮罩（key 非 PII 時的兜底，
+    # 遮自由文字 reason/note/summary 內的手機/身分證/市話）。
+    if isinstance(obj, str):
+        return _redact_pii_value(obj)
     return obj
 
 
@@ -212,6 +238,14 @@ def _scrub_event(event: dict, _hint: dict | None = None) -> dict | None:
                     crumb["data"] = _scrub_mapping(crumb["data"])
                 if isinstance(crumb.get("message"), str):
                     crumb["message"] = _sanitize_url(crumb["message"])
+
+    # P2-2：DB 例外訊息（SQLAlchemy StatementError 含 [parameters: {...}]）的 value
+    # 不在 request/extra 內，需單獨對 exception.values[].value 跑識別子遮罩。
+    exc = event.get("exception")
+    if isinstance(exc, dict) and isinstance(exc.get("values"), list):
+        for ev in exc["values"]:
+            if isinstance(ev, dict) and isinstance(ev.get("value"), str):
+                ev["value"] = _redact_pii_value(ev["value"])
     return event
 
 

@@ -52,9 +52,17 @@ def test_capture_fail_open_extra_tags_prefixed_and_stringified():
             key="ip:1.2.3.4",
             count=42,
         )
+        # P2-3（2026-06-23 資安掃描）：name/count 非識別子保留明文；
+        # key（可能含 username / IP / line_user_id）改 hash，不得以明文進 Sentry tag。
         fake_scope.set_tag.assert_any_call("fail_open.name", "login")
-        fake_scope.set_tag.assert_any_call("fail_open.key", "ip:1.2.3.4")
         fake_scope.set_tag.assert_any_call("fail_open.count", "42")
+        key_calls = [
+            c
+            for c in fake_scope.set_tag.call_args_list
+            if c.args and c.args[0] == "fail_open.key"
+        ]
+        assert key_calls, "應有 fail_open.key tag"
+        assert "1.2.3.4" not in key_calls[0].args[1], "key 識別子不得明文進 tag"
 
 
 def test_capture_fail_open_no_extra_works():
