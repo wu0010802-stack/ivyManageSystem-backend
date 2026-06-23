@@ -1051,6 +1051,28 @@ def pos_checkout(
             if body.idempotency_key and "idempotency_key" in str(e.orig).lower():
                 existing = _find_idempotent_hit(session, body.idempotency_key)
                 if existing is not None:
+                    # 內容守衛：與前置 replay 守衛（見上方 _request_content_signature
+                    # 比對）對齊。並發 race 下兩筆同 key 但內容不同時，loser 撞
+                    # UNIQUE 後若直接 replay winner 的收據，會誤判自己（不同
+                    # 項目/金額/類型/日期）的收/退款已成功 → 帳實不符。內容不符
+                    # 回 409，要求換 key 重送。
+                    if _request_content_signature(body) != _receipt_content_signature(
+                        session, existing
+                    ):
+                        logger.warning(
+                            "POS checkout UNIQUE race content mismatch: "
+                            "key=%s operator=%s",
+                            body.idempotency_key,
+                            operator,
+                        )
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                "idempotency_key 已用於不同內容的收據"
+                                "（項目/金額/付款類型/付款日期不符）；"
+                                "若需建立新交易，請使用新的 idempotency_key 重送"
+                            ),
+                        )
                     replay = _parse_receipt_response_from_record(session, existing)
                     if replay is not None:
                         logger.info(

@@ -878,6 +878,80 @@ class TestPOSIdempotency:
         with sf() as s:
             assert s.query(ActivityPaymentRecord).count() == 2
 
+    def test_unique_race_content_mismatch_returns_409(self, pos_client):
+        """併發同 idempotency_key 但內容不同：loser 撞 DB UNIQUE 補救路徑時，
+        不可把 winner 的收據當成自己交易成功（會誤判收/退款認知），須回 409。
+
+        模擬 race：loser 的前置冪等檢查在 winner 尚未可見時先跑（miss），
+        一路到 commit 撞 UNIQUE → IntegrityError 補救路徑。前置守衛（replay 前）
+        已比對內容簽章，補救路徑也必須比對，否則漂移成靜默 replay 別人的收據。
+        """
+        from unittest import mock
+
+        import api.activity.pos as pos_mod
+
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s)
+            reg_a = _setup_reg(
+                s, student_name="甲生", course_name="美術", supply_name="畫具A"
+            )
+            reg_b = _setup_reg(
+                s, student_name="乙生", course_name="勞作", supply_name="畫具B"
+            )
+            s.commit()
+            reg_a_id, reg_b_id = reg_a.id, reg_b.id
+        assert _login(client).status_code == 200
+
+        key = "race-shared-key-001"
+        winner = client.post(
+            "/api/activity/pos/checkout",
+            json={
+                "items": [{"registration_id": reg_a_id, "amount": 1000}],
+                "payment_method": "現金",
+                "payment_date": date.today().isoformat(),
+                "idempotency_key": key,
+            },
+        )
+        assert winner.status_code == 201
+        winner_receipt = winner.json()["receipt_no"]
+
+        # 模擬 race window：前置 _find_idempotent_hit（第 1 次呼叫）回 None、
+        # _has_any_record_for_key 回 False → loser 一路 commit 撞 UNIQUE；
+        # 補救路徑的 _find_idempotent_hit（第 2 次呼叫）走真實查詢找到 winner。
+        real_hit = pos_mod._find_idempotent_hit
+        state = {"n": 0}
+
+        def fake_hit(session, k):
+            state["n"] += 1
+            if state["n"] == 1:
+                return None
+            return real_hit(session, k)
+
+        with (
+            mock.patch.object(pos_mod, "_find_idempotent_hit", side_effect=fake_hit),
+            mock.patch.object(pos_mod, "_has_any_record_for_key", return_value=False),
+        ):
+            loser = client.post(
+                "/api/activity/pos/checkout",
+                json={
+                    "items": [{"registration_id": reg_b_id, "amount": 777}],
+                    "payment_method": "現金",
+                    "payment_date": date.today().isoformat(),
+                    "idempotency_key": key,
+                },
+            )
+
+        assert loser.status_code == 409, loser.json()
+        assert loser.json().get("receipt_no") != winner_receipt
+        # winner 收款未被污染、loser 交易未建立
+        with sf() as s:
+            assert s.query(ActivityPaymentRecord).count() == 1
+            a = s.query(ActivityRegistration).filter_by(id=reg_a_id).one()
+            b = s.query(ActivityRegistration).filter_by(id=reg_b_id).one()
+            assert a.paid_amount == 1000
+            assert (b.paid_amount or 0) == 0
+
 
 # ── 收據編號 ───────────────────────────────────────────────────────
 
