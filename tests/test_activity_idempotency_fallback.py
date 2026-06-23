@@ -346,6 +346,124 @@ class TestAddRegistrationPaymentNoKeyDedup:
                 payments[0].payment_date == yesterday
             ), "第一筆日期應保持，不可被第二筆覆寫"
 
+    def test_with_key_race_fallback_different_payment_date_rejected(
+        self, idk_client, monkeypatch
+    ):
+        """Finding (P1)：帶 idempotency_key 的單筆繳費 race fallback 路徑漏比
+        payment_date。
+
+        當兩個併發請求都先通過 `_find_idempotent_hit` 前置檢查（race window
+        內彼此都還沒看到對方已寫入的紀錄），第二個在 commit 撞 DB UNIQUE 約束
+        → 走 IntegrityError fallback。此 fallback 原本只比 reg/type/amount，
+        漏比 payment_date → 同 key 但不同帳務日的第二筆會被誤判為 replay 回 201、
+        沿用第一筆的舊日期，日結/報表記到錯誤日期錯帳。
+
+        用 monkeypatch 把 `_find_idempotent_hit`→None、`_has_any_record_for_key`
+        →False，精確模擬 race window（兩請求都還沒看到對方的已寫入紀錄、都通過
+        前置檢查），讓第二筆必走 commit 撞 UNIQUE 的 fallback。
+
+        修前 → fallback context 守衛漏 payment_date，第二筆回 201 replay。
+        修後 → fallback 對齊正常路徑（_assert_idempotency_context_match 含
+        payment_date），第二筆回 409；DB 仍只 1 筆（第一筆日期未被覆寫）。"""
+        from datetime import timedelta
+
+        import api.activity.pos as pos_mod
+
+        client, sf = idk_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, paid_amount=0)
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        base = {
+            "type": "payment",
+            "amount": 500,
+            "payment_method": "現金",
+            "notes": "",
+            "idempotency_key": "REG-PAY-RACE-DATE-0001",
+        }
+
+        # 模擬 race window：兩請求都先過前置檢查（看不到對方已寫入的紀錄），
+        # 第二筆在 commit 撞 UNIQUE → 走 IntegrityError fallback。
+        monkeypatch.setattr(pos_mod, "_find_idempotent_hit", lambda *a, **k: None)
+        monkeypatch.setattr(pos_mod, "_has_any_record_for_key", lambda *a, **k: False)
+
+        res1 = client.post(
+            f"/api/activity/registrations/{reg_id}/payments",
+            json={**base, "payment_date": yesterday.isoformat()},
+        )
+        assert res1.status_code == 201, res1.text
+        # 同 key、同額、不同日 → fallback 路徑也須視為 key 誤用（內容不符），回 409
+        res2 = client.post(
+            f"/api/activity/registrations/{reg_id}/payments",
+            json={**base, "payment_date": today.isoformat()},
+        )
+        assert res2.status_code == 409, res2.text
+
+        with sf() as s:
+            payments = (
+                s.query(ActivityPaymentRecord)
+                .filter(ActivityPaymentRecord.registration_id == reg_id)
+                .all()
+            )
+            assert len(payments) == 1, f"應只建立第一筆，實際 {len(payments)} 筆"
+            assert (
+                payments[0].payment_date == yesterday
+            ), "第一筆日期應保持，不可被第二筆 race fallback 覆寫"
+
+    def test_with_key_race_fallback_genuine_duplicate_replays(
+        self, idk_client, monkeypatch
+    ):
+        """race fallback 的正向路徑：同 key/reg/type/amount/payment_date 的真重送，
+        在 race window 撞 DB UNIQUE 時應 idempotent replay 回 201（不建立第二筆、
+        不誤判 409）。
+
+        同時驗證 reachability 修補：修前 fallback 因 IntegrityError 在
+        `_calc_total_amount` 的 autoflush（try 之外）逸出而形同虛設，連真重送都會
+        500；修後 try 涵蓋 autoflush，fallback 真正接住碰撞 → 正確 replay。"""
+        import api.activity.pos as pos_mod
+
+        client, sf = idk_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, paid_amount=0)
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+
+        body = {
+            "type": "payment",
+            "amount": 500,
+            "payment_date": date.today().isoformat(),
+            "payment_method": "現金",
+            "notes": "",
+            "idempotency_key": "REG-PAY-RACE-DUP-0001",
+        }
+        monkeypatch.setattr(pos_mod, "_find_idempotent_hit", lambda *a, **k: None)
+        monkeypatch.setattr(pos_mod, "_has_any_record_for_key", lambda *a, **k: False)
+
+        res1 = client.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
+        res2 = client.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
+        assert res1.status_code == 201, res1.text
+        # 內容完全相同 → fallback idempotent replay，非 500、非 409
+        assert res2.status_code == 201, res2.text
+
+        with sf() as s:
+            payments = (
+                s.query(ActivityPaymentRecord)
+                .filter(ActivityPaymentRecord.registration_id == reg_id)
+                .all()
+            )
+            assert len(payments) == 1, f"真重送只應 1 筆，實際 {len(payments)} 筆"
+            reg = s.query(ActivityRegistration).get(reg_id)
+            assert reg.paid_amount == 500, "paid_amount 只應 +500 一次（未雙扣）"
+
     def test_different_amount_without_key_not_deduped(self, idk_client):
         """無 key 但金額不同的兩筆繳費是合法的兩筆，不可被誤殺。"""
         client, sf = idk_client

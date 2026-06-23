@@ -297,6 +297,36 @@ def get_registration_payments(
 _IDEMPOTENCY_WINDOW_SECONDS = 600
 
 
+def _assert_idempotency_context_match(
+    hit: ActivityPaymentRecord,
+    registration_id: int,
+    body: AddPaymentRequest,
+) -> None:
+    """命中既有紀錄須與本請求屬同一筆邏輯交易，否則 409（視為 idempotency_key 誤用）。
+
+    比對 (registration_id, type, amount, payment_date)，對齊 POS checkout 的內容簽章
+    (_request_content_signature)。payment_date 必須納入：同 key 但不同帳務日是不同交易
+    （補登昨天 vs 今天），漏比會把第二筆當 replay 沿用第一筆的舊紀錄 → 日結/報表記到
+    錯誤日期錯帳。正常 replay 與 DB-UNIQUE 併發 race fallback 兩條路徑共用此守衛，
+    避免任一路徑漂移（Finding P1，2026-06-23：fallback 原僅比 reg/type/amount、漏比
+    payment_date）。
+    """
+    if (
+        hit.registration_id != registration_id
+        or hit.type != body.type
+        or hit.amount != body.amount
+        or hit.payment_date != body.payment_date
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"idempotency_key 已用於 registration {hit.registration_id} "
+                f"（{hit.type} NT${hit.amount} on {hit.payment_date}），"
+                "不可重複用於本請求；若為不同交易請改用新 key"
+            ),
+        )
+
+
 @router.post(
     "/registrations/{registration_id}/payments",
     status_code=201,
@@ -336,24 +366,9 @@ def add_registration_payment(
                     ),
                 )
             if hit is not None:
-                # 上下文一致才 replay；不一致視為 key 誤用。payment_date 也納入比對：
-                # 同 key 但不同帳務日是不同交易（補登昨天 vs 今天），若漏比會把第二
-                # 筆當 replay 沿用舊紀錄 → 日結/報表記到舊日期錯帳。對齊 POS checkout
-                # 的內容簽章（_request_content_signature 含 payment_date）。
-                if (
-                    hit.registration_id != registration_id
-                    or hit.type != body.type
-                    or hit.amount != body.amount
-                    or hit.payment_date != body.payment_date
-                ):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            f"idempotency_key 已用於 registration {hit.registration_id} "
-                            f"（{hit.type} NT${hit.amount} on {hit.payment_date}），"
-                            "不可重複用於本請求；若為不同交易請改用新 key"
-                        ),
-                    )
+                # 上下文一致才 replay；不一致視為 key 誤用。與下方 DB-UNIQUE race
+                # fallback 共用 _assert_idempotency_context_match（含 payment_date）。
+                _assert_idempotency_context_match(hit, registration_id, body)
                 reg_hit = (
                     session.query(ActivityRegistration)
                     .filter(ActivityRegistration.id == hit.registration_id)
@@ -501,23 +516,27 @@ def add_registration_payment(
             # max(0, ...) 防禦：即使驗證通過到執行之間狀態被搶改，也不會變負。
             reg.paid_amount = max(0, (reg.paid_amount or 0) - body.amount)
 
-        total_amount = _calc_total_amount(session, registration_id)
-        reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
-
         type_label = "繳費" if body.type == "payment" else "退費"
-        activity_service.log_change(
-            session,
-            registration_id,
-            reg.student_name,
-            f"新增{type_label}記錄",
-            f"{type_label} NT${body.amount}，繳費方式：{body.payment_method}",
-            operator,
-        )
         try:
+            # try 必須從這裡起：_calc_total_amount 的 query 會 autoflush 上方 add 的
+            # rec，DB 層 UNIQUE(idempotency_key) 的併發碰撞即在此 INSERT 觸發（而非稍後
+            # 的 session.commit()）。若 try 只包 commit，IntegrityError 會在 autoflush
+            # 處逸出成未捕捉的 500，底下的 idempotent replay fallback 永遠跑不到。
+            total_amount = _calc_total_amount(session, registration_id)
+            reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
+            activity_service.log_change(
+                session,
+                registration_id,
+                reg.student_name,
+                f"新增{type_label}記錄",
+                f"{type_label} NT${body.amount}，繳費方式：{body.payment_method}",
+                operator,
+            )
             session.commit()
         except IntegrityError as e:
-            # DB 層 UNIQUE 攔下並發同 idempotency_key 的第二筆：轉為 idempotent replay
-            # 重要：必須驗證 (registration_id, type, amount) 一致，否則視為 key 誤用
+            # DB 層 UNIQUE 攔下並發同 idempotency_key 的第二筆：轉為 idempotent replay。
+            # 上下文守衛與正常 replay 路徑共用 _assert_idempotency_context_match
+            # （含 payment_date），不一致視為 key 誤用回 409。
             session.rollback()
             if body.idempotency_key and "idempotency_key" in str(e.orig).lower():
                 hit = (
@@ -529,19 +548,7 @@ def add_registration_payment(
                     .first()
                 )
                 if hit is not None:
-                    if (
-                        hit.registration_id != registration_id
-                        or hit.type != body.type
-                        or hit.amount != body.amount
-                    ):
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                f"idempotency_key 已用於 registration "
-                                f"{hit.registration_id}（{hit.type} NT${hit.amount}），"
-                                f"不可重複用於本請求"
-                            ),
-                        )
+                    _assert_idempotency_context_match(hit, registration_id, body)
                     reg_hit = (
                         session.query(ActivityRegistration)
                         .filter(ActivityRegistration.id == hit.registration_id)
