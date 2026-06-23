@@ -196,6 +196,36 @@ class BonusTypeCreate(BaseModel):
     sort_order: int = 0
 
 
+# ---- Response models（契約收斂試點 2026-06-23）----
+# 只為前端真正消費、且無 `{}` empty-sentinel 風險的 GET 端點補 response_model，
+# 讓 OpenAPI → schema.d.ts 產出具名型別（取代 unknown）。欄位需精準對齊 router
+# 回傳 dict 的 key 集合與型別，否則 FastAPI 會靜默丟欄/改形狀。
+
+
+class JobTitleOut(BaseModel):
+    """GET /titles 回傳的職稱項目。"""
+
+    id: int
+    name: str
+    bonus_grade: Optional[str] = None
+
+
+class GradeTargetOut(BaseModel):
+    """GET /grade-targets 的值物件（dict key 為 grade_name）。
+
+    festival_* / overtime_* 為 Integer 欄（default 0）；以 Optional 接 None 防
+    legacy 空值觸發 response_model 驗證 500。
+    """
+
+    id: int
+    festival_two_teachers: Optional[int] = None
+    festival_one_teacher: Optional[int] = None
+    festival_shared: Optional[int] = None
+    overtime_two_teachers: Optional[int] = None
+    overtime_one_teacher: Optional[int] = None
+    overtime_shared: Optional[int] = None
+
+
 # PositionSalaryUpdate / PositionSalarySyncRequest 已搬到 .position_salary 子模組。
 # LineConfigRead / LineConfigUpdate 已搬到 .line 子模組（檔尾 include_router 接回）。
 
@@ -340,7 +370,7 @@ def update_attendance_policy(
 # /bonus 路由已搬到 .bonus 子模組。
 
 
-@router.get("/grade-targets")
+@router.get("/grade-targets", response_model=dict[str, GradeTargetOut])
 def get_grade_targets(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
@@ -758,7 +788,7 @@ def get_all_configs(
 # ============ Job Titles ============
 
 
-@router.get("/titles")
+@router.get("/titles", response_model=list[JobTitleOut])
 def get_job_titles(
     current_user: dict = Depends(require_staff_permission(Permission.SETTINGS_READ)),
 ):
