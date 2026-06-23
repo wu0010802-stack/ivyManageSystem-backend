@@ -147,12 +147,17 @@ def _serialize_close(row: ActivityPosDailyClose) -> dict:
         "by_method": by_method_net,
         "actual_cash_count": row.actual_cash_count,
         "cash_variance": row.cash_variance,
+        # 已簽核：盤點僅在簽核 pending 日時強制，唯讀檢視不需再 gate。
+        "cash_count_required": False,
     }
 
 
 def _live_preview(session, target_date: date) -> dict:
     """未簽核日的即時 preview：沿用 compute_daily_snapshot 的 by_method_net 結構。"""
     snap = compute_daily_snapshot(session, target_date)
+    # 盤點門檻以現金毛流量判定（與 approve 守衛同一口徑），供前端決定是否必填
+    # actual_cash_count；by_method 顯示仍維持淨額不變。
+    cash_gross_flow = int(snap.get("by_method_gross_flow", {}).get(_CASH_METHOD_KEY, 0))
     return {
         "date": target_date.isoformat(),
         "is_approved": False,
@@ -168,6 +173,7 @@ def _live_preview(session, target_date: date) -> dict:
         "by_method": snap["by_method_net"],
         "actual_cash_count": None,
         "cash_variance": None,
+        "cash_count_required": cash_gross_flow >= _CASH_COUNT_REQUIRED_THRESHOLD,
     }
 
 

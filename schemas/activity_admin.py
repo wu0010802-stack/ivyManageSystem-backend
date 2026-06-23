@@ -783,6 +783,11 @@ class PosDailyCloseOut(IvyBaseModel):
     by_method: dict[str, int]
     actual_cash_count: Optional[int] = None
     cash_variance: Optional[int] = None
+    # 後端權威的盤點門檻判定：現金毛流量（payment_gross + refund_gross）≥ 門檻時為
+    # True，前端據此決定 actual_cash_count 是否必填，避免前端用淨額自行推算與後端
+    # approve 守衛（用毛流量）口徑不一致 → 確認後才 400。已簽核（_serialize_close）
+    # 一律 False：盤點僅在簽核 pending 日時強制，唯讀檢視不需再 gate。
+    cash_count_required: bool = False
 
 
 class PosDailyCloseApproveOut(PosDailyCloseOut):
