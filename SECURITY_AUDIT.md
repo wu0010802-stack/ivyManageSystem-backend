@@ -632,11 +632,17 @@ Migration `20260511_a1p2p3r4i5s6_appraisal_init.py:292-296` 將
 | P2-5 / P2-6 home/summary + class-hub + medications/today 醫療 §6 留痕缺 + home 過敏遮罩缺 | ✅ 已修 | 三端點補 `emit_batch_medical_access_log`；home/summary 加 `can_view_student_health` 遮罩 | BE ee7a473f |
 | P2-8 WS 連線後不重驗 token | ✅ 已修 | `run_ws_connection` 加 verify 回調 + 周期重驗（≤60s）；contact_book_ws 接入。close_user_connections / dismissal_ws 為 follow-up | BE b045f2aa |
 | P2-2 / P2-3 / P2-10 Sentry value-level PII 漏遮（exception.value / fail_open tag / 自由文字）| ✅ 已修 | `_redact_pii_value` + `_scrub_mapping`/`_scrub_event` 各跑一層；fail_open key/jti hash。前端 sentry.ts value-level 為 follow-up | BE 0aaa4cbb |
+| P3-6 system-config prefix LIKE 萬用字元未轉義 | ✅ 已修 | `escape_like_pattern` + escape char（對照 audit.py），prefix 字面比對 | BE ab057901 |
+| P3-3(b) 廠商付款已簽收後附件仍可增刪 | ✅ 已修 | upload/delete attachment 補 `status != "pending"` 守衛（對齊 update/delete/sign）| BE a77e0677 |
+| P3-4 官方行事曆二級 SSRF（resourceDownloadUrl 無 host 白名單）| ✅ 已修 | `_is_allowed_calendar_url`（政府域白名單 + 封鎖私有/loopback IP），請求前驗 | BE 0cb81adb |
 
 ## 暫緩（需 spec + 業主裁定）
 
 - **P2-1 管理角色 scope 逐筆學生端點 IDOR**：看似「逐筆補 `code=`」，實為 `resolve_grant` bare=all 語義 + `is_unrestricted` 被 `assert_all_scope`（純 scope）與 `assert_student_access`（role+scope）共用的語義衝突重構，涉 92 caller、改 code 會反轉 principal 行為（破壞 `test_principal_cannot_issue_cross_class`）。需業主裁定權限語義 + 獨立 spec。
 
-## 剩餘加固（T-3，未做）
+## 剩餘加固（T-3，P3-6 / P3-3b / P3-4 已修見上表；以下未做）
 
-廠商付款 SoD（自建自簽、無 `created_by != signer` / 大額二簽）+ 已簽收附件未鎖 status；多個未認證公開 GET 端點無 per-IP 限流；`services/official_calendar.py` 跟隨 `resourceDownloadUrl` 二級 SSRF 無 host 白名單；`api/system_config.py` prefix LIKE 萬用字元未轉義；`python-multipart>=0.0.27` 下限過寬（升 ≥0.0.31 + starlette pin）；家長 PII GC 不撤 ParentRefreshToken（RA-MED-7）；LINE id_token replay cache per-worker；parent api sessionStorage 殘留路徑 id。
+- **需業主裁定**：P3-3(a) 廠商付款 SoD（自建自簽，是否要 `created_by != signer` / 大額二簽——小園所可能單人操作）；P3-5 家長 PII GC 撤 ParentRefreshToken（RA-MED-7，已知追蹤，8h 絕對壽命已緩解）。
+- **需 migration**：P3-2 LINE id_token replay 改 DB dedup（per-worker cache，單 worker 暴露面小）。
+- **低價值 / 有緩解**：P3-3(c) 多個未認證公開 GET 端點無 per-IP 限流（ETag/cache 已緩解）；P3-3(d) WS handshake 無限流；parent api sessionStorage 殘留路徑 id（前端）。
+- **無法證實（暫不動）**：P3-7 `python-multipart` 報告引用 CVE-2026-53538/9/40 超出知識截止、pip-audit 未安裝無法 runtime 證實；實裝 0.0.29 / starlette 1.1.0 與報告版本號（starlette 0.50.0）不符。待 CI pip-audit 實測確認後再收緊約束。
