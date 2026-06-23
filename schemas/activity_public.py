@@ -265,6 +265,8 @@ class PublicCoursesItemOut(IvyBaseModel):
     meeting_weekday: Optional[int] = None
     meeting_start_time: Optional[str] = None
     meeting_end_time: Optional[str] = None
+    instructor_name: Optional[str] = None
+    next_session_date: Optional[str] = None  # 下次上課 ISO date（無排程則 None）
 
 
 class PublicSuppliesItemOut(IvyBaseModel):

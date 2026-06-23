@@ -730,6 +730,33 @@ def _batch_calc_total_amounts(session, reg_ids: list) -> dict:
     }
 
 
+def _next_session_dates(session, course_ids) -> dict:
+    """各課程『下次上課』日期（>= 今日台灣時間的最早 ActivitySession），無排程則缺。
+
+    一次 GROUP BY min(session_date) 取代逐課 N+1。回 {course_id: "YYYY-MM-DD"}。
+    供 catalog（公開 / 家長端）課程卡顯示「下次上課」。
+    """
+    from utils.taipei_time import today_taipei
+
+    ids = list(course_ids or [])
+    if not ids:
+        return {}
+    today = today_taipei()
+    rows = (
+        session.query(
+            ActivitySession.course_id,
+            func.min(ActivitySession.session_date),
+        )
+        .filter(
+            ActivitySession.course_id.in_(ids),
+            ActivitySession.session_date >= today,
+        )
+        .group_by(ActivitySession.course_id)
+        .all()
+    )
+    return {cid: d.isoformat() for cid, d in rows if d is not None}
+
+
 def _build_registration_filter_query(
     session,
     *,

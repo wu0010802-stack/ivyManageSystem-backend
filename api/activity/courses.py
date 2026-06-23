@@ -134,6 +134,7 @@ def get_courses(
                         if c.meeting_end_time
                         else None
                     ),
+                    "instructor_name": c.instructor_name,
                     "enrolled": enrolled,
                     "promoted_pending": promoted_pending,
                     "waitlist_count": waitlist,
@@ -179,6 +180,7 @@ def get_course_detail(
             "video_url": c.video_url or "",
             "allow_waitlist": c.allow_waitlist,
             "description": c.description or "",
+            "instructor_name": c.instructor_name,
         }
     finally:
         session.close()
@@ -224,6 +226,7 @@ def create_course(
             meeting_weekday=body.meeting_weekday,
             meeting_start_time=body.meeting_start_time,
             meeting_end_time=body.meeting_end_time,
+            instructor_name=body.instructor_name,
         )
         session.add(course)
         session.commit()
@@ -324,6 +327,7 @@ def copy_courses_from_previous(
                         meeting_weekday=src.meeting_weekday,
                         meeting_start_time=src.meeting_start_time,
                         meeting_end_time=src.meeting_end_time,
+                        instructor_name=src.instructor_name,
                     )
                     session.add(new_course)
                     session.flush()

@@ -64,6 +64,9 @@ class ActivityCourse(Base):
     meeting_weekday = Column(Integer, nullable=True, comment="上課星期（0=Mon, 6=Sun）")
     meeting_start_time = Column(Time, nullable=True, comment="上課起始時刻")
     meeting_end_time = Column(Time, nullable=True, comment="上課結束時刻")
+    # 講師姓名（前台 advisory 顯示）。才藝老師常為外聘、非員工，故用自由字串而非
+    # employee FK；日後若要接員工/薪資再升級為關聯。migration: actvinstr01
+    instructor_name = Column(String(50), nullable=True, comment="講師姓名")
 
     created_at = Column(DateTime, default=now_taipei_naive)
     updated_at = Column(DateTime, default=now_taipei_naive, onupdate=now_taipei_naive)
