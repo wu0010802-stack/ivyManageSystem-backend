@@ -34,6 +34,7 @@ from models.database import (
     Classroom,
     DisciplinaryAction,
     Employee,
+    SalaryRecord,
     Student,
     User,
 )
@@ -184,3 +185,53 @@ def test_simulate_deducts_pending_discipline_from_bonus(sim_client):
         assert (
             action.applied_to_salary_id is None
         ), "simulate 不應標記懲處為已抵扣（no-write 沙盒）"
+
+
+def test_simulate_passes_override_aware_supplementary_basis(sim_client, monkeypatch):
+    """qa-loop #7：simulate 的補充保費基底須傳「覆寫感知總額」，與 _finalize_breakdown 口徑一致。
+
+    員工有 manual_override 的獎金欄位（HR 手填）時，引擎落帳用 record 持久化覆寫值算補充
+    保費基底；simulate 原未傳 breakdown_bonus_total_override → 用引擎重算值 → 試算顯示的
+    補充保費與實算對 override 員工不一致。補傳覆寫感知總額。
+    """
+    client, sf = sim_client
+    _login_admin(client, sf)
+    with sf() as s:
+        emp_id = _seed_teacher_with_class(s)
+        # 持久化 2026/2 record，festival_bonus 經 HR 手動覆寫為極大值
+        s.add(
+            SalaryRecord(
+                employee_id=emp_id,
+                salary_year=2026,
+                salary_month=2,
+                festival_bonus=999999,
+                manual_overrides=["festival_bonus"],
+                is_finalized=False,
+            )
+        )
+        s.commit()
+
+    import services.salary.supplementary_premium as sup_mod
+
+    captured = {}
+    orig = sup_mod.apply_bonus_supplementary_to_breakdown
+
+    def _spy(*args, **kwargs):
+        captured["override"] = kwargs.get("breakdown_bonus_total_override", "MISSING")
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(sup_mod, "apply_bonus_supplementary_to_breakdown", _spy)
+
+    res = client.post(
+        "/api/salaries/simulate",
+        json={"employee_id": emp_id, "year": 2026, "month": 2},
+    )
+    assert res.status_code == 200, res.text
+    # 修補前：simulate 未傳此 kwarg → MISSING；修補後：傳覆寫感知總額（含 festival 覆寫 999999）
+    assert captured.get("override") not in (
+        None,
+        "MISSING",
+    ), "simulate 未傳 breakdown_bonus_total_override（補充保費基底未覆寫感知，與實算不一致）"
+    assert (
+        captured["override"] >= 999999
+    ), f"覆寫感知總額應含 festival_bonus 覆寫值 999999，實得 {captured['override']}"

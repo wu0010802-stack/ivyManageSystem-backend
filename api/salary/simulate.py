@@ -362,6 +362,12 @@ def simulate_salary(
             apply_bonus_supplementary_to_breakdown,
         )
 
+        # qa-loop #7：與 engine._finalize_breakdown 口徑一致——補充保費基底用「覆寫感知」
+        # 總額（manual_overrides 內的獎金欄位用 record 持久化覆寫值）。否則對有 HR 手動
+        # 覆寫獎金的員工，simulate 顯示的補充保費會用引擎重算值、與實算（用覆寫值）不一致。
+        bonus_total_override = engine._bonus_total_with_manual_overrides(
+            session, emp.id, year, month, breakdown
+        )
         apply_bonus_supplementary_to_breakdown(
             session,
             emp_dict,
@@ -370,6 +376,7 @@ def simulate_salary(
             month,
             engine.insurance_service,
             emp.id,
+            breakdown_bonus_total_override=bonus_total_override,
         )
 
         breakdown.absent_count = absent_count
