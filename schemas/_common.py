@@ -55,6 +55,24 @@ class ImportResultOut(IvyBaseModel):
     failed: list[ImportFailureItem]
 
 
+class BatchApproveFailItem(IvyBaseModel):
+    """批次核准/駁回單筆失敗紀錄 — {id, reason}。"""
+
+    id: int
+    reason: str
+
+
+class BatchApproveResultOut(IvyBaseModel):
+    """批次核准/駁回回傳共用 shape — {succeeded, failed}。
+
+    succeeded 為成功處理的紀錄 id 清單；failed 為失敗明細（id + 原因）。
+    leaves / overtimes / punch_corrections 三個 batch-approve 端點回傳形狀一致，共用此 schema。
+    """
+
+    succeeded: list[int]
+    failed: list[BatchApproveFailItem]
+
+
 class OkStatusOut(IvyBaseModel):
     """純 {status: "ok"} 共用 shape (家長端常用)。"""
 

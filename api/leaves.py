@@ -44,7 +44,7 @@ from models.database import (
     User,
 )
 from models.approval import ApprovalStatus
-from schemas._common import MutationResultOut
+from schemas._common import BatchApproveResultOut, MutationResultOut
 from schemas.leaves import (
     LeaveApproveResultOut,
     LeaveDeleteResultOut,
@@ -1818,7 +1818,7 @@ def approve_leave(
         session.close()
 
 
-@router.post("/leaves/batch-approve")
+@router.post("/leaves/batch-approve", response_model=BatchApproveResultOut)
 def batch_approve_leaves(
     data: LeaveBatchApproveRequest,
     request: Request,
