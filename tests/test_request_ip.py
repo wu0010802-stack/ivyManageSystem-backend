@@ -311,3 +311,58 @@ class TestGetClientIp:
         assert all(
             r == "203.0.113.99" for r in results
         ), f"多次呼叫結果不一致：{results}"
+
+
+# ── P2-7 啟動告警：未明設可信代理時 prod log 可見 ─────────────────────────────
+
+
+class TestWarnIfTrustedProxiesUnset:
+    """P2-7（2026-06-23 全系統資安掃描）：_parse_trusted_proxies 的 fallback warning
+    因 get_client_ip 在未明設時短路 return 而成死碼，runbook「看 log 無警告＝生效」
+    永不觸發。改由啟動時主動檢查 _has_explicit_trusted_proxies()，使「乾淨啟動 log
+    ＝已設 edge CIDR」真正成立。"""
+
+    def test_warns_when_wildcard(self, monkeypatch, caplog):
+        """預設 '*'（未明設）→ 啟動告警含 TRUSTED_PROXY_IPS 指引。"""
+        monkeypatch.setenv("TRUSTED_PROXY_IPS", "*")
+        from config import reset_for_tests
+
+        reset_for_tests()
+        mod = _reload_request_ip()
+
+        with caplog.at_level(logging.WARNING, logger="utils.request_ip"):
+            mod.warn_if_trusted_proxies_unset()
+
+        assert any(
+            "TRUSTED_PROXY_IPS" in r.message for r in caplog.records
+        ), caplog.text
+
+    def test_warns_when_empty(self, monkeypatch, caplog):
+        """空字串（未設）→ 同樣告警。"""
+        monkeypatch.setenv("TRUSTED_PROXY_IPS", "")
+        from config import reset_for_tests
+
+        reset_for_tests()
+        mod = _reload_request_ip()
+
+        with caplog.at_level(logging.WARNING, logger="utils.request_ip"):
+            mod.warn_if_trusted_proxies_unset()
+
+        assert any(
+            "TRUSTED_PROXY_IPS" in r.message for r in caplog.records
+        ), caplog.text
+
+    def test_no_warn_when_explicit_cidr(self, monkeypatch, caplog):
+        """明設合法 CIDR → 不告警（乾淨啟動 log ＝ 設定生效）。"""
+        monkeypatch.setenv("TRUSTED_PROXY_IPS", "1.2.3.0/24")
+        from config import reset_for_tests
+
+        reset_for_tests()
+        mod = _reload_request_ip()
+
+        with caplog.at_level(logging.WARNING, logger="utils.request_ip"):
+            mod.warn_if_trusted_proxies_unset()
+
+        assert not any(
+            "TRUSTED_PROXY_IPS" in r.message for r in caplog.records
+        ), caplog.text

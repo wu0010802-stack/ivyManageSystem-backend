@@ -133,6 +133,30 @@ def _has_explicit_trusted_proxies() -> bool:
     return False
 
 
+def warn_if_trusted_proxies_unset() -> None:
+    """啟動告警（P2-7，2026-06-23 全系統資安掃描）。
+
+    未明設可信代理（空 / "*" / 全無效 token）時，get_client_ip 忽略轉發標頭直接回直連
+    peer。部署在反向代理（如 Zeabur edge）後，所有外部請求的 peer 都是同一內網 NAT 出口
+    IP → per-IP 限流 / audit IP 塌成單一共享桶（易被單點打爆成全站 429，暴力破解防護
+    喪失 per-attacker 隔離）。
+
+    _parse_trusted_proxies 的同類 fallback warning 因 get_client_ip 在未明設時短路
+    return 而成死碼（永不觸發）；改由啟動時主動檢查，使「乾淨啟動 log ＝ 已設 edge CIDR」
+    這條 runbook 驗證步驟真正成立。啟動僅呼叫一次，無洗版疑慮。
+    """
+    if _has_explicit_trusted_proxies():
+        return
+    raw = (settings.network.trusted_proxy_ips or "").strip()
+    logger.warning(
+        "TRUSTED_PROXY_IPS 未明設可信代理（目前值 %r）：反向代理（如 Zeabur edge）後，"
+        "per-IP 限流 / audit IP 將以直連 peer（內網 NAT 出口）為 key，全體外部請求共用"
+        "單一限流桶，易被單點打爆成全站 429，且暴力破解防護喪失 per-attacker 隔離。"
+        "prod 請把 TRUSTED_PROXY_IPS 設為 edge 出口 CIDR（搭配 RATE_LIMIT_BACKEND=postgres）。",
+        raw or "(空)",
+    )
+
+
 def get_client_ip(request: Request) -> Optional[str]:
     """回傳 best-effort 客戶端 IP；無法判定時回傳 None（不要回傳 'unknown' 字串）。
 

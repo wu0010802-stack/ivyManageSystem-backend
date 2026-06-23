@@ -240,6 +240,12 @@ def on_startup():
     except Exception as e:
         logger.warning("scope_options sanity check skipped: %s", e)
 
+    # P2-7（2026-06-23 資安掃描）：未明設可信代理時啟動告警，讓「per-IP 限流在反向代理後
+    # 塌成單桶」的風險在 prod log 可見（修正 runbook「看 log 無警告＝生效」原為死碼）。
+    from utils.request_ip import warn_if_trusted_proxies_unset
+
+    warn_if_trusted_proxies_unset()
+
 
 async def _activity_waitlist_sweeper():
     """每 10 分鐘掃描候補轉正過期，發放逾期放棄與即將到期提醒。

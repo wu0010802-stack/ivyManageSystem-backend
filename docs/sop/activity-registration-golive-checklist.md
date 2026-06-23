@@ -31,7 +31,8 @@
       `TRUSTED_PROXY_IPS=<zeabur-edge-cidr-1>,<zeabur-edge-cidr-2>`
       （runbook §8.3 範例 `103.20.128.0/18,103.30.0.0/16`，**依實際為準**）
 - [ ] **重新部署 → 驗證**（runbook §8.2）：兩支不同來源 IP（如辦公室 + 手機熱點）各打 6 次 `register`，確認限流計數**各自獨立**。
-- [ ] **確認啟動 log 不再出現** `TRUSTED_PROXY_IPS=* 解析後無有效 CIDR...`（此訊息＝設定未生效）。
+- [ ] **確認啟動 log 不再出現** `TRUSTED_PROXY_IPS 未明設可信代理`（啟動告警，未設/填 `*` 時會出現；設好合法 CIDR 重啟即消失＝生效）。
+      > ⚠ 舊「`解析後無有效 CIDR`」訊息是死碼永不觸發（P2-7 已改），**別拿它當依據**；下方 curl 偽造 XFF 驗 bucket key 才是有效驗證。
 
 ```bash
 # 偽造 XFF，確認後端記到的是「真實 peer IP」而非 1.2.3.4

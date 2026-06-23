@@ -293,7 +293,8 @@ done
 
 3. **重新部署**後重跑 Step 1 + Step 2 驗證。
 
-4. **確認 log 訊息不再出現** `TRUSTED_PROXY_IPS=* 解析後無有效 CIDR，fallback 成 RFC1918 預設信任`（此訊息代表設定未生效）。
+4. **確認啟動 log 不再出現** `TRUSTED_PROXY_IPS 未明設可信代理`（啟動告警，由 `warn_if_trusted_proxies_unset` 在 `on_startup` 主動發出）。未設或填 `*` 時會出現；設好合法 CIDR 重啟即消失＝生效；**仍出現＝設定未生效**。
+   > ⚠ 舊版「`TRUSTED_PROXY_IPS=* 解析後無有效 CIDR`」訊息來自 `_parse_trusted_proxies`，因 `get_client_ip` 在未明設時短路 return 而**永不觸發（死碼）**，不可作為驗證依據（P2-7，2026-06-23 資安掃描已改）。**Step 1/Step 2 的 curl 偽造 XFF 驗 bucket key 才是有效驗證。**
 
 ### 8.4 本機 dev 說明
 
