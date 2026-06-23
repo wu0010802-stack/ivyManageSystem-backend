@@ -103,7 +103,7 @@ def update_payment(
                     # 原設計直接寫「系統補齊」payment 補上欠費，無 method/原因/簽核，
                     # 會計可逐筆把欠費轉成收入流水。對齊 is_paid=False 嚴格度：
                     # 1. 必填人工 payment_method（拒絕 SYSTEM_RECONCILE_METHOD）
-                    # 2. 必填 ≥5 字 payment_reason
+                    # 2. 必填 ≥ MIN_REFUND_REASON_LENGTH（15）字 payment_reason
                     # 3. shortfall 過 FINANCE_APPROVAL_THRESHOLD 需金流簽核
                     method_cleaned = (body.payment_method or "").strip()
                     if not method_cleaned:
@@ -152,7 +152,8 @@ def update_payment(
                 reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
         else:
             # is_paid=False：一刀切全額沖帳會誤殺部分繳費者，收緊為「必須帶
-            # confirm_refund_amount == current_paid 且 refund_reason ≥ 5 字」。
+            # confirm_refund_amount == current_paid 且 refund_reason ≥
+            # MIN_REFUND_REASON_LENGTH（15）字」。
             current_paid = reg.paid_amount or 0
             if body.confirm_refund_amount is None:
                 raise HTTPException(
