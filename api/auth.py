@@ -1052,11 +1052,15 @@ def logout(request: Request):
             # token_version 不會 bump、jti 不會入 blocklist，攻擊者拿被遺失的 cookie
             # 仍能透過 /refresh 換新。
             payload = decode_token_allow_expired(token)
-            user_id = payload.get("user_id")
-            if user_id:
+            # qa-loop #14（與 #4 同根）：模擬中 access_token 的 user_id 是 target，登出應
+            # 作廢真正的操作主體（admin = impersonated_by），不可 bump 無辜 target 的
+            # token_version（會誤踢 target 真實使用者自己的合法 session）。模擬 token 本身
+            # 仍由下方 jti 黑名單失效；非模擬請求 impersonated_by 為 None → 維持 bump 自己。
+            bump_user_id = payload.get("impersonated_by") or payload.get("user_id")
+            if bump_user_id:
                 session = get_session()
                 try:
-                    user = session.query(User).filter(User.id == user_id).first()
+                    user = session.query(User).filter(User.id == bump_user_id).first()
                     if user:
                         user.token_version = (user.token_version or 0) + 1
                         session.commit()
