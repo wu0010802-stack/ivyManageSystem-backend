@@ -83,6 +83,18 @@ def generate_pos_receipt_pdf(
     c.drawCentredString(center_x, y, subtitle)
     y -= 5 * mm
 
+    # Finding 2（2026-06-23 audit）：補印且明細係即時重建（舊收據無 snapshot）時，
+    # 標註明細可能與開立當下不符，避免被當成正式原始收據。新收據走凍結 snapshot
+    # （items_rebuilt_live=False）則不顯示此警語。
+    if is_reprint and receipt.get("items_rebuilt_live"):
+        c.setFont(CJK_FONT_NAME, 7)
+        c.setFillColor(colors.HexColor("#999999"))
+        c.drawCentredString(
+            center_x, y, "※明細依目前報名狀態重建，金額以收據開立時為準"
+        )
+        c.setFillColor(colors.black)
+        y -= 4 * mm
+
     # ── meta ──────────────────────────────────────────────────────────────
     c.setFont(CJK_FONT_NAME, 8)
     _draw_text(c, MARGIN_X, y, f"編號：{receipt.get('receipt_no') or ''}", font_size=8)

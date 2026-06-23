@@ -16,6 +16,7 @@ from sqlalchemy import (
     Date,
     Time,
     Text,
+    JSON,
     ForeignKey,
     UniqueConstraint,
     Index,
@@ -405,6 +406,16 @@ class ActivityPaymentRecord(Base):
     # 走索引查詢同收據所有 items；notes 僅保留標記供舊版 UI 相容。
     receipt_no = Column(
         String(40), nullable=True, comment="POS 收據編號（整張收據的 items 共用）"
+    )
+    # 收據明細快照（開立當下凍結）：checkout 時把整張收據的 items 顯示明細
+    # （學生 / 班級 / 課程 / 用品 + 各 price_snapshot / amount_applied）序列化存於
+    # 整張收據的「第一筆（anchor）」紀錄；補印優先讀此 immutable snapshot，確保明細
+    # 與開立當下一致，不隨付款後增退課漂移（2026-06-23 audit Finding 2）。NULL 為
+    # 此欄上線前的舊收據，補印時退回即時重建並標註「依目前報名狀態重建」。
+    receipt_items_snapshot = Column(
+        JSON,
+        nullable=True,
+        comment="收據開立當下的 items 明細快照（僅存於整張收據第一筆紀錄）",
     )
     # created_at 用台灣時間；與 payment_date / 冪等視窗 threshold 對齊，
     # 部署在 UTC 伺服器時不會讓 snapshot / idempotency 判定差 8 小時。

@@ -101,6 +101,11 @@ _IDK_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 # 收據編號同日唯一檢查重試次數（uuid 碰撞極低，但保險起見）
 _RECEIPT_NO_RETRIES = 5
 
+# 合法 POS 收據編號格式：POS-YYYYMMDD-<hex>（新版固定 12 碼大寫，舊版 notes 標記
+# 為任意長度十六進位）。print 端點據此先驗證 path 參數，阻擋把 SQL LIKE 萬用字元
+# （% / _）塞進 notes fallback 撈到非指定收據的越權重印（2026-06-23 audit P2）。
+_RECEIPT_NO_VALID_RE = re.compile(r"^POS-\d{8}-[A-Fa-f0-9]+$")
+
 # 現金累積警報門檻（spec H7）：當日預期現金 ≥ 此值時提示老闆「請存銀行」
 # Why: 櫃台抽屜累積過多現金被竊損失大；NT$30,000 是常見幼稚園單日上限參考
 # 資安掃描 2026-05-07 P1：原本寫死無法熱更新；改 env POS_CASH_DEPOSIT_WARNING_THRESHOLD
@@ -206,10 +211,12 @@ def _strip_system_tags(raw_notes: str) -> str:
 def _parse_receipt_response_from_record(
     session, record: ActivityPaymentRecord
 ) -> Optional[dict]:
-    """用已存在的 ActivityPaymentRecord 重建 checkout response（冪等重試用）。
+    """用已存在的 ActivityPaymentRecord 重建 checkout response（冪等重試 / 補印用）。
 
-    僅依賴 DB 資料，不讀 request body — 確保重試時 response 穩定，
-    與第一次呼叫時的狀態一致。tendered/change 不儲存，故回 None。
+    僅依賴 DB 資料，不讀 request body — 確保重試時 response 穩定。
+    明細（items）優先讀 anchor 紀錄的 receipt_items_snapshot（開立當下凍結），
+    與收據開立時一致；snapshot 為 NULL 的舊收據退回即時重建並回 items_rebuilt_live=True。
+    tendered/change 不儲存，故回 None。
     """
     # 優先用 receipt_no 欄位；空值時回退抽取 notes 標記（舊紀錄相容）
     receipt_no = record.receipt_no
@@ -240,7 +247,9 @@ def _parse_receipt_response_from_record(
         same_recs = (
             session.query(ActivityPaymentRecord)
             .filter(
-                ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"),
+                ActivityPaymentRecord.notes.like(
+                    f"%[{escape_like_pattern(receipt_no)}]%", escape=LIKE_ESCAPE_CHAR
+                ),
                 ActivityPaymentRecord.voided_at.is_(None),
             )
             .order_by(ActivityPaymentRecord.id.asc())
@@ -248,17 +257,6 @@ def _parse_receipt_response_from_record(
         )
     if not same_recs:
         return None
-
-    reg_ids = [r.registration_id for r in same_recs]
-    reg_by_id = {
-        r.id: r
-        for r in session.query(ActivityRegistration)
-        .filter(ActivityRegistration.id.in_(reg_ids))
-        .all()
-    }
-    total_map = _batch_calc_total_amounts(session, reg_ids)
-    course_map = _fetch_reg_course_details(session, reg_ids)
-    supply_map = _fetch_reg_supplies(session, reg_ids)
 
     total_charged = sum(r.amount for r in same_recs)
 
@@ -274,7 +272,11 @@ def _parse_receipt_response_from_record(
     if not all_recs:
         all_recs = (
             session.query(ActivityPaymentRecord)
-            .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+            .filter(
+                ActivityPaymentRecord.notes.like(
+                    f"%[{escape_like_pattern(receipt_no)}]%", escape=LIKE_ESCAPE_CHAR
+                )
+            )
             .all()
         )
     has_voided_items = any(r.voided_at is not None for r in all_recs)
@@ -282,29 +284,57 @@ def _parse_receipt_response_from_record(
         sum(r.amount for r in all_recs) if has_voided_items else total_charged
     )
 
-    response_items = []
-    for r in same_recs:
-        reg = reg_by_id.get(r.registration_id)
-        if reg is None:
-            continue
-        total_amount = total_map.get(reg.id, 0) or 0
-        response_items.append(
-            {
-                "registration_id": reg.id,
-                "student_name": reg.student_name,
-                "class_name": reg.class_name or "",
-                "amount_applied": r.amount,
-                "new_paid_amount": reg.paid_amount or 0,
-                "total_amount": total_amount,
-                "new_payment_status": _derive_payment_status(
-                    reg.paid_amount or 0, total_amount
-                ),
-                "courses": course_map.get(reg.id, []),
-                "supplies": supply_map.get(reg.id, []),
-            }
-        )
-
     first = same_recs[0]
+
+    # Finding 2（2026-06-23 audit）：補印明細優先讀「開立當下」凍結的 snapshot
+    # （checkout 時序列化整張收據 items 寫進 anchor 紀錄 receipt_items_snapshot），
+    # 確保補印的課程/用品/班級/學生與收據開立時一致，不隨付款後的增退課漂移；
+    # 同時省去即時 N+1 查詢。舊收據（snapshot 為 NULL）退回即時重建，並標
+    # items_rebuilt_live=True 讓 PDF 註明「明細依目前報名狀態重建」。
+    snapshot = first.receipt_items_snapshot
+    if isinstance(snapshot, list) and snapshot:
+        # 用 same_recs（已濾 voided）的 registration_id 過濾 snapshot：保留 P2-6
+        # 「補印不含已作廢項目」契約——日後整張收據被部分作廢時，被作廢那筆的明細列
+        # 不應再出現（金額已由 has_voided_items / original_total 註記說明）。
+        valid_reg_ids = {r.registration_id for r in same_recs}
+        response_items = [
+            it for it in snapshot if it.get("registration_id") in valid_reg_ids
+        ]
+        items_rebuilt_live = False
+    else:
+        reg_ids = [r.registration_id for r in same_recs]
+        reg_by_id = {
+            r.id: r
+            for r in session.query(ActivityRegistration)
+            .filter(ActivityRegistration.id.in_(reg_ids))
+            .all()
+        }
+        total_map = _batch_calc_total_amounts(session, reg_ids)
+        course_map = _fetch_reg_course_details(session, reg_ids)
+        supply_map = _fetch_reg_supplies(session, reg_ids)
+        response_items = []
+        for r in same_recs:
+            reg = reg_by_id.get(r.registration_id)
+            if reg is None:
+                continue
+            total_amount = total_map.get(reg.id, 0) or 0
+            response_items.append(
+                {
+                    "registration_id": reg.id,
+                    "student_name": reg.student_name,
+                    "class_name": reg.class_name or "",
+                    "amount_applied": r.amount,
+                    "new_paid_amount": reg.paid_amount or 0,
+                    "total_amount": total_amount,
+                    "new_payment_status": _derive_payment_status(
+                        reg.paid_amount or 0, total_amount
+                    ),
+                    "courses": course_map.get(reg.id, []),
+                    "supplies": supply_map.get(reg.id, []),
+                }
+            )
+        items_rebuilt_live = True
+
     user_note = _strip_system_tags(notes)
 
     return {
@@ -324,6 +354,7 @@ def _parse_receipt_response_from_record(
         "idempotent_replay": True,
         "has_voided_items": has_voided_items,
         "original_total": original_total,
+        "items_rebuilt_live": items_rebuilt_live,
     }
 
 
@@ -464,6 +495,11 @@ def print_pos_receipt_pdf(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
 ):
     """重印 POS 收據 PDF（80mm 寬窄條）。"""
+    # 先嚴格驗證收據編號格式。Why: 落空時的 notes LIKE fallback 會把 path 參數塞進
+    # 萬用字元匹配；`%` / `_` 等輸入會繞過精確比對命中任一 [POS-...] 紀錄而越權重印
+    # 他人收據（2026-06-23 audit P2）。格式不合一律當「找不到」，不洩漏內部判定。
+    if not _RECEIPT_NO_VALID_RE.match(receipt_no):
+        raise HTTPException(status_code=404, detail="找不到此收據")
     session = get_session()
     try:
         anchor = (
@@ -473,10 +509,16 @@ def print_pos_receipt_pdf(
             .first()
         )
         if anchor is None:
-            # fallback：舊資料 notes 標記
+            # fallback：舊資料 notes 標記。即使上方已 regex 收口，仍 escape LIKE
+            # 萬用字元做防禦縱深（避免日後放寬 regex 時重新引入 wildcard 越權）。
             anchor = (
                 session.query(ActivityPaymentRecord)
-                .filter(ActivityPaymentRecord.notes.like(f"%[{receipt_no}]%"))
+                .filter(
+                    ActivityPaymentRecord.notes.like(
+                        f"%[{escape_like_pattern(receipt_no)}]%",
+                        escape=LIKE_ESCAPE_CHAR,
+                    )
+                )
                 .order_by(ActivityPaymentRecord.id.asc())
                 .first()
             )
@@ -973,6 +1015,9 @@ def pos_checkout(
 
         total_charged = 0
         response_items = []
+        anchor_rec = (
+            None  # 整張收據第一筆（idx==0）；承載 idempotency_key 與明細 snapshot
+        )
         type_label = "繳費" if body.type == "payment" else "退費"
 
         for idx, item in enumerate(body.items):
@@ -1013,6 +1058,8 @@ def pos_checkout(
                 receipt_no=receipt_no,
             )
             session.add(rec)
+            if idx == 0:
+                anchor_rec = rec
 
             if body.type == "payment":
                 reg.paid_amount = (reg.paid_amount or 0) + item.amount
@@ -1049,6 +1096,12 @@ def pos_checkout(
                     "supplies": supply_map.get(reg.id, []),
                 }
             )
+
+        # Finding 2（2026-06-23 audit）：把整張收據明細凍結成 snapshot 寫進 anchor
+        # （第一筆）紀錄。補印（_parse_receipt_response_from_record）優先讀此 immutable
+        # snapshot，使明細不隨日後增退課/移用品漂移而與收據開立當下不一致。
+        if anchor_rec is not None:
+            anchor_rec.receipt_items_snapshot = response_items
 
         # 總額上限保護（後端獨立於前端大額警告）
         if total_charged > _MAX_CHECKOUT_TOTAL:
