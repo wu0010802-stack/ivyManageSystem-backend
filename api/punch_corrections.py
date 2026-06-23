@@ -17,7 +17,7 @@ from models.database import (
     User,
 )
 from models.approval import ApprovalStatus
-from schemas._common import DeleteResultOut
+from schemas._common import BatchApproveResultOut, DeleteResultOut
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.rate_limit import create_limiter
@@ -417,7 +417,7 @@ def approve_punch_correction(
         session.close()
 
 
-@router.post("/punch-corrections/batch-approve")
+@router.post("/punch-corrections/batch-approve", response_model=BatchApproveResultOut)
 def batch_approve_punch_corrections(
     data: PunchCorrectionBatchApproveRequest,
     request: Request,

@@ -41,6 +41,7 @@ from models.database import (
 from models.approval import ApprovalStatus
 from models.event import Holiday
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
+from schemas._common import BatchApproveResultOut
 from schemas.overtimes import (
     BatchOvertimeCreateResultOut,
     OvertimeApproveResultOut,
@@ -1487,7 +1488,7 @@ def approve_overtime(
         session.close()
 
 
-@router.post("/overtimes/batch-approve")
+@router.post("/overtimes/batch-approve", response_model=BatchApproveResultOut)
 def batch_approve_overtimes(
     data: OvertimeBatchApproveRequest,
     request: Request,
