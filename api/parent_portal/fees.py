@@ -96,8 +96,14 @@ def compute_fees_summary(session, student_ids: list[int]) -> dict:
             continue
         bucket = buckets[(sid, period)]
         bucket["adjustment"] = bucket.get("adjustment", 0) + adj
+        # qa-loop #2：outstanding 是「該期總欠款」總額桶，overdue/due_soon 是其重疊子分類
+        # （同一筆 record 的 outstanding 同時累進總額桶與一個子分類）。折抵須對兩者各自扣抵：
+        # 總額桶獨立扣 min(adj, outstanding)；子分類另以共用 remaining 依 overdue→due_soon 扣。
+        # 舊版用單一 remaining 串扣 overdue→due_soon→outstanding，overdue 先吃光後 outstanding
+        # 漏扣 → totals.outstanding 高報、與 amount_due 自相矛盾、outstanding_count 誤計。
+        bucket["outstanding"] = max(0, bucket["outstanding"] - adj)
         remaining = adj
-        for k in ("overdue", "due_soon", "outstanding"):
+        for k in ("overdue", "due_soon"):
             take = min(bucket[k], remaining)
             bucket[k] -= take
             remaining -= take

@@ -242,6 +242,92 @@ class TestSummary:
         assert totals["due_soon"] == 0
         assert totals["adjustment"] == 10000
 
+    def test_summary_adjustment_reduces_outstanding_total_in_overdue_bucket(
+        self, fees_client
+    ):
+        """同一期逾期桶被折抵時，總額桶 outstanding 須同步扣減（不得只扣 overdue 子分類）。
+
+        qa-loop #2：outstanding 是「該期總欠款」總額桶，overdue/due_soon 是其重疊子分類。
+        舊版用單一 remaining 依序 overdue→due_soon→outstanding 扣抵，overdue 先吃光 remaining
+        後 outstanding（總額桶）扣不到 → totals.outstanding 高報、與 amount_due 自相矛盾。
+        """
+        client, session_factory = fees_client
+        today = date.today()
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            # 114-1：逾期 10000
+            _create_fee_record(
+                session,
+                student,
+                fee_item_name="上學期學費",
+                amount_due=10000,
+                amount_paid=0,
+                period="114-1",
+                due_date=today - timedelta(days=2),
+            )
+            # 同期 114-1 折抵 3000
+            session.add(
+                StudentFeeAdjustment(
+                    student_id=student.id,
+                    period="114-1",
+                    adjustment_type="prepayment",
+                    amount=3000,
+                    reason="減免",
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get("/api/parent/fees/summary", cookies={"access_token": token})
+        assert resp.status_code == 200
+        totals = resp.json()["totals"]
+        assert totals["outstanding"] == 7000, (
+            "總額桶 outstanding 須扣折抵 3000 → 7000，"
+            f"實際 {totals['outstanding']}（10000=overdue 先吃光 remaining 後 outstanding 漏扣 → 高報）"
+        )
+        assert totals["overdue"] == 7000
+        # amount_due 也應為 7000，與 outstanding 一致（不自相矛盾）
+        assert totals["amount_due"] == 7000
+        assert totals["adjustment"] == 3000
+
+    def test_summary_full_adjustment_of_overdue_bucket_clears_outstanding_count(
+        self, fees_client
+    ):
+        """逾期桶被同期折抵全額抵銷後，outstanding_count 不得仍計該桶為欠款。"""
+        client, session_factory = fees_client
+        today = date.today()
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            _create_fee_record(
+                session,
+                student,
+                fee_item_name="上學期學費",
+                amount_due=8000,
+                amount_paid=0,
+                period="114-1",
+                due_date=today - timedelta(days=5),
+            )
+            session.add(
+                StudentFeeAdjustment(
+                    student_id=student.id,
+                    period="114-1",
+                    adjustment_type="prepayment",
+                    amount=8000,
+                    reason="全額減免",
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+
+        resp = client.get("/api/parent/fees/summary", cookies={"access_token": token})
+        assert resp.status_code == 200
+        totals = resp.json()["totals"]
+        assert totals["outstanding"] == 0
+        assert totals["overdue"] == 0
+        assert (
+            totals["outstanding_count"] == 0
+        ), "逾期桶全額折抵後不應計入 outstanding_count"
+
 
 class TestRecords:
     def test_records_returns_owned_student(self, fees_client):
