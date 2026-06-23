@@ -189,6 +189,59 @@ def notify_high_risk_audit(
         )
 
 
+def notify_student_sync_failure(
+    *,
+    student_id: int,
+    failed_registration_ids: list[int],
+    reason: str = "部分軟刪失敗（savepoint 回滾）",
+) -> None:
+    """學生離園同步軟刪部分失敗時主動告警。
+
+    讓管理員知曉哪幾筆報名未成功軟刪（可能仍佔名額、有未退款付款金額），
+    以便人工跟進補刪或退款。
+
+    group_id 未設或 LineService 未注入時 no-op（log warn）；
+    push 例外吞掉並 log，不可影響 caller 的 deactivate 主流程。
+    """
+    cfg = settings.ops_alert
+    if not cfg.line_group_id:
+        logger.warning(
+            "學生離園同步軟刪失敗但 OPS_ALERT_LINE_GROUP_ID 未設；"
+            "student_id=%s failed_reg_ids=%s",
+            student_id,
+            failed_registration_ids,
+        )
+        return
+
+    if _line_service is None:
+        logger.warning(
+            "LineService 未注入（init_ops_alert_service 未呼叫）；"
+            "student sync failure alert student_id=%s 跳過 LINE push",
+            student_id,
+        )
+        return
+
+    ids_str = ", ".join(str(i) for i in failed_registration_ids)
+    text = (
+        f"⚠️ 學生離園同步部分失敗\n"
+        f"學生 ID：{student_id}\n"
+        f"未成功軟刪的報名 ID：{ids_str}\n"
+        f"原因：{reason}\n"
+        f"⚠ 上述報名可能仍佔名額或有未退款付款金額，請人工至後台跟進補刪／退款。\n"
+        f"env：{settings.core.env}"
+    )
+
+    try:
+        _line_service.push_text_to_group(cfg.line_group_id, text)
+    except Exception as e:
+        logger.error(
+            "Student sync failure alert push 失敗 (student_id=%s): %s",
+            student_id,
+            e,
+            exc_info=True,
+        )
+
+
 def reset_for_tests() -> None:
     """測試 helper：清空注入的 LineService。"""
     global _line_service

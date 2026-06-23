@@ -832,14 +832,14 @@ def delete_registration(
             )
             # 偏離建議值閘：整筆刪除＝退全部已繳，與整 reg 的 calculator 建議退費
             # 比對；與 POS / writeoff 退費閘對齊（fail-fast，刪除前先擋）。
-            suggested_total = build_refund_suggestion(session, registration_id)[
-                "total_suggested_amount"
-            ]
+            _sugg = build_refund_suggestion(session, registration_id)
+            suggested_total = _sugg["total_suggested_amount"]
             require_approve_for_refund_diff(
                 diff=abs(paid_before - suggested_total),
                 current_user=current_user,
                 suggested_total=suggested_total,
                 actual_total=paid_before,
+                suggestion=_sugg,
             )
 
         activity_service.delete_registration(

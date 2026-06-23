@@ -124,6 +124,7 @@ def require_approve_for_refund_diff(
     current_user: dict,
     suggested_total: int,
     actual_total: int,
+    suggestion: Optional[dict] = None,
 ) -> None:
     """實退 vs calculator 建議值差距超 ACTIVITY_REFUND_DIFF_THRESHOLD 時要求簽核。
 
@@ -131,13 +132,31 @@ def require_approve_for_refund_diff(
     需要管理者批准。與 require_approve_for_large_refund（擋總額）獨立共存，
     任一觸發都要簽核。
 
+    另：當 suggestion["needs_manual_review"] 為 True（課程 sessions IS NULL，
+    server-side 無法算出正確建議退費），依業主裁示強制要求 ACTIVITY_PAYMENT_APPROVE，
+    不論 diff 是否為 0。
+
     Args:
         diff: |actual_total - suggested_total| 累積值（多 reg 同收據時請以
               sum(abs(per_reg_diff)) 計算，避免方向抵消漏網）。
         current_user: 已認證的 user dict（含 permission_names）。
         suggested_total: server-side build_refund_suggestion 算出的總建議值。
         actual_total: 員工 body 送出的實退總額。
+        suggestion: build_refund_suggestion 回傳的完整 dict（可選）。傳入時會
+                    額外檢查 needs_manual_review 旗標。
     """
+    # 業主裁示：sessions 未知時一律強制簽核（無法 server-side 算建議的退費）
+    if suggestion is not None and suggestion.get("needs_manual_review"):
+        if not has_payment_approve(current_user):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"退費課程總堂數未設定（sessions IS NULL），系統無法計算正確建議退費，"
+                    f"需具備『才藝課收款簽核』（ACTIVITY_PAYMENT_APPROVE）權限才能執行退費"
+                ),
+            )
+        return
+
     if diff <= ACTIVITY_REFUND_DIFF_THRESHOLD:
         return
     if has_payment_approve(current_user):

@@ -902,11 +902,18 @@ def pos_checkout(
                 abs(actual_by_reg[rid] - suggested_by_reg[rid]) for rid in actual_by_reg
             )
 
+            # 若任一 reg 課程 sessions IS NULL → merged suggestion 標 needs_manual_review
+            _merged_suggestion = {
+                "needs_manual_review": any(
+                    s.get("needs_manual_review") for s in suggestion_details
+                )
+            }
             require_approve_for_refund_diff(
                 diff=diff,
                 current_user=current_user,
                 suggested_total=total_suggested,
                 actual_total=total_actual,
+                suggestion=_merged_suggestion,
             )
 
             _refund_audit_context = {

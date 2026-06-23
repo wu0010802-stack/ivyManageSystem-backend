@@ -285,6 +285,26 @@ def sync_registrations_on_student_deactivate(
             deleted,
             failed,
         )
+        failed_reg_ids = [reg_id for reg_id, _err in failed]
+        reason = (
+            f"共 {len(failed)} 筆 savepoint 回滾：{failed[0][1]}"
+            if len(failed) == 1
+            else f"共 {len(failed)} 筆 savepoint 回滾"
+        )
+        try:
+            from services.ops_alert import notify_student_sync_failure
+
+            notify_student_sync_failure(
+                student_id=student_id,
+                failed_registration_ids=failed_reg_ids,
+                reason=reason,
+            )
+        except Exception:
+            logger.exception(
+                "學生離園同步告警發送失敗（不影響主流程）：student_id=%s failed_ids=%s",
+                student_id,
+                failed_reg_ids,
+            )
     return deleted
 
 
