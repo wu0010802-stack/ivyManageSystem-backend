@@ -470,15 +470,16 @@ def register_courses(
     if payload.course_ids:
         locked_courses = {
             c.id: c
-            for c in session.query(ActivityCourse)
-            .filter(
+            for c in session.query(ActivityCourse).filter(
                 ActivityCourse.id.in_(sorted(payload.course_ids)),
                 ActivityCourse.is_active == True,
                 ActivityCourse.school_year == payload.school_year,
                 ActivityCourse.semester == payload.semester,
             )
-            .with_for_update()
-            .all()
+            # 以 id 排序固定 FOR UPDATE 列鎖的取得順序：id.in_(sorted(...)) 只排了
+            # Python 端 IN 清單，不決定列鎖順序（由查詢計畫決定）；缺 ORDER BY 時
+            # 兩交易以不同順序鎖重疊課程仍會 ABBA。order_by 須在 with_for_update 前。
+            .order_by(ActivityCourse.id).with_for_update().all()
         }
 
     # 加入課程：依容量決定 enrolled / waitlist。容量檢查同樣需用 admin-bypass

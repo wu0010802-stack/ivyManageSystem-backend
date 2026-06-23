@@ -174,15 +174,15 @@ def admin_create_registration(
         courses_by_name = (
             {
                 c.name: c
-                for c in session.query(ActivityCourse)
-                .filter(
+                for c in session.query(ActivityCourse).filter(
                     ActivityCourse.name.in_(course_names),
                     ActivityCourse.is_active.is_(True),
                     ActivityCourse.school_year == sy,
                     ActivityCourse.semester == sem,
                 )
-                .with_for_update()
-                .all()
+                # 以 id 排序固定 FOR UPDATE 列鎖取得順序，消除多課程並發報名的 ABBA
+                # 死鎖窗口（name.in_ 不保證鎖序）。order_by 須在 with_for_update 前。
+                .order_by(ActivityCourse.id).with_for_update().all()
             }
             if course_names
             else {}
