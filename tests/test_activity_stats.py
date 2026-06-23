@@ -249,6 +249,36 @@ class TestGetStatsEnrollmentRate:
         stats = svc.get_stats(session, **TERM)["statistics"]
         assert stats["enrollmentRate"] == 100.0
 
+    def test_null_capacity_course_counts_as_30(self, session, svc):
+        """capacity=NULL 的課程容量視為 30（對齊全系統 DEFAULT_COURSE_CAPACITY 慣例）。
+
+        回歸：原本 total_capacity 用 `func.sum(ActivityCourse.capacity)`，
+        SQL SUM 對 per-row NULL 直接略過（NULL 列貢獻 0 而非 30），
+        使分母少 30 → enrollmentRate 被高估。
+        """
+        # 一門 capacity=NULL（應視為 30）+ 一門 capacity=10，分母應為 40。
+        c_null = _add_course(session, name="無上限課", capacity=10)
+        c_ten = _add_course(session, name="十人課", capacity=10)
+        # ActivityCourse.capacity 為 Column(Integer, default=30)：直接傳
+        # capacity=None 給 ORM 建構子會在 flush 時被 column default 補成 30，
+        # 無法重現「DB 既有 NULL 列」的情境（capacity 欄位 nullable，歷史資料
+        # 可為 NULL）。改用 UPDATE 強制把該列寫成真正的 SQL NULL。
+        session.query(ActivityCourse).filter(ActivityCourse.id == c_null.id).update(
+            {ActivityCourse.capacity: None}
+        )
+        session.flush()
+
+        # 4 人報名（皆掛到有上限的課即可，僅驗證分母）。
+        for i in range(4):
+            reg = _add_reg(session, student_name=f"學生{i}")
+            _enroll(session, reg.id, c_ten.id)
+        session.commit()
+
+        stats = svc.get_stats(session, **TERM)["statistics"]
+        # 4 enrolled / (30 + 10) capacity = 10.0%
+        # 修前：NULL 列被 SUM 略過 → 分母只剩 10 → 40.0%（高估）
+        assert stats["enrollmentRate"] == 10.0
+
 
 class TestGetStatsTopCourses:
     def test_top_courses_ordered_by_enrollment(self, session, svc):
