@@ -24,8 +24,9 @@ from sqlalchemy.exc import IntegrityError
 from models.database import (
     get_session,
     ActivityRegistration,
+    RegistrationCourse,
 )
-from services.activity_service import activity_service
+from services.activity_service import activity_service, OCCUPYING_STATUSES
 from utils.advisory_lock import acquire_activity_registration_lock
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
@@ -484,6 +485,22 @@ def reject_registration(
             f"拒絕原因：{reason}",
             reg.reviewed_by or "",
         )
+
+        # 比照 delete_registration：收集被拒報名佔位的課程 id，
+        # flush 後對每門課嘗試遞補候補第一位。
+        occupying_course_ids = [
+            rc.course_id
+            for rc in session.query(RegistrationCourse)
+            .filter(
+                RegistrationCourse.registration_id == registration_id,
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
+            )
+            .all()
+        ]
+        session.flush()  # 使 is_active=False 對 _active_course_query 生效
+        for course_id in occupying_course_ids:
+            activity_service._auto_promote_first_waitlist(session, course_id)
+
         session.commit()
         _invalidate_after_registration_mutation(session)
         logger.warning(
