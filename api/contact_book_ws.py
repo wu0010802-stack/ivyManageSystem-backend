@@ -43,6 +43,19 @@ def _parent_channel(parent_user_id: int) -> str:
     return f"contact_book.parent.{parent_user_id}"
 
 
+def _token_still_valid(ws: WebSocket) -> bool:
+    """P2-8：週期重驗回調——重新 verify 當前 cookie token（含 is_active /
+    token_version / jti blocklist 檢查）。token 缺失或撤銷即回 False → 關閉連線。"""
+    token = get_token_from_ws(ws)
+    if not token:
+        return False
+    try:
+        verify_ws_token(token)
+        return True
+    except Exception:
+        return False
+
+
 async def broadcast_classroom(classroom_id: int, event: dict) -> None:
     """供 service 層呼叫：將事件推送至教師班級 channel。"""
     await get_broadcast().publish(_classroom_channel(classroom_id), event)
@@ -128,7 +141,7 @@ async def portal_contact_book_ws(ws: WebSocket):
         backend.unsubscribe(ws)
         unregister(ws)
 
-    await run_ws_connection(ws, cleanup=_cleanup)
+    await run_ws_connection(ws, cleanup=_cleanup, verify=lambda: _token_still_valid(ws))
 
 
 @ws_router.websocket("/api/ws/parent/contact-book")
@@ -177,4 +190,4 @@ async def parent_contact_book_ws(ws: WebSocket):
         backend.unsubscribe(ws)
         unregister(ws)
 
-    await run_ws_connection(ws, cleanup=_cleanup)
+    await run_ws_connection(ws, cleanup=_cleanup, verify=lambda: _token_still_valid(ws))

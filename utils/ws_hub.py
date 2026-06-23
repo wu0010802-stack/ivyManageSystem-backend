@@ -28,6 +28,8 @@ WS_CLOSE_FORBIDDEN = 4007
 # 心跳與廣播參數
 PING_INTERVAL = 30
 PONG_TIMEOUT = 90
+# P2-8：handshake 後週期性重驗 token 的間隔（秒）。撤銷暴露窗口 ≤ 此值。
+WS_REVERIFY_INTERVAL = 60
 MAX_BROADCAST_RETRIES = 2
 BROADCAST_RETRY_DELAY = 0.05
 
@@ -109,11 +111,17 @@ async def run_ws_connection(
     *,
     ping_interval: float = PING_INTERVAL,
     pong_timeout: float = PONG_TIMEOUT,
+    verify=None,
+    verify_interval: float = WS_REVERIFY_INTERVAL,
 ) -> None:
-    """通用 WS 主循環：心跳 + 接收 + 超時偵測。
+    """通用 WS 主循環：心跳 + 接收 + 超時偵測 +（可選）週期性 token 重驗。
 
     - ping_task：每 ping_interval 秒送 {"type":"ping"}
     - recv_task：超過 pong_timeout 秒無任何 client 訊息即關閉
+    - verify_task：（P2-8，2026-06-23 資安掃描）若提供 verify 回調，每 verify_interval
+      秒重驗一次；回 False 或 raise 即主動 ws.close（WS_CLOSE_INVALID_TOKEN）。
+      handshake 後 token 撤銷（登出/停用/改密/jti blocklist）的暴露窗口從「無限期」
+      降到 ≤ verify_interval，對齊 REST 端立即失效。
     - cleanup：連線結束（任何原因）皆呼叫
     """
 
@@ -138,12 +146,31 @@ async def run_ws_connection(
             except WebSocketDisconnect:
                 return
 
-    ping_task = asyncio.create_task(_ping_loop())
-    recv_task = asyncio.create_task(_recv_loop())
+    async def _verify_loop():
+        # P2-8：週期性重驗 token（verify 內部含 exp / jti blocklist / token_version /
+        # is_active 檢查）；失敗即關閉連線，落實登出/停用立即生效於 WS 通道。
+        while True:
+            await asyncio.sleep(verify_interval)
+            try:
+                ok = verify()
+            except Exception:
+                ok = False
+            if not ok:
+                logger.info("WS token 週期重驗失敗，主動關閉連線")
+                with contextlib.suppress(Exception):
+                    await ws.close(code=WS_CLOSE_INVALID_TOKEN)
+                return
+
+    tasks = [
+        asyncio.create_task(_ping_loop()),
+        asyncio.create_task(_recv_loop()),
+    ]
+    if verify is not None:
+        tasks.append(asyncio.create_task(_verify_loop()))
     try:
-        await asyncio.wait({ping_task, recv_task}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait(set(tasks), return_when=asyncio.FIRST_COMPLETED)
     finally:
-        for task in (ping_task, recv_task):
+        for task in tasks:
             if not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
