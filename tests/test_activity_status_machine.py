@@ -42,12 +42,16 @@ class TestEnumValues:
         assert f"{RegistrationCourseStatus.WAITLIST.value}" == "waitlist"
 
     def test_match_status_values(self):
+        # forced：force-accept（強行收件）寫入 DB 的既有字串值，enum 須涵蓋
+        # （values 即現有 column 字串），否則狀態機 soft-enforce 後 forced row
+        # 會被判為非法狀態。
         assert {s.value for s in MatchStatus} == {
             "unmatched",
             "matched",
             "pending",
             "rejected",
             "manual",
+            "forced",
         }
 
     def test_occupying_statuses(self):
@@ -87,12 +91,15 @@ class TestMatchTransitionTable:
         assert is_match_transition_allowed("pending", "matched")
         assert is_match_transition_allowed("pending", "manual")
         assert is_match_transition_allowed("pending", "rejected")
+        assert is_match_transition_allowed("pending", "forced")  # 強行收件
         assert is_match_transition_allowed("rejected", "pending")  # restore
 
     def test_illegal_edges(self):
         assert not is_match_transition_allowed("matched", "rejected")  # 終態
         assert not is_match_transition_allowed("manual", "pending")  # 終態
+        assert not is_match_transition_allowed("forced", "pending")  # 終態
         assert not is_match_transition_allowed("unmatched", "rejected")
+        assert not is_match_transition_allowed("unmatched", "forced")  # 須先 pending
 
     def test_same_state_false(self):
         assert not is_match_transition_allowed("pending", "pending")

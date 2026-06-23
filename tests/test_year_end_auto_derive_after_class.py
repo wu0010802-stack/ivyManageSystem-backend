@@ -334,6 +334,39 @@ def test_after_class_award_clean_partition_manual_vs_pending(seed):
     assert report.unmatched_count == 1
 
 
+def test_after_class_award_counts_forced(seed):
+    """forced（強行收件）計入課後才藝獎金 J（業主 2026-06-23 裁定：與
+    matched/manual 同為合法在班，點名/容量/營收都算它，獎金口徑須一致）。
+
+    forced + classroom_id=bird → 計入 bird J（25 → 26），不進 unmatched。
+    """
+    db = seed["db"]
+    cycle = seed["cycle"]
+    course = seed["course"]
+    sy, sem = seed["sy"], seed["sem"]
+
+    reg_forced = _mk_registration(
+        db,
+        classroom_id=seed["cls_bird"].id,
+        school_year=sy,
+        semester=sem,
+        match_status="forced",
+        student_name="bird_forced",
+    )
+    _enroll(db, reg_forced, course, status="enrolled")
+    db.commit()
+
+    report = aca.derive_after_class_award(db, cycle)
+    db.flush()
+
+    items = _special_items(db, cycle, SpecialBonusType.AFTER_CLASS_AWARD)
+    # bird J = 25 + 1(forced) = 26 → 26 × 75 = 1950
+    assert _amount_for(items, seed["emp_lin"].id) == Decimal("1950")
+    assert _amount_for(items, seed["emp_chen"].id) == Decimal("1105")
+    # forced 不進 unmatched（視為合法在班）
+    assert report.unmatched_count == 0
+
+
 def test_after_class_award_skips_manual(seed):
     """已有一筆 manual 的 AFTER_CLASS_AWARD（source_ref 非 auto:）→ 不被覆寫。"""
     db = seed["db"]
