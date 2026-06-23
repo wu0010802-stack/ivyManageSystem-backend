@@ -55,6 +55,7 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     total_suggested = 0
     total_amount_due = 0
+    needs_manual_review = False  # True when any course has unknown total sessions
 
     # ── 課程 items（僅 status='enrolled'）─────────────────────────────────
     course_rows = (
@@ -73,6 +74,7 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
 
         if course.sessions is None or course.sessions <= 0:
             # NULL sessions: item.suggested=None + warning，total 採 amount_due fallback
+            needs_manual_review = True  # cannot compute server-side suggestion
             items.append(
                 {
                     "type": "course",
@@ -154,5 +156,6 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
         "computed_at": now_taipei_naive().isoformat(),
         "total_suggested_amount": total_suggested,
         "total_amount_due": total_amount_due,
+        "needs_manual_review": needs_manual_review,
         "items": items,
     }

@@ -382,6 +382,8 @@ def remove_registration_supply(
             )
             # 偏離建議值閘：用品依 calculator 規則「一律不退」（建議退 0），故任何
             # 自動沖帳金額即等同偏離量；與 POS / writeoff 退費閘對齊（fail-fast）。
+            # 注意：不傳 suggestion= — 用品沖帳不涉及 sessions 計算，
+            # needs_manual_review 旗標僅對課程退費有意義，此處沿用 diff 閘即可。
             require_approve_for_refund_diff(
                 diff=preview_refund,
                 current_user=current_user,
@@ -568,7 +570,9 @@ def withdraw_course(
             # 偏離建議值閘：取該課程在 calculator 規則下的建議退費（session-based）
             # 與實退（preview_refund）比對，與 POS / writeoff 退費閘對齊。於
             # delete(rc) 前計算——此時課程仍 enrolled，suggestion 仍含此項。
-            _items = build_refund_suggestion(session, registration_id)["items"]
+            # 完整 dict 傳入以捕捉 needs_manual_review（sessions IS NULL 強制簽核）。
+            _full_sugg = build_refund_suggestion(session, registration_id)
+            _items = _full_sugg["items"]
             _course_item = next(
                 (
                     it
@@ -589,6 +593,7 @@ def withdraw_course(
                 current_user=current_user,
                 suggested_total=suggested_for_course,
                 actual_total=preview_refund,
+                suggestion=_full_sugg,
             )
 
         session.delete(rc)

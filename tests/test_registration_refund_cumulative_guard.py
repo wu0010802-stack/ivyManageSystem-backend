@@ -36,6 +36,7 @@ from models.database import (
 from utils.permissions import Permission
 
 from tests.test_activity_pos import _create_admin, _login, _setup_reg
+from tests.test_activity_refund_diff_verify import _set_course_sessions
 
 # 不含 ACTIVITY_PAYMENT_APPROVE → 應被累積簽核擋下
 NO_APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE"]
@@ -179,6 +180,9 @@ class TestPriorVoidedRefundDoesNotCount:
             reg = _setup_reg(
                 s, student_name="李測試", course_price=900, paid_amount=900
             )  # course_price=900 → 0 出席建議退=900=沖帳額 → diff=0 過 diff 閘，隔離測 cumulative
+            # sessions=10（已知）→ needs_manual_review=False，隔離測 cumulative 閘
+            # 不設 sessions 時 needs_manual_review=True 會提前 403，遮蔽 cumulative 邏輯
+            _set_course_sessions(s, "美術", 10)
             s.commit()
             reg_id = reg.id
             # 一筆「已被作廢」的舊退費 NT$600 — 不計入累積

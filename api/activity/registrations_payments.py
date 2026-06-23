@@ -192,6 +192,7 @@ def update_payment(
                     current_user=current_user,
                     suggested_total=_suggested_total,
                     actual_total=current_paid,
+                    suggestion=_suggestion,
                 )
             if current_paid > 0:
                 rec = ActivityPaymentRecord(
@@ -445,6 +446,7 @@ def add_registration_payment(
                 current_user=current_user,
                 suggested_total=suggested_total,
                 actual_total=int(body.amount),
+                suggestion=suggestion,
             )
             _refund_audit_context = {
                 "suggested_total": suggested_total,
