@@ -29,6 +29,12 @@ def _now_taipei_naive() -> datetime:
 # 決定「還有無名額」時務必 IN 兩者；統計/出席/收入等語意只算 enrolled。
 OCCUPYING_STATUSES = ("enrolled", "promoted_pending")
 
+# ActivityCourse.capacity 欄位 nullable（models/activity.py 為 default=30，僅
+# ORM insert 套用，DB 既有/歷史列可為 NULL）。容量計算一律把 NULL 視為 30，
+# 對齊全系統慣例（api/parent_portal/activity.DEFAULT_COURSE_CAPACITY 等 7 處
+# `capacity if not None else 30`）。就近於 services 層定義，避免反向依賴 api 層。
+DEFAULT_COURSE_CAPACITY = 30
+
 
 from config import get_settings
 
@@ -289,7 +295,16 @@ class ActivityService:
                 .where(active_registration_filter, *reg_term_filter)
                 .scalar_subquery()
                 .label("total_unpaid"),
-                select(func.coalesce(func.sum(ActivityCourse.capacity), 0))
+                select(
+                    func.coalesce(
+                        func.sum(
+                            func.coalesce(
+                                ActivityCourse.capacity, DEFAULT_COURSE_CAPACITY
+                            )
+                        ),
+                        0,
+                    )
+                )
                 .where(ActivityCourse.is_active.is_(True), *course_term_filter)
                 .scalar_subquery()
                 .label("total_capacity"),
@@ -854,7 +869,11 @@ class ActivityService:
         """家長確認升正式。狀態必須為 promoted_pending 且未逾期。"""
         now = _now_taipei_naive()
         row = (
-            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            session.query(
+                RegistrationCourse,
+                ActivityRegistration.student_name,
+                ActivityRegistration.student_id,
+            )
             .join(
                 ActivityRegistration,
                 RegistrationCourse.registration_id == ActivityRegistration.id,
@@ -869,7 +888,7 @@ class ActivityService:
         )
         if not row:
             raise ValueError("NOT_FOUND")
-        rc, student_name = row
+        rc, student_name, student_id = row
 
         if rc.status == "enrolled":
             raise ValueError("ALREADY_CONFIRMED")
@@ -877,6 +896,21 @@ class ActivityService:
             raise ValueError("NOT_PENDING")
         if rc.confirm_deadline and rc.confirm_deadline < now:
             raise ValueError("EXPIRED")
+
+        # 終態學生守衛：已離校/畢業/轉出子女（is_active=False）不可升為正式。否則
+        # 長出「幽靈 enrolled」——佔課程容量卻永不出現在點名名冊（session-detail
+        # 聚合排除 Student.is_active=False）。對齊直接報名的 _assert_student_owned
+        # (for_write=True) 終態寫入守衛；家長端與公開端 confirm 共用此道。
+        if student_id is not None:
+            from models.classroom import Student
+
+            student_active = (
+                session.query(Student.is_active)
+                .filter(Student.id == student_id)
+                .scalar()
+            )
+            if student_active is False:
+                raise ValueError("STUDENT_TERMINAL")
 
         course = (
             session.query(ActivityCourse)

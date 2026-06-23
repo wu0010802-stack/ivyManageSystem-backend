@@ -367,6 +367,25 @@ class TestExportRowLimit:
         assert res.status_code == 200
 
 
+class TestRegistrationsExportRateLimit:
+    """Finding (P2)：報名名單匯出 /registrations/export 漏掛 _export_limiter
+    （payment-report 已掛）。重複打 Excel 生成造成資源壓力。limiter = 5/60s。"""
+
+    def test_sixth_export_within_window_returns_429(self, client):
+        c, sf = client
+        with sf() as s:
+            _admin(s)
+            _make_reg(s)
+            s.commit()
+
+        assert _login(c).status_code == 200
+        for i in range(5):
+            res = c.get("/api/activity/registrations/export")
+            assert res.status_code == 200, f"第 {i + 1} 次匯出應 200：{res.text}"
+        res = c.get("/api/activity/registrations/export")
+        assert res.status_code == 429, res.text
+
+
 # ── 6. payment-report ws1（繳費總覽）Excel 公式注入防護 ────────────────────
 
 
@@ -638,7 +657,8 @@ class TestSessionDetailStudentIdMasking:
         sess_id, _, _ = self._seed_session(sf)
         assert _login(c).status_code == 200
         res = c.get(
-            f"/api/activity/attendance/sessions/{sess_id}", params={"group_by": "classroom"}
+            f"/api/activity/attendance/sessions/{sess_id}",
+            params={"group_by": "classroom"},
         )
         assert res.status_code == 200, res.text
         body = res.json()

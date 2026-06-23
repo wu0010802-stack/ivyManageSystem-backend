@@ -576,6 +576,11 @@ def confirm_promotion(
             raise HTTPException(
                 status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
             )
+        if code == "STUDENT_TERMINAL":
+            raise HTTPException(
+                status_code=403,
+                detail="此學生已離校，無法升為正式；可繼續查看歷史紀錄",
+            )
         raise
     # 與公開端 api/activity/public.py 對齊：confirm 後寫一筆業務 audit 軌跡，
     # operator 標 "parent" 區別於公開頁的 "parent-public"。
