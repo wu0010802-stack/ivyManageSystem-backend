@@ -498,6 +498,18 @@ class _PublicQueryPayload(BaseModel):
     parent_phone: str = Field(..., min_length=8, max_length=30)
 
 
+def _phone_matches_nonempty(reg_phone, input_phone) -> bool:
+    """公開查詢讀取側空對空守衛（P1-1，2026-06-23 全系統資安掃描）。
+
+    後台建立的報名 parent_phone 為 NULL，_normalize_phone(None) → None；攻擊者送
+    parent_phone="--------"（strip 後為空）亦為 None。舊式 `None == None → True` 會讓
+    只知姓名+生日者讀取 NULL-phone 報名 PII。要求 reg 側正規化後非 None 且兩側相符，
+    與 mutation 側 _parent_mutation_identity_ok 守衛對齊。
+    """
+    norm_reg = _normalize_phone(reg_phone)
+    return norm_reg is not None and norm_reg == _normalize_phone(input_phone)
+
+
 @router.post("/public/query", response_model=PublicRegistrationDetailOut)
 def public_query_registration(
     body: _PublicQueryPayload,
@@ -515,7 +527,6 @@ def public_query_registration(
     time.sleep(random.uniform(0.2, 0.5))
     session = get_session()
     try:
-        normalized_phone = _normalize_phone(body.parent_phone)
         # 先抓 (name, birthday) 候選（同姓同生日通常極少），再統一在 Python 端
         # 比對 normalize 後的 phone；無論是否匹配都走相同程式路徑，壓低時序差。
         # order_by 讓多筆跨學期 active 報名（同名同生日同手機可在不同學期各一筆，
@@ -537,7 +548,8 @@ def public_query_registration(
         )
         reg = None
         for candidate in candidates:
-            if _normalize_phone(candidate.parent_phone) == normalized_phone:
+            # 空對空守衛（P1-1）：reg 側 phone 為 NULL 時不得被空輸入匹配。
+            if _phone_matches_nonempty(candidate.parent_phone, body.parent_phone):
                 reg = candidate
                 break
         if reg is None:
@@ -604,7 +616,7 @@ def public_query_by_token(
         if (
             reg is None
             or token_expired
-            or _normalize_phone(reg.parent_phone) != _normalize_phone(body.parent_phone)
+            or not _phone_matches_nonempty(reg.parent_phone, body.parent_phone)
         ):
             raise HTTPException(
                 status_code=404,
