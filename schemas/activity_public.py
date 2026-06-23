@@ -276,6 +276,21 @@ class PublicSuppliesItemOut(IvyBaseModel):
     price: int
 
 
+class PublicBootstrapOut(IvyBaseModel):
+    """GET /public/bootstrap：一次回傳報名頁初始化所需的全部靜態資料。
+
+    取代前端開頁時並發打 registration-time + courses + supplies + classes +
+    course-videos 五支 GET（降低報名開放尖峰的請求數與單 worker DB 壓力，
+    穩定度稽核 2026-06-23）。名額（availability）變動快，仍走獨立端點即時查。
+    """
+
+    registration_time: PublicRegistrationTimeOut
+    courses: list[PublicCoursesItemOut]
+    supplies: list[PublicSuppliesItemOut]
+    classes: list[str]
+    course_videos: dict[str, str]
+
+
 class PublicRegistrationCourseOut(IvyBaseModel):
     """/public/query 與 /public/update 的 courses[] 單筆。"""
 

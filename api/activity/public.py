@@ -15,8 +15,8 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from utils.cache_layer import get_cache
 
@@ -24,7 +24,14 @@ _CACHE_NS_PUBLIC_AVAILABILITY = "public_availability"
 _CACHE_KEY_AVAILABILITY = "all"
 _CACHE_TTL_AVAILABILITY = 10  # seconds — advisory display only, true overbooking guard is register with_for_update
 
-from utils.errors import raise_safe_500
+# 報名頁初始化靜態資料（courses/supplies/classes/videos/registration-time）的
+# process-global 快取：報名開放尖峰數百家長同時開頁時，把 DB 實打次數從 O(家長數)
+# 收斂到 O(1/TTL)（穩定度稽核 2026-06-23）。這些資料變動低，30s staleness 可接受。
+_CACHE_NS_PUBLIC_BOOTSTRAP = "public_bootstrap"
+_CACHE_KEY_BOOTSTRAP = "all"
+_CACHE_TTL_BOOTSTRAP = 30  # seconds
+
+from utils.errors import raise_safe_500, is_lock_contention_error
 from utils.audit import write_explicit_audit
 
 _POSTER_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -54,6 +61,7 @@ from models.database import (
 )
 from services.activity_service import activity_service
 from utils.rate_limit import create_limiter
+from config import settings
 
 from schemas.activity_public import (
     PublicRegistrationTimeOut,
@@ -61,6 +69,7 @@ from schemas.activity_public import (
     PublicSuppliesItemOut,
     PublicRegistrationDetailOut,
     PublicRegisterResultOut,
+    PublicBootstrapOut,
 )
 from schemas._common import DeleteResultOut
 
@@ -100,17 +109,20 @@ from utils.academic import resolve_academic_term_filters
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 公開端 per-IP 限流額度自 settings.network 讀取（env 可調，預設見 config/network.py）。
+# 放寬預設是為了容忍校園/社區/CGNAT 共用出口 IP 的多位家長（穩定度稽核 2026-06-23）；
+# 上線尖峰可改 Zeabur 環境變數 + 重啟調整，免 push 後端。
 _public_query_limiter_instance = create_limiter(
-    max_calls=10,
-    window_seconds=60,
+    max_calls=settings.network.activity_query_rate_max,
+    window_seconds=settings.network.activity_query_rate_window,
     name="activity_public_query",
     error_detail="查詢過於頻繁，請稍後再試",
 )
 _public_query_limiter = _public_query_limiter_instance.as_dependency()
 
 _public_register_limiter_instance = create_limiter(
-    max_calls=5,
-    window_seconds=60,
+    max_calls=settings.network.activity_register_rate_max,
+    window_seconds=settings.network.activity_register_rate_window,
     name="activity_public_register",
     error_detail="提交過於頻繁，請稍後再試",
 )
@@ -118,12 +130,29 @@ _public_register_limiter = _public_register_limiter_instance.as_dependency()
 
 # 家長提問：相較報名放寬一些，避免誤擋連續補充問題
 _public_inquiry_limiter_instance = create_limiter(
-    max_calls=3,
-    window_seconds=60,
+    max_calls=settings.network.activity_inquiry_rate_max,
+    window_seconds=settings.network.activity_inquiry_rate_window,
     name="activity_public_inquiry",
     error_detail="提交過於頻繁，請稍後再試",
 )
 _public_inquiry_limiter = _public_inquiry_limiter_instance.as_dependency()
+
+
+def _set_hot_path_lock_timeout(session) -> None:
+    """報名 / 改報名熱路徑設較短 lock_timeout（per-transaction，SET LOCAL）。
+
+    為什麼：register/update 對熱門課程列下 with_for_update，報名尖峰大量並發搶同一
+    課時會在列鎖上序列化等待；無 lock_timeout 時等待者最久可佔住連線到 statement_timeout
+    (30s)，在僅 20 條的連線池下會放大成 pool 耗盡 → 全 pod 500（穩定度稽核 2026-06-23 P1/P2）。
+    設 3s（< pool_timeout 15s）讓搶不到鎖者快速失敗（55P03）釋放連線，由上層轉成 409
+    「請稍候再試」而非拖垮整池。
+
+    僅作用於「本交易」（SET LOCAL），不影響薪資 / 後台等其他路徑的鎖等待；
+    僅 PostgreSQL 生效，SQLite（單元測試）略過。lock_timeout 值為固定常數、非使用者輸入。
+    """
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        session.execute(text("SET LOCAL lock_timeout = '3s'"))
 
 
 _PUBLIC_DISPLAY_FIELDS = (
@@ -136,30 +165,118 @@ _PUBLIC_DISPLAY_FIELDS = (
 )
 
 
+# ── 報名頁靜態資料 builder（單一資料來源，供個別端點與 /public/bootstrap 共用）──
+
+
+def _build_registration_time_payload(session) -> dict:
+    """報名開放時間 + 顯示設定 payload。"""
+    settings_row = session.query(ActivityRegistrationSettings).first()
+    if not settings_row:
+        # Finding 1（2026-06-22）：無 settings 列時 _check_registration_open 放行報名
+        # （業主裁：維持放行）。此處回 is_open=True 與其一致，否則 UI 顯示關閉但 API
+        # 實際開放，可繞過前台直接報名。
+        return {
+            "is_open": True,
+            "open_at": None,
+            "close_at": None,
+            **{k: None for k in _PUBLIC_DISPLAY_FIELDS},
+        }
+    return {
+        "is_open": settings_row.is_open,
+        "open_at": settings_row.open_at,
+        "close_at": settings_row.close_at,
+        **{k: getattr(settings_row, k, None) for k in _PUBLIC_DISPLAY_FIELDS},
+    }
+
+
+def _build_courses_payload(session) -> list:
+    """當學期課程列表 payload（E1：只回當學期，避免跨學期同名重複）。"""
+    sy, sem = resolve_academic_term_filters(None, None, session)
+    courses = (
+        session.query(ActivityCourse)
+        .filter(
+            ActivityCourse.is_active.is_(True),
+            ActivityCourse.school_year == sy,
+            ActivityCourse.semester == sem,
+        )
+        .order_by(ActivityCourse.id)
+        .all()
+    )
+    next_session_map = _next_session_dates(session, [c.id for c in courses])
+    return [
+        {
+            "name": c.name,
+            "price": c.price,
+            "sessions": c.sessions,
+            "frequency": "",
+            "min_age_months": c.min_age_months,
+            "max_age_months": c.max_age_months,
+            "meeting_weekday": c.meeting_weekday,
+            "meeting_start_time": (
+                c.meeting_start_time.strftime("%H:%M") if c.meeting_start_time else None
+            ),
+            "meeting_end_time": (
+                c.meeting_end_time.strftime("%H:%M") if c.meeting_end_time else None
+            ),
+            "instructor_name": c.instructor_name,
+            "next_session_date": next_session_map.get(c.id),
+        }
+        for c in courses
+    ]
+
+
+def _build_supplies_payload(session) -> list:
+    """當學期用品列表 payload。"""
+    sy, sem = resolve_academic_term_filters(None, None, session)
+    supplies = (
+        session.query(ActivitySupply)
+        .filter(
+            ActivitySupply.is_active.is_(True),
+            ActivitySupply.school_year == sy,
+            ActivitySupply.semester == sem,
+        )
+        .order_by(ActivitySupply.id)
+        .all()
+    )
+    return [{"name": s.name, "price": s.price} for s in supplies]
+
+
+def _build_classes_payload(session) -> list:
+    """班級選項 payload。"""
+    classrooms = (
+        session.query(Classroom)
+        .filter(Classroom.is_active.is_(True))
+        .order_by(Classroom.id)
+        .all()
+    )
+    return [c.name for c in classrooms]
+
+
+def _build_course_videos_payload(session) -> dict:
+    """當學期課程介紹影片 URL payload。"""
+    sy, sem = resolve_academic_term_filters(None, None, session)
+    courses = (
+        session.query(ActivityCourse)
+        .filter(
+            ActivityCourse.is_active.is_(True),
+            ActivityCourse.school_year == sy,
+            ActivityCourse.semester == sem,
+            ActivityCourse.video_url.isnot(None),
+            ActivityCourse.video_url != "",
+        )
+        .all()
+    )
+    return {c.name: c.video_url for c in courses}
+
+
 @router.get("/public/registration-time", response_model=PublicRegistrationTimeOut)
 def get_public_registration_time(request: Request, response: Response):
     """公開端點：前台查詢報名開放時間 + 顯示設定（無需認證）"""
     session = get_session()
     try:
-        settings = session.query(ActivityRegistrationSettings).first()
-        if not settings:
-            # Finding 1（2026-06-22）：無 settings 列時 _check_registration_open
-            # 放行報名（業主裁：維持放行）。此處須回 is_open=True 與其一致，
-            # 否則 UI 顯示關閉但 API 實際開放，可繞過前台直接報名。
-            payload = {
-                "is_open": True,
-                "open_at": None,
-                "close_at": None,
-                **{k: None for k in _PUBLIC_DISPLAY_FIELDS},
-            }
-        else:
-            payload = {
-                "is_open": settings.is_open,
-                "open_at": settings.open_at,
-                "close_at": settings.close_at,
-                **{k: getattr(settings, k, None) for k in _PUBLIC_DISPLAY_FIELDS},
-            }
-        return _public_etag_response(request, response, payload)
+        return _public_etag_response(
+            request, response, _build_registration_time_payload(session)
+        )
     finally:
         session.close()
 
@@ -209,44 +326,7 @@ def get_public_courses(request: Request, response: Response):
     """前台：取得課程列表"""
     session = get_session()
     try:
-        # E1：只回當學期課程，避免上一學期/「複製上學期」遺留的 is_active 課程
-        # 在公開報名頁同名重複列出（register 寫入路徑本就過濾學期，讀取端對齊）。
-        sy, sem = resolve_academic_term_filters(None, None, session)
-        courses = (
-            session.query(ActivityCourse)
-            .filter(
-                ActivityCourse.is_active.is_(True),
-                ActivityCourse.school_year == sy,
-                ActivityCourse.semester == sem,
-            )
-            .order_by(ActivityCourse.id)
-            .all()
-        )
-        next_session_map = _next_session_dates(session, [c.id for c in courses])
-        payload = [
-            {
-                "name": c.name,
-                "price": c.price,
-                "sessions": c.sessions,
-                "frequency": "",
-                # Phase 3 — time 序列化為 "HH:MM" 給家長公開報名頁 advisory
-                "min_age_months": c.min_age_months,
-                "max_age_months": c.max_age_months,
-                "meeting_weekday": c.meeting_weekday,
-                "meeting_start_time": (
-                    c.meeting_start_time.strftime("%H:%M")
-                    if c.meeting_start_time
-                    else None
-                ),
-                "meeting_end_time": (
-                    c.meeting_end_time.strftime("%H:%M") if c.meeting_end_time else None
-                ),
-                "instructor_name": c.instructor_name,
-                "next_session_date": next_session_map.get(c.id),
-            }
-            for c in courses
-        ]
-        return _public_etag_response(request, response, payload)
+        return _public_etag_response(request, response, _build_courses_payload(session))
     finally:
         session.close()
 
@@ -256,20 +336,9 @@ def get_public_supplies(request: Request, response: Response):
     """前台：取得用品列表"""
     session = get_session()
     try:
-        # E1：只回當學期用品（同 /public/courses 理由）。
-        sy, sem = resolve_academic_term_filters(None, None, session)
-        supplies = (
-            session.query(ActivitySupply)
-            .filter(
-                ActivitySupply.is_active.is_(True),
-                ActivitySupply.school_year == sy,
-                ActivitySupply.semester == sem,
-            )
-            .order_by(ActivitySupply.id)
-            .all()
+        return _public_etag_response(
+            request, response, _build_supplies_payload(session)
         )
-        payload = [{"name": s.name, "price": s.price} for s in supplies]
-        return _public_etag_response(request, response, payload)
     finally:
         session.close()
 
@@ -279,14 +348,7 @@ def get_public_classes(request: Request, response: Response):
     """前台：取得班級選項"""
     session = get_session()
     try:
-        classrooms = (
-            session.query(Classroom)
-            .filter(Classroom.is_active.is_(True))
-            .order_by(Classroom.id)
-            .all()
-        )
-        payload = [c.name for c in classrooms]
-        return _public_etag_response(request, response, payload)
+        return _public_etag_response(request, response, _build_classes_payload(session))
     finally:
         session.close()
 
@@ -382,24 +444,43 @@ def get_public_course_videos(request: Request, response: Response):
     """前台：取得課程介紹影片 URL"""
     session = get_session()
     try:
-        # C8：只回當學期課程影片。否則跨學期同名課（含「複製上學期」遺留）以 course.name
-        # 當 dict key 互相覆寫，且非當學期影片外洩到當學期報名頁（與 /public/courses 對齊）。
-        sy, sem = resolve_academic_term_filters(None, None, session)
-        courses = (
-            session.query(ActivityCourse)
-            .filter(
-                ActivityCourse.is_active.is_(True),
-                ActivityCourse.school_year == sy,
-                ActivityCourse.semester == sem,
-                ActivityCourse.video_url.isnot(None),
-                ActivityCourse.video_url != "",
-            )
-            .all()
+        return _public_etag_response(
+            request, response, _build_course_videos_payload(session)
         )
-        payload = {c.name: c.video_url for c in courses}
-        return _public_etag_response(request, response, payload)
     finally:
         session.close()
+
+
+@router.get("/public/bootstrap", response_model=PublicBootstrapOut)
+def get_public_bootstrap(request: Request, response: Response):
+    """前台：一次取回報名頁初始化所需的全部靜態資料（取代 5 支並發 GET）。
+
+    回傳 registration-time + courses + supplies + classes + course-videos，
+    帶 30s process-global 快取：報名開放尖峰 cache hit 完全跳過 DB session，
+    把 DB 實打次數從 O(家長數) 收斂到 O(1/TTL)（穩定度稽核 2026-06-23）。
+    名額（availability）變動快，前端仍走 /public/courses/availability 即時查。
+    """
+    cache = get_cache()
+    bundle = cache.get(_CACHE_NS_PUBLIC_BOOTSTRAP, _CACHE_KEY_BOOTSTRAP)
+    if bundle is None:
+        session = get_session()
+        try:
+            bundle = {
+                "registration_time": _build_registration_time_payload(session),
+                "courses": _build_courses_payload(session),
+                "supplies": _build_supplies_payload(session),
+                "classes": _build_classes_payload(session),
+                "course_videos": _build_course_videos_payload(session),
+            }
+        finally:
+            session.close()
+        cache.set(
+            _CACHE_NS_PUBLIC_BOOTSTRAP,
+            _CACHE_KEY_BOOTSTRAP,
+            bundle,
+            ttl=_CACHE_TTL_BOOTSTRAP,
+        )
+    return _public_etag_response(request, response, bundle)
 
 
 class _PublicQueryPayload(BaseModel):
@@ -577,6 +658,8 @@ def public_register(
     session = get_session()
     try:
         _check_registration_open(session)
+        # 報名熱路徑短 lock_timeout：搶不到熱門課列鎖時快速失敗釋放連線（見 helper docstring）
+        _set_hot_path_lock_timeout(session)
 
         # 決定學期（未傳則用當前）
         sy, sem = resolve_academic_term_filters(body.school_year, body.semester)
@@ -783,6 +866,20 @@ def public_register(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        # 鎖爭用 / 鎖逾時（55P03 / 40P01）：報名尖峰搶同一熱門課的預期競態。
+        # 回 409 讓家長稍候重試，並用 warning（不噴 Sentry / 不報 500）。
+        session.rollback()
+        if is_lock_contention_error(e):
+            logger.warning(
+                "公開報名鎖爭用快速失敗 pgcode=%s",
+                getattr(getattr(e, "orig", None), "pgcode", None),
+            )
+            raise HTTPException(
+                status_code=409, detail="報名人數眾多，請稍候幾秒再送出一次"
+            )
+        logger.error("公開報名 DB 錯誤：%s", e)
+        raise_safe_500(e)
     except Exception as e:
         session.rollback()
         logger.error("公開報名失敗：%s", e)
@@ -819,6 +916,8 @@ def public_update_registration(
     session = get_session()
     try:
         _check_registration_open(session)
+        # 改報名同樣鎖 reg / 課程列，短 lock_timeout 避免爭用拖垮連線池（見 helper docstring）
+        _set_hot_path_lock_timeout(session)
 
         reg = (
             session.query(ActivityRegistration)
@@ -1185,6 +1284,19 @@ def public_update_registration(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        # 鎖爭用 / 鎖逾時：改報名與報名 / 候補遞補搶同列鎖的預期競態 → 409 稍候重試。
+        session.rollback()
+        if is_lock_contention_error(e):
+            logger.warning(
+                "前台更新報名鎖爭用快速失敗 pgcode=%s",
+                getattr(getattr(e, "orig", None), "pgcode", None),
+            )
+            raise HTTPException(
+                status_code=409, detail="資料處理中，請稍候幾秒再儲存一次"
+            )
+        logger.error("前台更新報名 DB 錯誤：%s", e)
+        raise_safe_500(e)
     except Exception as e:
         session.rollback()
         logger.error("前台更新報名失敗：%s", e)
