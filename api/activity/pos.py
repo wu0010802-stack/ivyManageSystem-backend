@@ -818,6 +818,73 @@ def _idempotent_replay(session, body, existing, operator, *, source: str):
     return None
 
 
+def _run_post_lock_refund_guards(session, body, reg_ids, current_user) -> dict:
+    """退費路徑在行級鎖之後的兩道簽核閘，回傳退費稽核 context（非退費回 {}）。
+
+    第二道：每 reg 累積退費簽核（鎖後查 prior_refunded，避免併發小額退費各自看到
+    相同舊累積值；封死同 reg 連開多張小收據繞過第一道收據合計門檻的拆單）。
+    第三道：實退 vs server-side 建議值偏離簽核（spec §8.1，員工算錯/多退私吞）。
+    須在 _lock_regs 之後呼叫；第一道（收據合計）與退費 advisory lock 仍在 caller。
+    """
+    if body.type != "refund":
+        return {}
+
+    # 第二道：累積退費簽核
+    prior_rows = (
+        session.query(
+            ActivityPaymentRecord.registration_id,
+            func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
+        )
+        .filter(
+            ActivityPaymentRecord.registration_id.in_(reg_ids),
+            ActivityPaymentRecord.type == "refund",
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
+        .group_by(ActivityPaymentRecord.registration_id)
+        .all()
+    )
+    prior_refund_map = {rid: int(amt or 0) for rid, amt in prior_rows}
+    for item in body.items:
+        cumulative = prior_refund_map.get(item.registration_id, 0) + int(item.amount)
+        require_approve_for_large_refund(
+            cumulative,
+            current_user,
+            label=f"報名 {item.registration_id} 累積退費總額",
+        )
+
+    # 第三道：實退 vs 建議值偏離簽核
+    actual_by_reg = {it.registration_id: it.amount for it in body.items}
+    suggested_by_reg: dict[int, int] = {}
+    suggestion_details: list[dict] = []
+    for rid in actual_by_reg:
+        suggestion = build_refund_suggestion(session, rid)
+        suggested_by_reg[rid] = suggestion["total_suggested_amount"]
+        suggestion_details.append(suggestion)
+
+    total_actual = sum(actual_by_reg.values())
+    total_suggested = sum(suggested_by_reg.values())
+    diff = sum(abs(actual_by_reg[rid] - suggested_by_reg[rid]) for rid in actual_by_reg)
+    # 若任一 reg 課程 sessions IS NULL → merged suggestion 標 needs_manual_review
+    _merged_suggestion = {
+        "needs_manual_review": any(
+            s.get("needs_manual_review") for s in suggestion_details
+        )
+    }
+    require_approve_for_refund_diff(
+        diff=diff,
+        current_user=current_user,
+        suggested_total=total_suggested,
+        actual_total=total_actual,
+        suggestion=_merged_suggestion,
+    )
+    return {
+        "suggested_total": total_suggested,
+        "actual_total": total_actual,
+        "diff": diff,
+        "suggestion_details": suggestion_details,
+    }
+
+
 @router.post("/pos/checkout", status_code=201, response_model=PosCheckoutOut)
 def pos_checkout(
     body: POSCheckoutRequest,
@@ -946,75 +1013,11 @@ def pos_checkout(
                     )
                     return replay
 
-        # ── 第二道：每 reg 累積退費簽核（須在 _lock_regs 之後）─────────
-        # 鎖之後才查 prior_refunded，避免兩個併發小額退費各自看到相同舊累積值；
-        # 並且封死「同 registration 連開多張小收據繞過第一道收據合計門檻」的拆單路徑。
-        # Why: 第一道（收據合計）只擋同收據內金額大；同 reg 用兩張小收據之間沒有檢查。
-        if body.type == "refund":
-            prior_rows = (
-                session.query(
-                    ActivityPaymentRecord.registration_id,
-                    func.coalesce(func.sum(ActivityPaymentRecord.amount), 0),
-                )
-                .filter(
-                    ActivityPaymentRecord.registration_id.in_(reg_ids),
-                    ActivityPaymentRecord.type == "refund",
-                    ActivityPaymentRecord.voided_at.is_(None),
-                )
-                .group_by(ActivityPaymentRecord.registration_id)
-                .all()
-            )
-            prior_refund_map = {rid: int(amt or 0) for rid, amt in prior_rows}
-            for item in body.items:
-                cumulative = prior_refund_map.get(item.registration_id, 0) + int(
-                    item.amount
-                )
-                require_approve_for_large_refund(
-                    cumulative,
-                    current_user,
-                    label=f"報名 {item.registration_id} 累積退費總額",
-                )
-
-        # ── 第三道：實退 vs 建議值偏離簽核 (spec §8.1) ───────────────
-        # Why: 員工算錯 / 多退私吞。重算 server-side suggestion 與 body 比對；
-        # 偏離總額 > NT$100 需 ACTIVITY_PAYMENT_APPROVE 權限。
-        # 注意：多 reg 同收據用 sum(abs(per-reg-diff)) 避免方向抵消漏網。
-        _refund_audit_context: dict = {}
-        if body.type == "refund":
-            actual_by_reg = {it.registration_id: it.amount for it in body.items}
-            suggested_by_reg: dict[int, int] = {}
-            suggestion_details: list[dict] = []
-            for rid in actual_by_reg:
-                suggestion = build_refund_suggestion(session, rid)
-                suggested_by_reg[rid] = suggestion["total_suggested_amount"]
-                suggestion_details.append(suggestion)
-
-            total_actual = sum(actual_by_reg.values())
-            total_suggested = sum(suggested_by_reg.values())
-            diff = sum(
-                abs(actual_by_reg[rid] - suggested_by_reg[rid]) for rid in actual_by_reg
-            )
-
-            # 若任一 reg 課程 sessions IS NULL → merged suggestion 標 needs_manual_review
-            _merged_suggestion = {
-                "needs_manual_review": any(
-                    s.get("needs_manual_review") for s in suggestion_details
-                )
-            }
-            require_approve_for_refund_diff(
-                diff=diff,
-                current_user=current_user,
-                suggested_total=total_suggested,
-                actual_total=total_actual,
-                suggestion=_merged_suggestion,
-            )
-
-            _refund_audit_context = {
-                "suggested_total": total_suggested,
-                "actual_total": total_actual,
-                "diff": diff,
-                "suggestion_details": suggestion_details,
-            }
+        # ── 退費鎖後兩道簽核閘（第二道累積 + 第三道實退偏離）；非退費回 {} ──
+        # 第一道（收據合計）與退費 advisory lock 已在上方鎖前處理。
+        _refund_audit_context = _run_post_lock_refund_guards(
+            session, body, reg_ids, current_user
+        )
 
         total_map = _batch_calc_total_amounts(session, reg_ids)
         course_map = _fetch_reg_course_details(session, reg_ids)
