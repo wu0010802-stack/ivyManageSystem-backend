@@ -187,22 +187,24 @@ def list_pending_registrations(
             q = q.filter(rejected_cond)
         else:
             q = q.filter(or_(pending_cond, rejected_cond))
+        # A1：家長電話屬 Guardian PII（與 /activity/students/search 口徑一致）。缺
+        # GUARDIANS_READ 時搜尋條件不含手機欄位——否則可用候選手機觀察「有/無命中」
+        # 反查電話↔學生關聯，繞過下方輸出端對 parent_phone 的遮罩。
+        can_see_guardian = can_view_guardian_pii(current_user)
         if search:
             # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 全表匹配
             like = f"%{escape_like_pattern(search)}%"
-            q = q.filter(
-                or_(
-                    ActivityRegistration.student_name.ilike(
-                        like, escape=LIKE_ESCAPE_CHAR
-                    ),
-                    ActivityRegistration.class_name.ilike(
-                        like, escape=LIKE_ESCAPE_CHAR
-                    ),
+            search_predicates = [
+                ActivityRegistration.student_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+                ActivityRegistration.class_name.ilike(like, escape=LIKE_ESCAPE_CHAR),
+            ]
+            if can_see_guardian:
+                search_predicates.append(
                     ActivityRegistration.parent_phone.ilike(
                         like, escape=LIKE_ESCAPE_CHAR
-                    ),
+                    )
                 )
-            )
+            q = q.filter(or_(*search_predicates))
         total = q.count()
         # 合併頁：待審核排前（created_at 倒序），已拒絕排後（reviewed_at 倒序）
         rows = (
@@ -217,7 +219,7 @@ def list_pending_registrations(
         # F-026：缺 STUDENTS_READ / GUARDIANS_READ 時遮罩對應 PII 欄位
         # S7：STUDENTS_READ:own_class 者對非管轄班級的列照樣遮罩（per-row）
         pii_visible, pii_allowed = resolve_student_pii_scope(session, current_user)
-        can_see_guardian = can_view_guardian_pii(current_user)
+        # can_see_guardian 已於搜尋條件前算過（手機 predicate 把關），此處沿用同值
         # #4：scoped caller 對終態學生遮 birthday/FK
         terminal_ids = (
             terminal_student_ids_in(session, [r.student_id for r in rows])
