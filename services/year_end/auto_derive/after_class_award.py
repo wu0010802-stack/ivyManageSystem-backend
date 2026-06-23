@@ -41,9 +41,12 @@ logger = logging.getLogger(__name__)
 # 計入人次的報名課程狀態（waitlist 不計）
 _COUNTED_STATUSES = ("enrolled", "promoted_pending")
 # 配對成功（合法在班）的報名 match_status 集合（models/activity.py:142 註解）：
-#   matched=自動匹配成功 / manual=人工綁定（亦為合法在班）。
+#   matched=自動匹配成功 / manual=人工綁定 / forced=強行收件（校外生或永遠比對
+#   不上但校方決定收件，亦為真實付費在班生）。三者皆視為合法在班。
 #   其餘（pending/rejected/unmatched）視為未配對。J 與 unmatched 以此乾淨互斥。
-_SUCCESS_STATUSES = ("matched", "manual")
+#   業主 2026-06-23 裁定 forced 計入：點名/容量/營收都把它當有效報名（口徑
+#   != 'rejected'），獎金口徑須一致，否則老師被少算學生數 → 少領獎金。
+_SUCCESS_STATUSES = ("matched", "manual", "forced")
 # 上學期（Excel「N上鼓勵推動才藝班獎金」）
 _FIRST_SEMESTER = 1
 
@@ -74,7 +77,7 @@ class AcaReport:
     """① 才藝鼓勵推導結果。
 
     written          : 寫入/更新的 SpecialBonusItem 筆數（不含 skip 的手動筆）
-    unmatched_count  : 未配對（classroom_id IS NULL，或 match_status 不在 {'matched','manual'}）的報名人次
+    unmatched_count  : 未配對（classroom_id IS NULL，或 match_status 不在 {'matched','manual','forced'}）的報名人次
     skipped_manual   : 因手動筆而 skip 的班數
     warnings         : 略過原因（缺單價/缺班導等）
     """
@@ -147,7 +150,7 @@ def _upsert_auto_item(
 def _count_enrollments(db: Session, *, classroom_id: int, academic_year: int) -> int:
     """該班上學期報名人次（COUNT(RegistrationCourse)，非 distinct）。
 
-    僅計合法在班（match_status IN ('matched','manual')）的報名，與 unmatched
+    僅計合法在班（match_status IN ('matched','manual','forced')）的報名，與 unmatched
     乾淨互斥：pending/rejected/unmatched 即使帶 classroom_id 也只進 unmatched，
     不進 J。
     """
@@ -175,7 +178,7 @@ def _count_unmatched(db: Session, *, academic_year: int) -> int:
     """未配對報名人次（classroom_id IS NULL，或 match_status 不在成功集）。
 
     與 J 同單位（COUNT(RegistrationCourse)、同狀態/學期），且與 J 乾淨互斥：
-    凡不滿足「classroom_id IS NOT NULL AND match_status IN ('matched','manual')」
+    凡不滿足「classroom_id IS NOT NULL AND match_status IN ('matched','manual','forced')」
     者落此（pending/rejected/unmatched 或無班）。語意為「若配對成功則本可計入
     獎金」的報名數。
     """

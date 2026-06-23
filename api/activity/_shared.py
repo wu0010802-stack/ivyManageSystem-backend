@@ -773,7 +773,7 @@ def _build_registration_filter_query(
 ):
     """回傳已套用篩選條件的 SQLAlchemy query，調用方可繼續加 .offset/.limit 或 .all()。
 
-    match_status：pending / matched / manual / rejected / unmatched，用於後台審核分頁。
+    match_status：pending / matched / manual / rejected / unmatched / forced，用於後台審核分頁。
     include_inactive：rejected 狀態的 registration 會被設為 is_active=False；若要列出
       rejected，需設 include_inactive=True。
     student_id：指定學生 ID 時，僅回傳該學生在校 Student.id 匹配的報名（含跨學期歷史）。

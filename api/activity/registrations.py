@@ -120,9 +120,14 @@ def admin_create_registration(
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_WRITE)),
 ):
     """後台手動新增報名（不受報名開放時間限制，需 ACTIVITY_WRITE 權限）"""
-    # 空報名守衛：至少要選 1 門課程，避免產生 total_amount=0 的殼子後又被 POS 誤收款
-    if not body.courses:
-        raise HTTPException(status_code=400, detail="請至少選擇一門課程再新增報名")
+    # 空報名守衛：至少要有一門課程或一項用品，避免空殼污染。對齊公開端
+    # （schemas/activity_public._require_at_least_one_item）與家長端
+    # （api/parent_portal/activity.register_courses）的核心 invariant，
+    # 不再硬性要求課程——用品-only 是合法補登（用品本身有金額）。
+    if not body.courses and not body.supplies:
+        raise HTTPException(
+            status_code=400, detail="請至少選擇一門課程或一項用品再新增報名"
+        )
 
     session = get_session()
     try:
@@ -292,7 +297,7 @@ def get_registrations(
     school_year: Optional[int] = Query(None, ge=100, le=200),
     semester: Optional[int] = Query(None, ge=1, le=2),
     match_status: Optional[str] = Query(
-        None, pattern="^(matched|pending|manual|rejected|unmatched)$"
+        None, pattern="^(matched|pending|manual|rejected|unmatched|forced)$"
     ),
     include_inactive: bool = Query(False),
     student_id: Optional[int] = Query(
