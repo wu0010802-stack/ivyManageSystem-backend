@@ -395,7 +395,7 @@ class TestFeeRefundCumulative:
 
 
 def _seed_activity_registration(
-    session, *, paid_amount=2000, course_price=2000
+    session, *, paid_amount=2000, course_price=2000, sessions=None
 ) -> ActivityRegistration:
     from utils.academic import resolve_current_academic_term
 
@@ -406,6 +406,7 @@ def _seed_activity_registration(
         capacity=30,
         school_year=sy,
         semester=sem,
+        sessions=sessions,
     )
     session.add(course)
     session.flush()
@@ -478,11 +479,18 @@ class TestActivityRefundCumulative:
         """已 voided 的退費不計入累積（避免封過刪過的歷史誤殺合法後續操作）。"""
         client, sf = strict_client
         with sf() as s:
-            reg = _seed_activity_registration(s, paid_amount=5000, course_price=400)
+            # sessions=10 + course_price=400 + 0 出席 → 建議全退 = 400 = 退費金額
+            # → diff=0，require_approve_for_refund_diff 放行；且 sessions 非 NULL
+            # 不觸發 needs_manual_review 強制簽核。保留 guard 2（voided 排除累積）
+            # 為本測試 active 驗證的對象。
+            # （原本靠 sessions=NULL fallback 取 price 湊 diff=0，guard 收緊成
+            #   sessions-NULL 一律簽核後該技巧失效，改用具體 sessions。）
+            reg = _seed_activity_registration(
+                s, paid_amount=5000, course_price=400, sessions=10
+            )
             _make_user(
                 s,
                 username="act_writer",
-                # course_price=400 使 sessions=NULL fallback 建議值 = 400 = 退費金額 → diff=0 guard 3 自然通過；保留 guard 2 對 voided 排除邏輯的 active 驗證。
                 permission_names=[
                     "ACTIVITY_READ",
                     "ACTIVITY_WRITE",

@@ -105,6 +105,7 @@ def _setup_reg(
     course_price: int = 500,
     paid_amount: int = 0,
     is_paid: bool = False,
+    sessions: int = None,
 ) -> ActivityRegistration:
     from utils.academic import resolve_current_academic_term
 
@@ -127,6 +128,7 @@ def _setup_reg(
             allow_waitlist=True,
             school_year=school_year,
             semester=semester,
+            sessions=sessions,
         )
         session.add(course)
         session.flush()
@@ -375,7 +377,11 @@ class TestRefundRequirements:
                 username="write_only",
                 permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
-            reg = _setup_reg(s, paid_amount=500, is_paid=True)
+            # 給課程具體 sessions：本測試驗的是「退費金額門檻（≤1000 免簽核）」，
+            # 與 sessions-NULL 強制簽核路徑（needs_manual_review，另有專測）正交；
+            # sessions=NULL 會被 require_approve_for_refund_diff 擋成 403，故設
+            # 具體值（0 出席→建議全退=500=退費額→diff=0）隔離出金額門檻路徑。
+            reg = _setup_reg(s, paid_amount=500, is_paid=True, sessions=10)
             s.commit()
             reg_id = reg.id
 
