@@ -111,6 +111,38 @@ def _desensitize_operator(operator: Optional[str], viewer_has_approve: bool) -> 
     return operator[0] + "***"
 
 
+# 金流類 change_type 的 changed_by 即「經手人/operator」，與繳費明細 / POS 收據的
+# operator 同屬金流 PII，須對非簽核者遮罩（否則可從修改紀錄繞過列表遮罩看「誰收的款」）。
+# 以關鍵字判定而非固定清單，避免日後新增金流 change_type 漏遮（清單漂移）。涵蓋目前所有
+# log_change 金流類型：POS繳費/POS退款、新增繳費記錄/新增退費記錄、更新付款狀態、
+# 批次更新付款狀態、軟刪除繳費記錄、學生離園自動沖帳。非金流（退課/候補/編輯等 admin
+# 操作軌跡）不含這些關鍵字、不受影響。
+_MONEY_CHANGE_TYPE_KEYWORDS = ("繳費", "退費", "退款", "付款", "沖帳")
+
+
+def _is_money_change_type(change_type: Optional[str]) -> bool:
+    """change_type 是否屬金流操作（其 changed_by 為經手人，需遮罩）。"""
+    if not change_type:
+        return False
+    if change_type.startswith("POS"):
+        return True
+    return any(kw in change_type for kw in _MONEY_CHANGE_TYPE_KEYWORDS)
+
+
+def desensitize_change_operator(
+    change_type: Optional[str], changed_by: Optional[str], viewer_has_approve: bool
+) -> Optional[str]:
+    """RegistrationChange.changed_by 對外輸出時的去敏化。
+
+    金流類 change_type → 套 _desensitize_operator（與繳費明細 / POS 收據同口徑，
+    僅 ACTIVITY_PAYMENT_APPROVE 見真實經手人）；非金流類維持原樣（admin 操作軌跡，
+    與金流 operator 內控無關）。None / 空字串原樣回傳。
+    """
+    if changed_by and _is_money_change_type(change_type):
+        return _desensitize_operator(changed_by, viewer_has_approve)
+    return changed_by
+
+
 def resolve_student_pii_scope(db_session, current_user: dict):
     """S7（D1）：解析 caller 對學生 PII 的可視範圍（scope-aware 版 F-026/027/028）。
 

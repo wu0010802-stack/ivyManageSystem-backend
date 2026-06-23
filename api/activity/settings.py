@@ -19,7 +19,11 @@ from utils.errors import raise_safe_500
 from utils.file_upload import read_upload_with_size_check
 from utils.permissions import Permission
 
-from ._shared import RegistrationTimeSettings
+from ._shared import (
+    RegistrationTimeSettings,
+    desensitize_change_operator,
+    has_payment_approve,
+)
 from schemas._common import DeleteResultOut
 from schemas.activity_admin import (
     ActivityClassOptionsOut,
@@ -185,6 +189,9 @@ def get_changes(
     """取得修改紀錄列表"""
     session = get_session()
     try:
+        # P1（2026-06-23 code review）：金流類 change 的 changed_by=經手人，須對非簽核者
+        # 遮罩，與繳費明細 / POS 收據同口徑；否則低權限員工可從修改紀錄繞過列表遮罩。
+        viewer_has_approve = has_payment_approve(current_user)
         q = session.query(RegistrationChange)
         total = q.count()
         rows = (
@@ -200,7 +207,9 @@ def get_changes(
                 "student_name": r.student_name,
                 "change_type": r.change_type,
                 "description": r.description,
-                "changed_by": r.changed_by,
+                "changed_by": desensitize_change_operator(
+                    r.change_type, r.changed_by, viewer_has_approve
+                ),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows

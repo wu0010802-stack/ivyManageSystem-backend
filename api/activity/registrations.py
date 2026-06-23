@@ -76,6 +76,7 @@ from ._shared import (
     student_pii_row_visible,
     terminal_student_ids_in,
     has_payment_approve,
+    desensitize_change_operator,
     require_refund_reason,
     require_approve_for_large_refund,
     require_approve_for_cumulative_refund,
@@ -523,12 +524,17 @@ def get_registration_detail(
             .limit(20)
             .all()
         )
+        # P1（2026-06-23 code review）：金流類 change 的 changed_by=經手人，須對非簽核者
+        # 遮罩（與 /changes、繳費明細、POS 收據同口徑），避免從報名詳情繞過遮罩。
+        viewer_has_approve = has_payment_approve(current_user)
         change_list = [
             {
                 "id": ch.id,
                 "change_type": ch.change_type,
                 "description": ch.description,
-                "changed_by": ch.changed_by,
+                "changed_by": desensitize_change_operator(
+                    ch.change_type, ch.changed_by, viewer_has_approve
+                ),
                 "created_at": ch.created_at.isoformat() if ch.created_at else None,
             }
             for ch in changes
