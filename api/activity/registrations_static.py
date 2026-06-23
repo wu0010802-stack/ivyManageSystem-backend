@@ -200,8 +200,10 @@ def export_registrations(
     course_id: Optional[int] = None,
     classroom_name: Optional[str] = None,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
+    _: None = Depends(_export_limiter),
 ):
-    """匯出報名名單為 Excel"""
+    """匯出報名名單為 Excel（含 _export_limiter：5/60s，對齊 payment-report，
+    避免重複打 Excel 生成造成資源壓力）"""
     import openpyxl
     from openpyxl.styles import Font, Alignment, PatternFill
 
