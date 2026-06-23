@@ -83,13 +83,10 @@ def portal_list_dismissal_calls(
         day_start = datetime.combine(today, _DAY_START)
         day_end = datetime.combine(today, _DAY_END)
 
-        q = (
-            session.query(StudentDismissalCall)
-            .filter(
-                StudentDismissalCall.status.in_(["pending", "acknowledged"]),
-                StudentDismissalCall.requested_at >= day_start,
-                StudentDismissalCall.requested_at <= day_end,
-            )
+        q = session.query(StudentDismissalCall).filter(
+            StudentDismissalCall.status.in_(["pending", "acknowledged"]),
+            StudentDismissalCall.requested_at >= day_start,
+            StudentDismissalCall.requested_at <= day_end,
         )
         if classroom_ids is not None:
             q = q.filter(StudentDismissalCall.classroom_id.in_(classroom_ids))
@@ -193,7 +190,7 @@ def _db_transition_call(
             session.rollback()
             raise e
         out = _call_base_dict(call, student, classroom)
-        logger.info("接送通知%s：ID %d，教師 %s", action_label, call_id, emp.name)
+        logger.info("接送通知%s：ID %d，教師 ID %d", action_label, call_id, emp.id)
         return out, classroom_id
     finally:
         session.close()

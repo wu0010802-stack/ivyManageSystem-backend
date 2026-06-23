@@ -21,6 +21,7 @@ from sqlalchemy import or_
 
 from models.database import get_session, Employee, Attendance, SalaryRecord
 from services.salary.utils import calc_daily_salary, lock_and_premark_stale
+from services.finance.salary_access import has_full_salary_view
 from utils.auth import require_staff_permission
 from utils.attendance_guards import assert_no_self_in_batch
 from utils.permissions import Permission
@@ -72,8 +73,22 @@ class BatchConfirmRequest(BaseModel):
 # ============ 共用輔助：建立異常列表 ============
 
 
-def _build_anomaly_rows(session, year: int, month: int, status_filter: str):
-    """查詢指定月份所有員工的異常記錄，回傳 list[dict]"""
+def _build_anomaly_rows(
+    session,
+    year: int,
+    month: int,
+    status_filter: str,
+    *,
+    include_amounts: bool = False,
+):
+    """查詢指定月份所有員工的異常記錄，回傳 list[dict]。
+
+    include_amounts：是否填入 estimated_deduction 金額。**fail-closed 預設 False**。
+    遲到扣款 = round_half_up(calc_daily_salary(base)/8/60 × late_minutes)，可逆推
+    底薪，屬薪資機密。金額欄綁「全員薪資視野」(has_full_salary_view = admin/hr)，
+    與 salary_access.py「跨員工彙總金額需 admin/hr」口徑一致；其他角色（含持
+    ATTENDANCE_READ 的 supervisor）一律遮罩為 None，僅保留出勤資訊（遲到分鐘等）。
+    """
     _, last_day = cal_module.monthrange(year, month)
     start = date(year, month, 1)
     end = date(year, month, last_day)
@@ -146,6 +161,11 @@ def _build_anomaly_rows(session, year: int, month: int, status_filter: str):
                 }
             )
 
+        # 非全員薪資視野 → 遮罩金額欄，防從遲到扣款逆推底薪（越權洩漏）。
+        if not include_amounts:
+            for _it in items:
+                _it["estimated_deduction"] = None
+
         for item in items:
             rows.append(
                 {
@@ -179,7 +199,13 @@ def get_attendance_anomalies(
     """查詢月份異常清單（所有員工）"""
     session = get_session()
     try:
-        rows = _build_anomaly_rows(session, year, month, status)
+        rows = _build_anomaly_rows(
+            session,
+            year,
+            month,
+            status,
+            include_amounts=has_full_salary_view(current_user),
+        )
         total = len(rows)
         pending = sum(1 for r in rows if r["confirmed_action"] is None)
         return {
@@ -336,7 +362,13 @@ def export_attendance_anomalies(
     """匯出考勤異常 Excel"""
     session = get_session()
     try:
-        rows = _build_anomaly_rows(session, year, month, status)
+        rows = _build_anomaly_rows(
+            session,
+            year,
+            month,
+            status,
+            include_amounts=has_full_salary_view(current_user),
+        )
     finally:
         session.close()
 

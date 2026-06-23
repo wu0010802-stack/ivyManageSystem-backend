@@ -123,8 +123,8 @@ def create_portal_assessment(
             session.refresh(assessment)
 
             logger.info(
-                "教師新增學生評量記錄：emp=%s student_id=%d semester=%s type=%s",
-                emp.name,
+                "教師新增學生評量記錄：emp_id=%d student_id=%d semester=%s type=%s",
+                emp.id,
                 payload.student_id,
                 payload.semester,
                 payload.assessment_type,

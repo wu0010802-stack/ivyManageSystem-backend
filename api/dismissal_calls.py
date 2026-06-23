@@ -258,8 +258,7 @@ def _db_create_dismissal_call(
             raise e
         session.refresh(call)
         logger.info(
-            "接送通知建立：學生 %s (ID: %d)，班級 ID: %d，通知 ID: %d",
-            out["student_name"],
+            "接送通知建立：學生 ID %d，班級 ID: %d，通知 ID: %d",
             body.student_id,
             body.classroom_id,
             call.id,
