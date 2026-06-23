@@ -2845,11 +2845,15 @@ class SalaryEngine:
         month: int,
         festival_total,
         overtime_total,
+        pending_actions=_PREFETCH_UNSET,
     ):
         """從發放月累積總額中扣減 pending 懲處。
 
         扣減順序：節慶獎金優先扣完才動超額（業主慣例，與 Excel 案例一致）。
         非發放月（totals 為 None）或無 pending 懲處直接 pass-through。
+
+        qa-loop #6：bulk 路徑經 pending_actions= 傳預載懲處清單，免每位員工重查
+        get_pending_actions（read-N+1）；single 路徑不傳（哨兵）→ 即時 query。
 
         Returns:
             (festival_after, overtime_after, total_deducted)
@@ -2859,16 +2863,16 @@ class SalaryEngine:
         if festival_total is None or overtime_total is None:
             return festival_total, overtime_total, 0
 
-        import calendar as _cal
-        from services.disciplinary import (
-            _effective_amount,
-            get_pending_actions,
-        )
+        from services.disciplinary import _effective_amount
 
-        _, last_day = _cal.monthrange(year, month)
-        until_date = date(year, month, last_day)
+        if pending_actions is _PREFETCH_UNSET:
+            from services.disciplinary import get_pending_actions
 
-        actions = get_pending_actions(session, emp.id, until_date)
+            _, last_day = calendar.monthrange(year, month)
+            until_date = date(year, month, last_day)
+            actions = get_pending_actions(session, emp.id, until_date)
+        else:
+            actions = pending_actions
         if not actions:
             return festival_total, overtime_total, 0
 
@@ -3036,6 +3040,7 @@ class SalaryEngine:
         absence_deduction_amount: float,
         ytd_before: float | None = None,
         prefetched_record=_PREFETCH_UNSET,
+        prefetched_pending_actions=_PREFETCH_UNSET,
     ):
         """single 與 bulk 共用的「計算尾段」：懲處扣減 → calculate_salary →
         二代健保補充保費 → 曠職扣款 → net + 守衛，回傳 breakdown（不 persist）。
@@ -3051,7 +3056,13 @@ class SalaryEngine:
         # → _adjust 直接 pass-through 不查 DB。
         period_festival_total, period_overtime_total, _disc_deducted = (
             self._adjust_period_totals_for_discipline(
-                session, emp, year, month, period_festival_total, period_overtime_total
+                session,
+                emp,
+                year,
+                month,
+                period_festival_total,
+                period_overtime_total,
+                pending_actions=prefetched_pending_actions,
             )
         )
 
@@ -3570,6 +3581,25 @@ class SalaryEngine:
             session, employee_ids, year, month
         )
 
+        # qa-loop #6：批次預載發放月懲處（一次 query 取代 _adjust_period_totals_for_discipline
+        # 逐員工 get_pending_actions 的 read-N+1）；按 emp 分組、保留 (action_date, id) 排序。
+        from models.disciplinary import DisciplinaryAction
+
+        _, _disc_last_day = calendar.monthrange(year, month)
+        _disc_until = date(year, month, _disc_last_day)
+        pending_actions_by_emp: dict = {eid: [] for eid in employee_ids}
+        for _disc_action in (
+            session.query(DisciplinaryAction)
+            .filter(
+                DisciplinaryAction.employee_id.in_(employee_ids),
+                DisciplinaryAction.action_date <= _disc_until,
+                DisciplinaryAction.applied_to_salary_id.is_(None),
+            )
+            .order_by(DisciplinaryAction.action_date, DisciplinaryAction.id)
+            .all()
+        ):
+            pending_actions_by_emp[_disc_action.employee_id].append(_disc_action)
+
         return _BulkSalaryPreload(
             emp_map=emp_map,
             att_by_emp=att_by_emp,
@@ -3592,6 +3622,7 @@ class SalaryEngine:
             appraisal_by_emp=appraisal_by_emp,
             skip_by_emp_month=skip_by_emp_month,
             pending_payout_by_emp=pending_payout_by_emp,
+            pending_actions_by_emp=pending_actions_by_emp,
         )
 
     def _acquire_locks_and_load_existing_records(
@@ -4015,6 +4046,8 @@ class SalaryEngine:
             ytd_before=preload.ytd_bonus_by_emp.get(emp.id),
             # qa-loop #5：傳預載既有 record，免 _bonus_total_with_manual_overrides 每人重查。
             prefetched_record=_existing_rec,
+            # qa-loop #6：傳預載發放月懲處，免 _adjust_period_totals_for_discipline 每人重查。
+            prefetched_pending_actions=preload.pending_actions_by_emp.get(emp.id, []),
         )
 
         # ── SalaryRecord upsert（延後至外層 commit）

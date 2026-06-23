@@ -344,3 +344,45 @@ def test_bonus_total_prefetched_none_skips_query(salary_engine_db):
     )
     assert result is None
     bad_session.query.assert_not_called()
+
+
+def test_adjust_discipline_uses_prefetched_actions_without_querying(salary_engine_db):
+    """qa-loop #6：傳入預載 pending_actions 時 _adjust_period_totals_for_discipline 不得
+    再 query get_pending_actions（發放月 read-N+1 消除）。以「query 即報錯」session 證明。"""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    engine, _ = salary_engine_db
+    bad_session = MagicMock()
+    bad_session.query.side_effect = AssertionError(
+        "傳入預載 pending_actions 時不應 query（read-N+1 未消除）"
+    )
+    emp = SimpleNamespace(id=1, name="T")
+    # 非 merit action_type → _effective_amount 直接回 deduction_amount(500)
+    action = SimpleNamespace(action_type="__deduction__", deduction_amount=500)
+    # festival=1000 / overtime=500，應扣 500 → festival_after=500, overtime_after=500
+    f_after, o_after, deducted = engine._adjust_period_totals_for_discipline(
+        bad_session, emp, 2026, 2, 1000, 500, pending_actions=[action]
+    )
+    assert deducted == 500
+    assert f_after == 500
+    assert o_after == 500
+    bad_session.query.assert_not_called()
+
+
+def test_adjust_discipline_prefetched_empty_skips_query(salary_engine_db):
+    """預載空清單（該員工無 pending 懲處）亦不 query，pass-through。"""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    engine, _ = salary_engine_db
+    bad_session = MagicMock()
+    bad_session.query.side_effect = AssertionError("空預載清單時不應 query")
+    emp = SimpleNamespace(id=1, name="T")
+    f_after, o_after, deducted = engine._adjust_period_totals_for_discipline(
+        bad_session, emp, 2026, 2, 1000, 500, pending_actions=[]
+    )
+    assert deducted == 0
+    assert f_after == 1000
+    assert o_after == 500
+    bad_session.query.assert_not_called()

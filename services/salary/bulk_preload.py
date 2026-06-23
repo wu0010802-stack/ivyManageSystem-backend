@@ -9,7 +9,7 @@ engine.py 保留 re-export 維持既有 import surface
 （tests/test_salary_*.py 多檔 import from services.salary.engine 仍可正常解析）。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from models.approval import ApprovalStatus
@@ -51,6 +51,9 @@ class _BulkSalaryPreload:
     pending_payout_by_emp: (
         dict  # {emp_id: [UnusedLeavePayoutLog]} — pending_payout_logs_bulk
     )
+    # qa-loop #6：發放月懲處讀取批次預載 {emp_id: [DisciplinaryAction]}，消除
+    # _adjust_period_totals_for_discipline 逐員工 get_pending_actions 的 N+1。
+    pending_actions_by_emp: dict = field(default_factory=dict)
 
 
 def _get_ytd_sick_hours_before(
