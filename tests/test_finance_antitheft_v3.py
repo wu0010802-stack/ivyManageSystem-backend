@@ -715,7 +715,12 @@ class TestPaymentReportVoidedHandling:
             s.commit()
 
         assert _login(client, "act_admin").status_code == 200
-        res = client.get("/api/activity/registrations/payment-report")
+        # payment-report 自 16add535 起預設當前學期（避免傾印全學期 PII）；本測試
+        # 的 _seed_unpaid_registration 種 school_year=2025/semester=1，須顯式帶上對應
+        # 學期，否則被當前學期過濾掉 → 匯出 0 筆（與 production 安全行為一致）。
+        res = client.get(
+            "/api/activity/registrations/payment-report" "?school_year=2025&semester=1"
+        )
         assert res.status_code == 200
         wb = load_workbook(io.BytesIO(res.content))
         ws = wb["繳費明細"]
@@ -790,7 +795,12 @@ class TestPaymentReportVoidedHandling:
             s.commit()
 
         assert _login(client, "act_admin_lpd").status_code == 200
-        res = client.get("/api/activity/registrations/payment-report")
+        # payment-report 自 16add535 起預設當前學期（避免傾印全學期 PII）；本測試
+        # 的 _seed_unpaid_registration 種 school_year=2025/semester=1，須顯式帶上對應
+        # 學期，否則被當前學期過濾掉 → 匯出 0 筆（與 production 安全行為一致）。
+        res = client.get(
+            "/api/activity/registrations/payment-report" "?school_year=2025&semester=1"
+        )
         assert res.status_code == 200
         wb = load_workbook(io.BytesIO(res.content))
         ws = wb["繳費總覽"]
