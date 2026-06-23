@@ -49,12 +49,15 @@ def _deactivate_term_filter(sy: int, sem: int):
     school_year / semester 皆為 Integer（民國學年 / 1=上 2=下），可直接排序比較。
     - 未來學期 active 報名一併取消，避免續佔名額或被候補/付款流程處理；
     - 歷史學期（嚴格早於當前）保留供報表追溯，故用 >= 而非全部；
-    - NULL-term（school_year/semester 為 NULL）屬異常資料，正常報名流程一律帶當前
-      學期；但 NULL-term 的已繳費 active 報名若不取消，離園不會自動沖帳 → 幽靈金額/
-      名額殘留，故一併納入軟刪（杜絕無人沖帳的幽靈報名）。
+    - NULL-term（school_year 或 semester 任一為 NULL）屬異常資料，正常報名流程一律帶
+      當前學期；但 NULL-term 的已繳費 active 報名若不取消，離園不會自動沖帳 → 幽靈
+      金額/名額殘留，故一併納入軟刪（杜絕無人沖帳的幽靈報名）。對齊歷史 migration
+      20260417 的回填條件 `school_year IS NULL OR semester IS NULL`：須同時涵蓋
+      「school_year 有值但 semester NULL」這型 partial-null，否則離園後仍 active。
     """
     return or_(
         ActivityRegistration.school_year.is_(None),
+        ActivityRegistration.semester.is_(None),
         ActivityRegistration.school_year > sy,
         and_(
             ActivityRegistration.school_year == sy,
