@@ -82,7 +82,7 @@ def _num(value):
     return int(f) if f == int(f) else f
 
 
-@router.get("/salaries/enrollment-snapshot")
+@router.get("/salaries/enrollment-snapshot", response_model=dict)
 def get_enrollment_snapshot(
     year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
@@ -133,7 +133,7 @@ def get_enrollment_snapshot(
         }
 
 
-@router.post("/salaries/enrollment-snapshot/generate")
+@router.post("/salaries/enrollment-snapshot/generate", response_model=dict)
 def generate_enrollment_snapshot(
     data: SnapshotGenerateRequest,
     request: Request,
@@ -173,7 +173,7 @@ def generate_enrollment_snapshot(
         }
 
 
-@router.patch("/salaries/enrollment-snapshot/{snapshot_id}")
+@router.patch("/salaries/enrollment-snapshot/{snapshot_id}", response_model=dict)
 def patch_enrollment_snapshot(
     snapshot_id: int,
     data: SnapshotPatchRequest,
@@ -225,7 +225,7 @@ def patch_enrollment_snapshot(
         }
 
 
-@router.post("/salaries/enrollment-snapshot/confirm")
+@router.post("/salaries/enrollment-snapshot/confirm", response_model=dict)
 def confirm_enrollment_snapshot(
     data: SnapshotConfirmRequest,
     request: Request,

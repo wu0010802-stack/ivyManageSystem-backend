@@ -143,7 +143,7 @@ def create_binding_code(
         session.close()
 
 
-@router.post("/{guardian_id}/device-setup-code")
+@router.post("/{guardian_id}/device-setup-code", response_model=dict)
 def create_device_setup_code(
     guardian_id: int,
     request: Request,
@@ -221,7 +221,7 @@ def create_device_setup_code(
         session.close()
 
 
-@router.post("/{guardian_id}/revoke-devices")
+@router.post("/{guardian_id}/revoke-devices", response_model=dict)
 def revoke_guardian_devices(
     guardian_id: int,
     request: Request,

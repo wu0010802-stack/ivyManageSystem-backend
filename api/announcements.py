@@ -491,7 +491,7 @@ def list_readers(
         session.close()
 
 
-@router.post("/{announcement_id}/attachments", status_code=201)
+@router.post("/{announcement_id}/attachments", status_code=201, response_model=dict)
 async def upload_announcement_attachment(
     announcement_id: int,
     file: UploadFile = File(...),

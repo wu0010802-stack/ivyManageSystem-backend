@@ -102,7 +102,7 @@ def _get_report_or_404(session: Session, report_id: int) -> DataQualityReport:
     return row
 
 
-@router.post("/reports/{report_id}/ack")
+@router.post("/reports/{report_id}/ack", response_model=dict)
 def ack_report(
     report_id: int,
     body: AckBody,
@@ -125,7 +125,7 @@ def ack_report(
     return {"ok": True, "id": row.id, "status": row.status}
 
 
-@router.post("/reports/{report_id}/resolve")
+@router.post("/reports/{report_id}/resolve", response_model=dict)
 def resolve_report(
     report_id: int,
     body: ResolveBody,
@@ -147,7 +147,7 @@ def resolve_report(
     return {"ok": True, "id": row.id, "status": row.status}
 
 
-@router.post("/reports/{report_id}/ignore")
+@router.post("/reports/{report_id}/ignore", response_model=dict)
 def ignore_report(
     report_id: int,
     body: IgnoreBody,
