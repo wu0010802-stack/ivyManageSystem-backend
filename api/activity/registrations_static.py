@@ -32,6 +32,7 @@ from schemas.activity_admin import BatchPaymentResultOut
 from utils.permissions import Permission
 from utils.rate_limit import create_limiter
 from utils.finance_guards import require_finance_approve
+from utils.academic import resolve_academic_term_filters
 
 from ._shared import (
     BatchPaymentUpdate,
@@ -52,6 +53,16 @@ from ._shared import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# 付款狀態五態中文 label（與 _derive_payment_status 回傳值對齊）。
+# 報名名單匯出與繳費總覽匯出共用，避免兩份 inline map 漂移。
+_PAYMENT_STATUS_LABELS = {
+    "paid": "已繳清",
+    "partial": "部分繳費",
+    "unpaid": "未繳費",
+    "overpaid": "超額繳費",
+    "no_fee": "免繳",
+}
 
 
 # instance 與 dependency 分開存（對齊 public.py 慣例），測試 fixture 可清
@@ -199,13 +210,21 @@ def export_registrations(
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,
     classroom_name: Optional[str] = None,
+    school_year: Optional[int] = None,
+    semester: Optional[int] = None,
     current_user: dict = Depends(require_staff_permission(Permission.ACTIVITY_READ)),
     _: None = Depends(_export_limiter),
 ):
     """匯出報名名單為 Excel（含 _export_limiter：5/60s，對齊 payment-report，
-    避免重複打 Excel 生成造成資源壓力）"""
+    避免重複打 Excel 生成造成資源壓力）
+
+    school_year / semester：與列表端點一致，未提供時預設當前學期
+    （resolve_academic_term_filters），避免匯出傾印所有 active 學期。
+    """
     import openpyxl
     from openpyxl.styles import Font, Alignment, PatternFill
+
+    sy, sem = resolve_academic_term_filters(school_year, semester)
 
     session = get_session()
     try:
@@ -215,6 +234,8 @@ def export_registrations(
             payment_status=payment_status,
             course_id=course_id,
             classroom_name=classroom_name,
+            school_year=sy,
+            semester=sem,
             current_user=current_user,
         )
         total_count = q.count()
@@ -229,6 +250,11 @@ def export_registrations(
         regs = q.order_by(ActivityRegistration.created_at.desc()).all()
         reg_ids = [r.id for r in regs]
         course_name_map = _fetch_reg_course_names(session, reg_ids)
+        # 付款狀態改用即時衍生五態（與列表 / payment-report 一致），不再用 reg.is_paid
+        # 二分法（部分繳費被壓成未繳、超繳被壓成已繳）。
+        total_amount_map = (
+            _batch_calc_total_amounts(session, reg_ids) if reg_ids else {}
+        )
 
         wb = openpyxl.Workbook()
         ws = SafeWorksheet(wb.active)
@@ -248,13 +274,16 @@ def export_registrations(
             cell.alignment = center
 
         for idx, reg in enumerate(regs, start=1):
+            status = _derive_payment_status(
+                reg.paid_amount or 0, total_amount_map.get(reg.id, 0)
+            )
             ws.append(
                 [
                     idx,
                     reg.student_name,
                     reg.class_name or "",
                     "、".join(course_name_map.get(reg.id, [])),
-                    "已繳費" if reg.is_paid else "未繳費",
+                    _PAYMENT_STATUS_LABELS.get(status, status),
                     reg.remark or "",
                     reg.created_at.strftime("%Y-%m-%d %H:%M") if reg.created_at else "",
                 ]
@@ -283,6 +312,8 @@ def export_payment_report(
     payment_status: Optional[str] = None,
     course_id: Optional[int] = None,
     classroom_name: Optional[str] = None,
+    school_year: Optional[int] = None,
+    semester: Optional[int] = None,
     include_inactive: bool = Query(
         False,
         description="納入已軟刪（is_active=False）報名，供財務查核刪除/退款後的歷史帳務",
@@ -294,6 +325,9 @@ def export_payment_report(
 
     include_inactive：預設 False（維持只含 active 的現狀）；財務需查核刪除並退款後的
     歷史帳務時可帶 true 納入軟刪報名（#5）。
+
+    school_year / semester：與列表端點一致，未提供時預設當前學期
+    （resolve_academic_term_filters），避免匯出傾印所有 active 學期。
     """
     import openpyxl
     from openpyxl.styles import Font, Alignment, PatternFill
@@ -304,6 +338,8 @@ def export_payment_report(
     )
     _CENTER = Alignment(horizontal="center", vertical="center")
 
+    sy, sem = resolve_academic_term_filters(school_year, semester)
+
     session = get_session()
     try:
         q = _build_registration_filter_query(
@@ -312,6 +348,8 @@ def export_payment_report(
             payment_status=payment_status,
             course_id=course_id,
             classroom_name=classroom_name,
+            school_year=sy,
+            semester=sem,
             include_inactive=include_inactive,
             current_user=current_user,
         )
@@ -385,13 +423,6 @@ def export_payment_report(
             cell.fill = _HEADER_FILL
             cell.alignment = _CENTER
 
-        status_label_map = {
-            "paid": "已繳清",
-            "partial": "部分繳費",
-            "unpaid": "未繳費",
-            "overpaid": "超額繳費",
-            "no_fee": "免繳",
-        }
         for idx, reg in enumerate(regs, start=1):
             total = total_amount_map.get(reg.id, 0)
             paid = reg.paid_amount or 0
@@ -406,7 +437,7 @@ def export_payment_report(
                     total,
                     paid,
                     diff,
-                    status_label_map.get(status, status),
+                    _PAYMENT_STATUS_LABELS.get(status, status),
                     last_payment_date_map.get(reg.id, ""),
                 ]
             )
