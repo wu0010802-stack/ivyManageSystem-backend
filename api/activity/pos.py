@@ -776,6 +776,48 @@ def _lock_regs(session, reg_ids: list):
     # OperationalError（真 DB 錯誤 / lock timeout / 連線中斷）上拋，不降級
 
 
+def _idempotent_replay(session, body, existing, operator, *, source: str):
+    """同 idempotency_key 命中既有非作廢紀錄時的內容守衛 + replay。
+
+    收斂 pos_checkout 原本「前置守衛」與「except IntegrityError race」兩處各寫
+    一份、易漂移的核心邏輯：content-signature 比對不符 → 409；可解析回應 →
+    回放原收據 dict；existing 找到但無可解析回應 → 回 None（caller 各自決定
+    fall-through / re-raise）。source 僅供 log 區分來源（prefront / unique_race），
+    不影響行為；兩處 409 detail 完全一致。
+
+    ⚠ 不在此檢查 voided-key reuse（_has_any_record_for_key）——其放置在前置為
+    `elif existing is None`、在 except 為 existing 區塊之後且接 re-raise，兩處外層
+    控制流不同，刻意留在各 call site 以精確保留語意。
+    """
+    if _request_content_signature(body) != _receipt_content_signature(
+        session, existing
+    ):
+        logger.warning(
+            "POS checkout idempotent content mismatch (%s): key=%s operator=%s",
+            source,
+            body.idempotency_key,
+            operator,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "idempotency_key 已用於不同內容的收據"
+                "（項目/金額/付款類型/付款日期不符）；"
+                "若需建立新交易，請使用新的 idempotency_key 重送"
+            ),
+        )
+    replay = _parse_receipt_response_from_record(session, existing)
+    if replay is not None:
+        logger.info(
+            "POS checkout idempotent replay (%s): key=%s operator=%s",
+            source,
+            body.idempotency_key,
+            operator,
+        )
+        return replay
+    return None
+
+
 @router.post("/pos/checkout", status_code=201, response_model=PosCheckoutOut)
 def pos_checkout(
     body: POSCheckoutRequest,
@@ -815,34 +857,13 @@ def pos_checkout(
         if body.idempotency_key:
             existing = _find_idempotent_hit(session, body.idempotency_key)
             if existing is not None:
-                # 內容守衛：同 key 必須對應同一張收據內容（項目集合/金額/付款
-                # 類型/付款日期）。否則使用者在網路丟回應後改了金額再用同一把
-                # key 重送，會收到舊收據而新交易不建立 → 帳實不符。對齊 sibling
-                # add_registration_payment / fees refund 的上下文守衛語意。
-                if _request_content_signature(body) != _receipt_content_signature(
-                    session, existing
-                ):
-                    logger.warning(
-                        "POS checkout idempotent key content mismatch: "
-                        "key=%s operator=%s",
-                        body.idempotency_key,
-                        operator,
-                    )
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "idempotency_key 已用於不同內容的收據"
-                            "（項目/金額/付款類型/付款日期不符）；"
-                            "若需建立新交易，請使用新的 idempotency_key 重送"
-                        ),
-                    )
-                replay = _parse_receipt_response_from_record(session, existing)
+                # 內容守衛 + replay 收斂到 _idempotent_replay（與下方 UNIQUE race
+                # except 共用同一份，消除兩處易漂移實作）。existing 找到但無可解析
+                # 回應 → 回 None，fall-through 走正常出帳（與原行為一致）。
+                replay = _idempotent_replay(
+                    session, body, existing, operator, source="prefront"
+                )
                 if replay is not None:
-                    logger.info(
-                        "POS checkout idempotent replay: key=%s operator=%s",
-                        body.idempotency_key,
-                        operator,
-                    )
                     return replay
             elif _has_any_record_for_key(session, body.idempotency_key):
                 # spec C5：key 存在但所有對應紀錄都被 voided；不可 replay 已作廢交易
@@ -1129,35 +1150,12 @@ def pos_checkout(
             if body.idempotency_key and "idempotency_key" in str(e.orig).lower():
                 existing = _find_idempotent_hit(session, body.idempotency_key)
                 if existing is not None:
-                    # 內容守衛：與前置 replay 守衛（見上方 _request_content_signature
-                    # 比對）對齊。並發 race 下兩筆同 key 但內容不同時，loser 撞
-                    # UNIQUE 後若直接 replay winner 的收據，會誤判自己（不同
-                    # 項目/金額/類型/日期）的收/退款已成功 → 帳實不符。內容不符
-                    # 回 409，要求換 key 重送。
-                    if _request_content_signature(body) != _receipt_content_signature(
-                        session, existing
-                    ):
-                        logger.warning(
-                            "POS checkout UNIQUE race content mismatch: "
-                            "key=%s operator=%s",
-                            body.idempotency_key,
-                            operator,
-                        )
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                "idempotency_key 已用於不同內容的收據"
-                                "（項目/金額/付款類型/付款日期不符）；"
-                                "若需建立新交易，請使用新的 idempotency_key 重送"
-                            ),
-                        )
-                    replay = _parse_receipt_response_from_record(session, existing)
+                    # 內容守衛 + replay 與前置共用 _idempotent_replay。replay None →
+                    # 落到下方 voided/has_any_record 檢查、最終 re-raise（保留原語意）。
+                    replay = _idempotent_replay(
+                        session, body, existing, operator, source="unique_race"
+                    )
                     if replay is not None:
-                        logger.info(
-                            "POS checkout idempotent replay via UNIQUE: key=%s operator=%s",
-                            body.idempotency_key,
-                            operator,
-                        )
                         return replay
                 # spec C5：voided 過濾後 None 但 UNIQUE 衝突 → key 命中但全 voided
                 # 不可繼續 replay；回 409 同前置守衛語意
