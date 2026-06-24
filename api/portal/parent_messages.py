@@ -236,6 +236,141 @@ def _thread_summary(session, *, t: ParentMessageThread) -> dict:
     }
 
 
+def _resolve_parent_display_names_batch(session, parents: dict) -> dict:
+    """批次解析家長顯示名；display_name 優先，缺則一次批次撈 Guardian。
+
+    語意與 api.parent_portal._shared.resolve_parent_display_name 逐筆一致：
+    user.display_name → Guardian(is_primary desc, created_at asc) 第一個非空 name → 「家長」。
+    parents: {user_id: User}。
+    """
+    from api.parent_portal._shared import _DEFAULT_PARENT_DISPLAY_NAME
+
+    result: dict[int, str] = {}
+    need_guardian: list[int] = []
+    for uid, u in parents.items():
+        if u.display_name and u.display_name.strip():
+            result[uid] = u.display_name.strip()
+        else:
+            need_guardian.append(uid)
+
+    if need_guardian:
+        chosen: dict[int, str] = {}
+        rows = (
+            session.query(
+                Guardian.user_id,
+                Guardian.name,
+                Guardian.is_primary,
+                Guardian.created_at,
+            )
+            .filter(
+                Guardian.user_id.in_(need_guardian),
+                Guardian.deleted_at.is_(None),
+            )
+            .order_by(
+                Guardian.user_id,
+                Guardian.is_primary.desc(),
+                Guardian.created_at.asc(),
+            )
+            .all()
+        )
+        for uid, name, _is_primary, _created in rows:
+            if uid in chosen:
+                continue  # 排序後每位家長第一個非空 name 已取
+            if name and name.strip():
+                chosen[uid] = name.strip()
+        for uid in need_guardian:
+            result[uid] = chosen.get(uid, _DEFAULT_PARENT_DISPLAY_NAME)
+    return result
+
+
+def _thread_summaries(session, threads: list) -> list[dict]:
+    """批次版 _thread_summary：一次預載 Student / parent / 訊息 / Guardian。
+
+    供 list_threads 消除每串 4-5 查詢的 N+1（單頁 20-100 串 → 80-100+ 查詢）。
+    語意與逐筆 _thread_summary 完全一致（tests/test_portal_parent_messages_batch.py
+    等價守護）；單筆 _thread_summary 仍供 get_thread 使用。
+    """
+    if not threads:
+        return []
+
+    student_ids = {t.student_id for t in threads if t.student_id is not None}
+    parent_ids = {t.parent_user_id for t in threads if t.parent_user_id is not None}
+    thread_ids = [t.id for t in threads]
+
+    students = (
+        {s.id: s for s in session.query(Student).filter(Student.id.in_(student_ids))}
+        if student_ids
+        else {}
+    )
+    parents = (
+        {u.id: u for u in session.query(User).filter(User.id.in_(parent_ids))}
+        if parent_ids
+        else {}
+    )
+
+    # 訊息一次撈（thread_id 升冪、created_at 降冪、id 降冪），Python 端算 last
+    # preview 與 per-thread unread（cutoff = t.teacher_last_read_at，per-thread）。
+    cutoff_by_thread = {t.id: t.teacher_last_read_at for t in threads}
+    last_by_thread: dict[int, tuple] = {}
+    unread_by_thread: dict[int, int] = {}
+    if thread_ids:
+        rows = (
+            session.query(
+                ParentMessage.thread_id,
+                ParentMessage.body,
+                ParentMessage.deleted_at,
+                ParentMessage.sender_role,
+                ParentMessage.created_at,
+            )
+            .filter(ParentMessage.thread_id.in_(thread_ids))
+            .order_by(
+                ParentMessage.thread_id,
+                ParentMessage.created_at.desc(),
+                ParentMessage.id.desc(),
+            )
+            .all()
+        )
+        for tid, body, deleted_at, sender_role, created_at in rows:
+            if tid not in last_by_thread:  # 排序後每串第一筆 = 最新
+                last_by_thread[tid] = (body, deleted_at)
+            if sender_role == "parent" and deleted_at is None:
+                cutoff = cutoff_by_thread.get(tid)
+                if cutoff is None or created_at > cutoff:
+                    unread_by_thread[tid] = unread_by_thread.get(tid, 0) + 1
+
+    parent_name_by_id = _resolve_parent_display_names_batch(session, parents)
+
+    summaries: list[dict] = []
+    for t in threads:
+        last = last_by_thread.get(t.id)
+        last_preview = None
+        if last is not None:
+            body, deleted_at = last
+            if deleted_at is None:
+                last_preview = (body or "(附件)")[:60]
+            else:
+                last_preview = "(已撤回)"
+        student = students.get(t.student_id)
+        parent = parents.get(t.parent_user_id)
+        summaries.append(
+            {
+                "id": t.id,
+                "student_id": t.student_id,
+                "student_name": student.name if student else None,
+                "parent_user_id": t.parent_user_id,
+                "parent_name": (
+                    parent_name_by_id.get(t.parent_user_id) if parent else None
+                ),
+                "last_message_at": (
+                    t.last_message_at.isoformat() if t.last_message_at else None
+                ),
+                "last_message_preview": last_preview,
+                "unread_count": unread_by_thread.get(t.id, 0),
+            }
+        )
+    return summaries
+
+
 def _resolve_employee_id(current_user: dict) -> int:
     eid = current_user.get("employee_id")
     if not eid:
@@ -319,7 +454,7 @@ def list_threads(
         )
         has_more = len(threads) > limit
         page = threads[:limit]
-        items = [_thread_summary(session, t=t) for t in page]
+        items = _thread_summaries(session, page)
         next_cursor = page[-1].id if has_more and page else None
         return {"items": items, "next_cursor": next_cursor}
     finally:
