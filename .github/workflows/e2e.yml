@@ -74,12 +74,12 @@ jobs:
 
     steps:
       - name: Checkout ivy-backend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: ivy-backend
 
       - name: Checkout ivy-frontend (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
           path: ivy-frontend
