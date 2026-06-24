@@ -167,9 +167,10 @@ class TestBatchApproveOverlapBlock:
         """conflict_map: dict[leave_id] = conflict_record_or_None"""
         session = MagicMock()
 
-        # session.query(LeaveRecord).filter(...).with_for_update().all() → leave list
+        # session.query(LeaveRecord).filter(...).order_by(id).with_for_update().all() → leave list
+        # （order_by(LeaveRecord.id) 為防批次間 ABBA 死鎖的鎖序，見 batch_approve_leaves）
         leave_records = list(leave_map.values())
-        session.query.return_value.filter.return_value.with_for_update.return_value.all.return_value = (
+        session.query.return_value.filter.return_value.order_by.return_value.with_for_update.return_value.all.return_value = (
             leave_records
         )
 
