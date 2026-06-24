@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +22,7 @@ from models.activity import (
 )
 from utils.academic import resolve_current_academic_term
 from utils.taipei_time import today_taipei
+from utils.audit import write_explicit_audit
 from utils.auth import get_current_user
 from ._shared import _get_employee
 from api.activity._shared import (
@@ -350,6 +351,7 @@ def portal_get_session_detail(
 def portal_batch_update_attendance(
     session_id: int,
     body: PortalBatchAttendanceUpdate,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """批次點名：任何老師可點整堂跨班名冊；無效報名略過（對齊 admin）。
@@ -444,6 +446,42 @@ def portal_batch_update_attendance(
 
         session.commit()
         applied = sum(1 for item in records if item.registration_id in valid_reg_ids)
+
+        # AuditMiddleware 不涵蓋 /api/portal/activity/*（ENTITY_PATTERNS 無對應
+        # pattern → _parse_entity_type 回 None 短路），故顯式留稽核：教師端點名
+        # 同樣改變出席狀態，直接影響退費比例（T_served）與出席統計，須可追溯。
+        course_name = (
+            session.query(ActivityCourse.name)
+            .filter(ActivityCourse.id == sess.course_id)
+            .scalar()
+        )
+        write_explicit_audit(
+            request,
+            action="UPDATE",
+            entity_type="activity_session",
+            entity_id=str(session_id),
+            summary=(
+                f"教師批次點名：「{course_name}」{sess.session_date.isoformat()} "
+                f"更新 {applied} 筆（跳過 {len(skipped)}）"
+            ),
+            changes={
+                "course_id": sess.course_id,
+                "course_name": course_name,
+                "session_date": sess.session_date.isoformat(),
+                "updated_count": applied,
+                "skipped_count": len(skipped),
+                "operator": operator,
+                "source": "portal",
+                "records": [
+                    {
+                        "registration_id": item.registration_id,
+                        "is_present": item.is_present,
+                    }
+                    for item in records
+                    if item.registration_id in valid_reg_ids
+                ],
+            },
+        )
         return {"ok": True, "updated": applied, "skipped": len(skipped)}
     finally:
         session.close()
