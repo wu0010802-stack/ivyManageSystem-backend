@@ -106,6 +106,10 @@ _BIND_TOKEN_TTL_MINUTES = 5
 _BIND_FAIL_THRESHOLD = 5
 _BIND_FAIL_LOCKOUT = 900  # 15 分鐘
 _BIND_SCOPE = "parent_bind"
+# SEC-2026-0624-02：bind-additional 為三個綁定碼入口中唯一原本無失敗鎖定者。
+# 已登入家長以 user_id 為 key 做失敗鎖（對齊 bind_first_child 的 line_user_id 鎖、
+# device_setup 的 IP 鎖）。限流亦讓細分失敗訊息 oracle 無法被大量採集。
+_BIND_ADDITIONAL_SCOPE = "parent_bind_additional"
 
 # In-process dict 仍保留，作為「DB 失敗時的 fail-open 配套」與測試 fixture
 # reset target；正式擋線靠 DB-backed counter（multi-worker 安全）。
@@ -242,7 +246,7 @@ def _check_bind_lockout(line_user_id: str) -> None:
     if count >= _BIND_FAIL_THRESHOLD:
         logger.warning(
             "家長綁定失敗次數過多，line_user_id=%s 已鎖 (failures=%d)",
-            line_user_id,
+            line_user_id[:8] if line_user_id else "",
             count,
         )
         raise HTTPException(
@@ -263,6 +267,41 @@ def _clear_bind_failures(line_user_id: str) -> None:
     from utils.rate_limit_db import clear_attempts
 
     clear_attempts(_BIND_SCOPE, line_user_id)
+
+
+def _check_bind_additional_lockout(user_id: int) -> None:
+    """bind-additional 以已登入家長 user_id 為 key 做失敗鎖（連 5 次鎖 15 分）。
+
+    走 DB-backed counter（rate_limit_buckets），multi-worker 一致；DB 失敗時
+    走 in-process backstop（_AUTH_SCOPES 含本 scope，不 fail-open）。
+    """
+    from utils.rate_limit_db import count_recent_attempts
+
+    count = count_recent_attempts(
+        _BIND_ADDITIONAL_SCOPE,
+        str(user_id),
+        within_seconds=_BIND_FAIL_LOCKOUT,
+        fail_closed=True,
+    )
+    if count >= _BIND_FAIL_THRESHOLD:
+        logger.warning(
+            "家長新增綁定失敗次數過多，user_id=%s 已鎖 (failures=%d)", user_id, count
+        )
+        raise HTTPException(status_code=429, detail="綁定失敗次數過多，請稍後再試")
+
+
+def _record_bind_additional_failure(user_id: int) -> None:
+    from utils.rate_limit_db import record_attempt
+
+    record_attempt(
+        _BIND_ADDITIONAL_SCOPE, str(user_id), window_seconds=_BIND_FAIL_LOCKOUT
+    )
+
+
+def _clear_bind_additional_failures(user_id: int) -> None:
+    from utils.rate_limit_db import clear_attempts
+
+    clear_attempts(_BIND_ADDITIONAL_SCOPE, str(user_id))
 
 
 # ── 內部工具 ────────────────────────────────────────────────────────────
@@ -648,7 +687,7 @@ def bind_first_child(
                 "拒絕 line_user_id=%s（user_id=%s）的綁定請求；綁定碼可能外洩",
                 guardian.id,
                 guardian.user_id,
-                line_user_id,
+                line_user_id[:8] if line_user_id else "",
                 user.id,
             )
             session.rollback()
@@ -681,7 +720,7 @@ def bind_first_child(
             "[parent-bind] guardian_id=%s user_id=%s line_user_id=%s",
             guardian.id,
             user.id,
-            line_user_id,
+            line_user_id[:8] if line_user_id else "",
         )
         return {
             "status": "ok",
@@ -707,6 +746,7 @@ def bind_additional_child(
     指向當前 user.id。
     """
     user_id = current_user["user_id"]
+    _check_bind_additional_lockout(user_id)
     code_hash = _hash_code(payload.code)
     session = get_session()
     try:
@@ -715,6 +755,7 @@ def bind_additional_child(
         )
         if binding is None:
             session.rollback()
+            _record_bind_additional_failure(user_id)
             failure_code = _diagnose_binding_failure(session, code_hash)
             raise BusinessError(
                 code=failure_code,
@@ -733,6 +774,7 @@ def bind_additional_child(
             raise HTTPException(status_code=400, detail="此監護人已綁定其他家長帳號")
         guardian.user_id = user_id
         session.commit()
+        _clear_bind_additional_failures(user_id)
 
         logger.warning(
             "[parent-bind-additional] guardian_id=%s user_id=%s",
