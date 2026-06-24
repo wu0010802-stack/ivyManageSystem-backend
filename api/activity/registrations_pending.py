@@ -404,6 +404,21 @@ def reject_registration(
                 detail="該筆報名已不存在或已被處理",
             )
 
+        # 2026-06-24 review #1：reject 僅供「待審核」工作流（視為校外生/資料不符駁回）。
+        # 不得用來軟刪已確認報名——否則有 ACTIVITY_WRITE 者可繞過 delete_registration
+        # 的退費簽核（require_refund_reason / require_approve_for_cumulative_refund /
+        # require_approve_for_refund_diff），把已付款報名直接標 rejected 而不沖帳。
+        if not reg.pending_review:
+            raise HTTPException(
+                status_code=409,
+                detail="此報名非待審核狀態，不可由此駁回；如需移除請改走刪除/退費流程",
+            )
+        if (reg.paid_amount or 0) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail="此報名已有繳費金額，請改走刪除並退費（delete）流程以保留沖帳簽核",
+            )
+
         reg.is_active = False
         reg.match_status = "rejected"
         reg.pending_review = False
@@ -595,6 +610,15 @@ def rematch_registration(
                 reg.reviewed_by = current_user.get("username")
                 reg.reviewed_at = now_taipei_naive()
                 matched = True
+
+        if not matched:
+            # 2026-06-24 review #2：比對失敗（含「原本已 matched，改資料後比不上」）須
+            # 清掉舊的 student_id/classroom_id，退回待審核——否則 response 回「仍無符合的
+            # 在校生」，但 reg 仍綁著舊學生/舊班級 → 教師端名冊/點名/儀表板統計被污染。
+            reg.student_id = None
+            reg.classroom_id = None
+            reg.pending_review = True
+            reg.match_status = "pending"
 
         session.commit()
         _invalidate_after_registration_mutation(session)

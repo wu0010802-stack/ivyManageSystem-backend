@@ -1213,6 +1213,9 @@ class TestTimestampsUseTaipeiTimezone:
                 class_name="大班",
                 parent_phone="0944444444",
             )
+            # reject 僅允許待審核報名（2026-06-24 review #1）：明確設為 pending。
+            reg.pending_review = True
+            reg.match_status = "pending"
             session.commit()
             reg_id = reg.id
 

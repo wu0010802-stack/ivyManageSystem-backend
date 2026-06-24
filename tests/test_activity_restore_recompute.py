@@ -175,19 +175,17 @@ def test_restore_recomputes_is_paid_after_waitlist_demotion(restore_recompute_cl
 
     _login(client)
 
-    # 模擬 A 已繳費：直接寫 DB（paid_amount=1200, is_paid=True）
+    # 模擬 A 已繳費並進入 rejected 狀態：直接寫 DB（paid_amount=1200, is_paid=True）。
+    # 已付款報名不可由 reject 端點軟刪（2026-06-24 review #1：須走 delete/退費流程），
+    # 本測試聚焦 restore 重算 is_paid，故直接構造「已付款的 rejected」狀態。
     with sf() as s:
         reg_a = s.query(ActivityRegistration).filter_by(id=reg_a_id).one()
         reg_a.paid_amount = 1200
         reg_a.is_paid = True
+        reg_a.is_active = False
+        reg_a.match_status = "rejected"
+        reg_a.pending_review = False
         s.commit()
-
-    # reject A
-    rj = client.post(
-        f"/api/activity/registrations/{reg_a_id}/reject",
-        json={"reason": "測試拒絕"},
-    )
-    assert rj.status_code == 200, rj.text
 
     # B 補位（佔住唯一名額）
     rb = _register(client, name="陳小美", birthday="2019-01-01", phone="0922222222")
