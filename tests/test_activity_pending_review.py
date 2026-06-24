@@ -1086,3 +1086,122 @@ class TestAdminApprovalWorkflow:
 
         res = client.post(f"/api/activity/registrations/{reg_id}/force-accept")
         assert res.status_code == 409, res.text
+
+    def test_force_accept_rejected_on_non_pending_registration(self, pending_client):
+        """守衛：已處理過的報名（pending_review=False，例如已比對成功的正式報名）不可被
+        強行收件。否則持 ACTIVITY_WRITE 者可把已正確綁定 student_id 的報名翻成 forced 並
+        改 name/birthday，但 student_id/classroom_id 仍指向原學生 → PII↔FK 不一致。"""
+        client, sf = pending_client
+        with sf() as s:
+            _seed_base(s)  # 建 student S001 王小明（大象班）
+        # 三欄一致 → 比對成功：pending_review=False、match_status=matched、student_id 已綁
+        r = client.post(
+            "/api/activity/public/register", json=_public_register_payload()
+        )
+        assert r.status_code == 201
+        with sf() as s:
+            reg = s.query(ActivityRegistration).one()
+            assert reg.pending_review is False
+            assert reg.match_status == "matched"
+            assert reg.student_id is not None
+            reg_id = reg.id
+            orig_sid = reg.student_id
+
+        _login(client)
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/force-accept",
+            json={"name": "改名小明", "birthday": "2018-01-01"},
+        )
+        assert res.status_code == 400, res.text
+
+        # 報名須保持原狀：未被翻 forced、身分未被改、student_id 未被動
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.match_status == "matched"
+            assert reg.pending_review is False
+            assert reg.student_name == "王小明"
+            assert reg.student_id == orig_sid
+
+    def test_force_accept_clears_stale_student_link_on_identity_change(
+        self, pending_client
+    ):
+        """matched→reject→restore 會留下 pending_review=True 但仍綁 student_id 的報名。
+        force-accept 時若改 name/birthday，原 student_id/classroom_id 已與新身分不符 →
+        應清空連結，使 forced 報名成為與新身分一致的未匹配紀錄（force-accept 本就跳過比對）。"""
+        from utils.academic import resolve_current_academic_term
+
+        client, sf = pending_client
+        with sf() as s:
+            classroom_id = _seed_base(s)  # student S001 王小明（大象班）
+            sy, sem = resolve_current_academic_term()
+            sid = s.query(Student).one().id
+            reg = ActivityRegistration(
+                student_name="王小明",
+                birthday=date(2020, 5, 10),
+                class_name="大象班",
+                school_year=sy,
+                semester=sem,
+                student_id=sid,
+                classroom_id=classroom_id,
+                parent_phone="0912345678",
+                pending_review=True,
+                match_status="pending",
+                is_active=True,
+            )
+            s.add(reg)
+            s.commit()
+            reg_id = reg.id
+
+        _login(client)
+        res = client.post(
+            f"/api/activity/registrations/{reg_id}/force-accept",
+            json={"name": "校外小銘", "birthday": "2019-09-09"},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.match_status == "forced"
+            assert reg.student_name == "校外小銘"
+            assert reg.student_id is None
+            assert reg.classroom_id is None
+
+    def test_force_accept_keeps_valid_student_link_when_identity_unchanged(
+        self, pending_client
+    ):
+        """pending 但已綁 student_id（restore 後）的報名，若 force-accept 未改身分，
+        原連結仍與報名身分一致 → 不應被清空（只在身分變更時清，避免誤失有效綁定）。"""
+        from utils.academic import resolve_current_academic_term
+
+        client, sf = pending_client
+        with sf() as s:
+            classroom_id = _seed_base(s)
+            sy, sem = resolve_current_academic_term()
+            sid = s.query(Student).one().id
+            reg = ActivityRegistration(
+                student_name="王小明",
+                birthday=date(2020, 5, 10),
+                class_name="大象班",
+                school_year=sy,
+                semester=sem,
+                student_id=sid,
+                classroom_id=classroom_id,
+                parent_phone="0912345678",
+                pending_review=True,
+                match_status="pending",
+                is_active=True,
+            )
+            s.add(reg)
+            s.commit()
+            reg_id = reg.id
+            orig_sid = sid
+
+        _login(client)
+        res = client.post(f"/api/activity/registrations/{reg_id}/force-accept")
+        assert res.status_code == 200, res.text
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg.match_status == "forced"
+            assert reg.student_id == orig_sid
+            assert reg.classroom_id == classroom_id

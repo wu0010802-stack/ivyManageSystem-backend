@@ -662,6 +662,16 @@ def force_accept_registration(
         if not reg:
             raise _not_found("報名資料")
 
+        # 守衛：force-accept 是「待審核佇列」動作（家長校外生／資料永遠比對不上、校方決定
+        # 收件）。已處理過的報名（matched / manual / forced，皆 pending_review=False）不應
+        # 再被強行收件——否則持 ACTIVITY_WRITE 者可把已正確綁定 student_id 的正式報名翻成
+        # forced 並改 name/birthday，而 student_id/classroom_id 不會跟著改 → 報名 PII 與
+        # 學生 FK 不一致。對齊 restore 的「非目標狀態 → 400」慣例。
+        if not reg.pending_review:
+            raise HTTPException(
+                status_code=400, detail="此報名已非待審核狀態，無法強行收件"
+            )
+
         new_name = reg.student_name
         new_birthday = reg.birthday
         new_phone = reg.parent_phone
@@ -677,9 +687,10 @@ def force_accept_registration(
                 new_phone = body.parent_phone
                 field_changed = True
 
-        if field_changed and (
+        identity_changed = field_changed and (
             new_name != reg.student_name or new_birthday != reg.birthday
-        ):
+        )
+        if identity_changed:
             # C6：以「修改後身分」取 advisory lock 序列化同學生同學期的並發改身分
             # （與 rematch / restore P2-3 對齊）。SQLite no-op。
             acquire_activity_registration_lock(
@@ -710,6 +721,13 @@ def force_accept_registration(
         reg.student_name = new_name
         reg.birthday = new_birthday
         reg.parent_phone = new_phone
+        # FK/PII 一致性：pending 報名仍可能帶 student_id（matched→reject→restore 不清
+        # student_id）。一旦在強行收件時改了 name/birthday，原 student_id/classroom_id
+        # 指向的學生已與本報名新身分不符 → 清掉連結，forced 報名成為與新身分一致的未匹配
+        # 紀錄（force-accept 本就「跳過比對」、不保留舊綁定）。未改身分則維持有效綁定。
+        if identity_changed:
+            reg.student_id = None
+            reg.classroom_id = None
         reg.pending_review = False
         reg.match_status = "forced"
         reg.reviewed_by = current_user.get("username")
