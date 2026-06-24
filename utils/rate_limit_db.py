@@ -58,6 +58,7 @@ _AUTH_SCOPES = frozenset(
         "pwd_change_user",
         "pwd_reset_ip",
         "parent_bind",
+        "parent_bind_additional",
         "parent_device_setup",
     }
 )

@@ -91,10 +91,15 @@ _FILTERED = "[Filtered]"
 _VALUE_TW_ID_RE = re.compile(r"\b[A-Za-z][12A-Da-d]\d{8}\b")  # 身分證 / 居留證
 _VALUE_MOBILE_RE = re.compile(r"\b09\d{8}\b")  # 手機
 _VALUE_LANDLINE_RE = re.compile(r"\b0\d{1,2}-\d{6,8}\b")  # 市話（帶 dash）
+# SEC-2026-0624-01：LINE userId（`U` + 32 小寫 hex，全球唯一、可直接對映真實
+# LINE 帳號）。家長綁定 log 已改 line_user_id[:8] 截短，此正則為縱深防禦——
+# 攔截任何隨自由文字漏進 breadcrumb message / exception value 的完整 userId。
+_VALUE_LINE_UID_RE = re.compile(r"\bU[0-9a-f]{32}\b")
 
 
 def _redact_pii_value(text: Any) -> Any:
-    """遮罩自由文字 / 例外訊息中的強識別子（身分證/居留證、手機、帶 dash 市話）。
+    """遮罩自由文字 / 例外訊息中的強識別子（身分證/居留證、手機、帶 dash 市話、
+    LINE userId）。
 
     非字串原樣回傳。只遮樣式明確的識別子，避免誤遮操作 id / 數字 / 姓名。
     """
@@ -103,6 +108,7 @@ def _redact_pii_value(text: Any) -> Any:
     text = _VALUE_TW_ID_RE.sub(_FILTERED, text)
     text = _VALUE_MOBILE_RE.sub(_FILTERED, text)
     text = _VALUE_LANDLINE_RE.sub(_FILTERED, text)
+    text = _VALUE_LINE_UID_RE.sub(_FILTERED, text)
     return text
 
 
@@ -237,7 +243,9 @@ def _scrub_event(event: dict, _hint: dict | None = None) -> dict | None:
                 if "data" in crumb:
                     crumb["data"] = _scrub_mapping(crumb["data"])
                 if isinstance(crumb.get("message"), str):
-                    crumb["message"] = _sanitize_url(crumb["message"])
+                    crumb["message"] = _redact_pii_value(
+                        _sanitize_url(crumb["message"])
+                    )
 
     # P2-2：DB 例外訊息（SQLAlchemy StatementError 含 [parameters: {...}]）的 value
     # 不在 request/extra 內，需單獨對 exception.values[].value 跑識別子遮罩。
@@ -255,7 +263,7 @@ def _scrub_breadcrumb(crumb: dict, _hint: dict | None = None) -> dict | None:
     if "data" in crumb:
         crumb["data"] = _scrub_mapping(crumb["data"])
     if isinstance(crumb.get("message"), str):
-        crumb["message"] = _sanitize_url(crumb["message"])
+        crumb["message"] = _redact_pii_value(_sanitize_url(crumb["message"]))
     return crumb
 
 
