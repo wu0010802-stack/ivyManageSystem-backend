@@ -54,6 +54,10 @@ class _BulkSalaryPreload:
     # qa-loop #6：發放月懲處讀取批次預載 {emp_id: [DisciplinaryAction]}，消除
     # _adjust_period_totals_for_discipline 逐員工 get_pending_actions 的 N+1。
     pending_actions_by_emp: dict = field(default_factory=dict)
+    # MF-1（F1）：當月才藝鐘點明細加總 {emp_id: float}（sum ArtTeacherPayrollEntry
+    # .total_amount）。bulk 路徑須與 single 一樣以此覆寫 hourly_total，否則才藝老師
+    # 不打卡時 hourly_total 被考勤 0 覆寫並 persist（系統性錯帳）。
+    art_total_by_emp: dict = field(default_factory=dict)
 
 
 def _get_ytd_sick_hours_before(

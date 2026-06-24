@@ -41,6 +41,29 @@ def compute_total_for_month(
     return float(result or 0)
 
 
+def compute_totals_by_emp_for_month(
+    session: Session, year: int, month: int
+) -> dict[int, float]:
+    """批次版 compute_total_for_month：一次查回 {employee_id: sum(total_amount)}。
+
+    供批次薪資（process_bulk_salary_calculation）預載使用，避免 per-employee N+1。
+    與單筆 compute_total_for_month 同口徑（同 filter、同 coalesce）。
+    """
+    rows = (
+        session.query(
+            ArtTeacherPayrollEntry.employee_id,
+            func.coalesce(func.sum(ArtTeacherPayrollEntry.total_amount), 0),
+        )
+        .filter(
+            ArtTeacherPayrollEntry.salary_year == year,
+            ArtTeacherPayrollEntry.salary_month == month,
+        )
+        .group_by(ArtTeacherPayrollEntry.employee_id)
+        .all()
+    )
+    return {emp_id: float(total or 0) for emp_id, total in rows}
+
+
 def list_entries_for_month(
     session: Session, year: int, month: int
 ) -> list[tuple[Employee, ArtTeacherPayrollEntry]]:
