@@ -133,6 +133,29 @@
 - 手動驗證：本機 `cd ivy-backend && alembic heads` 應只有 1 個 head
 - Rollback：alembic downgrade **非自動**；prod 出事先 Promote 上一版部署，DB 改動再考慮 downgrade
 
+#### ⚠ 上線前 migration 預演（防 cold-start boot loop，崩潰防護 P0）
+**風險**：push 後端 = Zeabur cold-start 跑 `alembic upgrade heads`，且 `on_startup()` 對此
+**無 try/except**（fail-fast 是刻意的——schema 沒上對就不該收流量）。任一支 migration 在
+prod 失敗 → 啟動失敗 → process 退出 → **反覆 boot loop，全服務 down**。
+
+**push 含 migration 的後端前，依序做**：
+1. 快速本地靜態 sanity（無需 DB，秒級）：
+   ```bash
+   cd ivy-backend && python scripts/validate_migrations.py
+   ```
+   檢查單一 head / 全部 version 檔可載入 / 每支有 upgrade()+downgrade()。
+   （CI 另有 `alembic-roundtrip`（per-migration up/down pytest）、`alembic-symmetry-lint`、
+   single-head gate；上述本地 script 是 push 前的即時版。）
+2. **權威預演（必做，會抓 SQLite/靜態測試照不到的 prod-only 失敗）**：對 **DR 還原的 prod
+   副本**（見 `docs/sop/dr-runbook.md` 還原流程）跑 cold-start 路徑
+   `alembic upgrade heads`，確認套用成功、無 `WARNING`/exception。
+
+**⚠ 不要用「空 DB / `create_all` 基底」當預演**（2026-06-24 實測確認會誤失敗）：
+prod 以 `create_all + stamp head` 建立，**跳過 migration 的 `op.execute` 基礎建設**
+（SECURITY DEFINER functions / roles / RLS，見記憶 `reference_prod_create_all_stamp_skips_infra`）。
+從 `create_all` 基底跑 downgrade/upgrade 會因缺 `public_count_enrolled` / `ivy_parent_role`
+等而炸 → 給出假失敗。**唯有對真實 prod schema（DR 還原）預演才有意義。**
+
 #### 一次性前置（2026-06-11 考核規章對齊批次，含 aprreg01）
 - ~~部署前確認 prod 的 114上 appraisal cycle 已 finalized~~ **已由程式護欄取代（2026-06-12）**：
   `sync_score_items` 對「基準日早於規章生效日 2026-02-01 且已 sync 過」的 cycle 一律 400
