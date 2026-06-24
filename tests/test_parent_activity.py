@@ -806,6 +806,99 @@ class TestMyRegistrationsAndPayments:
         assert items[0]["receipt_no"] == "POS-20260401-XYZ"
         assert "operator" not in items[0]
 
+    def test_payments_visible_for_own_inactive_registration(self, activity_client):
+        # code review（2026-06-24）：報名被軟刪（is_active=False，常見於退課/刪除後
+        # 自動沖帳）後，家長仍須能查到自己的退費/付款歷史——與 admin 端
+        # test_activity_inactive_accounting 的稽核需求一致。原本硬篩 is_active=True
+        # 會讓家長對自己已軟刪的報名拿到 403，付款/退費紀錄在家長端憑空消失。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(session)
+            reg = ActivityRegistration(
+                student_name=student.name,
+                is_active=False,  # 已軟刪
+                school_year=115,
+                semester=1,
+                student_id=student.id,
+                parent_phone="0911",
+                pending_review=False,
+                match_status="manual",
+            )
+            session.add(reg)
+            session.flush()
+            session.add(
+                ActivityPaymentRecord(
+                    registration_id=reg.id,
+                    type="refund",
+                    amount=1500,
+                    payment_date=date(2026, 4, 2),
+                    payment_method="系統補齊",
+                    operator="財務人員",
+                    receipt_no="REFUND-20260402-ABC",
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+            reg_id = reg.id
+
+        resp = client.get(
+            f"/api/parent/activity/registrations/{reg_id}/payments",
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["type"] == "refund"
+        assert items[0]["amount"] == 1500
+        assert items[0]["receipt_no"] == "REFUND-20260402-ABC"
+
+    def test_payments_other_family_inactive_registration_blocked(self, activity_client):
+        # 放寬 is_active 篩選不可削弱枚舉防護：查別人家小孩的（軟刪）報名仍須
+        # 回 generic 403（與「報名不存在」同樣的訊息），不得洩漏存在性。
+        client, session_factory = activity_client
+        with session_factory() as session:
+            _attacker, _, _, _ = _setup_family(
+                session, line_user_id="UB", student_name="攻擊者小孩"
+            )
+            victim_user, _, victim_student, _ = _setup_family(
+                session,
+                line_user_id="UV",
+                student_name="受害者小孩",
+                classroom_name="受害者班",
+            )
+            reg = ActivityRegistration(
+                student_name=victim_student.name,
+                is_active=False,
+                school_year=115,
+                semester=1,
+                student_id=victim_student.id,
+                parent_phone="0922",
+                pending_review=False,
+                match_status="manual",
+            )
+            session.add(reg)
+            session.flush()
+            session.add(
+                ActivityPaymentRecord(
+                    registration_id=reg.id,
+                    type="refund",
+                    amount=999,
+                    payment_date=date(2026, 4, 3),
+                    payment_method="系統補齊",
+                    operator="財務人員",
+                    receipt_no="REFUND-SECRET",
+                )
+            )
+            session.commit()
+            attacker_token = _parent_token(_attacker)
+            reg_id = reg.id
+
+        resp = client.get(
+            f"/api/parent/activity/registrations/{reg_id}/payments",
+            cookies={"access_token": attacker_token},
+        )
+        assert resp.status_code == 403
+
 
 class TestConfirmPromotion:
     def test_confirm_promotion_happy_path(self, activity_client):

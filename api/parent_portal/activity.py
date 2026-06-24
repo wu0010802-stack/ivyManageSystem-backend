@@ -676,16 +676,19 @@ def registration_payments(
     current_user: dict = Depends(require_parent_role()),
     session: Session = Depends(get_parent_db),
 ):
-    """報名繳費歷史；不揭露 operator 等員工欄位。"""
+    """報名繳費歷史；不揭露 operator 等員工欄位。
+
+    不以 is_active 過濾：報名被軟刪（退課/刪除後自動沖帳）後，家長仍須能查到自己
+    的付款/退費歷史（與 admin 端 test_activity_inactive_accounting 的稽核需求一致）。
+    存取控制改純靠 student_id 歸屬檢查 + generic 403 枚舉防護——不存在 / 未綁定 /
+    別人家小孩一律回同一句 403，不洩漏存在性。
+    """
     user_id = current_user["user_id"]
     # F-003：「報名不存在」「未綁定學生」「不屬於本家庭」一律 generic 403。
     _, owned_student_ids = _get_parent_student_ids(session, user_id)
     reg = (
         session.query(ActivityRegistration)
-        .filter(
-            ActivityRegistration.id == registration_id,
-            ActivityRegistration.is_active == True,
-        )
+        .filter(ActivityRegistration.id == registration_id)
         .first()
     )
     if reg is None or reg.student_id is None or reg.student_id not in owned_student_ids:
