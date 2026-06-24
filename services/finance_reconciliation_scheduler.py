@@ -153,7 +153,7 @@ async def run_finance_reconciliation_scheduler(stop_event: asyncio.Event) -> Non
                     "finance_reconciliation",
                     expected_interval_seconds=_DAILY_INTERVAL_SEC,
                 ):
-                    result = run_finance_reconciliation()
+                    result = await asyncio.to_thread(run_finance_reconciliation)
                     record_rows(
                         "finance_reconciliation",
                         int(result.get("mismatch_count", 0) or 0),

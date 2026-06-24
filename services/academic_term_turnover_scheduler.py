@@ -128,8 +128,13 @@ async def run_academic_term_turnover_scheduler(stop_event: asyncio.Event) -> Non
         with scheduler_iteration(
             "academic_term_turnover", expected_interval_seconds=check_interval
         ):
-            with session_scope() as session:
-                out = reconcile_academic_term(session, today=_today_taipei())
+
+            def _run_turnover():
+                with session_scope() as session:
+                    return reconcile_academic_term(session, today=_today_taipei())
+
+            # 同步 DB 工作丟 threadpool，不在 event loop 上跑（與 security_gc 一致）。
+            out = await asyncio.to_thread(_run_turnover)
             record_rows(
                 "academic_term_turnover",
                 1 if out["action"] == "turnover" else 0,

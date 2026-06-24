@@ -141,7 +141,7 @@ async def run_line_retry_scheduler(stop_event: asyncio.Event) -> None:
             "notification_retry",
             expected_interval_seconds=_TICK_INTERVAL,
         ):
-            metric = tick_line_retry()
+            metric = await asyncio.to_thread(tick_line_retry)
             if metric["attempted"] > 0:
                 logger.info("line retry tick: %s", metric)
         try:

@@ -214,7 +214,9 @@ async def medication_reminder_loop(stop_event: asyncio.Event) -> None:
                     "medication_reminder",
                     expected_interval_seconds=_DAILY_INTERVAL_SEC,
                 ):
-                    result = run_medication_reminder(effective_date=today)
+                    result = await asyncio.to_thread(
+                        run_medication_reminder, effective_date=today
+                    )
                     record_rows(
                         "medication_reminder",
                         int(result.get("order_count", 0) or 0),

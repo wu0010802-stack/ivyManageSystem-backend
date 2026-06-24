@@ -103,7 +103,7 @@ async def run_pending_uploads_scheduler(stop_event: asyncio.Event) -> None:
             "pending_uploads",
             expected_interval_seconds=TICK_INTERVAL_SECONDS,
         ):
-            tick_pending_uploads()
+            await asyncio.to_thread(tick_pending_uploads)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=TICK_INTERVAL_SECONDS)
         except asyncio.TimeoutError:

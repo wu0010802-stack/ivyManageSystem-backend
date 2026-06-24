@@ -3,6 +3,7 @@
 每日 08:00 Asia/Taipei ping /v2/bot/info；200 → healthy=true；
 401/403 → healthy=false + Sentry alert（consecutive_failures milestone dedup 1/8/30）。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +41,9 @@ def tick_line_token_health() -> dict:
             _update_health(healthy=True, error=None, reset_failures=True)
             metric["healthy"] = True
         elif resp.status_code in (401, 403):
-            _update_health(healthy=False, error=f"http_{resp.status_code}", increment=True)
+            _update_health(
+                healthy=False, error=f"http_{resp.status_code}", increment=True
+            )
             _alert_if_milestone(f"http_{resp.status_code}", level="error")
             metric["error"] = f"http_{resp.status_code}"
         else:
@@ -130,4 +133,4 @@ async def run_line_token_health_scheduler(stop_event: asyncio.Event) -> None:
             "line_token_health",
             expected_interval_seconds=86400,
         ):
-            tick_line_token_health()
+            await asyncio.to_thread(tick_line_token_health)

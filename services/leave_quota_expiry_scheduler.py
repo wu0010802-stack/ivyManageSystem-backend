@@ -54,13 +54,16 @@ async def run_leave_quota_expiry_scheduler(stop_event: asyncio.Event) -> None:
         ):
             today = _today_taipei()
             if last_run_date != today:
-                with session_scope() as session:
-                    with try_scheduler_lock(
-                        session,
-                        scheduler_name="leave_quota_expiry",
-                        run_key=today.isoformat(),
-                    ) as acquired:
-                        if acquired:
+
+                def _run_expiry():
+                    with session_scope() as session:
+                        with try_scheduler_lock(
+                            session,
+                            scheduler_name="leave_quota_expiry",
+                            run_key=today.isoformat(),
+                        ) as acquired:
+                            if not acquired:
+                                return False
                             comp_summary = expire_comp_leave_grants(today, session)
                             cutover_summary = cutover_annual_leave_anniversaries(
                                 today, session
@@ -74,7 +77,11 @@ async def run_leave_quota_expiry_scheduler(stop_event: asyncio.Event) -> None:
                                 cutover_summary,
                                 reminder_summary,
                             )
-                            last_run_date = today
+                            return True
+
+                # 同步 DB 工作丟 threadpool，不在 event loop 上跑（與 security_gc 一致）。
+                if await asyncio.to_thread(_run_expiry):
+                    last_run_date = today
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
         except asyncio.TimeoutError:

@@ -224,7 +224,9 @@ async def run_auto_graduation_scheduler(stop_event: asyncio.Event) -> None:
                     )
                     # effective_date 用畢業日 target（非補跑當日），讓畢業日期一致記為
                     # 7/31，且 advisory lock run_key 穩定（多 worker / 跨日補跑皆只一次）。
-                    result = run_auto_graduation(effective_date=target)
+                    result = await asyncio.to_thread(
+                        run_auto_graduation, effective_date=target
+                    )
                     record_rows("auto_graduation", int(result.get("succeeded", 0) or 0))
                     last_run_year = today.year
         except Exception:

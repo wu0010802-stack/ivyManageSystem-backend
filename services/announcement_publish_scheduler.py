@@ -116,25 +116,33 @@ async def run_announcement_publish_scheduler(stop_event: asyncio.Event) -> None:
             expected_interval_seconds=check_interval,
         ):
             now = now_taipei_naive()
+
             # bug #22：tick 例外不可在此被 try/except 吞掉，否則 scheduler_iteration
             # 會把失敗記成成功（監控全綠卻零推播）。讓例外自然冒泡進
             # scheduler_iteration（與其他 13 個 scheduler 及 offboarding SEC-007 一致），
             # 由它記為失敗、退避上報，loop 於下個 interval 重試整批。
-            with session_scope() as session:
-                with try_scheduler_lock(
-                    session,
-                    scheduler_name="announcement_publish",
-                    run_key="singleton",
-                ) as acquired:
-                    if acquired:
+            def _run_publish():
+                with session_scope() as session:
+                    with try_scheduler_lock(
+                        session,
+                        scheduler_name="announcement_publish",
+                        run_key="singleton",
+                    ) as acquired:
+                        if not acquired:
+                            return None
                         # 每次 tick 都從 DB 讀最新 watermark，而非使用 per-process
                         # local 變數；多 worker 時，未取得鎖的 worker 下輪會看到
                         # 已推進的游標，不會重推停機窗口公告。
                         last_dispatched_at = _initial_watermark(session)
-                        dispatched = tick(
+                        return tick(
                             session, now=now, last_dispatched_at=last_dispatched_at
                         )
-                        record_rows("announcement_publish", dispatched)
+
+            # 同步 DB + after_commit LINE fan-out 丟 threadpool，不在 event loop 上跑
+            # （fan-out 內 WS 廣播本就以 run_coroutine_threadsafe 投回主 loop）。
+            dispatched = await asyncio.to_thread(_run_publish)
+            if dispatched is not None:
+                record_rows("announcement_publish", dispatched)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
         except asyncio.TimeoutError:

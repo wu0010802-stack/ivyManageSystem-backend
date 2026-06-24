@@ -116,7 +116,7 @@ async def run_data_quality_scheduler(stop_event: asyncio.Event) -> None:
                                 "data_quality",
                                 expected_interval_seconds=_DAILY_INTERVAL_SEC,
                             ):
-                                result = run_data_quality_once()
+                                result = await asyncio.to_thread(run_data_quality_once)
                                 record_rows(
                                     "data_quality",
                                     int(result.get("detected", 0) or 0),

@@ -59,34 +59,40 @@ async def run_recruitment_term_advance_scheduler(stop_event: asyncio.Event) -> N
             "recruitment_term_advance", expected_interval_seconds=check_interval
         ):
             today = _today_taipei()
-            advanced = 0
-            with session_scope() as session:
-                lo, hi = term_start_date_window(today)
-                terms = (
-                    session.query(AcademicTerm)
-                    .filter(
-                        AcademicTerm.start_date >= lo,
-                        AcademicTerm.start_date <= hi,
+
+            def _run_term_advance():
+                advanced = 0
+                with session_scope() as session:
+                    lo, hi = term_start_date_window(today)
+                    terms = (
+                        session.query(AcademicTerm)
+                        .filter(
+                            AcademicTerm.start_date >= lo,
+                            AcademicTerm.start_date <= hi,
+                        )
+                        .all()
                     )
-                    .all()
-                )
-                for term in terms:
-                    summary = advance_term_to_active(
-                        session,
-                        term.school_year,
-                        term.semester,
-                    )
-                    advanced += (
-                        int(summary.get("advanced", 0) or 0)
-                        if isinstance(summary, dict)
-                        else 0
-                    )
-                    logger.info(
-                        "term advance year=%s sem=%s %s",
-                        term.school_year,
-                        term.semester,
-                        summary,
-                    )
+                    for term in terms:
+                        summary = advance_term_to_active(
+                            session,
+                            term.school_year,
+                            term.semester,
+                        )
+                        advanced += (
+                            int(summary.get("advanced", 0) or 0)
+                            if isinstance(summary, dict)
+                            else 0
+                        )
+                        logger.info(
+                            "term advance year=%s sem=%s %s",
+                            term.school_year,
+                            term.semester,
+                            summary,
+                        )
+                return advanced
+
+            # 同步 DB 工作丟 threadpool，不在 event loop 上跑（與 security_gc 一致）。
+            advanced = await asyncio.to_thread(_run_term_advance)
             record_rows("recruitment_term_advance", advanced)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval)
