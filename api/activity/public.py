@@ -16,7 +16,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import Response as PlainResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, text
+from sqlalchemy import and_, func, or_, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from utils.cache_layer import get_cache
@@ -1018,28 +1018,55 @@ def public_update_registration(
                 semester=pre_semester,
             )
 
+        # P3-5（2026-06-24 才藝模組稽核）：未鎖預讀本筆報名目前佔位的課程 id，與 desired
+        # 課程併入下方單一 order_by(id) 批次列鎖。否則「退課所釋出的 vacated 課程」會延後
+        # 到尾段 _auto_promote_first_waitlist 才首次取鎖（已在 reg 列鎖之後）→ 與另一筆
+        # desired/vacated 課程集合相反的並發 public_update 形成 ABBA（雖已由
+        # _set_hot_path_lock_timeout + is_lock_contention_error→409 緩解，仍補齊鎖序一致）。
+        prelim_old_course_ids = {
+            cid
+            for (cid,) in session.query(RegistrationCourse.course_id)
+            .filter(
+                RegistrationCourse.registration_id == pre_reg.id,
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
+            )
+            .all()
+        }
+
         # 限定本筆報名所屬學期，避免上下學期同名課程/用品被誤選。
         # 以 id 排序固定 FOR UPDATE 列鎖取得順序，消除多課程並發改報名的 ABBA 死鎖窗口
         # （name.in_ 不保證鎖序）。與 public_register / admin create / 家長 register 對齊。
         # order_by 須在 with_for_update 前。學期取自非鎖定預讀（報名學期實務上不可變，
-        # 取鎖後再以鎖定列重新驗證一致性）。
-        courses_by_name = (
-            {
-                c.name: c
-                for c in session.query(ActivityCourse)
-                .filter(
-                    ActivityCourse.name.in_(course_names),
-                    ActivityCourse.is_active.is_(True),
-                    ActivityCourse.school_year == pre_school_year,
-                    ActivityCourse.semester == pre_semester,
+        # 取鎖後再以鎖定列重新驗證一致性）。desired（依名稱+學期）∪ vacated/old-occupying
+        # （依 id）併成單一 id-ordered 批次鎖，courses_by_name 僅取 desired 子集。
+        _locked_courses = (
+            session.query(ActivityCourse)
+            .filter(
+                or_(
+                    and_(
+                        ActivityCourse.name.in_(course_names),
+                        ActivityCourse.is_active.is_(True),
+                        ActivityCourse.school_year == pre_school_year,
+                        ActivityCourse.semester == pre_semester,
+                    ),
+                    ActivityCourse.id.in_(prelim_old_course_ids),
                 )
-                .order_by(ActivityCourse.id)
-                .with_for_update()
-                .all()
-            }
-            if course_names
-            else {}
+            )
+            .order_by(ActivityCourse.id)
+            .with_for_update()
+            .all()
+            if (course_names or prelim_old_course_ids)
+            else []
         )
+        _desired_name_set = set(course_names)
+        courses_by_name = {
+            c.name: c
+            for c in _locked_courses
+            if c.name in _desired_name_set
+            and c.is_active
+            and c.school_year == pre_school_year
+            and c.semester == pre_semester
+        }
 
         # 課程列鎖取得後才鎖 registration 列（course → registration），以鎖定列為真值。
         # populate_existing() 強制把 in-memory 屬性刷新為 FOR UPDATE 取得後的最新狀態

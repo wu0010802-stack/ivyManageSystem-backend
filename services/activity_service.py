@@ -1082,6 +1082,39 @@ class ActivityService:
         """
         now = _now_taipei_naive()
 
+        # P3 鎖序協議（2026-06-24 才藝模組稽核）：清除過期 promoted_pending 前，先以
+        # order_by(ActivityCourse.id) 對涉及課程取列鎖，對齊 canonical
+        # 「ActivityCourse → RegistrationCourse」（與 confirm/decline/_auto_promote 一致）。
+        # 原本先鎖過期 RC 列（skip_locked）、再在 _auto_promote 內才取 course 鎖，與家長
+        # confirm/decline 的 course-first 相反 → 到期瞬間家長操作同 (reg, course) 時
+        # PostgreSQL ABBA 死鎖。sweep 由排程 advisory 序列化（無 sweep-vs-sweep），故此處
+        # 對 course 改用阻塞式列鎖（等 confirm 釋放後接手）安全且消除 ABBA。
+        prelim_expired_course_ids = sorted(
+            {
+                cid
+                for (cid,) in session.query(RegistrationCourse.course_id)
+                .join(
+                    ActivityRegistration,
+                    RegistrationCourse.registration_id == ActivityRegistration.id,
+                )
+                .filter(
+                    RegistrationCourse.status == "promoted_pending",
+                    RegistrationCourse.confirm_deadline.isnot(None),
+                    RegistrationCourse.confirm_deadline < now,
+                    ActivityRegistration.is_active.is_(True),
+                )
+                .all()
+            }
+        )
+        if prelim_expired_course_ids:
+            (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id.in_(prelim_expired_course_ids))
+                .order_by(ActivityCourse.id)
+                .with_for_update()
+                .all()
+            )
+
         # 1. 過期者：刪除 + 遞補
         expired_rows = (
             session.query(RegistrationCourse, ActivityRegistration.student_name)
@@ -1269,6 +1302,32 @@ class ActivityService:
         today = datetime.now(TAIPEI_TZ).date()
         if force_refund:
             acquire_activity_daily_close_lock(session, today)
+
+        # P3 鎖序協議（2026-06-24 才藝模組稽核）：鎖 reg 列前，先以
+        # order_by(ActivityCourse.id) 對佔位課程取列鎖，對齊 canonical
+        # 「advisory → ActivityCourse → ActivityRegistration」（與 withdraw_course /
+        # confirm / decline / _auto_promote 一致）。原本先鎖 reg、course 鎖延後到
+        # _auto_promote_first_waitlist 內才取，與 course-first 群相反 → 同 (reg, course)
+        # 並發（例：delete 對上家長 confirm / 管理員 withdraw）時 PostgreSQL ABBA 鎖序
+        # 反轉死鎖。預讀用未鎖查詢決定鎖集合；鎖定後本 reg 佔位課程集合穩定
+        # （_auto_promote 稍後重入同 course 列鎖為 no-op）。
+        prelim_course_ids = sorted(
+            cid
+            for (cid,) in session.query(RegistrationCourse.course_id)
+            .filter(
+                RegistrationCourse.registration_id == registration_id,
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
+            )
+            .all()
+        )
+        if prelim_course_ids:
+            (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id.in_(prelim_course_ids))
+                .order_by(ActivityCourse.id)
+                .with_for_update()
+                .all()
+            )
 
         reg = (
             session.query(ActivityRegistration)

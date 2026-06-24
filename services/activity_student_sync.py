@@ -25,6 +25,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import CompileError
 
 from models.database import (
+    ActivityCourse,
     ActivityPaymentRecord,
     ActivityRegistration,
     Classroom,
@@ -263,6 +264,38 @@ def sync_registrations_on_student_deactivate(
     prelim_has_paid = prelim_paid_total > 0
     if prelim_has_paid:
         _require_daily_close_unlocked(session, today)
+
+    # ── P3 鎖序協議（2026-06-24 才藝模組稽核）：reg row lock 前，先以
+    # order_by(ActivityCourse.id) 對本批 reg 佔位課程取列鎖，對齊 canonical
+    # 「advisory → ActivityCourse → ActivityRegistration」（與 delete_registration /
+    # withdraw / confirm / decline / _auto_promote 一致）。原本先鎖 reg、course 鎖延後到
+    # _soft_delete_single_registration → _auto_promote_first_waitlist 內才取，與
+    # course-first 群相反 → 離園同步對上同生同課 withdraw/add 時 PostgreSQL ABBA 死鎖。
+    # 預讀用未鎖查詢決定鎖集合；SQLite 不支援 FOR UPDATE 時降級為無鎖（與下方 reg lock
+    # 同 try/except）。──
+    prelim_occupying_course_ids = sorted(
+        {
+            cid
+            for (cid,) in session.query(RegistrationCourse.course_id)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(*base_filter)
+            .filter(RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)))
+            .all()
+        }
+    )
+    if prelim_occupying_course_ids:
+        course_lock_query = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id.in_(prelim_occupying_course_ids))
+            .order_by(ActivityCourse.id)
+        )
+        try:
+            course_lock_query.with_for_update().all()
+        except (CompileError, NotImplementedError):
+            course_lock_query.all()
 
     # ── row lock（advisory 之後）+ populate_existing：取得鎖內最新 paid_amount ──
     # 不加 populate_existing 時，若 reg 已在 session identity-map（同步流程先前讀過），

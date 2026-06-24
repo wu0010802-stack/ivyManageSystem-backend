@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 
 from models.database import (
     get_session,
+    ActivityCourse,
     ActivityRegistration,
     RegistrationCourse,
 )
@@ -389,6 +390,32 @@ def reject_registration(
     """
     session = get_session()
     try:
+        # P3 鎖序協議（2026-06-24 才藝模組稽核）：鎖 reg 列前，先以
+        # order_by(ActivityCourse.id) 對佔位課程取列鎖，對齊 canonical
+        # 「ActivityCourse → ActivityRegistration」（與 delete_registration /
+        # withdraw_course / confirm / decline / _auto_promote 一致）。原本先鎖 reg、
+        # course 鎖延後到 _auto_promote_first_waitlist 內才取，與 course-first 群相反 →
+        # 同 (reg, course) 並發（例：reject 對上家長 confirm / 管理員 withdraw）時
+        # PostgreSQL ABBA 鎖序反轉死鎖。預讀用未鎖查詢決定鎖集合；鎖定後本 reg 佔位
+        # 課程集合穩定（_auto_promote 稍後重入同 course 列鎖為 no-op）。
+        prelim_course_ids = sorted(
+            cid
+            for (cid,) in session.query(RegistrationCourse.course_id)
+            .filter(
+                RegistrationCourse.registration_id == registration_id,
+                RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
+            )
+            .all()
+        )
+        if prelim_course_ids:
+            (
+                session.query(ActivityCourse)
+                .filter(ActivityCourse.id.in_(prelim_course_ids))
+                .order_by(ActivityCourse.id)
+                .with_for_update()
+                .all()
+            )
+
         reg = (
             session.query(ActivityRegistration)
             .filter(
