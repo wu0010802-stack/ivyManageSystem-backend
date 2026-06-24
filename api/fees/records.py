@@ -166,6 +166,12 @@ def pay_fee_record(
 
         用於冪等 replay 忠實回放「首次回應」的快照，避免用 record 最新 amount_paid
         反推——後續若又有繳費把累計推高，最新快照已非 hit 當下值（#4）。
+
+        注意：此為 **payments-only** 累計（退款寫獨立 StudentFeeRefund 表、不寫負流水），
+        故有退款穿插時會與 record.amount_paid 分歧。replay 回應的 amount_paid /
+        previous_amount_paid 屬 informational（前端無 consumer、不影響 DB 金額/audit/
+        月報聚合），在「原繳費 amount_paid=None 全額 + hit 前有退款」的罕見回放會略偏高，
+        屬可接受權衡；標準帶值 replay 會先被 _assert_pay_payload_matches 以同一累計比對擋下。
         """
         return int(
             session.query(func.coalesce(func.sum(StudentFeePayment.amount), 0))
