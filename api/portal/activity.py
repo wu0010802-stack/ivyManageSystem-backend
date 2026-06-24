@@ -42,6 +42,10 @@ router = APIRouter()
 # portal 場次列表無分頁；兩個日期都沒帶時的預設近窗天數，bounds 全歷史掃描
 # （一年涵蓋兩學期場次，足夠教師 portal 點名導覽；更早場次顯式帶 start_date）。
 _PORTAL_SESSIONS_DEFAULT_WINDOW_DAYS = 365
+# 防禦性硬上限：無窗保護只擋「兩日期皆空」；顯式帶超寬 start_date 仍可能撈全部
+# 歷史場次（隨歷年累積無界成長）。此上限作為 backstop 防無界回傳，截斷時 log
+# warning（非靜默），保留回傳為 flat array 的既有契約。
+_PORTAL_SESSIONS_MAX_ROWS = 1000
 
 
 # --- Response schema（補契約：原回裸 dict → OpenAPI 無具名 schema → 前端 codegen unknown）。
@@ -293,9 +297,24 @@ def portal_list_sessions(
             query = query.filter(ActivitySession.session_date >= start_date)
         if end_date:
             query = query.filter(ActivitySession.session_date <= end_date)
-        rows = query.order_by(
-            ActivitySession.session_date.desc(), ActivitySession.id.desc()
-        ).all()
+        rows = (
+            query.order_by(
+                ActivitySession.session_date.desc(), ActivitySession.id.desc()
+            )
+            .limit(_PORTAL_SESSIONS_MAX_ROWS + 1)
+            .all()
+        )
+        if len(rows) > _PORTAL_SESSIONS_MAX_ROWS:
+            logger.warning(
+                "portal_list_sessions 命中硬上限 %s（course_id=%s start=%s end=%s）；"
+                "僅回最近 %s 筆，更早場次請縮小日期範圍",
+                _PORTAL_SESSIONS_MAX_ROWS,
+                course_id,
+                start_date,
+                end_date,
+                _PORTAL_SESSIONS_MAX_ROWS,
+            )
+            rows = rows[:_PORTAL_SESSIONS_MAX_ROWS]
 
         return build_session_rows_with_stats(session, rows)
     finally:

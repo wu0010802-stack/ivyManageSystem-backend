@@ -132,3 +132,73 @@ def test_explicit_old_start_date_includes_old_sessions(portal_client):
     returned = {row["id"] for row in res.json()}
     assert ids["recent"] in returned
     assert ids["old"] in returned  # 顯式帶舊 start_date → 超窗場次也回
+
+
+def _seed_n_recent(sf, n):
+    """一課程 + n 筆近窗場次（today, today-1, ...）+ 一名教師帳號。"""
+    from utils.academic import resolve_current_academic_term
+
+    with sf() as s:
+        sy, sem = resolve_current_academic_term()
+        emp = Employee(
+            employee_id="PT002", name="李老師", base_salary=32000, is_active=True
+        )
+        s.add(emp)
+        s.flush()
+        course = ActivityCourse(
+            name="畫畫",
+            price=1000,
+            capacity=30,
+            school_year=sy,
+            semester=sem,
+            is_active=True,
+        )
+        s.add(course)
+        s.flush()
+        for i in range(n):
+            s.add(
+                ActivitySession(
+                    course_id=course.id,
+                    session_date=date.today() - timedelta(days=i),
+                    created_by="seed",
+                )
+            )
+        s.add(
+            User(
+                username="emp_teacher",
+                password_hash=hash_password(PASSWORD),
+                role="teacher",
+                employee_id=emp.id,
+                permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE", "STUDENTS_READ"],
+                is_active=True,
+                must_change_password=False,
+            )
+        )
+        s.commit()
+
+
+def test_explicit_range_hard_cap_truncates_recent_and_logs(
+    portal_client, monkeypatch, caplog
+):
+    """顯式寬日期範圍時硬上限防無界回傳：截斷為最近 N 筆（date desc）並 log warning。
+
+    無窗保護只擋『兩日期皆空』；顯式帶超寬 start_date 仍可能撈全部歷史場次。
+    硬上限作為防禦性 backstop，截斷時 log（非靜默）。
+    """
+    import logging
+
+    from api.portal import activity as activity_module
+
+    c, sf = portal_client
+    _seed_n_recent(sf, 3)
+    _login(c)
+    monkeypatch.setattr(activity_module, "_PORTAL_SESSIONS_MAX_ROWS", 2)
+    far = (date.today() - timedelta(days=500)).isoformat()
+    with caplog.at_level(logging.WARNING):
+        res = c.get(f"/api/portal/activity/attendance/sessions?start_date={far}")
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert len(rows) == 2, f"應截斷至硬上限 2 筆，實得 {len(rows)}"
+    dates = [r["session_date"] for r in rows]
+    assert dates == sorted(dates, reverse=True)  # 保留最近的（session_date desc）
+    assert any("硬上限" in rec.message for rec in caplog.records)
