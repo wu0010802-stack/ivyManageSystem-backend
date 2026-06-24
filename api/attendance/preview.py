@@ -14,13 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from api.attendance._shared import MAX_IMPORT_ROWS, AttendanceCSVRow
 from models.database import Attendance, Employee, get_session
+from models.salary import SalaryRecord
 from schemas.attendance_preview import (
     AttendancePreviewRequest,
     AttendancePreviewResult,
     PreviewRow,
     PreviewSummary,
 )
-from utils.approval_helpers import _get_finalized_salary_record
 from utils.attendance_shift_window import compute_status_for_employee_date
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
@@ -67,6 +67,50 @@ def _norm_date(raw: str | None) -> str | None:
     return None
 
 
+def _finalized_month_keys(
+    session, emp_ids: set[int], month_keys: set[tuple[int, int, int]]
+) -> set[tuple[int, int, int]]:
+    """批次查出已封存的 (employee_id, year, month) 集合（取代逐列 finalized 查詢）。
+
+    只查涉及的員工與年月，再於 Python 端用 month_keys 過濾掉 year×month
+    笛卡兒積的多餘命中；語意等同逐列 _get_finalized_salary_record 的真值判斷。
+    """
+    if not emp_ids or not month_keys:
+        return set()
+    years = {y for _, y, _ in month_keys}
+    months = {m for _, _, m in month_keys}
+    rows = (
+        session.query(
+            SalaryRecord.employee_id,
+            SalaryRecord.salary_year,
+            SalaryRecord.salary_month,
+        )
+        .filter(
+            SalaryRecord.employee_id.in_(emp_ids),
+            SalaryRecord.is_finalized == True,  # noqa: E712
+            SalaryRecord.salary_year.in_(years),
+            SalaryRecord.salary_month.in_(months),
+        )
+        .all()
+    )
+    return {(e, y, m) for e, y, m in rows if (e, y, m) in month_keys}
+
+
+def _existing_attendance_pairs(session, emp_ids: set[int], dates: set):
+    """批次查出已存在的 (employee_id, attendance_date) 集合（取代逐列既有檢查）。"""
+    if not emp_ids or not dates:
+        return set()
+    rows = (
+        session.query(Attendance.employee_id, Attendance.attendance_date)
+        .filter(
+            Attendance.employee_id.in_(emp_ids),
+            Attendance.attendance_date.in_(dates),
+        )
+        .all()
+    )
+    return {(e, d) for e, d in rows}
+
+
 @router.post("/upload/preview", response_model=AttendancePreviewResult)
 def preview_attendance_upload(
     body: AttendancePreviewRequest,
@@ -93,6 +137,26 @@ def preview_attendance_upload(
             e.employee_id: e
             for e in session.query(Employee).filter(Employee.is_active.is_(True)).all()
         }
+
+        # Pre-scan：純記憶體算出每列的 emp 與 iso 日期，收集需批次查詢的 keys，
+        # 避免主迴圈逐列查封存月 / 既有考勤（數百~數千列 = 數百~數千次序列查詢）。
+        scan_emp_ids: set[int] = set()
+        scan_month_keys: set[tuple[int, int, int]] = set()
+        scan_dates: set = set()
+        for r in raw_rows:
+            emp = emps.get((r.get("employee_number") or "").strip())
+            if emp is None:
+                continue
+            iso = _norm_date(r.get("date"))
+            if iso is None:
+                continue
+            d = datetime.fromisoformat(iso).date()
+            scan_emp_ids.add(emp.id)
+            scan_month_keys.add((emp.id, d.year, d.month))
+            scan_dates.add(d)
+
+        finalized_set = _finalized_month_keys(session, scan_emp_ids, scan_month_keys)
+        existing_set = _existing_attendance_pairs(session, scan_emp_ids, scan_dates)
 
         rows: list[PreviewRow] = []
         normalized: list[AttendanceCSVRow] = []
@@ -136,8 +200,8 @@ def preview_attendance_upload(
             pin_raw = (r.get("punch_in") or "").strip() or None
             pout_raw = (r.get("punch_out") or "").strip() or None
 
-            # 3. 該月已封存
-            if _get_finalized_salary_record(session, emp.id, d.year, d.month):
+            # 3. 該月已封存（pre-scan 批次查得 finalized_set）
+            if (emp.id, d.year, d.month) in finalized_set:
                 rows.append(
                     PreviewRow(
                         row_num=i,
@@ -186,13 +250,8 @@ def preview_attendance_upload(
                 is_assistant=getattr(emp, "is_assistant", False),
             )
 
-            # 4. 檢查是否已有記錄（將覆蓋）
-            exists = (
-                session.query(Attendance.id)
-                .filter_by(employee_id=emp.id, attendance_date=d)
-                .first()
-                is not None
-            )
+            # 4. 檢查是否已有記錄（將覆蓋）（pre-scan 批次查得 existing_set）
+            exists = (emp.id, d) in existing_set
             check = "overwrite" if exists else "importable"
             if check == "overwrite":
                 overwrites += 1
