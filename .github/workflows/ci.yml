@@ -87,23 +87,29 @@ jobs:
         run: python scripts/lint_scope_filter_guard.py
 
   test:
-    name: Tests (TZ=${{ matrix.container_tz }})
+    name: Tests (TZ=${{ matrix.container_tz }}, 分片 ${{ matrix.group }}/4)
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # 2026-05-25: 15→30→60. CI 64% @ 30 min；含 5000+ test + spike_rls auth setup overhead
-    # PR1 (2026-05-26) 引入 TZ matrix；當時 UTC leg 暫以 continue-on-error 軟化
-    # pre-existing TZ-dependent fail 以解 CI deadlock（spec §7.5 載明「收尾時移除」）。
-    # 2026-06-02：datetime cutover 收尾 + 個案修復（如 security_gc 改 now_taipei_naive）後，
-    # TZ 敏感 test 在 UTC / Asia/Taipei 已對稱通過 → 移除 continue-on-error，UTC leg
-    # 恢復為 blocking gate（防新寫的 datetime.now()/date.today() 偷渡回 codebase；本 CI
-    # 在真 PG 雙時區跑全套，補足本地 SQLite 涵蓋不到的 DB 層 server_default/date_trunc）。
+    timeout-minutes: 30  # 分片後單片 ~¼ 套件、單進程序列，遠低於 30 min（史：全序列 2026-05-25 15→30→60 撞 60）
+    # 2026-06-24：為何 pytest-split 分片而非 xdist —— xdist -n auto 本地驗證會「非確定性 flaky」：
+    # 套件是序列順序調好的（跨模組全局態相依）+ 背景 task 在多 worker CPU 飢餓下被餓死，
+    # 每輪隨機 ~2 個不同 test 假陰（全部單獨跑皆綠 = 污染非真 bug）。pytest-split 每片單進程
+    # 序列跑 1/4 子集：無並發 → 無 CPU 競爭 timing fail；每片是全序列的子序列 → 與全序列同
+    # 隔離語義 → 零 flaky。靠 matrix 多 job 並行提速；coverage 由 coverage-gate job 合併 4 片後 gate。
+    #
+    # PR1 (2026-05-26) 引入 TZ matrix；UTC leg 為 blocking gate（防新寫 datetime.now()/date.today()
+    # 偷渡回 codebase；本 CI 在真 PG 雙時區跑全套，補本地 SQLite 照不到的 DB 層 server_default/date_trunc）。
 
     strategy:
       fail-fast: false
       matrix:
         container_tz: [Asia/Taipei, UTC]
+        group: [1, 2, 3, 4]
 
     env:
       TZ: ${{ matrix.container_tz }}
+      # 每片寫 distinct coverage data file；只 Asia/Taipei leg 上傳供 coverage-gate 合併
+      # （coverage 涵蓋的行與 TZ 無關，取單一 leg 即可，省去跨 TZ 重複上傳/命名衝突）。
+      COVERAGE_FILE: .coverage.${{ matrix.group }}
 
     services:
       postgres:
@@ -153,7 +159,7 @@ jobs:
           python -c "from models.database import Base; from models.base import get_engine; Base.metadata.create_all(get_engine())"
           alembic stamp heads
 
-      - name: Run tests with coverage
+      - name: Run tests (分片 ${{ matrix.group }}/4)
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/ivymanagement_test
           ENV: development
@@ -166,17 +172,59 @@ jobs:
           # 測試照不到的 PG 分支（如 permission_names ARRAY contains 的 cast 修補）。
           # 用交易回滾、非破壞性，故可共用同一 test DB（系統設計審查 2026-06-14）。
           PG_TEST_URL: postgresql://test:test@localhost:5432/ivymanagement_test
-        # T9: 加 coverage gate（pyproject.toml [tool.coverage.run] 已設定 source）。
-        # 起步門檻 60%：給既有覆蓋率不至於立即 fail，未來逐步提升。
-        # --cov-fail-under 用 ratchet 風格：每次提升只能升不能降。
+        # pytest-split：--splits 4 依收集順序把全套件切 4 等份，--group K 只跑第 K 份（單進程序列，
+        # 無 -n/xdist）。--cov 收覆蓋率落 COVERAGE_FILE（job env 設定，每片 distinct），--cov-report=
+        # 不在此輸出/不 gate；整體 --cov-fail-under=60 留到 coverage-gate job 合併 4 片後判（見下）。
         run: |
-          pytest tests/ -v --tb=short -q \
-            --cov \
-            --cov-report=term-missing:skip-covered \
-            --cov-report=xml:coverage.xml \
-            --cov-fail-under=60
+          pytest tests/ --splits 4 --group ${{ matrix.group }} \
+            -v --tb=short -q \
+            --cov --cov-report=
 
-      - name: Upload coverage report
+      - name: Upload partial coverage (分片 ${{ matrix.group }})
+        # coverage 與 TZ 無關，只取 Asia/Taipei leg 的 4 片上傳即足；UTC leg 跑 test 但不上傳。
+        if: matrix.container_tz == 'Asia/Taipei'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-partial-${{ matrix.group }}
+          path: ${{ env.COVERAGE_FILE }}
+          include-hidden-files: true  # .coverage.* 為 dotfile，upload-artifact v4 預設排除隱藏檔
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage-gate:
+    name: Coverage Gate（合併分片 → --fail-under=60）
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install coverage
+        run: pip install coverage
+
+      - name: Download all partial coverage
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-partial-*
+          path: cov-parts
+          merge-multiple: true  # 各 artifact 內的 .coverage.K 全部攤平到 cov-parts/
+
+      - name: Combine + gate
+        # 合併 4 片 coverage data → 整體 report 並以 --fail-under=60 gate（ratchet：只升不降）。
+        # 分片前此 gate 在 test job 內；分片後單片只覆蓋部分程式碼，移到合併後判才有意義。
+        run: |
+          python -m coverage combine cov-parts
+          python -m coverage report --show-missing --skip-covered --fail-under=60
+          python -m coverage xml -o coverage.xml
+
+      - name: Upload combined coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
