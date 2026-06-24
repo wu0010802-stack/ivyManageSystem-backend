@@ -161,6 +161,22 @@ def pay_fee_record(
     - idempotency_key：全域唯一，同 key 重送回放（DB UNIQUE 兜底）
     """
 
+    def _cumulative_through(session, hit: StudentFeePayment) -> int:
+        """hit 這筆 payment 建立當下該 record 的累計已繳 = SUM(amount WHERE id <= hit.id)。
+
+        用於冪等 replay 忠實回放「首次回應」的快照，避免用 record 最新 amount_paid
+        反推——後續若又有繳費把累計推高，最新快照已非 hit 當下值（#4）。
+        """
+        return int(
+            session.query(func.coalesce(func.sum(StudentFeePayment.amount), 0))
+            .filter(
+                StudentFeePayment.record_id == hit.record_id,
+                StudentFeePayment.id <= hit.id,
+            )
+            .scalar()
+            or 0
+        )
+
     def _assert_pay_payload_matches(session, hit: StudentFeePayment, record_id: int):
         """同 key 必須對應完整相同的 payload 上下文（record_id + payment_date +
         payment_method + 目標 amount_paid）；任一欄位不符視為 key 誤用 → 409。
@@ -176,14 +192,7 @@ def pay_fee_record(
         if hit.payment_method != payload.payment_method:
             mismatch.append(f"payment_method（原 {hit.payment_method}）")
         # 推算 hit 建立當下 record 的累計已繳 = SUM(payments WHERE id <= hit.id)
-        hit_cumulative = (
-            session.query(func.coalesce(func.sum(StudentFeePayment.amount), 0))
-            .filter(
-                StudentFeePayment.record_id == hit.record_id,
-                StudentFeePayment.id <= hit.id,
-            )
-            .scalar()
-        ) or 0
+        hit_cumulative = _cumulative_through(session, hit)
         if payload.amount_paid is not None and int(payload.amount_paid) != int(
             hit_cumulative
         ):
@@ -207,16 +216,12 @@ def pay_fee_record(
             )
             if hit is not None:
                 _assert_pay_payload_matches(session, hit, record_id)
-                rec = (
-                    session.query(StudentFeeRecord)
-                    .filter(StudentFeeRecord.id == record_id)
-                    .first()
-                )
+                # 忠實回放 hit 建立當下的快照（非 record 最新值，後續再繳費會失真，#4）
+                hit_cumulative = _cumulative_through(session, hit)
                 return {
                     "ok": True,
-                    "amount_paid": rec.amount_paid if rec else None,
-                    "previous_amount_paid": (rec.amount_paid if rec else 0)
-                    - hit.amount,
+                    "amount_paid": hit_cumulative,
+                    "previous_amount_paid": hit_cumulative - hit.amount,
                     "idempotent_replay": True,
                 }
 
@@ -312,17 +317,12 @@ def pay_fee_record(
                     )
                     if hit is not None:
                         _assert_pay_payload_matches(replay_session, hit, record_id)
-                        rec = (
-                            replay_session.query(StudentFeeRecord)
-                            .filter(StudentFeeRecord.id == record_id)
-                            .first()
-                        )
+                        # 同前置 replay：回放 hit 當下快照（#4）
+                        hit_cumulative = _cumulative_through(replay_session, hit)
                         return {
                             "ok": True,
-                            "amount_paid": rec.amount_paid if rec else None,
-                            "previous_amount_paid": (
-                                (rec.amount_paid if rec else 0) - hit.amount
-                            ),
+                            "amount_paid": hit_cumulative,
+                            "previous_amount_paid": hit_cumulative - hit.amount,
                             "idempotent_replay": True,
                         }
             raise

@@ -310,6 +310,57 @@ class TestPayFeeRecordIdempotency:
             rec = s.query(StudentFeeRecord).get(rec_id)
             assert rec.amount_paid == 400
 
+    def test_replay_returns_snapshot_at_payment_time_not_current(
+        self, fee_stream_client
+    ):
+        """replay 回傳的 amount_paid / previous_amount_paid 應為「該筆繳費當下」的
+        累計快照，而非 record 最新值——後續又有繳費把 amount_paid 推高時，用最新
+        rec.amount_paid 反推會失真（#4）。"""
+        client, sf = fee_stream_client
+        today = date.today()
+        with sf() as s:
+            _admin(s)
+            rec = _seed_record(s, amount_due=1000)
+            s.commit()
+            rec_id = rec.id
+        assert _login(client).status_code == 200
+
+        # 第一次繳 300（帶 idempotency_key）：首次回應 previous=0 / amount=300
+        k1 = {
+            "payment_date": today.isoformat(),
+            "amount_paid": 300,
+            "payment_method": "現金",
+            "idempotency_key": "rep-snap-k1",
+        }
+        r1 = client.put(f"/api/fees/records/{rec_id}/pay", json=k1)
+        assert r1.status_code == 200, r1.text
+        assert r1.json()["amount_paid"] == 300
+        assert r1.json()["previous_amount_paid"] == 0
+
+        # 後續補到 800（無 key），把 record 累計推高到 800
+        r2 = client.put(
+            f"/api/fees/records/{rec_id}/pay",
+            json={
+                "payment_date": today.isoformat(),
+                "amount_paid": 800,
+                "payment_method": "現金",
+            },
+        )
+        assert r2.status_code == 200, r2.text
+
+        # 重送 K1：應忠實回放「K1 當下」快照（amount=300 / previous=0），
+        # 而非用最新 rec.amount_paid(800) 反推得 amount=800 / previous=500。
+        r_replay = client.put(f"/api/fees/records/{rec_id}/pay", json=k1)
+        assert r_replay.status_code == 200, r_replay.text
+        body = r_replay.json()
+        assert body.get("idempotent_replay") is True
+        assert (
+            body["amount_paid"] == 300
+        ), f"replay amount_paid 應為 K1 當下累計 300，實得 {body['amount_paid']}"
+        assert (
+            body["previous_amount_paid"] == 0
+        ), f"replay previous_amount_paid 應為 0，實得 {body['previous_amount_paid']}"
+
     def test_same_key_different_record_returns_409(self, fee_stream_client):
         """同 key 用於不同 record（上下文不同）→ 409，避免錯帳到其他 record。"""
         client, sf = fee_stream_client
