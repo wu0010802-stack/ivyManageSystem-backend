@@ -2,7 +2,7 @@
 
 > 緣由：上線穩定度稽核（2026-06-23，workflow `activity-golive-stability-audit`）。
 > 本檔只收「上線前必做、純設定/操作」項目。架構級改善（合併 bootstrap 端點、redis 多 worker、lock_timeout 等）另案。
-> 後端目前 Zeabur **SUSPENDED**；以下標 **[T-0]** 者須在 **resume 後端後、開放報名前** 執行（多數需 live 後端才能取值/驗證）。
+> 後端 Zeabur **RUNNING**（自 2026-06-23 上線；舊敘述「SUSPENDED」已過時）。**§1 client IP 已於 2026-06-24 以偽造 XFF live 驗證 PASS**、**§2 `max_connections=256` 已查證**（見各節 ✅ 區塊）；其餘 **[T-0]** 項仍須在開放報名前確認。
 
 ---
 
@@ -12,13 +12,15 @@
 
 | 優先 | 問題 | 對策 | 性質 |
 |------|------|------|------|
-| 🔴 1 | rate limiter 取錯 client IP（Zeabur 代理後全體塌成同一把 key）→ 全站共用 `register` 額度，幾秒就全體 429 | 設 `TRUSTED_PROXY_IPS` + 依 runbook §8 驗證 | **[T-0]** Zeabur env |
-| 🔴 2 | 單 worker + 20 連線池，並發 >20 即排隊逾時 500 並拖垮全 pod | 確認 PG `max_connections` 後調 pool；報名分批開放 | **[T-0]** + 營運 |
+| ✅ 1 | rate limiter 取錯 client IP（Zeabur 代理後全體塌成同一把 key）→ 全站共用 `register` 額度，幾秒就全體 429 | `TRUSTED_PROXY_IPS=10/8,172.16/12,192.168/16` **已設**；2026-06-24 偽造 XFF live 驗證 **PASS**（bucket key=真實公網 IP，非偽造、非 10.42.0.1） | ✅ 已完成 |
+| 🟠 2 | 單 worker + 20 連線池，並發 >20 即排隊逾時 500 並拖垮全 pod | PG `max_connections=256`（**已查證**，餘裕大）；尖峰可上調 pool 或報名分批開放 | 營運判斷 |
 | 🟠 3 | 同一 NAT/校園 WiFi 多家長共用 `register 5/min` 互相擠掉 | 限流已改 **env 可調 + 放寬預設**（見 §3） | ✅ 已落地（可再調） |
 
 ---
 
 ## 1. [T-0] 修正 client IP 解析（最高優先，否則全體家長被當同一人擋掉）
+
+> **✅ 已驗證 2026-06-24（PASS）**：prod `TRUSTED_PROXY_IPS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` **已設**。flood `POST /api/activity/public/query` 帶偽造 `X-Forwarded-For: 203.0.113.7`，第 31 次起 429，runtime log `Rate limit exceeded [activity_public_query] key=<真實公網 IP>`（**非**偽造值、**非**內網 `10.42.0.1`）→ 偽造 XFF 被忽略、真實 client 有被區分。RFC1918 對此 k8s 拓樸是**正確選擇**（edge peer `10.42.0.1` ∈ 10/8 被信任剝除；若改填特定公網 edge CIDR 反而會讓 10.42.0.1 變 rightmost-untrusted → 全體塌縮）。下方步驟保留作為「redeploy / 改 `TRUSTED_PROXY_IPS` 後」的回歸驗證 runbook。
 
 **為什麼**：後端跑在 Zeabur edge 後面。`TRUSTED_PROXY_IPS` 預設 `"*"` 被 `utils/request_ip.py:_has_explicit_trusted_proxies()` 視為「未明設」→ 忽略 `X-Forwarded-For` → `get_client_ip()` 回傳 Zeabur 內網代理 IP，**對所有家長相同**。三個公開限流器（register/query/inquiry）因此全站共用一個桶 → 開放後 register 額度幾秒用完，**所有家長一律 429**。
 
@@ -43,6 +45,8 @@ curl -s -H 'X-Forwarded-For: 1.2.3.4' https://<prod-host>/api/activity/public/co
 ---
 
 ## 2. [T-0] 確認 PostgreSQL `max_connections` 並決定 pool 容量
+
+> **✅ 已查證 2026-06-24**：prod PG `max_connections=256`（current 15、headroom 241）。pool 20/pod 安全且可上調，**無**「託管 PG 僅 25–50」問題。殘餘風險僅「單 worker + pool 20 瞬時並發 >20 → `pool_timeout=15s` 後 500」，屬尖峰削峰 / 調 pool 的營運判斷，非結構缺陷。
 
 **為什麼**：單 pod 連線需求 = `db_pool_size(10) + max_overflow(10) = 20`（`config/core.py:34-37`）。`config/core.py:30-33` 自警：部分託管 PG / pgbouncer 預設僅 25-50 連線。若 prod 上限不足，尖峰搶連線會在 `pool_timeout=15s` 後 500。
 
