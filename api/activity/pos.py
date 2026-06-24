@@ -347,10 +347,14 @@ def _has_any_record_for_key(session, idempotency_key: str) -> bool:
 def _receipt_content_signature(session, record: ActivityPaymentRecord) -> tuple:
     """重建命中收據的內容簽章，供冪等 replay 前的內容守衛比對。
 
-    回傳 (frozenset[(registration_id, amount)], type, payment_date)，只計未作廢
+    回傳 (sorted tuple[(registration_id, amount)], type, payment_date)，只計未作廢
     紀錄（代表這張收據「目前生效」的內容）。一張收據可含多筆 registration（多
     item），故 item 集合要涵蓋同 receipt_no 的全部有效紀錄，不能只看 hit 單筆。
     舊紀錄無 receipt_no 時退回 hit 單筆。
+
+    用「排序後的 tuple」而非 frozenset：frozenset 會把重複的 (reg, amount) 折成
+    單一元素，使 [x] 與 [x, x] 簽章相同 → 內容守衛誤判相符靜默 replay。排序後
+    tuple 保留重數（multiplicity）且與項目順序無關，與 request 端對稱。
     """
     receipt_no = record.receipt_no
     recs = []
@@ -365,13 +369,16 @@ def _receipt_content_signature(session, record: ActivityPaymentRecord) -> tuple:
         )
     if not recs:
         recs = [record]
-    items = frozenset((r.registration_id, r.amount) for r in recs)
+    items = tuple(sorted((r.registration_id, r.amount) for r in recs))
     return (items, record.type, record.payment_date)
 
 
 def _request_content_signature(body: "POSCheckoutRequest") -> tuple:
-    """本次 checkout request 的內容簽章，與 _receipt_content_signature 同形狀。"""
-    items = frozenset((it.registration_id, it.amount) for it in body.items)
+    """本次 checkout request 的內容簽章，與 _receipt_content_signature 同形狀。
+
+    同樣用排序後 tuple 保留重數（見 _receipt_content_signature docstring）。
+    """
+    items = tuple(sorted((it.registration_id, it.amount) for it in body.items))
     return (items, body.type, body.payment_date)
 
 
@@ -862,6 +869,14 @@ def pos_checkout(
             detail="多筆收費請帶 idempotency_key（避免重複出帳）",
         )
 
+    # 重複 registration_id 守衛：必須在冪等 replay 之前。否則「重用 key + 帶重複項」
+    # 的請求會在 replay 階段先被回放舊收據（內容簽章雖已保留重數，但守衛是更早、
+    # 更明確的拒絕點），重複項永遠到不了下方的行級鎖出帳流程。純 body 驗證、不需
+    # session，故置於冪等檢查之前。
+    reg_ids = [item.registration_id for item in body.items]
+    if len(set(reg_ids)) != len(reg_ids):
+        raise HTTPException(status_code=400, detail="結帳項目含重複的報名 ID")
+
     session = get_session()
     try:
         # ── 冪等性檢查 ──────────────────────────────────────────
@@ -904,10 +919,7 @@ def pos_checkout(
             total_refund_amount = sum(it.amount for it in body.items)
             require_approve_for_large_refund(total_refund_amount, current_user)
 
-        reg_ids = [item.registration_id for item in body.items]
-        if len(set(reg_ids)) != len(reg_ids):
-            raise HTTPException(status_code=400, detail="結帳項目含重複的報名 ID")
-
+        # reg_ids 與重複守衛已在函式開頭（冪等檢查之前）完成，此處直接沿用。
         # ── spec C4：退費 advisory lock（在 _lock_regs 之前取鎖）─────────
         # Why: 同 reg 並發兩筆小額退費可能各自看到 prior_refund_map=舊值
         # 並通過累積閾值；advisory lock 強制序列化同 reg 的退費流程，

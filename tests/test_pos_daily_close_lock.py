@@ -30,7 +30,7 @@ import models.base as base_module
 from api.activity import router as activity_router
 from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
-from models.database import Base
+from models.database import ActivityPaymentRecord, Base
 from utils.advisory_lock import (
     _key_for_activity_daily_close,
     _key_for_activity_refund,
@@ -40,6 +40,23 @@ from utils.advisory_lock import (
 from tests.test_activity_pos import _create_admin, _login, _setup_reg
 
 APPROVE_PERMS = ["ACTIVITY_READ", "ACTIVITY_WRITE", "ACTIVITY_PAYMENT_APPROVE"]
+
+
+def _seed_payment(s, reg_id, day, amount=500):
+    """直接 seed 一筆當日有效交易，讓日結簽核非 0 筆（避免空簽守衛擋下）。
+    與 checkout 自身守衛解耦——本檔測的是鎖協議，不是 checkout 流程。"""
+    s.add(
+        ActivityPaymentRecord(
+            registration_id=reg_id,
+            type="payment",
+            amount=amount,
+            payment_date=day,
+            payment_method="現金",
+            notes="[TEST]",
+            operator="tester",
+        )
+    )
+    s.flush()
 
 
 @pytest.fixture
@@ -165,6 +182,8 @@ def test_approve_daily_close_acquires_lock(lock_client, monkeypatch):
     target = date.today() - timedelta(days=1)
     with sf() as s:
         _create_admin(s, permission_names=APPROVE_PERMS)
+        reg = _setup_reg(s, student_name="鎖測試簽核", paid_amount=0)
+        _seed_payment(s, reg.id, target)
         s.commit()
 
     calls = _spy_lock(monkeypatch)
@@ -209,6 +228,8 @@ def test_unlock_daily_close_acquires_lock(lock_client, monkeypatch):
     target = date.today() - timedelta(days=1)
     with sf() as s:
         _create_admin(s, permission_names=APPROVE_PERMS)
+        reg = _setup_reg(s, student_name="鎖測試解鎖", paid_amount=0)
+        _seed_payment(s, reg.id, target)
         s.commit()
 
     assert _login(client).status_code == 200
@@ -241,6 +262,8 @@ def test_checkout_rejected_after_daily_close(lock_client):
     with sf() as s:
         _create_admin(s, permission_names=APPROVE_PERMS)
         reg = _setup_reg(s, student_name="簽核後擋寫", paid_amount=0)
+        # 先 seed 一筆當日交易，讓日結非 0 筆（空簽已被守衛拒絕）
+        _seed_payment(s, reg.id, target)
         s.commit()
         reg_id = reg.id
 
