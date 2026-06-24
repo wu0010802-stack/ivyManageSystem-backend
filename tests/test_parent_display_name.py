@@ -38,6 +38,7 @@ from models.database import (
 )
 from utils.auth import create_access_token
 from utils.cache_layer import get_cache
+from utils.taipei_time import now_taipei_naive
 
 
 class FakeLineLoginService:
@@ -376,7 +377,7 @@ class TestLiffSyncDisplayName:
                 GuardianBindingCode(
                     guardian_id=guardian.id,
                     code_hash=_hash_code(plain),
-                    expires_at=datetime.now() + _td(hours=1),
+                    expires_at=now_taipei_naive() + _td(hours=1),
                     used_at=None,
                     used_by_user_id=None,
                     created_by=admin.id,

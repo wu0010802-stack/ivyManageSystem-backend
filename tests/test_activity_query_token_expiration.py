@@ -23,6 +23,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
+from utils.taipei_time import now_taipei_naive
 from api.activity import router as activity_router
 from api.activity._shared import (
     _hash_query_token,
@@ -201,7 +202,9 @@ class TestRegisterStampsIssuedAt:
             )
             s.commit()
 
-        before = datetime.now()
+        # 程式以 now_taipei_naive() 寫 issued_at；測試 bracket 必須用同一時鐘，
+        # 否則 TZ=UTC 的 CI 分片下 datetime.now()（UTC）與 issued_at（台北 +8h）差 8 小時而誤判。
+        before = now_taipei_naive()
         res = client.post(
             "/api/activity/public/register",
             json={
@@ -213,7 +216,7 @@ class TestRegisterStampsIssuedAt:
                 "supplies": [],
             },
         )
-        after = datetime.now()
+        after = now_taipei_naive()
         assert res.status_code == 201, res.text
 
         with sf() as s:
