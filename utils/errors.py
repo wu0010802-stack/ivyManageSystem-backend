@@ -54,6 +54,36 @@ def raise_safe_500(e: Exception, *, context: str = "") -> None:
         raise HTTPException(status_code=500, detail=_GENERIC_500_MESSAGE)
 
 
+def raise_lock_contention_or_500(
+    e: Exception,
+    *,
+    detail: str = "操作衝突，請稍候幾秒再試一次",
+    context: str = "",
+) -> None:
+    """鎖爭用 / 死鎖（40P01 / 55P03）→ 乾淨 409（可重試）；其餘 → raise_safe_500。
+
+    後台寫入端點（才藝待審 match / rematch / force_accept / restore /
+    update_registration_basic 等）對「reg row + identity advisory」的取鎖順序與公開
+    public_update 相反，併發時 PG deadlock detector 會中止其一（40P01）。後台原本落入
+    通用 except → 500 + Sentry 噪音；改走此 helper 回 409 讓前端稍候重試，與
+    public.py 報名熱路徑的 409 行為一致。
+
+    Usage::
+
+        except OperationalError as e:
+            session.rollback()
+            raise_lock_contention_or_500(e, context="強行收件")
+    """
+    if is_lock_contention_error(e):
+        logger.warning(
+            "鎖爭用快速失敗 pgcode=%s context=%s",
+            getattr(getattr(e, "orig", None), "pgcode", None),
+            context or "-",
+        )
+        raise HTTPException(status_code=409, detail=detail)
+    raise_safe_500(e, context=context)
+
+
 _GENERIC_BATCH_REASON = "處理失敗，請稍後重試或聯絡管理員"
 
 

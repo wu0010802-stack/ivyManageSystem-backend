@@ -18,7 +18,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from models.database import (
     get_session,
@@ -29,7 +29,7 @@ from models.database import (
 from services.activity_service import activity_service, OCCUPYING_STATUSES
 from utils.activity_constants import effective_capacity
 from utils.advisory_lock import acquire_activity_registration_lock
-from utils.errors import raise_safe_500
+from utils.errors import raise_lock_contention_or_500, raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
@@ -367,6 +367,9 @@ def match_registration(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        session.rollback()
+        raise_lock_contention_or_500(e, context="手動匹配")
     except Exception as e:
         session.rollback()
         logger.error("手動匹配失敗：%s", e)
@@ -677,6 +680,9 @@ def rematch_registration(
         # （與 restore 對齊）。
         session.rollback()
         raise HTTPException(status_code=409, detail="本學期已有同一學生的有效報名")
+    except OperationalError as e:
+        session.rollback()
+        raise_lock_contention_or_500(e, context="重新比對")
     except Exception as e:
         session.rollback()
         logger.error("重新比對失敗：%s", e)
@@ -794,6 +800,9 @@ def force_accept_registration(
         # 的兜底，回乾淨 409 而非 raise_safe_500 的 500。
         session.rollback()
         raise HTTPException(status_code=409, detail="本學期已有同一學生的有效報名")
+    except OperationalError as e:
+        session.rollback()
+        raise_lock_contention_or_500(e, context="強行收件")
     except Exception as e:
         session.rollback()
         logger.error("強行收件失敗：%s", e)
@@ -1052,6 +1061,9 @@ def restore_registration(
         raise HTTPException(
             status_code=409, detail="本學期已有同一學生的有效報名，無法復原此筆"
         )
+    except OperationalError as e:
+        session.rollback()
+        raise_lock_contention_or_500(e, context="還原報名")
     except Exception as e:
         session.rollback()
         logger.error("還原報名失敗：%s", e)

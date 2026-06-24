@@ -36,7 +36,8 @@ from models.database import (
 from services.activity_service import activity_service
 from utils.activity_constants import OCCUPYING_STATUSES
 from services.activity_refund_query import build_refund_suggestion
-from utils.errors import raise_safe_500
+from sqlalchemy.exc import OperationalError
+from utils.errors import raise_lock_contention_or_500, raise_safe_500
 from utils.auth import require_staff_permission
 from utils.advisory_lock import (
     acquire_activity_daily_close_lock,
@@ -768,6 +769,9 @@ def update_registration_basic(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        session.rollback()
+        raise_lock_contention_or_500(e, context="編輯報名基本資料")
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
