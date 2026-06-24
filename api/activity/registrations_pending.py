@@ -18,7 +18,6 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 
 from models.database import (
@@ -40,7 +39,6 @@ from ._shared import (
     _compute_is_paid,
     _invalidate_after_registration_mutation,
     _not_found,
-    _validate_tw_mobile,
     now_taipei_naive,
     resolve_student_pii_scope,
     student_pii_row_visible,
@@ -48,6 +46,9 @@ from ._shared import (
 )
 
 from schemas.activity_admin import (
+    RegistrationMatchRequest,
+    RegistrationRejectRequest,
+    RegistrationRematchRequest,
     PendingRegistrationActionResultOut,
     PendingRegistrationForceAcceptResultOut,
     PendingRegistrationListOut,
@@ -58,68 +59,8 @@ from schemas.activity_admin import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 # ── 審核工作流（pending / match / reject / rematch / students-search）─────
-
-
-class RegistrationMatchRequest(BaseModel):
-    student_id: int = Field(..., gt=0)
-
-
-class RegistrationRejectRequest(BaseModel):
-    reason: str = Field(..., min_length=2, max_length=200)
-
-    @field_validator("reason", mode="before")
-    @classmethod
-    def _strip_reason(cls, v):
-        if isinstance(v, str):
-            stripped = v.strip()
-            if len(stripped) < 2:
-                raise ValueError("拒絕原因至少需 2 個字，方便事後追溯")
-            return stripped
-        return v
-
-
-class RegistrationRematchRequest(BaseModel):
-    """重新比對可選欄位：校方可即時修正家長打錯的 name/birthday/parent_phone。
-
-    三欄皆可選——未提供時沿用 registration 原值。提供的欄位會在比對前寫回 reg，
-    即使比對仍失敗也保留修改內容，避免校方白打一次字。
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    name: Optional[str] = Field(None, min_length=1, max_length=50)
-    birthday: Optional[str] = None
-    parent_phone: Optional[str] = Field(None, min_length=8, max_length=30)
-
-    @field_validator("name", mode="before")
-    @classmethod
-    def _strip_name(cls, v):
-        if isinstance(v, str):
-            stripped = v.strip()
-            return stripped or None
-        return v
-
-    @field_validator("birthday")
-    @classmethod
-    def _validate_birthday(cls, v):
-        if v is None or v == "":
-            return None
-        from datetime import date as _d
-
-        try:
-            _d.fromisoformat(v)
-        except ValueError:
-            raise ValueError("生日格式必須為 YYYY-MM-DD")
-        return v
-
-    @field_validator("parent_phone", mode="before")
-    @classmethod
-    def _normalize_phone(cls, v):
-        if v is None or (isinstance(v, str) and v.strip() == ""):
-            return None
-        from ._shared import _validate_tw_mobile
-
-        return _validate_tw_mobile(v)
+# request schemas（RegistrationMatchRequest / RegistrationRejectRequest /
+# RegistrationRematchRequest）已移至 schemas/activity_admin.py
 
 
 def _serialize_pending_item(
