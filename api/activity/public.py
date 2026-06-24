@@ -1289,6 +1289,32 @@ def public_update_registration(
             else {}
         )
 
+        # 終態學生守衛（2026-06-24 才藝模組稽核 / P2）：matched 報名的學生若已離校／
+        # 畢業／轉出（Student.is_active=False），家長自助加課會長出「幽靈 enrolled」——
+        # 佔課程容量、灌水 enrollmentRate/total_enrollments、產生欠款，卻因讀取側
+        # （_build_session_detail_response 等）以 Student.is_active IS True 過濾而永不
+        # 出現在點名名冊／出席統計。對齊 add_registration_course /
+        # confirm_waitlist_promotion / promote_waitlist / _auto_promote_first_waitlist /
+        # restore 既有終態守衛——_attach_courses 的另外三個 caller（admin_create /
+        # public_register / parent register_courses）皆只綁在籍學生或有上游守衛，唯獨此
+        # 公開自助路徑遺漏。pending re-match 成功者 student_id 必為在籍
+        # （_match_student_with_parent_phone 只匹配 is_active=True），故守衛只會打到
+        # stale 終態案例；student_id 為 NULL（校外/未匹配）無終態概念，略過；僅在實際
+        # 新增課程（new_course_items 非空）時把關，純退課/欄位更新不受影響。
+        if new_course_items and reg.student_id is not None:
+            from models.classroom import Student
+
+            student_active = (
+                session.query(Student.is_active)
+                .filter(Student.id == reg.student_id)
+                .scalar()
+            )
+            if student_active is False:
+                raise HTTPException(
+                    status_code=400,
+                    detail="該生已離校／畢業／轉出，無法追加課程",
+                )
+
         # K：只 attach 新增課程（未變更的已保留原列/ id，移除的已刪）。
         _attach_courses(
             session, reg.id, new_course_items, courses_by_name, upd_enrolled_map
