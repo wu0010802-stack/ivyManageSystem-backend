@@ -159,8 +159,8 @@ def _assert_upload_months_not_finalized(session, emp_ids: set, dates: set) -> No
 
 @router.get("/records", response_model=list[AttendanceRecordItemOut])
 def get_attendance_records(
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
     employee_id: Optional[int] = None,
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):

@@ -12,7 +12,16 @@ from typing import Any, Optional, List
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile, File
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    File,
+)
 from utils.errors import raise_safe_500, safe_batch_reason
 from utils.excel_utils import SafeWorksheet
 from utils.rate_limit import create_limiter
@@ -572,8 +581,8 @@ from utils.excel_writer import write_header_row as _ot_write_header  # noqa: E40
 @router.get("/overtimes")
 def get_overtimes(
     employee_id: Optional[int] = None,
-    year: Optional[int] = None,
-    month: Optional[int] = None,
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
     status: Optional[str] = None,  # pending, approved, rejected
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_READ)),
 ):

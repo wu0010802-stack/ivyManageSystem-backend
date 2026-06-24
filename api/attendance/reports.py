@@ -100,8 +100,8 @@ def get_today_attendance_summary(
 
 @router.get("/summary")
 def get_attendance_summary(
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """取得考勤統計摘要"""
@@ -570,8 +570,8 @@ def _get_attendance_calendar_new(
 @router.get("/calendar")
 def get_attendance_calendar(
     employee_id: int = Query(...),
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
 ):
     """取得員工月出勤日曆資料。
