@@ -15,7 +15,7 @@ from utils.auth import require_permission
 from utils.permissions import Permission
 from api.dismissal_calls import _call_base_dict, _DAY_START, _DAY_END
 from ._shared import _get_teacher_classroom_ids, _get_employee
-from utils.portfolio_access import is_unrestricted
+from utils.portfolio_access import is_row_unrestricted
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,9 @@ def portal_list_dismissal_calls(
     try:
         emp = _get_employee(session, current_user)
         # Phase 2.3：DISMISSAL_CALLS_READ:all 可跨班看全校；teacher :own_class 限自班
-        if is_unrestricted(current_user, code=Permission.DISMISSAL_CALLS_READ.value):
+        if is_row_unrestricted(
+            current_user, code=Permission.DISMISSAL_CALLS_READ.value
+        ):
             classroom_ids = None
         else:
             classroom_ids = _get_teacher_classroom_ids(session, emp.id)
@@ -107,7 +109,9 @@ def portal_pending_count(
     try:
         emp = _get_employee(session, current_user)
         # Phase 2.3：DISMISSAL_CALLS_READ:all 可跨班看全校；teacher :own_class 限自班
-        if is_unrestricted(current_user, code=Permission.DISMISSAL_CALLS_READ.value):
+        if is_row_unrestricted(
+            current_user, code=Permission.DISMISSAL_CALLS_READ.value
+        ):
             classroom_ids = None
         else:
             classroom_ids = _get_teacher_classroom_ids(session, emp.id)
@@ -147,7 +151,9 @@ def _db_transition_call(
     try:
         emp = _get_employee(session, current_user)
         # Phase 2.3：DISMISSAL_CALLS_WRITE:all 可跨班處理全校；teacher :own_class 限自班
-        if is_unrestricted(current_user, code=Permission.DISMISSAL_CALLS_WRITE.value):
+        if is_row_unrestricted(
+            current_user, code=Permission.DISMISSAL_CALLS_WRITE.value
+        ):
             classroom_ids = None
         else:
             classroom_ids = _get_teacher_classroom_ids(session, emp.id)

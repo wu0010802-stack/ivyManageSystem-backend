@@ -22,7 +22,7 @@ from api.portal._shared import (
 )
 from utils.broadcast import get_broadcast
 from utils.permissions import Permission, has_permission
-from utils.portfolio_access import is_unrestricted
+from utils.portfolio_access import is_row_unrestricted, is_unrestricted
 from utils.ws_connection_limiter import (
     WSConnectionLimitExceeded,
     register,
@@ -157,9 +157,12 @@ async def portal_dismissal_ws(ws: WebSocket):
         await ws.close(code=1008, reason="ws_connection_limit_exceeded")
         return
 
-    # 訂閱範圍對齊 REST scope（is_unrestricted 同一呼叫，保證 WS 收到的與 REST 回傳一致）。
+    # 訂閱範圍對齊 REST row-level scope（is_row_unrestricted 同一語義，保證 WS 收到的與
+    # REST 逐筆回傳一致）。用 is_row_unrestricted 而非 is_unrestricted：後者把 bare
+    # DISMISSAL_CALLS_READ 當 :all，會讓自訂角色從 WS 收全校接送事件（P2-1 IDOR）；
+    # 改後 bare 碼落入 else 的 own_class channel scoping，與 REST 一致。
     backend = get_broadcast()
-    if is_unrestricted(payload, code=Permission.DISMISSAL_CALLS_READ.value):
+    if is_row_unrestricted(payload, code=Permission.DISMISSAL_CALLS_READ.value):
         channels = [_ADMIN_CHANNEL]
     else:
         employee_id = payload.get("employee_id")

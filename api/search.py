@@ -30,7 +30,7 @@ from utils.audit import write_explicit_audit
 from utils.auth import get_current_user
 from utils.masking import mask_phone
 from utils.permissions import Permission, has_permission
-from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
+from utils.portfolio_access import accessible_classroom_ids, is_row_unrestricted
 from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,7 @@ class GlobalSearchResult(BaseModel):
 
 def _search_students(session, pattern: str, current_user: dict) -> list[dict]:
     code = Permission.STUDENTS_READ.value
-    unrestricted = is_unrestricted(current_user, code=code)
+    unrestricted = is_row_unrestricted(current_user, code=code)
     qy = session.query(Student).filter(
         Student.is_active.is_(True),
         Student.lifecycle_status.notin_(_TERMINAL),
@@ -181,7 +181,7 @@ def _search_employees(session, pattern: str) -> list[dict]:
 
 def _search_guardians(session, pattern: str, current_user: dict) -> list[dict]:
     code = Permission.GUARDIANS_READ.value
-    unrestricted = is_unrestricted(current_user, code=code)
+    unrestricted = is_row_unrestricted(current_user, code=code)
     qy = (
         session.query(Guardian, Student)
         .join(Student, Guardian.student_id == Student.id)
