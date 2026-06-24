@@ -131,12 +131,15 @@ def create_month_end_snapshots(
     }
 
     created = 0
+    failed = 0
     for r in records:
         if r.employee_id in existing_emp_ids:
             continue
-        snap = _copy_record_to_snapshot(r, "month_end", captured_by)
-        # savepoint + IntegrityError 接住跨 worker / lazy+scheduler 撞同秒的並發插入
+        # savepoint + IntegrityError 接住跨 worker / lazy+scheduler 撞同秒的並發插入。
+        # row-copy 也納入 try，且非 Integrity 例外（單筆壞資料 / DataError）改為「跳過該筆
+        # 續跑整批」——否則一筆壞資料會中斷整月所有員工的快照。
         try:
+            snap = _copy_record_to_snapshot(r, "month_end", captured_by)
             with session.begin_nested():
                 session.add(snap)
                 session.flush()
@@ -148,7 +151,20 @@ def create_month_end_snapshots(
                 month,
             )
             continue
+        except Exception:
+            failed += 1
+            logger.exception(
+                "salary month_end snapshot 單筆失敗已跳過: emp=%s %d/%d",
+                getattr(r, "employee_id", "?"),
+                year,
+                month,
+            )
+            continue
         created += 1
+    if failed:
+        logger.warning(
+            "salary month_end snapshot: %d 筆單筆失敗已跳過 %d/%d", failed, year, month
+        )
     if created:
         logger.info(
             "salary month_end snapshot: %d/%d created for %d/%d by %s",
