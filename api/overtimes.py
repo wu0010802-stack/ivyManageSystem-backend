@@ -1515,6 +1515,7 @@ def batch_approve_overtimes(
             ot.id: ot
             for ot in session.query(OvertimeRecord)
             .filter(OvertimeRecord.id.in_(data.ids))
+            .order_by(OvertimeRecord.id)
             .with_for_update()
             .all()
         }

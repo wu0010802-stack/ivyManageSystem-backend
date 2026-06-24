@@ -472,7 +472,8 @@ def _process_settlement_batch(session, settlement_ids, current_user, apply_fn) -
     succeeded: list[int] = []
     failed: list[dict] = []
     seen: set[int] = set()
-    for sid in settlement_ids:
+    # 以 id 排序逐筆取鎖，避免兩個併發批次帶重疊 settlement_ids 但順序不同時 ABBA 死鎖。
+    for sid in sorted(settlement_ids):
         if sid in seen:
             continue
         seen.add(sid)

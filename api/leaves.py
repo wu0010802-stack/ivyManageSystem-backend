@@ -1839,6 +1839,7 @@ def batch_approve_leaves(
             lv.id: lv
             for lv in session.query(LeaveRecord)
             .filter(LeaveRecord.id.in_(data.ids))
+            .order_by(LeaveRecord.id)
             .with_for_update()
             .all()
         }
