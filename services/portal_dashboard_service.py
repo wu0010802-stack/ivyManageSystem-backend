@@ -41,8 +41,78 @@ def _active_students_in_classroom(session: Session, classroom_id: int) -> list[S
             Student.is_active.is_(True),
             Student.lifecycle_status == LIFECYCLE_ACTIVE,
         )
+        .order_by(Student.id)
         .all()
     )
+
+
+def _active_students_by_classroom(
+    session: Session, classroom_ids: list[int]
+) -> dict[int, list[Student]]:
+    """一次 IN query 取所有班級 active 學生，按 classroom_id 分組（per-classroom 依
+    Student.id 排序，與 _active_students_in_classroom 同序，確保批次與逐班結果一致）。
+    """
+    result: dict[int, list[Student]] = {cid: [] for cid in classroom_ids}
+    rows = (
+        session.query(Student)
+        .filter(
+            Student.classroom_id.in_(classroom_ids),
+            Student.is_active.is_(True),
+            Student.lifecycle_status == LIFECYCLE_ACTIVE,
+        )
+        .order_by(Student.id)
+        .all()
+    )
+    for s in rows:
+        result[s.classroom_id].append(s)
+    return result
+
+
+def _consecutive_absence_for_student(
+    record: dict, today: date, start: date
+) -> tuple[int, "date | None"]:
+    """從昨日往前掃 record（{date: status}），算最近連續「缺席」天數與最後缺席日。
+
+    single 與 batch 共用，確保逐班與批次語意完全一致。
+    """
+    days = 0
+    last_absent: date | None = None
+    cursor = today - timedelta(days=1)
+    while cursor >= start:
+        if record.get(cursor) == "缺席":
+            days += 1
+            if last_absent is None:
+                last_absent = cursor
+            cursor -= timedelta(days=1)
+            continue
+        break
+    return days, last_absent
+
+
+def _upcoming_birthday_for_student(s: Student, today: date, window_days: int):
+    """單一學生：window 內生日回 dict，否則 None。single 與 batch 共用。"""
+    if not s.birthday:
+        return None
+    try:
+        this_year_bday = s.birthday.replace(year=today.year)
+    except ValueError:
+        # 2/29 → 平年退一日
+        this_year_bday = s.birthday.replace(year=today.year, day=28)
+    if this_year_bday < today:
+        try:
+            this_year_bday = s.birthday.replace(year=today.year + 1)
+        except ValueError:
+            this_year_bday = s.birthday.replace(year=today.year + 1, day=28)
+    days_until = (this_year_bday - today).days
+    if 0 <= days_until <= window_days:
+        return {
+            "student_id": s.id,
+            "student_name": s.name,
+            "birthday": s.birthday.isoformat(),
+            "age_turning": this_year_bday.year - s.birthday.year,
+            "days_until": days_until,
+        }
+    return None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -100,14 +170,13 @@ def _compute_consecutive_absences_single(
     if not students:
         return []
     student_by_id = {s.id: s for s in students}
-    student_ids = list(student_by_id.keys())
 
     start = today - timedelta(days=lookback_days)
     end = today - timedelta(days=1)
     rows = (
         session.query(StudentAttendance)
         .filter(
-            StudentAttendance.student_id.in_(student_ids),
+            StudentAttendance.student_id.in_(list(student_by_id.keys())),
             StudentAttendance.date >= start,
             StudentAttendance.date <= end,
         )
@@ -119,19 +188,7 @@ def _compute_consecutive_absences_single(
 
     results: list[dict] = []
     for sid, record in by_student.items():
-        # 從昨日開始連續往前掃
-        days = 0
-        last_absent: date | None = None
-        cursor = today - timedelta(days=1)
-        while cursor >= start:
-            status = record.get(cursor)
-            if status == "缺席":
-                days += 1
-                if last_absent is None:
-                    last_absent = cursor
-                cursor -= timedelta(days=1)
-                continue
-            break
+        days, last_absent = _consecutive_absence_for_student(record, today, start)
         if days >= threshold_days:
             results.append(
                 {
@@ -156,20 +213,53 @@ def _compute_consecutive_absences_batch(
     threshold_days: int = 2,
     lookback_days: int = 14,
 ) -> dict[int, list[dict]]:
-    """Fallback dict-comp：語意複雜（per-student 連續天數），逐班呼叫 _single。
-
-    NOTE: 若後續確認是性能瓶頸，再優化為跨班單 query。
+    """跨班一次 IN query 取學生 + 一次 IN query 取出勤回看窗，Python 端按班分組計算
+    （取代逐班 _single 的 N+1）。per-student 連續天數邏輯與單筆共用
+    _consecutive_absence_for_student，語意一致。
     """
-    return {
-        cid: _compute_consecutive_absences_single(
-            session,
-            cid,
-            today,
-            threshold_days=threshold_days,
-            lookback_days=lookback_days,
+    students_by_cls = _active_students_by_classroom(session, classroom_ids)
+    result: dict[int, list[dict]] = {cid: [] for cid in classroom_ids}
+
+    student_cls: dict[int, int] = {}
+    student_by_id: dict[int, Student] = {}
+    for cid, students in students_by_cls.items():
+        for s in students:
+            student_cls[s.id] = cid
+            student_by_id[s.id] = s
+    if not student_by_id:
+        return result
+
+    start = today - timedelta(days=lookback_days)
+    end = today - timedelta(days=1)
+    rows = (
+        session.query(StudentAttendance)
+        .filter(
+            StudentAttendance.student_id.in_(list(student_by_id.keys())),
+            StudentAttendance.date >= start,
+            StudentAttendance.date <= end,
         )
-        for cid in classroom_ids
-    }
+        .all()
+    )
+    by_student: dict[int, dict[date, str]] = {}
+    for r in rows:
+        by_student.setdefault(r.student_id, {})[r.date] = r.status
+
+    for sid, record in by_student.items():
+        days, last_absent = _consecutive_absence_for_student(record, today, start)
+        if days >= threshold_days:
+            result[student_cls[sid]].append(
+                {
+                    "student_id": sid,
+                    "student_name": student_by_id[sid].name,
+                    "days": days,
+                    "last_absent_date": (
+                        last_absent.isoformat() if last_absent else None
+                    ),
+                }
+            )
+    for cid in result:
+        result[cid].sort(key=lambda x: (-x["days"], x["student_name"]))
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -214,31 +304,9 @@ def _compute_upcoming_birthdays_single(
     students = _active_students_in_classroom(session, classroom_id)
     results: list[dict] = []
     for s in students:
-        if not s.birthday:
-            continue
-        # 計算今年生日（若已過則用明年）
-        try:
-            this_year_bday = s.birthday.replace(year=today.year)
-        except ValueError:
-            # 2/29 → 平年退一日
-            this_year_bday = s.birthday.replace(year=today.year, day=28)
-        if this_year_bday < today:
-            try:
-                this_year_bday = s.birthday.replace(year=today.year + 1)
-            except ValueError:
-                this_year_bday = s.birthday.replace(year=today.year + 1, day=28)
-        days_until = (this_year_bday - today).days
-        if 0 <= days_until <= window_days:
-            age_turning = this_year_bday.year - s.birthday.year
-            results.append(
-                {
-                    "student_id": s.id,
-                    "student_name": s.name,
-                    "birthday": s.birthday.isoformat(),
-                    "age_turning": age_turning,
-                    "days_until": days_until,
-                }
-            )
+        row = _upcoming_birthday_for_student(s, today, window_days)
+        if row is not None:
+            results.append(row)
     results.sort(key=lambda x: x["days_until"])
     return results
 
@@ -250,16 +318,18 @@ def _compute_upcoming_birthdays_batch(
     *,
     window_days: int = 7,
 ) -> dict[int, list[dict]]:
-    """Fallback dict-comp：birthday 需在 Python 端計算，逐班呼叫 _single。
-
-    NOTE: 若後續確認是性能瓶頸，再優化為跨班單 query。
+    """跨班一次 IN query 取學生，Python 端按班計算（取代逐班 _single 的 N+1）。
+    per-student 生日邏輯與單筆共用 _upcoming_birthday_for_student，語意一致。
     """
-    return {
-        cid: _compute_upcoming_birthdays_single(
-            session, cid, today, window_days=window_days
-        )
-        for cid in classroom_ids
-    }
+    students_by_cls = _active_students_by_classroom(session, classroom_ids)
+    result: dict[int, list[dict]] = {cid: [] for cid in classroom_ids}
+    for cid, students in students_by_cls.items():
+        for s in students:
+            row = _upcoming_birthday_for_student(s, today, window_days)
+            if row is not None:
+                result[cid].append(row)
+        result[cid].sort(key=lambda x: x["days_until"])
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════
