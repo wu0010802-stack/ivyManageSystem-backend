@@ -20,6 +20,12 @@ class NetworkSettings(BaseSettings):
     school_wifi_ips: CsvList = []
     rate_limit_backend: str = "memory"
 
+    # 全域 request body 大小上限（bytes）。Starlette/uvicorn 預設不限 body 大小，單一
+    # 超大 body（數百 MB JSON）會在驗證前先被 uvicorn 收進記憶體 → 單 worker 記憶體飆升。
+    # 預設 64MB：高於最大合法上傳（檔案 50MB，見 utils/file_upload），純擋「數百 MB」攻擊。
+    # 可經 env MAX_REQUEST_BODY_BYTES 調整（改 Zeabur Service Variables + 重啟即生效）。
+    max_request_body_bytes: int = 64 * 1024 * 1024
+
     # 家長公開報名端 per-IP 限流（max_calls / window_seconds）。
     # 可經 env 在上線尖峰「免改碼」調整（改 Zeabur Service Variables + 重啟即生效），
     # 不必 push 後端——配合報名視窗內的部署凍結紀律。

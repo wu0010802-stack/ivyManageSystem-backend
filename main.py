@@ -1222,6 +1222,16 @@ from middleware.magic_link_log_scrub import MagicLinkLogScrubMiddleware
 
 app.add_middleware(MagicLinkLogScrubMiddleware)
 
+# Body 大小上限：先於 handler / Pydantic 讀 body 擋掉超大 request（防單 worker 記憶體
+# 被數百 MB body 撐爆）。置於 CORS 之內層（CORS 在其後 add → 外層），讓 413 回流時
+# 經 CORS 補上 Access-Control-Allow-Origin。
+from middleware.body_size_limit import BodySizeLimitMiddleware
+
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_body_bytes=settings.network.max_request_body_bytes,
+)
+
 # CORS 必須在 KillSwitch / CSRF / SecurityHeaders / RequestLogging / Audit 之外層
 # （即在它們之後 add），才能讓這些 middleware 自身短路的 503/403 回應在回流時
 # 經過 CORS 補上 Access-Control-Allow-Origin，並讓 preflight OPTIONS 在維護模式下
