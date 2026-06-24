@@ -57,6 +57,18 @@ def test_text_keeps_operational_ids_and_names():
     assert out == s  # 無強識別子 → 原樣保留
 
 
+def test_text_masks_cjk_adjacent_identifiers():
+    """中文緊鄰數字無空白也應遮（與 sentry_init._redact_pii_value 對齊；原 \\b 漏遮）。"""
+    out = redact_pii_text("電話0912345678請改期，身分證A123456789止")
+    assert "0912345678" not in out
+    assert "A123456789" not in out
+
+
+def test_text_not_masked_inside_longer_digit_run():
+    """保留原意：夾在更長數字串中的子序列不誤遮。"""
+    assert redact_pii_text("代碼1230912345678末") == "代碼1230912345678末"
+
+
 def test_text_handles_none_and_nonstr():
     assert redact_pii_text(None) is None
     assert redact_pii_text("") == ""

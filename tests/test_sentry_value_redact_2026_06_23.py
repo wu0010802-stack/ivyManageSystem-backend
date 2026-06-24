@@ -75,3 +75,26 @@ def test_scrub_event_exception_missing_is_safe():
     """無 exception 區塊不應炸。"""
     out = _scrub_event({"message": "hello"})
     assert out["message"] == "hello"
+
+
+# ── CJK 緊鄰數字無空白（zh-TW 自由文字極常見）：原 \b 漏遮 ──
+
+
+def test_redact_pii_value_masks_cjk_adjacent_identifiers():
+    """Python \\b 為 Unicode-aware，對『話0』『證A』不視為詞邊界 → 原 \\b 對中文緊鄰
+    識別子漏遮（FE JS \\b 為 ASCII-only 反而較嚴）。改顯式非數字/非英數邊界後兩端對齊。"""
+    out = _redact_pii_value("電話0912345678請改期，身分證A123456789，市話02-12345678止")
+    assert "0912345678" not in out, "中文緊鄰手機應遮"
+    assert "A123456789" not in out, "中文緊鄰身分證應遮"
+    assert "02-12345678" not in out, "中文緊鄰市話應遮"
+
+
+def test_redact_pii_value_masks_cjk_adjacent_line_uid():
+    uid = "U" + "0123456789abcdef" * 2  # U + 32 hex
+    out = _redact_pii_value(f"綁定{uid}完成")
+    assert uid not in out, "中文緊鄰 LINE userId 應遮"
+
+
+def test_redact_pii_value_not_masked_inside_longer_digit_run():
+    """保留原意：夾在更長數字串中的子序列不誤遮（流水號/長碼）。"""
+    assert _redact_pii_value("代碼1230912345678末") == "代碼1230912345678末"

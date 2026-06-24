@@ -88,13 +88,20 @@ _FILTERED = "[Filtered]"
 # key-based denylist 漏掉「自由文字 value」（reason/note/summary）與「DB 例外訊息」
 # （SQLAlchemy [parameters: {...}]）內嵌的識別子；此層補上。正則對齊 utils/audit_redact
 # （單一語意；sentry_init 為底層模組，不反向 import audit_redact 以免循環）。
-_VALUE_TW_ID_RE = re.compile(r"\b[A-Za-z][12A-Da-d]\d{8}\b")  # 身分證 / 居留證
-_VALUE_MOBILE_RE = re.compile(r"\b09\d{8}\b")  # 手機
-_VALUE_LANDLINE_RE = re.compile(r"\b0\d{1,2}-\d{6,8}\b")  # 市話（帶 dash）
+# 邊界用顯式 lookaround 而非 \b：Python \b 為 Unicode-aware，對「中文緊鄰數字無空白」
+# （如 `電話0912345678請改期`，zh-TW 自由文字極常見）不視為詞邊界 → 漏遮（前端 JS \b
+# 為 ASCII-only 反而較嚴）。改「不被數字（ID/uid 類為英數）包夾」的顯式邊界，既修 CJK
+# 緊鄰漏遮、又保留原意（不遮夾在更長數字串中的子序列）。三份對齊：本檔 / utils/audit_redact
+# / 前端 src/utils/sentry.ts（陷阱#8）。
+_VALUE_TW_ID_RE = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z][12A-Da-d]\d{8}(?![A-Za-z0-9])"
+)  # 身分證 / 居留證
+_VALUE_MOBILE_RE = re.compile(r"(?<!\d)09\d{8}(?!\d)")  # 手機
+_VALUE_LANDLINE_RE = re.compile(r"(?<!\d)0\d{1,2}-\d{6,8}(?!\d)")  # 市話（帶 dash）
 # SEC-2026-0624-01：LINE userId（`U` + 32 小寫 hex，全球唯一、可直接對映真實
 # LINE 帳號）。家長綁定 log 已改 line_user_id[:8] 截短，此正則為縱深防禦——
 # 攔截任何隨自由文字漏進 breadcrumb message / exception value 的完整 userId。
-_VALUE_LINE_UID_RE = re.compile(r"\bU[0-9a-f]{32}\b")
+_VALUE_LINE_UID_RE = re.compile(r"(?<![A-Za-z0-9])U[0-9a-f]{32}(?![A-Za-z0-9])")
 
 
 def _redact_pii_value(text: Any) -> Any:
