@@ -964,6 +964,86 @@ def public_update_registration(
         # 改報名同樣鎖 reg / 課程列，短 lock_timeout 避免爭用拖垮連線池（見 helper docstring）
         _set_hot_path_lock_timeout(session)
 
+        # ── 鎖序（2026-06-24 code review P2）：course → registration ──────────────
+        # confirm/decline_waitlist_promotion（services/activity_service）自 2026-06-23
+        # 統一為「先鎖 ActivityCourse、後鎖 RegistrationCourse/ActivityRegistration」。
+        # 本端點原本相反（先鎖 reg 列、後鎖 course 列）——家長改報名與候補確認/放棄
+        # 同時處理同一 (reg, course) 時形成 PostgreSQL ABBA 鎖序反轉死鎖。改為對齊
+        # 全域 canonical 階層：advisory(name+birthday+term) → ActivityCourse 列鎖
+        # (order by id) → ActivityRegistration 列鎖。
+        #
+        # 因 course 查詢需 reg 的學期、advisory 需 reg 的 name/birthday/term，先做一次
+        # 非鎖定預讀取得身分/學期並『預檢』身分（不符即 403，避免未授權者持有任何
+        # 列鎖），取鎖後再以鎖定列重新驗證身分/token/is_active/term。
+        pre_reg = (
+            session.query(ActivityRegistration)
+            .filter(
+                ActivityRegistration.id == body.id,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .first()
+        )
+        # 通用錯誤：查不到 / 身分不符一律回相同訊息（資安 #5：有 token 報名強制 token）
+        if not pre_reg or not _parent_mutation_identity_ok(
+            pre_reg, body.name, body.birthday, body.parent_phone, body.query_token
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="查無對應報名，請確認三項資料是否與報名時一致",
+            )
+        pre_school_year = pre_reg.school_year
+        pre_semester = pre_reg.semester
+        pre_pending_review = bool(pre_reg.pending_review)
+
+        # 課程/用品清單去重（僅看 body，不需鎖）—— 須在鎖課程列前完成。
+        course_names = [item.name for item in body.courses]
+        if len(course_names) != len(set(course_names)):
+            raise HTTPException(status_code=400, detail="課程清單中有重複項目")
+        supply_names = [item.name for item in body.supplies]
+        if len(supply_names) != len(set(supply_names)):
+            raise HTTPException(status_code=400, detail="用品清單中有重複項目")
+
+        # P1（2026-06-23 code review）：pending 報名在本次更新可能因改電話 re-match
+        # 綁定 student_id（見下方 pending→matched 轉態）。advisory lock（name+birthday+
+        # term，與 register/match 同鎖序：advisory 先、課程列鎖後）讓稍後 re-match 後的
+        # student_id 唯一性檢查能序列化並發。已 matched 的報名 student_id 不會在本端點
+        # 變動，無此風險、不取鎖（依預讀的 pending_review 判定；極窄窗的「取鎖後鎖定列
+        # 才變 pending」於下方退 409，見該處說明）。
+        if pre_pending_review:
+            acquire_activity_registration_lock(
+                session,
+                student_name=pre_reg.student_name,
+                birthday=pre_reg.birthday,
+                school_year=pre_school_year,
+                semester=pre_semester,
+            )
+
+        # 限定本筆報名所屬學期，避免上下學期同名課程/用品被誤選。
+        # 以 id 排序固定 FOR UPDATE 列鎖取得順序，消除多課程並發改報名的 ABBA 死鎖窗口
+        # （name.in_ 不保證鎖序）。與 public_register / admin create / 家長 register 對齊。
+        # order_by 須在 with_for_update 前。學期取自非鎖定預讀（報名學期實務上不可變，
+        # 取鎖後再以鎖定列重新驗證一致性）。
+        courses_by_name = (
+            {
+                c.name: c
+                for c in session.query(ActivityCourse)
+                .filter(
+                    ActivityCourse.name.in_(course_names),
+                    ActivityCourse.is_active.is_(True),
+                    ActivityCourse.school_year == pre_school_year,
+                    ActivityCourse.semester == pre_semester,
+                )
+                .order_by(ActivityCourse.id)
+                .with_for_update()
+                .all()
+            }
+            if course_names
+            else {}
+        )
+
+        # 課程列鎖取得後才鎖 registration 列（course → registration），以鎖定列為真值。
+        # populate_existing() 強制把 in-memory 屬性刷新為 FOR UPDATE 取得後的最新狀態
+        # （否則 identity-map 會沿用上面非鎖定預讀的舊快照）。
         reg = (
             session.query(ActivityRegistration)
             .filter(
@@ -971,9 +1051,10 @@ def public_update_registration(
                 ActivityRegistration.is_active.is_(True),
             )
             .with_for_update()
+            .populate_existing()
             .first()
         )
-        # 通用錯誤：查不到 / 身分不符一律回相同訊息（資安 #5：有 token 報名強制 token）
+        # 取鎖後以鎖定列重新驗證身分（與預檢同一守衛；防預讀與取鎖之間身分欄位被改）
         if not reg or not _parent_mutation_identity_ok(
             reg, body.name, body.birthday, body.parent_phone, body.query_token
         ):
@@ -981,9 +1062,25 @@ def public_update_registration(
                 status_code=403,
                 detail="查無對應報名，請確認三項資料是否與報名時一致",
             )
+        # 學期在預讀與取鎖之間須一致：否則上面鎖到的是錯學期的課程列。報名學期實務上
+        # 不可變，此為防禦性檢查（極端並發），不符即請家長重整重送。
+        if reg.school_year != pre_school_year or reg.semester != pre_semester:
+            raise HTTPException(
+                status_code=409,
+                detail="資料已被校方更新，請重新整理頁面確認最新狀態後再儲存。",
+            )
+        # 預讀判為 matched（未取 advisory）但鎖定後變 pending（極窄窗：並發 decline+
+        # restore 在預讀與列鎖間 commit）→ 後續 re-match 的唯一性檢查會缺 advisory 保護。
+        # 為避免取鎖後再補 advisory 與正常路徑（advisory→course→reg）形成自我 ABBA，
+        # 改退 409 讓家長重送（重送時預讀即見 pending → 正常於課程列鎖前取得 advisory）。
+        if reg.pending_review and not pre_pending_review:
+            raise HTTPException(
+                status_code=409,
+                detail="資料已被校方更新，請重新整理頁面確認最新狀態後再儲存。",
+            )
 
-        # 樂觀鎖檢查：token 為不透明字串（前端原樣回拋），只做相等比較，
-        # 不 parse datetime — 避免 TZ/microsecond precision 邊界問題。
+        # 樂觀鎖檢查：token 為不透明字串（前端原樣回拋），只做相等比較，不 parse
+        # datetime — 避免 TZ/microsecond precision 邊界問題。
         if body.if_unmodified_since is not None:
             current_token = reg.updated_at.isoformat() if reg.updated_at else None
             if current_token != body.if_unmodified_since:
@@ -991,20 +1088,6 @@ def public_update_registration(
                     status_code=409,
                     detail=("資料已被校方更新，請重新整理頁面確認最新狀態後再儲存。"),
                 )
-
-        # P1（2026-06-23 code review）：pending 報名在本次更新可能因改電話 re-match
-        # 綁定 student_id（見下方 pending→matched 轉態）。在鎖課程列前先取報名 advisory
-        # lock（name+birthday+term，與 register/match 同一把鎖序：advisory 先、課程列鎖
-        # 後，不引入 ABBA），讓稍後 re-match 後的 student_id 唯一性檢查能序列化並發。
-        # 已 matched 的報名 student_id 不會在本端點變動，無此風險、不取鎖。
-        if reg.pending_review:
-            acquire_activity_registration_lock(
-                session,
-                student_name=reg.student_name,
-                birthday=reg.birthday,
-                school_year=reg.school_year,
-                semester=reg.semester,
-            )
 
         # 為 audit / RegistrationChange 軌跡保留舊值（在任何寫入前快照）。
         # 課程/用品 diff 只比 name（不含 status）— 避免「候補升正式 / 重存」這類
@@ -1037,32 +1120,6 @@ def public_update_registration(
         else:
             # pending 或 classroom_id 已停用 → 允許家長透過更新修正
             classroom_name_to_store = body.class_
-
-        course_names = [item.name for item in body.courses]
-        if len(course_names) != len(set(course_names)):
-            raise HTTPException(status_code=400, detail="課程清單中有重複項目")
-        supply_names = [item.name for item in body.supplies]
-        if len(supply_names) != len(set(supply_names)):
-            raise HTTPException(status_code=400, detail="用品清單中有重複項目")
-
-        # 限定本筆報名所屬學期，避免上下學期同名課程/用品被誤選
-        courses_by_name = (
-            {
-                c.name: c
-                for c in session.query(ActivityCourse).filter(
-                    ActivityCourse.name.in_(course_names),
-                    ActivityCourse.is_active.is_(True),
-                    ActivityCourse.school_year == reg.school_year,
-                    ActivityCourse.semester == reg.semester,
-                )
-                # 以 id 排序固定 FOR UPDATE 列鎖取得順序，消除多課程並發改報名的 ABBA
-                # 死鎖窗口（name.in_ 不保證鎖序）。與 public_register / admin create /
-                # 家長 register 對齊。order_by 須在 with_for_update 前。
-                .order_by(ActivityCourse.id).with_for_update().all()
-            }
-            if course_names
-            else {}
-        )
 
         supplies_by_name = (
             {
