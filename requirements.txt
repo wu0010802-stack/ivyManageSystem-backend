@@ -1,4 +1,5 @@
-fastapi>=0.104.0,!=0.136.3  # MAL-2026-4750（0.136.3 偷塞 typosquat 'fastar' 到 [standard] group）
+fastapi==0.136.1  # 釘版（見下方 starlette）；亦避開 0.136.3 typosquat MAL-2026-4750
+starlette==1.1.0  # 釘版：starlette 1.3.x 起 include_router 產生 _IncludedRouter（無 .path），破壞全部路由內省測試；上限放開時 CI 會漂到 1.3.1。後續宜改用 lockfile 統一釘版
 uvicorn>=0.24.0
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
@@ -22,7 +23,7 @@ alembic>=1.13.0
 requests>=2.33.0  # CVE-2026-25645（修補版 2.33.0；專案 requires-python>=3.10）
 supabase>=2.0.0  # 物件儲存（activity_posters / leave_attachments）
 python-json-logger>=2.0.0
-pytest>=9.0.3  # CVE-2025-71176
+pytest==9.0.3  # CVE-2025-71176；釘版對齊本地驗證環境（CI 漂到 9.1.1 未在本地驗證）
 pytest-cov>=4.1.0
 pytest-split>=0.11.0  # CI 分片：matrix 多 job 各跑 1/N 子集（單進程序列，避 xdist 並發 flaky）
 httpx>=0.24.0
