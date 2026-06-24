@@ -153,6 +153,10 @@ def _get_shift_type_id_map_cached(session) -> dict:
 
 router = APIRouter(prefix="/api/shifts", tags=["shifts"])
 
+# 每日排班查詢的範圍/列數上限（防超寬日期範圍把整表 + eager join 載入 OOM）。
+_DAILY_SHIFT_MAX_SPAN_DAYS = 366
+_DAILY_SHIFT_ROW_CAP = 5000
+
 
 # ---------------------------------------------------------------------------
 # Pydantic Schemas
@@ -515,8 +519,19 @@ def get_daily_shifts(
     """查詢日期範圍內的排班調動/每日排班"""
     session = get_session()
     try:
-        s_date = date.fromisoformat(start_date)
-        e_date = date.fromisoformat(end_date)
+        try:
+            s_date = date.fromisoformat(start_date)
+            e_date = date.fromisoformat(end_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="日期格式錯誤，需 YYYY-MM-DD")
+        if e_date < s_date:
+            raise HTTPException(status_code=400, detail="end_date 不可早於 start_date")
+        # 範圍上限：排班檢視最長一年。防 caller 指定超寬範圍把整表 + eager join 載入 OOM。
+        if (e_date - s_date).days > _DAILY_SHIFT_MAX_SPAN_DAYS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"日期範圍過大（最長 {_DAILY_SHIFT_MAX_SPAN_DAYS} 天），請縮小範圍",
+            )
 
         query = (
             session.query(DailyShift)
@@ -530,7 +545,8 @@ def get_daily_shifts(
         if employee_id:
             query = query.filter(DailyShift.employee_id == employee_id)
 
-        daily_shifts = query.order_by(DailyShift.date).all()
+        # .limit() 安全網（對齊本 repo 其他列表端點的 5000 上限慣例）。
+        daily_shifts = query.order_by(DailyShift.date).limit(_DAILY_SHIFT_ROW_CAP).all()
 
         result = []
         for ds in daily_shifts:
