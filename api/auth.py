@@ -1247,9 +1247,18 @@ def end_impersonate(request: Request):
         if not user:
             raise HTTPException(status_code=401, detail="管理員帳號已停用或不存在")
 
-        if user.role != "admin":
+        # #8：admin_token cookie 由 impersonate 端點以「操作者自己的 token」簽發備份，
+        # 經 JWT 簽章無法偽造。發起模擬需 PORTAL_PREVIEW（readonly）或 PORTAL_IMPERSONATE
+        # （write），故合法發起者（admin / principal 等）皆持其一。原本硬要求
+        # role=='admin' 會把園長(principal) readonly 模擬鎖死在模擬狀態（按「結束預覽」
+        # 403、唯一逃生口是整個登出）。改以模擬權限判定，admin（wildcard）仍涵蓋。
+        operator_perms = resolve_user_permissions(user, session)
+        if not (
+            has_permission(operator_perms, Permission.PORTAL_PREVIEW)
+            or has_permission(operator_perms, Permission.PORTAL_IMPERSONATE)
+        ):
             raise HTTPException(
-                status_code=403, detail="無效的管理員 Token（角色非 admin）"
+                status_code=403, detail="無效的管理員 Token（無模擬權限）"
             )
 
         # C14：校驗 admin_token 的 token_version 與 DB 一致，否則密碼變更/重設/撤帳
@@ -1260,8 +1269,38 @@ def end_impersonate(request: Request):
                 status_code=401, detail="管理員 Token 已失效，請重新登入"
             )
 
+        # #9：撤銷「當前模擬 access_token」的 jti，避免殘留 cookie 在 ~15min 自然
+        # 過期前仍具被模擬者權限（對齊 logout 的 jti 黑名單）。不 bump 被模擬者
+        # token_version——那會誤踢 target 真實使用者自己的合法 session（同 logout #14）。
+        imp_token = request.cookies.get("access_token")
+        if imp_token:
+            try:
+                from datetime import datetime, timedelta, timezone
+
+                from utils.auth import (
+                    JWT_REFRESH_GRACE_HOURS,
+                    decode_token_allow_expired,
+                    revoke_token,
+                )
+
+                imp_payload = decode_token_allow_expired(imp_token)
+                imp_jti = imp_payload.get("jti")
+                imp_exp = imp_payload.get("exp")
+                if imp_jti and imp_exp:
+                    revoke_token(
+                        imp_jti,
+                        datetime.fromtimestamp(imp_exp, tz=timezone.utc)
+                        + timedelta(hours=JWT_REFRESH_GRACE_HOURS),
+                        reason="end_impersonate",
+                    )
+            except HTTPException:
+                # 模擬 token 已過期超出寬限或已撤銷：結束模擬仍要成功
+                pass
+            except Exception as e:  # noqa: BLE001 — 撤銷失敗不能阻擋退出模擬
+                logger.warning("end_impersonate 撤銷模擬 token 失敗（仍繼續）：%s", e)
+
         emp = session.query(Employee).filter(Employee.id == user.employee_id).first()
-        permission_names = resolve_user_permissions(user, session)
+        permission_names = operator_perms
 
         # 為管理員簽發新的 access token（避免使用可能已接近過期的舊 token）
         new_token = create_access_token(

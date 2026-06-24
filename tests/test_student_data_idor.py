@@ -32,7 +32,7 @@ from api.student_attendance import router as student_attendance_router
 from api.student_communications import router as student_communications_router
 from api.student_leaves import router as student_leaves_router
 from api.students import router as students_router
-from models.classroom import LIFECYCLE_ACTIVE
+from models.classroom import LIFECYCLE_ACTIVE, LIFECYCLE_WITHDRAWN
 from models.database import (
     Base,
     Classroom,
@@ -206,9 +206,19 @@ _BASIC_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE"]
 # 教師加上健康讀取
 _HEALTH_READ_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE", "STUDENTS_HEALTH_READ"]
 # 教師加上特殊需求讀取（無健康）
-_SPECIAL_NEEDS_ONLY_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE", "STUDENTS_SPECIAL_NEEDS_READ"]
+_SPECIAL_NEEDS_ONLY_PERMS = [
+    "STUDENTS_READ",
+    "STUDENTS_WRITE",
+    "STUDENTS_SPECIAL_NEEDS_READ",
+]
 # 教師持兩者全（健康 + 特需）
-_FULL_PERMS = ["STUDENTS_READ", "STUDENTS_WRITE", "STUDENTS_HEALTH_READ", "STUDENTS_SPECIAL_NEEDS_READ", "CLASSROOMS_READ"]
+_FULL_PERMS = [
+    "STUDENTS_READ",
+    "STUDENTS_WRITE",
+    "STUDENTS_HEALTH_READ",
+    "STUDENTS_SPECIAL_NEEDS_READ",
+    "CLASSROOMS_READ",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -845,3 +855,115 @@ class TestF021LeavesList:
         ids = [item["id"] for item in items]
         assert leave_a_id in ids, "admin 應能看到 A 班請假"
         assert leave_b_id in ids, "admin 應能看到 B 班請假"
+
+    def _seed_terminal_student_with_leave(self, session, seed, applicant_user_id):
+        """在 A 班加一名終態（已退學）學生 + 一筆 approved leave；回傳 (terminal_id, leave_id)。"""
+        st_terminal = Student(
+            student_id="SA_TERM",
+            name="A 班已退學學生",
+            classroom_id=seed["cls_a"].id,
+            is_active=False,
+            enrollment_date=date(2025, 9, 1),
+            lifecycle_status=LIFECYCLE_WITHDRAWN,
+        )
+        session.add(st_terminal)
+        session.flush()
+        leave_terminal = StudentLeaveRequest(
+            student_id=st_terminal.id,
+            applicant_user_id=applicant_user_id,
+            leave_type="事假",
+            start_date=date.today() + timedelta(days=3),
+            end_date=date.today() + timedelta(days=3),
+            status="approved",
+        )
+        session.add(leave_terminal)
+        session.flush()
+        return st_terminal.id, leave_terminal.id
+
+    def test_teacher_list_excludes_terminal_students_own_class(self, idor_app):
+        """終態學生（退學/畢業/轉出）的請假不應出現在 scoped 教師清單，
+        即使該學生仍掛在教師自己的班級（終態轉移只設 is_active=False、不清
+        classroom_id）。對齊 portfolio_access filter_student_ids_by_access。"""
+        client, factory = idor_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            user_a = _create_user(
+                s,
+                username="lv_tA_terminal",
+                password="Pass1234",
+                role="staff",
+                permission_names=_BASIC_PERMS,
+                employee=seed["emp_a"],
+            )
+            active_id = seed["st_a"].id
+            leave_active = StudentLeaveRequest(
+                student_id=active_id,
+                applicant_user_id=user_a.id,
+                leave_type="病假",
+                start_date=date.today() + timedelta(days=1),
+                end_date=date.today() + timedelta(days=1),
+                status="approved",
+            )
+            s.add(leave_active)
+            s.flush()
+            leave_active_id = leave_active.id
+            terminal_id, leave_terminal_id = self._seed_terminal_student_with_leave(
+                s, seed, user_a.id
+            )
+            s.commit()
+        assert _login(client, "lv_tA_terminal", "Pass1234").status_code == 200
+        r = client.get("/api/student-leaves")
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        ids = [item["id"] for item in items]
+        assert leave_active_id in ids, "在職學生的請假應出現"
+        assert leave_terminal_id not in ids, "終態學生的請假不應出現在 scoped 教師清單"
+        seen_student_ids = {item["student_id"] for item in items}
+        assert terminal_id not in seen_student_ids
+
+    def test_teacher_list_with_own_classroom_filter_excludes_terminal(self, idor_app):
+        """即使顯式帶 classroom_id=自己班，終態學生請假仍應被排除。"""
+        client, factory = idor_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            user_a = _create_user(
+                s,
+                username="lv_tA_term_cls",
+                password="Pass1234",
+                role="staff",
+                permission_names=_BASIC_PERMS,
+                employee=seed["emp_a"],
+            )
+            own_cls = seed["cls_a"].id
+            terminal_id, leave_terminal_id = self._seed_terminal_student_with_leave(
+                s, seed, user_a.id
+            )
+            s.commit()
+        assert _login(client, "lv_tA_term_cls", "Pass1234").status_code == 200
+        r = client.get(f"/api/student-leaves?classroom_id={own_cls}")
+        assert r.status_code == 200, r.text
+        ids = [item["id"] for item in r.json()["items"]]
+        assert leave_terminal_id not in ids, "帶本班 filter 時終態學生請假仍應排除"
+
+    def test_admin_unrestricted_still_sees_terminal_leaves(self, idor_app):
+        """回歸護欄：admin（unrestricted）仍應看到終態學生請假（查歷史用途，by-design）。"""
+        client, factory = idor_app
+        with factory() as s:
+            seed = _seed_two_classrooms(s)
+            admin = _create_user(
+                s,
+                username="lv_adm_term",
+                password="Pass1234",
+                role="admin",
+                permission_names=["*"],
+                employee=None,
+            )
+            _terminal_id, leave_terminal_id = self._seed_terminal_student_with_leave(
+                s, seed, admin.id
+            )
+            s.commit()
+        assert _login(client, "lv_adm_term", "Pass1234").status_code == 200
+        r = client.get("/api/student-leaves")
+        assert r.status_code == 200, r.text
+        ids = [item["id"] for item in r.json()["items"]]
+        assert leave_terminal_id in ids, "admin 應仍能看到終態學生請假"

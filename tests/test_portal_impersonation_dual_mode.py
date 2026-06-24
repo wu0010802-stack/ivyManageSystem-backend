@@ -573,3 +573,76 @@ class TestGetMeImpersonationMode:
         assert (
             user_dict["impersonation_mode"] == "readonly"
         ), f"impersonate user.impersonation_mode 應為 'readonly'，實際: {user_dict['impersonation_mode']}"
+
+
+# ─── end-impersonate：非 admin 合法發起者退出 + 撤銷舊模擬 jti ────────────────
+
+
+class TestEndImpersonateNonAdminAndRevoke:
+    """#8：園長(principal)等合法非 admin 發起者應能經 /end-impersonate 乾淨退出
+    （修復前 end_impersonate 硬要求 role=='admin' → 園長按結束預覽 403）。
+    #9：結束模擬時應撤銷當前模擬 access_token 的 jti（殘留 cookie 在自然過期前
+    仍具被模擬者權限）。"""
+
+    @pytest.fixture
+    def setup(self, app_and_client):
+        client, session_factory = app_and_client
+        with session_factory() as session:
+            principal_emp = _make_employee(session, "EP01", "園長")
+            _make_user(
+                session,
+                employee_id=principal_emp.id,
+                username="principal_end",
+                role="principal",
+            )
+            teacher_emp = _make_employee(session, "ET01", "老師")
+            _make_user(
+                session,
+                employee_id=teacher_emp.id,
+                username="teacher_end",
+                role="teacher",
+            )
+            session.commit()
+            ids = {"teacher_emp_id": teacher_emp.id}
+        return client, ids
+
+    def _impersonate_as_principal(self, client, ids):
+        assert _login(client, "principal_end").status_code == 200
+        r = client.post(
+            "/api/auth/impersonate",
+            json={"employee_id": ids["teacher_emp_id"], "mode": "readonly"},
+        )
+        assert r.status_code == 200, f"principal readonly 模擬應 200: {r.json()}"
+        return r
+
+    def test_principal_can_end_impersonate(self, setup):
+        client, ids = setup
+        self._impersonate_as_principal(client, ids)
+        end = client.post("/api/auth/end-impersonate")
+        assert (
+            end.status_code == 200
+        ), f"園長應能乾淨退出模擬，got {end.status_code}: {end.json()}"
+        restored = end.json()["user"]
+        assert restored["role"] == "principal"
+        assert restored["username"] == "principal_end"
+
+    def test_end_impersonate_revokes_old_impersonation_jti(self, setup):
+        """結束模擬後，當前模擬 access_token 的 jti 應入黑名單（殘留 cookie 在
+        ~15min 自然過期前不可再用，對齊 logout 的 jti 撤銷）。"""
+        from utils.auth import is_token_revoked
+
+        client, ids = setup
+        self._impersonate_as_principal(client, ids)
+
+        old_imp_token = client.cookies.get("access_token")
+        assert old_imp_token, "模擬後應有 access_token cookie"
+        old_jti = decode_token(old_imp_token).get("jti")
+        assert old_jti, "模擬 token 應帶 jti"
+        assert is_token_revoked(old_jti) is False, "結束前 jti 不應已撤銷"
+
+        end = client.post("/api/auth/end-impersonate")
+        assert end.status_code == 200, f"end-impersonate 應 200: {end.json()}"
+
+        assert (
+            is_token_revoked(old_jti) is True
+        ), "end-impersonate 應撤銷舊模擬 token 的 jti"
