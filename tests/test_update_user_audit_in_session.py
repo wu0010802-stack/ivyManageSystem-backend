@@ -143,6 +143,26 @@ def _user_audit_rows(sf):
         )
 
 
+def _wait_for_user_audit_rows(sf, expected, timeout=10.0):
+    """輪詢 DB 直到出現至少 `expected` 筆 user audit，或逾時才放棄。
+
+    為何不只用 _wait_for_background_audits()：那是用「另一個 event loop」去
+    gather TestClient portal loop 上建立的 task——跨 loop 無法真正 await，
+    serial 下只是剛好背景已寫完才通過；pytest-xdist 把 CPU 佔滿時 portal
+    thread 被餓死、背景寫入延後 → 假陰（實得 0）。改輪詢 DB 至條件成立對
+    負載免疫；仍先呼叫 drain 盡量推進，再小睡重查。
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    rows = _user_audit_rows(sf)
+    while len(rows) < expected and time.monotonic() < deadline:
+        _wait_for_background_audits()
+        time.sleep(0.05)
+        rows = _user_audit_rows(sf)
+    return rows
+
+
 def test_role_change_audit_written_in_session_without_middleware(bare_client):
     """不掛 middleware：改 role 後 audit_logs 必有紀錄（與主交易同生死）。"""
     client, sf = bare_client
@@ -200,8 +220,7 @@ def test_pure_deactivation_still_audited_as_soft_delete(middleware_client):
     res = client.put(f"/api/auth/users/{target_id}", json={"is_active": False})
     assert res.status_code == 200, res.text
 
-    _wait_for_background_audits()
-
-    rows = _user_audit_rows(sf)
+    # 軟刪 audit 僅走 middleware 背景路徑（無 in-session 寫入），輪詢等它落地。
+    rows = _wait_for_user_audit_rows(sf, expected=1)
     assert len(rows) == 1, f"純停用應恰好 1 筆 user audit，實得 {len(rows)}"
     assert "軟刪" in rows[0].summary
