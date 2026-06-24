@@ -1813,3 +1813,204 @@ class PaymentVoidResultOut(PaymentMutationOut):
 class BatchPaymentResultOut(IvyBaseModel):
     message: str
     updated: int
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 從 api/activity/ 各 router 內聯抽出的 request schemas（2026-06-24）
+# Why: 才藝 request schema 收斂到 schemas/ 單一來源，與既有 admin schema 一致；
+# router 只保留路由與 handler。驗證所需的 _shared 函式以 validator 內 lazy import
+# 取用，避免 schemas/ ←→ api.activity._shared 的模組級循環匯入。
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ── POS 結帳（原 api/activity/pos.py）──────────────────────────────────────
+_MAX_TENDERED = 9_999_999  # 客戶實付上限 NT$9,999,999（避免整型誇張值）
+_IDK_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")  # 冪等 key：8-64 英數/底線/連字號
+
+
+class POSCheckoutItem(BaseModel):
+    registration_id: int = Field(..., gt=0)
+    amount: int = Field(
+        ...,
+        gt=0,
+        le=MAX_PAYMENT_AMOUNT,
+        description="本次此筆收取金額（正整數，上限 NT$999,999）",
+    )
+
+
+class POSCheckoutRequest(BaseModel):
+    items: List[POSCheckoutItem] = Field(..., min_length=1, max_length=10)
+    payment_method: Literal["現金"] = Field(
+        "現金",
+        description="目前 POS 僅支援現金；payment_method 欄位保留供未來擴充",
+    )
+    payment_date: date
+    tendered: Optional[int] = Field(
+        None,
+        ge=0,
+        le=_MAX_TENDERED,
+        description="客戶實付（僅現金有意義，上限 NT$9,999,999）",
+    )
+    notes: str = Field("", max_length=200)
+    type: Literal["payment", "refund"] = "payment"
+    idempotency_key: Optional[str] = Field(
+        None,
+        description="冪等 key，同 key 在 10 分鐘內重送視為重試，回傳先前結果",
+    )
+
+    @field_validator("payment_date")
+    @classmethod
+    def _validate_payment_date(cls, v: date) -> date:
+        return validate_payment_date(v)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _validate_idempotency_key(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        if not _IDK_PATTERN.match(v):
+            raise ValueError("idempotency_key 格式不合（需 8-64 英數/底線/連字號）")
+        return v
+
+    def refund_notes_cleaned(self) -> str:
+        """回傳 cleaned notes（僅 type=refund 時使用；handler 額外呼叫
+        require_refund_reason 做最終閘門）。"""
+        return (self.notes or "").strip()
+
+
+# ── 出席場次 / 點名（原 api/activity/attendance.py）─────────────────────────
+class SessionCreate(BaseModel):
+    course_id: int
+    session_date: date
+    notes: Optional[str] = None
+
+
+class SessionBatchCreate(BaseModel):
+    course_id: int
+    start_date: date
+    end_date: date
+    # 省略則用課程 meeting_weekday；0=Mon..6=Sun
+    weekday: Optional[int] = Field(None, ge=0, le=6)
+    notes: Optional[str] = None
+
+
+class AttendanceRecordItem(BaseModel):
+    registration_id: int
+    is_present: bool
+    notes: Optional[str] = ""
+
+
+class BatchAttendanceUpdate(BaseModel):
+    records: List[AttendanceRecordItem] = Field(..., min_length=1, max_length=500)
+
+
+# ── POS 日結簽核（原 api/activity/pos_approval.py）──────────────────────────
+_UNLOCK_REASON_MIN_LENGTH = 10
+_ADMIN_OVERRIDE_REASON_MIN_LENGTH = 30
+
+
+class DailyCloseCreate(BaseModel):
+    note: Optional[str] = Field(None, max_length=500)
+    actual_cash_count: Optional[int] = Field(
+        None, ge=0, le=9_999_999, description="實際現金盤點金額（可選）"
+    )
+
+
+class DailyCloseUnlock(BaseModel):
+    """解鎖日結簽核的請求。
+
+    一般 4-eye 路徑：reason ≥ 10 字 + 解鎖人 ≠ 原簽核人（handler 守衛）。
+    Admin override 路徑：is_admin_override=True + reason ≥ 30 字 + role='admin'（handler 守衛）。
+
+    Why: 原設計只擋 reason 長度，未限制「自簽自解」循環；spec C2 收緊。
+    """
+
+    reason: str = Field(..., max_length=500)
+    is_admin_override: bool = Field(
+        False,
+        description=(
+            "管理員緊急 override：略過 4-eye 但 reason 須 ≥ "
+            f"{_ADMIN_OVERRIDE_REASON_MIN_LENGTH} 字"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_reason_length(self):
+        cleaned = (self.reason or "").strip()
+        min_len = (
+            _ADMIN_OVERRIDE_REASON_MIN_LENGTH
+            if self.is_admin_override
+            else _UNLOCK_REASON_MIN_LENGTH
+        )
+        if len(cleaned) < min_len:
+            extra = (
+                "（admin override 須具體說明緊急情況）"
+                if self.is_admin_override
+                else ""
+            )
+            raise ValueError(f"解鎖原因需至少 {min_len} 字{extra}")
+        self.reason = cleaned
+        return self
+
+
+# ── 報名審核工作流（原 api/activity/registrations_pending.py）───────────────
+class RegistrationMatchRequest(BaseModel):
+    student_id: int = Field(..., gt=0)
+
+
+class RegistrationRejectRequest(BaseModel):
+    reason: str = Field(..., min_length=2, max_length=200)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _strip_reason(cls, v):
+        if isinstance(v, str):
+            stripped = v.strip()
+            if len(stripped) < 2:
+                raise ValueError("拒絕原因至少需 2 個字，方便事後追溯")
+            return stripped
+        return v
+
+
+class RegistrationRematchRequest(BaseModel):
+    """重新比對可選欄位：校方可即時修正家長打錯的 name/birthday/parent_phone。
+
+    三欄皆可選——未提供時沿用 registration 原值。提供的欄位會在比對前寫回 reg，
+    即使比對仍失敗也保留修改內容，避免校方白打一次字。
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    birthday: Optional[str] = None
+    parent_phone: Optional[str] = Field(None, min_length=8, max_length=30)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, v):
+        if isinstance(v, str):
+            stripped = v.strip()
+            return stripped or None
+        return v
+
+    @field_validator("birthday")
+    @classmethod
+    def _validate_birthday(cls, v):
+        if v is None or v == "":
+            return None
+        from datetime import date as _d
+
+        try:
+            _d.fromisoformat(v)
+        except ValueError:
+            raise ValueError("生日格式必須為 YYYY-MM-DD")
+        return v
+
+    @field_validator("parent_phone", mode="before")
+    @classmethod
+    def _normalize_phone(cls, v):
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return None
+        from api.activity._shared import _validate_tw_mobile
+
+        return _validate_tw_mobile(v)

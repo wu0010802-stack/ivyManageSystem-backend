@@ -1326,7 +1326,7 @@ class TestBatchInputLimits:
     def test_batch_attendance_update_max_length(self):
         """BatchAttendanceUpdate.records 超過 500 筆應拋 ValidationError"""
         from pydantic import ValidationError
-        from api.activity.attendance import BatchAttendanceUpdate, AttendanceRecordItem
+        from schemas.activity_admin import BatchAttendanceUpdate, AttendanceRecordItem
 
         records = [
             AttendanceRecordItem(registration_id=i, is_present=True) for i in range(501)
@@ -1336,7 +1336,7 @@ class TestBatchInputLimits:
 
     def test_batch_attendance_update_valid(self):
         """BatchAttendanceUpdate.records 正常 1 筆不應拋例外"""
-        from api.activity.attendance import BatchAttendanceUpdate, AttendanceRecordItem
+        from schemas.activity_admin import BatchAttendanceUpdate, AttendanceRecordItem
 
         obj = BatchAttendanceUpdate(
             records=[AttendanceRecordItem(registration_id=1, is_present=True)]

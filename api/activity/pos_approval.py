@@ -16,7 +16,6 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import case, func
 
 from models.approval import ApprovalStatus
@@ -29,6 +28,8 @@ from models.database import (
     get_session,
 )
 from schemas.activity_admin import (
+    DailyCloseCreate,
+    DailyCloseUnlock,
     PosCloseHistoryOut,
     PosDailyCloseApproveOut,
     PosDailyCloseOut,
@@ -57,57 +58,6 @@ _CASH_METHOD_KEY = "現金"
 # 簽核時必填現金盤點的門檻：當日預期現金 ≥ NT$3,000 才強制
 # Why: 小金額日子強迫盤點會造成操作疲勞；大金額日子要求對齊抽屜現金以避免盲簽
 _CASH_COUNT_REQUIRED_THRESHOLD = 3000
-
-
-# ── Pydantic schemas ────────────────────────────────────────────────────
-
-
-class DailyCloseCreate(BaseModel):
-    note: Optional[str] = Field(None, max_length=500)
-    actual_cash_count: Optional[int] = Field(
-        None, ge=0, le=9_999_999, description="實際現金盤點金額（可選）"
-    )
-
-
-_UNLOCK_REASON_MIN_LENGTH = 10
-_ADMIN_OVERRIDE_REASON_MIN_LENGTH = 30
-
-
-class DailyCloseUnlock(BaseModel):
-    """解鎖日結簽核的請求。
-
-    一般 4-eye 路徑：reason ≥ 10 字 + 解鎖人 ≠ 原簽核人（handler 守衛）。
-    Admin override 路徑：is_admin_override=True + reason ≥ 30 字 + role='admin'（handler 守衛）。
-
-    Why: 原設計只擋 reason 長度，未限制「自簽自解」循環；spec C2 收緊。
-    """
-
-    reason: str = Field(..., max_length=500)
-    is_admin_override: bool = Field(
-        False,
-        description=(
-            "管理員緊急 override：略過 4-eye 但 reason 須 ≥ "
-            f"{_ADMIN_OVERRIDE_REASON_MIN_LENGTH} 字"
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _validate_reason_length(self):
-        cleaned = (self.reason or "").strip()
-        min_len = (
-            _ADMIN_OVERRIDE_REASON_MIN_LENGTH
-            if self.is_admin_override
-            else _UNLOCK_REASON_MIN_LENGTH
-        )
-        if len(cleaned) < min_len:
-            extra = (
-                "（admin override 須具體說明緊急情況）"
-                if self.is_admin_override
-                else ""
-            )
-            raise ValueError(f"解鎖原因需至少 {min_len} 字{extra}")
-        self.reason = cleaned
-        return self
 
 
 # ── 內部輔助 ────────────────────────────────────────────────────────────

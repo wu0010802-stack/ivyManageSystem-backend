@@ -5,13 +5,12 @@ api/activity/attendance.py — 才藝點名管理（管理端）
 import logging
 from datetime import date, timedelta
 from io import BytesIO
-from typing import List, Optional
+from typing import Optional
 from urllib.parse import quote
 
 import openpyxl
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
@@ -36,6 +35,10 @@ from api.activity._shared import (
 )
 from services.activity_attendance_roll_pdf import generate_attendance_roll_pdf
 from schemas.activity_admin import (
+    AttendanceRecordItem,
+    BatchAttendanceUpdate,
+    SessionBatchCreate,
+    SessionCreate,
     ActivityAttendanceBatchUpdateResultOut,
     ActivitySessionBatchCreateResultOut,
     ActivitySessionCreateResultOut,
@@ -49,36 +52,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/attendance")
 
 
-# ── Pydantic Schemas ──────────────────────────────────────────────────────────
-
-
-class SessionCreate(BaseModel):
-    course_id: int
-    session_date: date
-    notes: Optional[str] = None
-
-
-class SessionBatchCreate(BaseModel):
-    course_id: int
-    start_date: date
-    end_date: date
-    # 省略則用課程 meeting_weekday；0=Mon..6=Sun
-    weekday: Optional[int] = Field(None, ge=0, le=6)
-    notes: Optional[str] = None
-
-
 # 一次批次最多展開的場次數（一學年每週約 ~44 堂，60 留裕度且擋誤填超大範圍）
+# （SessionCreate / SessionBatchCreate / AttendanceRecordItem / BatchAttendanceUpdate
+#  已移至 schemas/activity_admin.py）
 _MAX_BATCH_SESSIONS = 60
-
-
-class AttendanceRecordItem(BaseModel):
-    registration_id: int
-    is_present: bool
-    notes: Optional[str] = ""
-
-
-class BatchAttendanceUpdate(BaseModel):
-    records: List[AttendanceRecordItem] = Field(..., min_length=1, max_length=500)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────

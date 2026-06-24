@@ -52,6 +52,8 @@ from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 from services.activity_payment_guards import require_approve_for_refund_diff
 from services.activity_refund_query import build_refund_suggestion
 from schemas.activity_admin import (
+    POSCheckoutItem,
+    POSCheckoutRequest,
     PosCheckoutOut,
     PosDailySummaryOut,
     PosOutstandingOut,
@@ -77,16 +79,14 @@ from ._shared import (
     terminal_student_ids_in,
     require_refund_reason,
     require_approve_for_large_refund,
-    validate_payment_date,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# 單個品項與實收金額上限（NT$999,999 / NT$9,999,999）— 避免誤輸入或整型誇張值
-_MAX_ITEM_AMOUNT = 999_999
-_MAX_TENDERED = 9_999_999
 # 單次結帳總額上限 NT$1,000,000 — 避免前端繞過大額確認造成誤輸入巨額
+# （單筆品項上限 MAX_PAYMENT_AMOUNT / 實付上限 _MAX_TENDERED 隨 POSCheckout*
+#  schema 一併移到 schemas/activity_admin.py）
 _MAX_CHECKOUT_TOTAL = 1_000_000
 
 # 冪等 key 為全域 UNIQUE（DB 約束 uq_activity_payment_records_idk）；
@@ -94,9 +94,6 @@ _MAX_CHECKOUT_TOTAL = 1_000_000
 # 與 DB UNIQUE 不一致導致 race（window 外重送會 INSERT 失敗 500）；
 # 現移除 window，純依 DB 約束。常數保留供未來監控查詢使用。
 _IDEMPOTENCY_WINDOW_SECONDS = 600
-
-# 冪等 key 格式：POS-IDK-<32 字元英數>
-_IDK_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 # 收據編號同日唯一檢查重試次數（uuid 碰撞極低，但保險起見）
 _RECEIPT_NO_RETRIES = 5
@@ -127,60 +124,7 @@ _pos_checkout_limiter = create_limiter(
 ).as_dependency()
 
 
-# ── Pydantic schemas ───────────────────────────────────────────────────────
-
-
-class POSCheckoutItem(BaseModel):
-    registration_id: int = Field(..., gt=0)
-    amount: int = Field(
-        ...,
-        gt=0,
-        le=_MAX_ITEM_AMOUNT,
-        description="本次此筆收取金額（正整數，上限 NT$999,999）",
-    )
-
-
-class POSCheckoutRequest(BaseModel):
-    items: List[POSCheckoutItem] = Field(..., min_length=1, max_length=10)
-    payment_method: Literal["現金"] = Field(
-        "現金",
-        description="目前 POS 僅支援現金；payment_method 欄位保留供未來擴充",
-    )
-    payment_date: date
-    tendered: Optional[int] = Field(
-        None,
-        ge=0,
-        le=_MAX_TENDERED,
-        description="客戶實付（僅現金有意義，上限 NT$9,999,999）",
-    )
-    notes: str = Field("", max_length=200)
-    type: Literal["payment", "refund"] = "payment"
-    idempotency_key: Optional[str] = Field(
-        None,
-        description="冪等 key，同 key 在 10 分鐘內重送視為重試，回傳先前結果",
-    )
-
-    @field_validator("payment_date")
-    @classmethod
-    def _validate_payment_date(cls, v: date) -> date:
-        return validate_payment_date(v)
-
-    @field_validator("idempotency_key")
-    @classmethod
-    def _validate_idempotency_key(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v == "":
-            return None
-        if not _IDK_PATTERN.match(v):
-            raise ValueError("idempotency_key 格式不合（需 8-64 英數/底線/連字號）")
-        return v
-
-    def refund_notes_cleaned(self) -> str:
-        """回傳 cleaned notes（僅 type=refund 時使用；handler 額外呼叫
-        require_refund_reason 做最終閘門）。"""
-        return (self.notes or "").strip()
-
-
-# ── 常數 ─────────────────────────────────────────────────────────────────
+# ── 內部輔助 ───────────────────────────────────────────────────────────────
 
 
 def _make_receipt_no() -> str:
