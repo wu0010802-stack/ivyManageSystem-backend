@@ -259,6 +259,51 @@ def _recalculate_salary_for_overtime_months(
         _salary_engine.process_salary_calculation(employee_id, year, month)
 
 
+def _recalc_salaries_after_overtime_batch(
+    session, changes, approved: bool, salary_engine
+) -> None:
+    """批次審核 commit 後重算受影響薪資；同 (employee_id, year, month) 只重算一次。
+
+    changes 元素為 (ot_id, ot, was_approved, is_reject_of_approved, approval_log_id)。
+    同員工同月多筆 OT 一起審時（很常見：一位老師整月加班一次過審），舊版逐筆
+    重算會把完整單人薪資計算對同一 (emp, year, month) 重複跑 N 次；去重後每組
+    只跑一次。重算失敗只 log + 標 stale（與舊逐筆行為一致），不影響 succeeded。
+    """
+    if salary_engine is None:
+        return
+    # 收集需重算的 distinct (emp, year, month)，記代表 ot_id 供日誌定位。
+    recalc_targets: dict[tuple[int, int, int], int] = {}
+    for ot_id, ot, was_approved, _ir, _alog in changes:
+        if approved or was_approved:
+            key = (ot.employee_id, ot.overtime_date.year, ot.overtime_date.month)
+            recalc_targets.setdefault(key, ot_id)
+
+    for (emp_id, year, month), rep_ot_id in recalc_targets.items():
+        try:
+            salary_engine.process_salary_calculation(emp_id, year, month)
+        except Exception as se:
+            logger.error(
+                "批次審核後薪資重算失敗（員工 #%d %d-%02d，代表加班 #%d）：%s",
+                emp_id,
+                year,
+                month,
+                rep_ot_id,
+                se,
+            )
+            try:
+                _mark_salary_stale(session, emp_id, year, month)
+                session.commit()
+            except Exception:
+                logger.warning(
+                    "批次審核降級時標記 stale 失敗（員工 #%d %d-%02d）",
+                    emp_id,
+                    year,
+                    month,
+                    exc_info=True,
+                )
+                session.rollback()
+
+
 def _grant_comp_leave_quota(session, ot: OvertimeRecord, result: dict) -> None:
     """核准補休模式加班時，upsert 補休配額並標記 comp_leave_granted。
 
@@ -1702,34 +1747,13 @@ def batch_approve_overtimes(
         if changes:
             try:
                 session.commit()
-                for ot_id, ot, was_approved, _ir, _alog in changes:
+                for ot_id, _ot, _was_approved, _ir, _alog in changes:
                     succeeded.append(ot_id)
-                    if (data.approved or was_approved) and _salary_engine is not None:
-                        try:
-                            _salary_engine.process_salary_calculation(
-                                ot.employee_id,
-                                ot.overtime_date.year,
-                                ot.overtime_date.month,
-                            )
-                        except Exception as se:
-                            logger.error(
-                                "批次審核後薪資重算失敗（加班 #%d）：%s", ot_id, se
-                            )
-                            try:
-                                _mark_salary_stale(
-                                    session,
-                                    ot.employee_id,
-                                    ot.overtime_date.year,
-                                    ot.overtime_date.month,
-                                )
-                                session.commit()
-                            except Exception:
-                                logger.warning(
-                                    "批次審核降級時標記 stale 失敗（加班 #%d）",
-                                    ot_id,
-                                    exc_info=True,
-                                )
-                                session.rollback()
+                # 同員工同月多筆 OT 一起審時，去重後每組只重算一次，避免對同一
+                # (employee_id, year, month) 重複跑完整單人薪資計算。
+                _recalc_salaries_after_overtime_batch(
+                    session, changes, data.approved, _salary_engine
+                )
             except Exception as e:
                 session.rollback()
                 reason = safe_batch_reason(
