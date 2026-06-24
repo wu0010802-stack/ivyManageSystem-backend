@@ -106,6 +106,41 @@ def _resolve_parent_user_ids_for_registration(
     return [r[0] for r in rows]
 
 
+def _resolve_parent_user_ids_batch(session, reg_ids) -> dict[int, list[int]]:
+    """批次版 _resolve_parent_user_ids_for_registration：reg→student 一次 in_() +
+    Guardian 一次 in_()，回 {reg_id: [user_id]}。供 sweep 三迴圈取代逐筆解析的 N+1
+    （背景排程常駐負載）。
+
+    語意與逐筆版一致：reg 無 student 或 student 無 active guardian → []。
+    """
+    from models.database import Guardian
+
+    ids = {r for r in reg_ids if r is not None}
+    if not ids:
+        return {}
+    reg_rows = (
+        session.query(ActivityRegistration.id, ActivityRegistration.student_id)
+        .filter(ActivityRegistration.id.in_(ids))
+        .all()
+    )
+    reg_to_student = {rid: sid for rid, sid in reg_rows if sid is not None}
+    student_ids = set(reg_to_student.values())
+    by_student: dict[int, list[int]] = {}
+    if student_ids:
+        guardian_rows = (
+            session.query(Guardian.student_id, Guardian.user_id)
+            .filter(
+                Guardian.student_id.in_(student_ids),
+                Guardian.user_id.isnot(None),
+                Guardian.deleted_at.is_(None),
+            )
+            .all()
+        )
+        for sid, uid in guardian_rows:
+            by_student.setdefault(sid, []).append(uid)
+    return {rid: by_student.get(reg_to_student.get(rid), []) for rid in ids}
+
+
 def _list_active_users_with_permission(session, perm: str) -> list[int]:
     """SQLite/PG 通用：列 permission_names 含 perm 的 active user_id。
 
@@ -132,17 +167,28 @@ def _course_name_map(session, course_ids) -> dict[int, str]:
     return {cid: name for cid, name in rows}
 
 
-def _notify_parents(session, reg_id: int, event_type: str, context: dict) -> bool:
+def _notify_parents(
+    session,
+    reg_id: int,
+    event_type: str,
+    context: dict,
+    *,
+    parent_uids: list[int] | None = None,
+) -> bool:
     """Fan-out 通知給該報名所有家長 user_id；fail-soft，回傳 enqueue 是否成功。
 
     收斂 sweep（逾期/T-6h/T-24h）與 auto-promote 多處重複的「解析家長 →
     逐 uid enqueue → try/except 告警」樣板。source_entity 固定為
     registration_course / reg_id（與原各站點一致）。
+
+    parent_uids 提供時直接用（sweep 批次預解析，避免逐筆 N+1）；None 則退回
+    逐筆 _resolve_parent_user_ids_for_registration（auto-promote 等單筆路徑）。
     """
     try:
         from services.notification import dispatch
 
-        parent_uids = _resolve_parent_user_ids_for_registration(session, reg_id)
+        if parent_uids is None:
+            parent_uids = _resolve_parent_user_ids_for_registration(session, reg_id)
         for puid in parent_uids:
             dispatch.enqueue(
                 session=session,
@@ -1104,6 +1150,9 @@ class ActivityService:
         course_name_map = _course_name_map(
             session, [rc.course_id for rc, _ in expired_rows]
         )
+        parent_uids_map = _resolve_parent_user_ids_batch(
+            session, [rc.registration_id for rc, _ in expired_rows]
+        )
         for rc, student_name in expired_rows:
             course_name = course_name_map.get(rc.course_id, f"course_{rc.course_id}")
             reg_id = rc.registration_id
@@ -1130,6 +1179,7 @@ class ActivityService:
                     "course_name": course_name,
                     "course_id": course_id,
                 },
+                parent_uids=parent_uids_map.get(reg_id, []),
             )
             expired_count += 1
 
@@ -1162,6 +1212,9 @@ class ActivityService:
         course_name_map = _course_name_map(
             session, [rc.course_id for rc, _ in final_reminder_rows]
         )
+        parent_uids_map = _resolve_parent_user_ids_batch(
+            session, [rc.registration_id for rc, _ in final_reminder_rows]
+        )
         for rc, student_name in final_reminder_rows:
             course_name = course_name_map.get(rc.course_id, f"course_{rc.course_id}")
             # 通知家長：T-6h 最後提醒。enqueue 成功即寫戳記（fire-and-forget；
@@ -1179,6 +1232,7 @@ class ActivityService:
                         rc.confirm_deadline.isoformat() if rc.confirm_deadline else None
                     ),
                 },
+                parent_uids=parent_uids_map.get(rc.registration_id, []),
             ):
                 rc.final_reminder_sent_at = now
                 final_reminded_count += 1
@@ -1211,6 +1265,9 @@ class ActivityService:
         course_name_map = _course_name_map(
             session, [rc.course_id for rc, _ in reminder_rows]
         )
+        parent_uids_map = _resolve_parent_user_ids_batch(
+            session, [rc.registration_id for rc, _ in reminder_rows]
+        )
         for rc, student_name in reminder_rows:
             course_name = course_name_map.get(rc.course_id, f"course_{rc.course_id}")
             # 通知家長：T-24h 一般提醒（同 final_reminder 邏輯）
@@ -1226,6 +1283,7 @@ class ActivityService:
                         rc.confirm_deadline.isoformat() if rc.confirm_deadline else None
                     ),
                 },
+                parent_uids=parent_uids_map.get(rc.registration_id, []),
             ):
                 rc.reminder_sent_at = now
                 reminded_count += 1
