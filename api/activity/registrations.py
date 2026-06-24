@@ -111,6 +111,31 @@ def _list_active_users_with_permission(session, perm: str) -> list[int]:
     return list_active_user_ids_with_permission(session, perm)
 
 
+def _active_classroom_for_student(session, student_id):
+    """回該在校生目前的「啟用中」班級（Classroom 物件）。
+
+    2026-06-24 review #3：後台 create/update 的 student_id 來自姓名+生日比對，
+    classroom_id 卻來自表單班級 → 班級選錯時報名連到 A 學生但歸到 B 班，污染教師端
+    名冊/點名/儀表板。改以 Student.classroom_id 為單一來源（與公開報名路徑一致：
+    _match_student_with_parent_phone 已回 cid）。
+
+    回 None 的情況：未匹配（student_id is None）／該生無班級／該生班級已停用 —— 由
+    呼叫端 fallback 回表單班級（校外生情境）。
+    """
+    if student_id is None:
+        return None
+    from models.database import Classroom, Student
+
+    row = session.query(Student.classroom_id).filter(Student.id == student_id).first()
+    if not row or row[0] is None:
+        return None
+    return (
+        session.query(Classroom)
+        .filter(Classroom.id == row[0], Classroom.is_active.is_(True))
+        .first()
+    )
+
+
 # ── 靜態路由（batch-payment / export / payment-report）已拆至 registrations_static.py ──
 
 
@@ -232,13 +257,18 @@ def admin_create_registration(
         )
 
         matched_student_id = _match_student_id(session, body.name, body.birthday)
+        # review #3：比對到在校生時，班級以該生 Student.classroom_id 為準（與 student_id
+        # 同源）；校外生（未匹配/無班級）才沿用表單班級。classroom 已先驗證為啟用中班級。
+        reg_classroom = (
+            _active_classroom_for_student(session, matched_student_id) or classroom
+        )
 
         operator = current_user.get("username", "")
         reg = ActivityRegistration(
             student_name=body.name,
             birthday=body.birthday,
-            class_name=classroom.name,
-            classroom_id=classroom.id,
+            class_name=reg_classroom.name,
+            classroom_id=reg_classroom.id,
             email=body.email or None,
             remark=body.remark or None,
             school_year=sy,
@@ -644,12 +674,30 @@ def update_registration_basic(
                 ActivityRegistration.id == registration_id,
                 ActivityRegistration.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not reg:
             raise _not_found("報名資料")
 
         classroom = _require_active_classroom(session, body.class_)
+
+        name_or_bday_changed = (reg.student_name != body.name) or (
+            (reg.birthday or "") != body.birthday
+        )
+
+        # review #4：改身分時先對「修改後身分」取 advisory lock，序列化同學生同學期的
+        # 並發改身分（與 rematch C6 對齊）。否則兩筆 reg 同時改成同一 name+birthday，
+        # 純 SELECT 去重各自看不到對方未 commit 的變更而雙雙通過，且 DB partial unique
+        # 鍵含 parent_phone（後台列多為 NULL，PG NULL 互不相等）擋不住。SQLite no-op。
+        if name_or_bday_changed:
+            acquire_activity_registration_lock(
+                session,
+                student_name=body.name,
+                birthday=body.birthday,
+                school_year=reg.school_year,
+                semester=reg.semester,
+            )
 
         # 同學期內姓名+生日不得重複於另一筆
         dup = (
@@ -669,6 +717,20 @@ def update_registration_basic(
                 status_code=400, detail="本學期已有另一筆相同姓名與生日的報名"
             )
 
+        # review #3：student_id 改身分時重新比對，否則保留既有綁定（含校方 manual 綁定，
+        # 不可被 name+birthday 自動比對清掉）。班級一律跟隨「有效 student_id」對應的
+        # Student.classroom_id（同源）——校外生（無 student_id / 無班級）才沿用表單班級。
+        # 教師端 portal 以 classroom_id FK 篩選班級報名，須與綁定學生班級一致；轉班自癒
+        # 改由 sync_registrations_on_student_transfer 負責，不靠表單覆寫。
+        effective_student_id = (
+            _match_student_id(session, body.name, body.birthday)
+            if name_or_bday_changed
+            else reg.student_id
+        )
+        reg_classroom = (
+            _active_classroom_for_student(session, effective_student_id) or classroom
+        )
+
         diffs: list[str] = []
         if reg.student_name != body.name:
             diffs.append(f"姓名：{reg.student_name} → {body.name}")
@@ -676,13 +738,10 @@ def update_registration_basic(
         if (reg.birthday or "") != body.birthday:
             diffs.append(f"生日：{reg.birthday or '—'} → {body.birthday}")
             reg.birthday = body.birthday
-        if (reg.class_name or "") != classroom.name:
-            diffs.append(f"班級：{reg.class_name or '—'} → {classroom.name}")
-            reg.class_name = classroom.name
-        # classroom_id 一律與解析出的班級對齊（含自癒 legacy NULL 與轉班後 stale）：
-        # 教師端 portal 以 classroom_id FK 篩選班級報名（避免字串比對在轉班後失準），
-        # 僅更新 class_name 快照會讓此報名在教師端可見性漂移。
-        reg.classroom_id = classroom.id
+        if (reg.class_name or "") != reg_classroom.name:
+            diffs.append(f"班級：{reg.class_name or '—'} → {reg_classroom.name}")
+            reg.class_name = reg_classroom.name
+        reg.classroom_id = reg_classroom.id
         new_email = body.email or None
         if (reg.email or None) != new_email:
             # 不寫明文 email：異動紀錄 description 僅需 ACTIVITY_READ 即可讀，寫完整
@@ -691,9 +750,8 @@ def update_registration_basic(
             diffs.append("Email 已變更")
             reg.email = new_email
 
-        # 姓名+生日變更時重新匹配 student_id
-        if any(d.startswith("姓名") or d.startswith("生日") for d in diffs):
-            reg.student_id = _match_student_id(session, body.name, body.birthday)
+        if name_or_bday_changed:
+            reg.student_id = effective_student_id
 
         if diffs:
             activity_service.log_change(
