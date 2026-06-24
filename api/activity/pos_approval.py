@@ -276,6 +276,21 @@ def approve_daily_close(
             )
 
         snap = compute_daily_snapshot(session, target)
+
+        # 0 筆交易守衛（業主裁定 2026-06-24）：當日完全無有效交易時拒絕簽核。
+        # Why: 空日簽核毫無對帳意義，卻會建立 close row → _require_daily_close_unlocked
+        # 將整天鎖死，使後續任何補登（payment_date 允許回補 30 天）一律 400；唯一救濟
+        # 是 admin 解鎖。前端日期選擇器預設今天，主管誤簽今天即把當天所有交易擋住。
+        # 故預設拒絕；若日後需「記錄無交易日」再加明確 opt-in 旗標。
+        if snap["transaction_count"] == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"日期 {target.isoformat()} 當日無任何 POS 交易，無需日結簽核"
+                    "（避免誤鎖該日後續補登）。"
+                ),
+            )
+
         by_method_net = snap["by_method_net"]
         cash_snapshot = int(by_method_net.get(_CASH_METHOD_KEY, 0))
         # 毛流量（payment gross + refund gross）：退款會把淨額壓低，但抽屜仍有

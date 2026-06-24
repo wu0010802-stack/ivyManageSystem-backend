@@ -980,6 +980,75 @@ class TestPOSIdempotency:
             assert a.paid_amount == 1000
             assert (b.paid_amount or 0) == 0
 
+    def test_reused_key_with_duplicate_items_rejected_not_replayed(self, pos_client):
+        """重用 idempotency_key 但 payload 含重複報名 ID（與舊收據 frozenset 相同）：
+        重複 ID 守衛須在冪等 replay 之前生效 → 回 400，不可靜默 replay 舊收據。
+
+        舊 bug：內容簽章用 frozenset((reg, amount)) 把 [x, x] 折成 {x}，與舊收據
+        {x} 相符 → _idempotent_replay 在重複 ID 守衛（原在 replay 之後）之前先
+        回放舊收據（201），重複項被靜默吞掉。
+        """
+        client, sf = pos_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, student_name="王小明")
+            s.commit()
+            reg_id = reg.id
+        assert _login(client).status_code == 200
+
+        idk = "dup-collapse-key-0001"
+        first = client.post(
+            "/api/activity/pos/checkout",
+            json={
+                "items": [{"registration_id": reg_id, "amount": 500}],
+                "payment_method": "現金",
+                "payment_date": date.today().isoformat(),
+                "idempotency_key": idk,
+            },
+        )
+        assert first.status_code == 201
+
+        # 重用同 key，但帶兩筆相同 (reg, amount)：frozenset 折疊後與舊收據相同
+        dup = client.post(
+            "/api/activity/pos/checkout",
+            json={
+                "items": [
+                    {"registration_id": reg_id, "amount": 500},
+                    {"registration_id": reg_id, "amount": 500},
+                ],
+                "payment_method": "現金",
+                "payment_date": date.today().isoformat(),
+                "idempotency_key": idk,
+            },
+        )
+        assert dup.status_code == 400, dup.json()
+        assert "重複" in dup.json()["detail"]
+
+        # 舊收據未被回放污染：仍只有一筆紀錄、paid_amount 維持原值
+        with sf() as s:
+            assert s.query(ActivityPaymentRecord).count() == 1
+            reg_after = s.query(ActivityRegistration).filter_by(id=reg_id).one()
+            assert reg_after.paid_amount == 500
+
+    def test_content_signature_preserves_duplicate_multiplicity(self):
+        """內容簽章須保留重複 (reg, amount) 的重數：[x] 與 [x, x] 簽章必須不同，
+        否則冪等內容守衛會把兩者誤判為相同內容（防禦縱深，與守衛前移互補）。"""
+        from api.activity.pos import _request_content_signature
+        from schemas.activity_admin import POSCheckoutRequest
+
+        single = POSCheckoutRequest(
+            items=[{"registration_id": 1, "amount": 500}],
+            payment_date=date.today(),
+        )
+        double = POSCheckoutRequest(
+            items=[
+                {"registration_id": 1, "amount": 500},
+                {"registration_id": 1, "amount": 500},
+            ],
+            payment_date=date.today(),
+        )
+        assert _request_content_signature(single) != _request_content_signature(double)
+
 
 # ── 收據編號 ───────────────────────────────────────────────────────
 
@@ -1455,8 +1524,10 @@ class TestPosDailyClose:
         res = client.post("/api/activity/pos/daily-close/bad-date", json={})
         assert res.status_code == 400
 
-    def test_approve_zero_transaction_day_succeeds_currently(self, pos_client):
-        """釘住當前行為：即使當日完全無交易，簽核依然成功（snapshot 全 0）。"""
+    def test_approve_zero_transaction_day_rejected(self, pos_client):
+        """0 筆交易日結預設拒絕（400）：避免誤簽空日後
+        _require_daily_close_unlocked 把整天鎖死、後續補登一律 400
+        （業主裁定，2026-06-24）。亦不可建立 close row。"""
         client, sf = pos_client
         target = date.today() - timedelta(days=1)
         with sf() as s:
@@ -1466,13 +1537,17 @@ class TestPosDailyClose:
         res = client.post(
             f"/api/activity/pos/daily-close/{target.isoformat()}", json={}
         )
-        assert res.status_code == 201
-        data = res.json()
-        assert data["payment_total"] == 0
-        assert data["refund_total"] == 0
-        assert data["net_total"] == 0
-        assert data["transaction_count"] == 0
-        assert data["by_method"] == {}
+        assert res.status_code == 400, res.text
+        detail = res.json()["detail"]
+        assert "無" in detail and "交易" in detail
+        # 未建立 close row → 該日仍可寫入（未被誤鎖）
+        with sf() as s:
+            assert (
+                s.query(ActivityPosDailyClose)
+                .filter(ActivityPosDailyClose.close_date == target)
+                .count()
+                == 0
+            )
 
     def test_approve_note_over_length_rejected(self, pos_client):
         client, sf = pos_client
