@@ -19,6 +19,7 @@ session 必須來自 models.base.get_session_factory()，parent_db / spike_rls
 
 from __future__ import annotations
 
+import contextvars
 import logging
 from dataclasses import dataclass, replace as _dc_replace
 from typing import Optional
@@ -37,6 +38,13 @@ from services.notification.renderers import render
 logger = logging.getLogger(__name__)
 
 _QUEUE_KEY = "ivy_notification_queue"
+
+# 整個 drain 共用的 log session（避免廣播時每個 event 各開新 session 造成連線
+# churn）。以 contextvar 傳遞而非加 _fan_out 參數，維持 _fan_out(evt) 單參數簽名
+# 相容既有測試/直呼端；standalone（非 drain）呼叫時為 None，_fan_out 自開自關。
+_drain_session_var: contextvars.ContextVar[Optional[Session]] = contextvars.ContextVar(
+    "ivy_drain_log_session", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -132,16 +140,29 @@ def _drain_after_commit(session: Session) -> None:
     pending = session.info.pop(_QUEUE_KEY, None)
     if not pending:
         return
-    for evt in pending:
-        try:
-            _fan_out(evt)
-        except Exception:
-            logger.exception(
-                "dispatch fan-out 失敗 event=%s recipient=%s",
-                evt.event_type,
-                evt.recipient_user_id,
-            )
-            # 絕不 re-raise — 一筆 fan-out 失敗不能影響後續
+    # 整個 drain 共用一個 log session（廣播時每收件人一個 event，逐筆開新 session
+    # 會造成大量連線 churn）。_fan_out 經 contextvar 取得並重用此 session。
+    log_session = get_session_factory()()
+    token = _drain_session_var.set(log_session)
+    try:
+        for evt in pending:
+            try:
+                _fan_out(evt)
+            except Exception:
+                logger.exception(
+                    "dispatch fan-out 失敗 event=%s recipient=%s",
+                    evt.event_type,
+                    evt.recipient_user_id,
+                )
+                # 絕不 re-raise — 一筆 fan-out 失敗不能影響後續；rollback 清掉
+                # 共用 session 上可能殘留的失敗交易，避免污染下一筆。
+                try:
+                    log_session.rollback()
+                except Exception:
+                    logger.warning("drain 共用 session rollback 失敗", exc_info=True)
+    finally:
+        _drain_session_var.reset(token)
+        log_session.close()
 
 
 def _clear_on_rollback(session: Session) -> None:
@@ -289,8 +310,13 @@ def _fan_out(evt: PendingEvent) -> None:
     """tx commit 後實際發送：寫 log → 過 gate → 呼叫 adapter。
 
     任何 channel 失敗只記 channels_failed，不 re-raise。
+
+    drain 內經 _drain_session_var 共用同一個 log session（避免廣播逐筆開新連線）；
+    standalone 呼叫（contextvar 為 None）則自開自關，行為與舊版一致。
     """
-    log_session = get_session_factory()()
+    shared = _drain_session_var.get()
+    owns_session = shared is None
+    log_session = shared if shared is not None else get_session_factory()()
     try:
         rendered = render(evt.event_type, evt.context)
 
@@ -424,4 +450,6 @@ def _fan_out(evt: PendingEvent) -> None:
                 row.channels_failed = list(row.channels_failed) + failed
                 log_session.commit()
     finally:
-        log_session.close()
+        # drain 內共用 session 由 _drain_after_commit 統一 close；standalone 自關。
+        if owns_session:
+            log_session.close()
