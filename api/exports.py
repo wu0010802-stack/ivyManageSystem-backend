@@ -20,7 +20,9 @@ from utils.portfolio_access import assert_all_scope
 from utils.rate_limit import create_limiter
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 
 from models.approval import ApprovalStatus
 from models.database import (
@@ -120,6 +122,48 @@ def _to_response(wb, filename):
     )
 
 
+def _stream_export_response(title, headers, row_iter, filename):
+    """write_only streaming Excel：不在記憶體保留全部 Cell 物件，避免大表 OOM。
+
+    供「全表、隨資料量單調成長」的匯出（全校學生 / 員工名冊）使用。write_only 把列
+    streaming 寫到暫存檔，記憶體不隨列數爆。代價：不支援 merge_cells、無法事後讀 cell
+    算 auto-width，故標題不合併、欄寬以 header 長度估固定值（外觀微調，資料不變）。
+
+    row_iter 為「逐列產生 list[值]」的 iterable（建議用 query.yield_per(...) 直接迭代，
+    勿先 list() materialize）。每個值仍經 _sanitize_excel_value 防 Excel 公式注入。
+    """
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet(title)
+    ncols = len(headers)
+
+    # 欄寬（write_only 無法事後讀 cell 算寬，用 header 長度估）
+    for col_idx in range(1, ncols + 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(
+            max(len(str(headers[col_idx - 1])) + 6, 12), 40
+        )
+
+    # row1 標題（write_only 不支援 merge，置於 A1、不合併）
+    title_cell = WriteOnlyCell(ws, value=title)
+    title_cell.font = TITLE_FONT
+    ws.append([title_cell])
+    # row2 空白（維持與舊版相同的列結構：標題/空白/表頭/資料）
+    ws.append([None])
+    # row3 表頭
+    header_cells = []
+    for header in headers:
+        cell = WriteOnlyCell(ws, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = CENTER_ALIGN
+        header_cells.append(cell)
+    ws.append(header_cells)
+    # row4+ 資料（streaming，逐列 append；sanitize 防公式注入）
+    for values in row_iter:
+        ws.append([_sanitize_excel_value(v) for v in values])
+
+    return _to_response(wb, filename)
+
+
 def _id_name_map(session, model):
     """建立 {id: name} 對照表"""
     return {obj.id: obj.name for obj in session.query(model).all()}
@@ -146,7 +190,6 @@ def export_employees(
         if search:
             like = f"%{search}%"
             q = q.filter(Employee.name.ilike(like) | Employee.employee_id.ilike(like))
-        employees = list(q.yield_per(500))
         classrooms = _id_name_map(session, Classroom)
         job_titles = _id_name_map(session, JobTitle)
         can_view_full_account = has_permission(
@@ -155,7 +198,7 @@ def export_employees(
         # 顯式寫 AuditLog:GET 匯出不會經 AuditMiddleware,但本端會輸出
         # 全員姓名/聯絡電話/銀行帳號等敏感資料。is_full_bank_account=True 時
         # 表示完整薪轉帳號被匯出,稽核必須看得見此事件。
-        export_count = len(employees)
+        export_count = q.count()
         write_explicit_audit(
             request,
             action="EXPORT",
@@ -177,15 +220,6 @@ def export_employees(
                 export_count,
             )
 
-        wb = Workbook()
-        ws = _safe_ws(wb)
-        ws.title = "員工名冊"
-
-        ws.merge_cells("A1:O1")
-        ws["A1"] = "員工名冊"
-        ws["A1"].font = TITLE_FONT
-        ws["A1"].alignment = CENTER_ALIGN
-
         headers = [
             "工號",
             "姓名",
@@ -203,16 +237,14 @@ def export_employees(
             "戶名",
             "在職狀態",
         ]
-        _write_header_row(ws, 3, headers)
 
-        for idx, emp in enumerate(employees, 4):
-            jt = job_titles.get(emp.job_title_id, emp.title or "")
-            cr = classrooms.get(emp.classroom_id, "")
-            emp_type = "正職" if emp.employee_type == "regular" else "時薪"
-            _write_data_row(
-                ws,
-                idx,
-                [
+        def _emp_rows():
+            # 直接迭代 yield_per cursor（不 list() materialize）→ ORM row 逐批 GC。
+            for emp in q.yield_per(500):
+                jt = job_titles.get(emp.job_title_id, emp.title or "")
+                cr = classrooms.get(emp.classroom_id, "")
+                emp_type = "正職" if emp.employee_type == "regular" else "時薪"
+                yield [
                     emp.employee_id,
                     emp.name,
                     jt,
@@ -232,11 +264,11 @@ def export_employees(
                     ),
                     emp.bank_account_name or "",
                     "在職" if emp.is_active else "離職",
-                ],
-            )
+                ]
 
-        _auto_width(ws)
-        return _to_response(wb, "員工名冊.xlsx")
+        return _stream_export_response(
+            "員工名冊", headers, _emp_rows(), "員工名冊.xlsx"
+        )
     finally:
         session.close()
 
@@ -259,28 +291,18 @@ def export_students(
     )
     session = get_session()
     try:
-        students = list(
-            session.query(Student).order_by(Student.student_id).yield_per(500)
-        )
+        q = session.query(Student).order_by(Student.student_id)
         classrooms = _id_name_map(session, Classroom)
         # F-033：學生名冊含全校生日 / 家長電話 / 地址等 PII，必須留稽核軌跡。
         # AuditMiddleware 只審計 POST/PUT/DELETE，GET 匯出需顯式呼叫此 helper。
+        export_count = q.count()
         write_explicit_audit(
             request,
             action="EXPORT",
             entity_type="student",
-            summary=f"匯出學生名冊（{len(students)} 筆，含家長電話/地址/生日）",
-            changes={"count": len(students)},
+            summary=f"匯出學生名冊（{export_count} 筆，含家長電話/地址/生日）",
+            changes={"count": export_count},
         )
-
-        wb = Workbook()
-        ws = _safe_ws(wb)
-        ws.title = "學生名冊"
-
-        ws.merge_cells("A1:K1")
-        ws["A1"] = "學生名冊"
-        ws["A1"].font = TITLE_FONT
-        ws["A1"].alignment = CENTER_ALIGN
 
         headers = [
             "學號",
@@ -295,15 +317,14 @@ def export_students(
             "狀態標籤",
             "在籍狀態",
         ]
-        _write_header_row(ws, 3, headers)
 
         gender_map = {"M": "男", "F": "女"}
-        for idx, stu in enumerate(students, 4):
-            cr = classrooms.get(stu.classroom_id, "")
-            _write_data_row(
-                ws,
-                idx,
-                [
+
+        def _student_rows():
+            # 直接迭代 yield_per cursor（不 list() materialize）→ ORM row 逐批 GC。
+            for stu in q.yield_per(500):
+                cr = classrooms.get(stu.classroom_id, "")
+                yield [
                     stu.student_id,
                     stu.name,
                     gender_map.get(stu.gender, stu.gender or ""),
@@ -315,11 +336,11 @@ def export_students(
                     stu.address or "",
                     stu.status_tag or "",
                     "在籍" if stu.is_active else "離校",
-                ],
-            )
+                ]
 
-        _auto_width(ws)
-        return _to_response(wb, "學生名冊.xlsx")
+        return _stream_export_response(
+            "學生名冊", headers, _student_rows(), "學生名冊.xlsx"
+        )
     finally:
         session.close()
 
@@ -332,8 +353,8 @@ def export_attendance(
     request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
 ):
     """匯出出勤月報 Excel"""
     session = get_session()
@@ -602,8 +623,8 @@ def export_leaves(
     request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.LEAVES_READ)),
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
 ):
     """匯出請假記錄 Excel"""
     session = get_session()
@@ -678,8 +699,8 @@ def export_overtimes(
     request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.OVERTIME_READ)),
-    year: int = Query(...),
-    month: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
 ):
     """匯出加班記錄 Excel。
 
@@ -778,7 +799,7 @@ def export_holidays(
     request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
-    year: int = Query(..., description="要匯出的年份"),
+    year: int = Query(..., ge=2000, le=2100, description="要匯出的年份"),
 ):
     """匯出指定年份國定假日 Excel"""
     session = get_session()
