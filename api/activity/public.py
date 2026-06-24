@@ -2,6 +2,7 @@
 api/activity/public.py — 公開前台端點（無需認證，10 個）
 """
 
+import asyncio
 import time
 import logging
 import random
@@ -514,7 +515,7 @@ def _phone_matches_nonempty(reg_phone, input_phone) -> bool:
 
 
 @router.post("/public/query", response_model=PublicRegistrationDetailOut)
-def public_query_registration(
+async def public_query_registration(
     body: _PublicQueryPayload,
     _: None = Depends(_public_query_limiter),
 ):
@@ -527,43 +528,48 @@ def public_query_registration(
 
     LOW-3：對成功與失敗 path 加入 200~500ms 隨機延遲，提高低成本枚舉成本。
     """
-    time.sleep(random.uniform(0.2, 0.5))
-    session = get_session()
-    try:
-        # 先抓 (name, birthday) 候選（同姓同生日通常極少），再統一在 Python 端
-        # 比對 normalize 後的 phone；無論是否匹配都走相同程式路徑，壓低時序差。
-        # order_by 讓多筆跨學期 active 報名（同名同生日同手機可在不同學期各一筆，
-        # partition unique index per-term 允許）的取捨 deterministic：取最新學期，
-        # 避免依 DB 預設順序任意取到舊學期那筆。
-        candidates = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.student_name == body.name,
-                ActivityRegistration.birthday == body.birthday,
-                ActivityRegistration.is_active.is_(True),
-            )
-            .order_by(
-                ActivityRegistration.school_year.desc(),
-                ActivityRegistration.semester.desc(),
-                ActivityRegistration.id.desc(),
-            )
-            .all()
-        )
-        reg = None
-        for candidate in candidates:
-            # 空對空守衛（P1-1）：reg 側 phone 為 NULL 時不得被空輸入匹配。
-            if _phone_matches_nonempty(candidate.parent_phone, body.parent_phone):
-                reg = candidate
-                break
-        if reg is None:
-            raise HTTPException(
-                status_code=404,
-                detail="查無對應報名，請確認三項資料是否與報名時一致",
-            )
+    # LOW-3 隨機延遲改用 asyncio.sleep（不佔 threadpool token），同步 DB 工作丟 to_thread。
+    await asyncio.sleep(random.uniform(0.2, 0.5))
 
-        return _build_public_query_payload(session, reg)
-    finally:
-        session.close()
+    def _query():
+        session = get_session()
+        try:
+            # 先抓 (name, birthday) 候選（同姓同生日通常極少），再統一在 Python 端
+            # 比對 normalize 後的 phone；無論是否匹配都走相同程式路徑，壓低時序差。
+            # order_by 讓多筆跨學期 active 報名（同名同生日同手機可在不同學期各一筆，
+            # partition unique index per-term 允許）的取捨 deterministic：取最新學期，
+            # 避免依 DB 預設順序任意取到舊學期那筆。
+            candidates = (
+                session.query(ActivityRegistration)
+                .filter(
+                    ActivityRegistration.student_name == body.name,
+                    ActivityRegistration.birthday == body.birthday,
+                    ActivityRegistration.is_active.is_(True),
+                )
+                .order_by(
+                    ActivityRegistration.school_year.desc(),
+                    ActivityRegistration.semester.desc(),
+                    ActivityRegistration.id.desc(),
+                )
+                .all()
+            )
+            reg = None
+            for candidate in candidates:
+                # 空對空守衛（P1-1）：reg 側 phone 為 NULL 時不得被空輸入匹配。
+                if _phone_matches_nonempty(candidate.parent_phone, body.parent_phone):
+                    reg = candidate
+                    break
+            if reg is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="查無對應報名，請確認三項資料是否與報名時一致",
+                )
+
+            return _build_public_query_payload(session, reg)
+        finally:
+            session.close()
+
+    return await asyncio.to_thread(_query)
 
 
 class _PublicQueryByTokenPayload(BaseModel):
@@ -583,7 +589,7 @@ class _PublicQueryByTokenPayload(BaseModel):
 
 
 @router.post("/public/query-by-token", response_model=PublicRegistrationDetailOut)
-def public_query_by_token(
+async def public_query_by_token(
     body: _PublicQueryByTokenPayload,
     _: None = Depends(_public_query_limiter),
 ):
@@ -598,36 +604,41 @@ def public_query_by_token(
 
     LOW-3 一致性：成功與失敗 path 都加入隨機延遲，壓低時序差。
     """
-    time.sleep(random.uniform(0.2, 0.5))
-    session = get_session()
-    try:
-        token_hash = _hash_query_token(body.token)
-        reg = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.query_token_hash == token_hash,
-                ActivityRegistration.is_active.is_(True),
+    # LOW-3 隨機延遲改用 asyncio.sleep（不佔 threadpool token），同步 DB 工作丟 to_thread。
+    await asyncio.sleep(random.uniform(0.2, 0.5))
+
+    def _query():
+        session = get_session()
+        try:
+            token_hash = _hash_query_token(body.token)
+            reg = (
+                session.query(ActivityRegistration)
+                .filter(
+                    ActivityRegistration.query_token_hash == token_hash,
+                    ActivityRegistration.is_active.is_(True),
+                )
+                .first()
             )
-            .first()
-        )
-        # 資安 P0 (2026-05-07)：查詢碼到期判定。issued_at 為 None（舊資料）或超過 TTL
-        # 一律回 404 同訊息（與 token 不存在 / phone 錯一致），不洩漏「token 過期」
-        # 與其他失敗的差別。家長過期後自然引導到 /public/query 三欄比對。
-        token_expired = reg is not None and is_query_token_expired(
-            reg.query_token_issued_at
-        )
-        if (
-            reg is None
-            or token_expired
-            or not _phone_matches_nonempty(reg.parent_phone, body.parent_phone)
-        ):
-            raise HTTPException(
-                status_code=404,
-                detail="查無對應報名，請確認查詢碼與手機號碼是否正確",
+            # 資安 P0 (2026-05-07)：查詢碼到期判定。issued_at 為 None（舊資料）或超過 TTL
+            # 一律回 404 同訊息（與 token 不存在 / phone 錯一致），不洩漏「token 過期」
+            # 與其他失敗的差別。家長過期後自然引導到 /public/query 三欄比對。
+            token_expired = reg is not None and is_query_token_expired(
+                reg.query_token_issued_at
             )
-        return _build_public_query_payload(session, reg)
-    finally:
-        session.close()
+            if (
+                reg is None
+                or token_expired
+                or not _phone_matches_nonempty(reg.parent_phone, body.parent_phone)
+            ):
+                raise HTTPException(
+                    status_code=404,
+                    detail="查無對應報名，請確認查詢碼與手機號碼是否正確",
+                )
+            return _build_public_query_payload(session, reg)
+        finally:
+            session.close()
+
+    return await asyncio.to_thread(_query)
 
 
 @router.post(
