@@ -1772,6 +1772,12 @@ class TestPosDailyClose:
                 password="BossPass1234",
                 permission_names=["ACTIVITY_READ", "ACTIVITY_PAYMENT_APPROVE"],
             )
+            # 空簽（0 筆交易）自 review #2 起拒絕（400）；此測試專測「權限」可簽核，
+            # 故先 seed 一筆當日真實交易，讓 close 走正常 201 路徑（對齊同類測試）。
+            reg = _make_reg_minimal(s, student_name="approve_perm")
+            _add_payment(
+                s, reg.id, type_="payment", amount=1000, method="現金", day=target
+            )
             s.commit()
         assert (
             _login(client, username="boss", password="BossPass1234").status_code == 200
