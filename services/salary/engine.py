@@ -3600,8 +3600,17 @@ class SalaryEngine:
         ):
             pending_actions_by_emp[_disc_action.employee_id].append(_disc_action)
 
+        # MF-1（F1）：批次預載當月才藝鐘點明細加總，與 single 路徑同口徑覆寫
+        # hourly_total（避免才藝老師不打卡時 bulk 把 gross 抹成考勤 0）。
+        from services.finance.art_teacher_payroll import (
+            compute_totals_by_emp_for_month,
+        )
+
+        art_total_by_emp = compute_totals_by_emp_for_month(session, year, month)
+
         return _BulkSalaryPreload(
             emp_map=emp_map,
+            art_total_by_emp=art_total_by_emp,
             att_by_emp=att_by_emp,
             classroom_map=classroom_map,
             employee_to_classroom=employee_to_classroom,
@@ -3850,6 +3859,13 @@ class SalaryEngine:
         emp_dict["special_bonus"] = (
             (_existing_rec.special_bonus or 0) if _existing_rec else 0
         )
+
+        # MF-1（F1）：才藝鐘點明細覆寫 hourly_total（與 single 路徑
+        # _build_breakdown_for_month 同口徑）。值由批次預載取得避免 N+1。
+        if emp.employee_type == "hourly":
+            _art_total = preload.art_total_by_emp.get(emp.id, 0)
+            if _art_total and _art_total > 0:
+                emp_dict["art_teacher_entries_total"] = _art_total
 
         # ── 考勤統計（使用預載）
         # admin_waive 標記的考勤異常薪資端視為已豁免（不計入遲到/早退/缺打卡）

@@ -38,7 +38,10 @@ from utils.activity_constants import OCCUPYING_STATUSES
 from services.activity_refund_query import build_refund_suggestion
 from utils.errors import raise_safe_500
 from utils.auth import require_staff_permission
-from utils.advisory_lock import acquire_activity_registration_lock
+from utils.advisory_lock import (
+    acquire_activity_daily_close_lock,
+    acquire_activity_registration_lock,
+)
 from utils.permissions import Permission, list_active_user_ids_with_permission
 from utils.portfolio_access import can_view_guardian_pii
 from utils.finance_guards import (
@@ -819,14 +822,19 @@ def delete_registration(
     """軟刪除報名"""
     session = get_session()
     try:
-        reg_preview = (
-            session.query(ActivityRegistration)
-            .filter(
-                ActivityRegistration.id == registration_id,
-                ActivityRegistration.is_active.is_(True),
-            )
-            .first()
+        # MF-4（F4）：force_refund 時退費簽核閘須讀「上鎖後」的 paid_amount，與
+        # service.delete_registration 沖帳同基準，否則閘(未鎖讀)與 service(鎖讀)之間
+        # 並發繳費可繞過大額/偏離退費簽核閾值(TOCTOU)。鎖序與 service 一致：
+        # daily_close(force_refund 時) → reg row，避免與 POS/checkout ABBA。
+        if force_refund:
+            acquire_activity_daily_close_lock(session, datetime.now(TAIPEI_TZ).date())
+        _reg_q = session.query(ActivityRegistration).filter(
+            ActivityRegistration.id == registration_id,
+            ActivityRegistration.is_active.is_(True),
         )
+        if force_refund:
+            _reg_q = _reg_q.with_for_update()
+        reg_preview = _reg_q.first()
         student_name = reg_preview.student_name if reg_preview else None
         paid_before = (reg_preview.paid_amount or 0) if reg_preview else 0
 
