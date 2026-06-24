@@ -25,9 +25,15 @@ _FILTERED = "[Filtered]"
 # Finding H：自由文字（如 audit summary）的強識別子樣式。summary 由各端點自由組
 # 字串，redact_pii（key-based）對它無效。這裡只遮「高辨識度且不會與操作 ID 衝突」
 # 的識別子——刻意不遮純數字 user_id/employee_id 與姓名（admin-only 稽核面需可讀）。
-_TW_ID_RE = re.compile(r"\b[A-Za-z][12A-Da-d]\d{8}\b")  # 身分證 / 居留證
-_MOBILE_RE = re.compile(r"\b09\d{8}\b")  # 手機
-_LANDLINE_RE = re.compile(r"\b0\d{1,2}-\d{6,8}\b")  # 市話（帶 dash）
+# 邊界用顯式 lookaround 而非 \b：Python \b 為 Unicode-aware，對「中文緊鄰數字無空白」
+# （如 `電話0912345678請改期`）不視為詞邊界 → 漏遮。改「不被數字（ID 類為英數）包夾」
+# 的顯式邊界，既修 CJK 緊鄰漏遮、又保留原意（不遮夾在更長數字串中的子序列）。
+# 與 utils/sentry_init._VALUE_*_RE 及前端 src/utils/sentry.ts 三份對齊（陷阱#8）。
+_TW_ID_RE = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z][12A-Da-d]\d{8}(?![A-Za-z0-9])"
+)  # 身分證 / 居留證
+_MOBILE_RE = re.compile(r"(?<!\d)09\d{8}(?!\d)")  # 手機
+_LANDLINE_RE = re.compile(r"(?<!\d)0\d{1,2}-\d{6,8}(?!\d)")  # 市話（帶 dash）
 
 
 def redact_pii_text(text):
