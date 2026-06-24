@@ -367,7 +367,11 @@ def _fan_out(evt: PendingEvent) -> None:
                         logger.info(
                             "LINE consent denied，skip 並記 consent_denied event=%s user=%s",
                             evt.event_type,
-                            evt.recipient_user_id[:8] if evt.recipient_user_id else "",
+                            (
+                                str(evt.recipient_user_id)[:8]
+                                if evt.recipient_user_id
+                                else ""
+                            ),
                         )
                         failed.append({"channel": "line", "error": "consent_denied"})
                         continue
