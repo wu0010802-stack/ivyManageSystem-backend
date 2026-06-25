@@ -115,6 +115,45 @@ def _seed_with_meeting_absence(session_factory):
         return record.id
 
 
+def _seed_clamped_festival(session_factory):
+    """節慶獎金已被會議缺席扣抵到 0（festival=0, meeting_absence=5000；真實 raw 不可回推）。"""
+    with session_factory() as session:
+        emp = Employee(
+            employee_id="M002",
+            name="clamp測試",
+            base_salary=30000,
+            employee_type="regular",
+            is_active=True,
+        )
+        session.add(emp)
+        session.flush()
+        record = SalaryRecord(
+            employee_id=emp.id,
+            salary_year=2026,
+            salary_month=6,
+            base_salary=30000,
+            festival_bonus=0,
+            meeting_absence_deduction=5000,
+            gross_salary=30000,
+            total_deduction=5000,
+            net_salary=25000,
+            is_finalized=False,
+        )
+        session.add(record)
+        user = User(
+            employee_id=None,
+            username="adj_admin",
+            password_hash=hash_password("AdjPass123"),
+            role="admin",
+            permission_names=["*"],
+            is_active=True,
+            must_change_password=False,
+        )
+        session.add(user)
+        session.commit()
+        return record.id
+
+
 def _seed_hourly(session_factory):
     """建立時薪制員工 + 既有薪資記錄（hourly_total=24,000）。"""
     with session_factory() as session:
@@ -213,6 +252,45 @@ class TestRecalculatePreservesHourlyTotal:
         )
         assert res.status_code == 200
         assert res.json()["record"]["festival_bonus"] == 1900
+
+    def test_meeting_absence_reduce_when_festival_clamped_rejects(self, salary_client):
+        """P2-C：原 festival 已被會議缺席扣抵為 0（raw 不可回推）時，降 meeting_absence
+        不得以 (0 + old_meeting_absence) 連動回推（會高估 festival）；應拒絕純連動，
+        要求 HR 同時明確提供 festival_bonus。"""
+        client, sf = salary_client
+        record_id = _seed_clamped_festival(sf)
+        _login(client)
+
+        res = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={
+                "adjustment_reason": "降會議缺席扣款",
+                "meeting_absence_deduction": 1000,
+            },
+        )
+        # 修補前：festival 連動回推為 max(0, 5000-1000)=4000（高估，原 raw 已不可知）
+        # 修補後：400 拒絕純連動
+        assert res.status_code == 400, (
+            f"festival 曾 clamp 到 0 時降 meeting_absence 應拒絕純連動回推，"
+            f"實得 {res.status_code}：{res.text}"
+        )
+
+    def test_meeting_absence_reduce_with_explicit_festival_allowed(self, salary_client):
+        """P2-C：clamped 情境下，HR 同時明確提供 festival_bonus 則允許（不走連動回推）。"""
+        client, sf = salary_client
+        record_id = _seed_clamped_festival(sf)
+        _login(client)
+
+        res = client.put(
+            f"/api/salaries/{record_id}/manual-adjust",
+            json={
+                "adjustment_reason": "降會議缺席並明確設定節慶獎金",
+                "meeting_absence_deduction": 1000,
+                "festival_bonus": 2000,
+            },
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["record"]["festival_bonus"] == 2000
 
     def test_meeting_absence_connection_delta_counted_for_threshold(
         self, salary_client

@@ -331,16 +331,32 @@ def manual_adjust_salary(
         festival_bonus_in_payload = "festival_bonus" in payload
         if meeting_absence_in_payload and not festival_bonus_in_payload:
             new_meeting_absence = round_half_up(record.meeting_absence_deduction or 0)
-            inferred_raw = old_festival_bonus + old_meeting_absence
-            recomputed_festival = max(0, inferred_raw - new_meeting_absence)
-            if recomputed_festival != old_festival_bonus:
-                record.festival_bonus = recomputed_festival
-                changed_parts.append(
-                    f"節慶獎金（連動）{old_festival_bonus}→{recomputed_festival}"
+            # P2-C：連動回推只有在「原 festival 未被 clamp 到 0」時才精確。
+            # 引擎以 festival_after = max(0, festival_raw - meeting_absence) 落帳；當
+            # old_festival_bonus > 0 表示未 clamp，raw = old_festival + old_meeting_absence
+            # 為精確值，可安全回推。當 old_festival_bonus == 0 表示原 raw 已被會議缺席
+            # 扣抵到 0（raw ≤ old_meeting_absence，真實 raw 不可由 0+old_meeting_absence
+            # 復原，會高估），故降低 meeting_absence 時不得純連動，要求 HR 明確提供
+            # festival_bonus；若 meeting_absence 不變或調高（festival 維持 0 仍正確）則不連動。
+            if old_festival_bonus > 0:
+                inferred_raw = old_festival_bonus + old_meeting_absence
+                recomputed_festival = max(0, inferred_raw - new_meeting_absence)
+                if recomputed_festival != old_festival_bonus:
+                    record.festival_bonus = recomputed_festival
+                    changed_parts.append(
+                        f"節慶獎金（連動）{old_festival_bonus}→{recomputed_festival}"
+                    )
+                    # 連動寫入的 festival_bonus 也視為人工調整,同一原則保留不被重算覆寫
+                    modified_fields.append("festival_bonus")
+                    total_abs_delta += abs(recomputed_festival - old_festival_bonus)
+            elif new_meeting_absence < old_meeting_absence:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "原節慶獎金已被會議缺席扣抵為 0，無法由連動回推真實節慶獎金"
+                        "（會高估）；降低會議缺席扣款時請同時明確提供 festival_bonus。"
+                    ),
                 )
-                # 連動寫入的 festival_bonus 也視為人工調整,同一原則保留不被重算覆寫
-                modified_fields.append("festival_bonus")
-                total_abs_delta += abs(recomputed_festival - old_festival_bonus)
 
         # ── A 錢守衛：本次所有欄位 |delta| 合計（含 festival_bonus 連動）+ 已鎖定欄位的
         # 歷史人工偏移 > 門檻需金流簽核 ──
