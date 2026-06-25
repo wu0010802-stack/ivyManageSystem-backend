@@ -236,6 +236,30 @@ ENTITY_PATTERNS = [
     # 附件軟刪：缺此規則時 middleware _parse_entity_type 回 None → 短路跳過，
     # 導致 DELETE /api/attachments/{id} 產生零 audit_logs row。
     (r"/api/attachments", "attachment"),
+    # ── 設計審查 2026-06-25：補稽核覆蓋缺口 ────────────────────────────────
+    # 下列寫端點原本不在 ENTITY_PATTERNS，_parse_entity_type 回 None → middleware
+    # 靜默跳過、零 audit_logs。多為金流 / HR / 醫療 / 權限 / 個資類敏感寫入，補上
+    # pattern；整體覆蓋率由 tests/test_audit_route_coverage.py sweep 護線（任何新增
+    # 寫端點漏配 pattern 又不在 AUDIT_EXEMPT 白名單即 CI 紅）。
+    # 已自行 write_explicit_audit / write_audit_in_session 的端點（roles、policies、
+    # dsr、activity/attendance、portal reveal-phone）刻意不在此處重複攔截，列於
+    # 該 sweep 的 AUDIT_EXEMPT 並註明「端點自審」。
+    (r"/api/shifts", "shift"),  # 班別/排班（異動牽動薪資 stale）
+    (r"/api/dismissal-calls", "dismissal_call"),  # 接送通知（兒童安全/監護爭議溯源）
+    (r"/api/data-quality", "data_quality_report"),  # 資料品質告警處置
+    (r"/api/disciplinary-actions", "disciplinary_action"),  # 員工懲處（HR 敏感）
+    (r"/api/art-teacher-payroll", "art_teacher_payroll"),  # 才藝老師鐘點費（金流）
+    (r"/api/system-configs", "system_config"),  # 系統參數
+    (r"/api/grades", "class_grade"),  # 班級年段設定
+    (r"/api/events", "event"),  # 校園活動/國定假日匯入（牽動工作日→薪資）
+    (r"/api/medication-logs", "medication_log"),  # 給藥/補登/略過（醫療，兒童安全）
+    (r"/api/guardians", "guardian"),  # 監護人綁定碼/裝置碼/撤銷（家長存取控制）
+    (r"/api/punch-corrections", "punch_correction"),  # 補打卡核准（牽動考勤→薪資）
+    (r"/api/appraisal/scoring_rules", "appraisal_scoring_rule"),  # 考核評分規則
+    # 尾斜線錨定：避免 re.match prefix 誤吃 /api/parent/messages|milestones 等
+    (r"/api/parent/me/", "parent_data_rights"),  # 家長個資權利（同意/退出/更正/刪除）
+    (r"/api/portal/assessments", "student_assessment"),  # 教師端建發展評估
+    (r"/api/portal/incidents", "student_incident"),  # 教師端建學生事件（受傷/衝突）
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -330,6 +354,19 @@ ENTITY_LABELS = {
     # 廠商付款簽收
     "vendor_payment": "廠商付款簽收",
     "monthly_fixed_cost": "月度固定費用",
+    # 設計審查 2026-06-25：補稽核覆蓋缺口（敏感寫端點原本 _parse_entity_type 回 None）
+    "shift": "班別/排班設定",
+    "dismissal_call": "接送通知",
+    "data_quality_report": "資料品質報告",
+    "disciplinary_action": "員工懲處",
+    "art_teacher_payroll": "才藝老師鐘點費",
+    "system_config": "系統參數設定",
+    "class_grade": "班級年段設定",
+    "event": "校園活動/行事",
+    "medication_log": "給藥紀錄",
+    "punch_correction": "補打卡更正",
+    "appraisal_scoring_rule": "考核評分規則",
+    "parent_data_rights": "家長個資權利請求",
 }
 
 ACTION_LABELS = {
