@@ -379,6 +379,37 @@ def test_public_catalog_visible_to_all_parents(phase1f_seed):
             pass
 
 
+def test_parent_role_can_for_update_activity_courses_catalog():
+    """[P1 回歸 / parcuplk01] register_courses 與 confirm/decline_waitlist_promotion
+    為防並發超賣，對 activity_courses 下 `SELECT ... FOR UPDATE` 序列化容量檢查，
+    且走 ivy_parent_role（get_parent_db）。PostgreSQL 的 row-locking 子句要求該表的
+    UPDATE 權限（非僅 SELECT）。parlsr007 對 catalog 只 GRANT SELECT → 此鎖
+    `permission denied for table activity_courses`（InsufficientPrivilege / ProgrammingError）
+    → 登入家長報名/候補確認全 500。parcuplk01 補 GRANT UPDATE 後此查詢應成功。
+
+    對照 test_public_catalog_visible_to_all_parents（純 SELECT 始終可行）：本測試專測
+    FOR UPDATE 這條被遺漏的鎖路徑。parcuplk01 之前 RED（raise ProgrammingError），
+    補 grant 後 GREEN（不 raise）。
+
+    seed-independent：直接以 ivy_parent_login 連線（同 get_parent_db 底層 role）跑
+    FOR UPDATE，純測 table-level UPDATE 權限。activity_courses 為 catalog（無 RLS），
+    privilege 檢查與 RLS context / seed 資料無關，故刻意不依賴 phase1f_seed（避免被
+    無關的 seed 漂移干擾）。"""
+    parent_eng = create_engine(
+        f"postgresql://ivy_parent_login:{_PARENT_LOGIN_PW}@localhost:5432/ivymanagement"
+    )
+    try:
+        with parent_eng.connect() as conn:
+            # parcuplk01 之前此處 raise ProgrammingError(permission denied)；
+            # 補 GRANT UPDATE 後取得行鎖成功（回 0~1 列，視 catalog 是否有資料）。
+            conn.execute(
+                text("SELECT id FROM activity_courses ORDER BY id LIMIT 1 FOR UPDATE")
+            ).all()
+            conn.rollback()
+    finally:
+        parent_eng.dispose()
+
+
 def test_public_count_enrolled_bypasses_rls(phase1f_seed):
     """SECURITY DEFINER function returns the true count across all parents,
     not just the calling parent's. Parent B has 0 registrations on courseA
