@@ -116,3 +116,22 @@ def test_copy_record_to_snapshot_copies_independent_payout_columns(test_db_sessi
     assert snap.supplementary_health_employee == 123.45
     assert snap.appraisal_year_end_bonus == 678.90
     assert snap.unused_leave_payout == 111.11
+
+
+def test_detail_schema_declares_every_payload_column():
+    """schema↔payload 防漂移（設計審查 2026-06-25 QW5）：detail 端點以
+    ``_PAYLOAD_COLUMNS`` 反射組 payload dict，但回傳走 ``SalarySnapshotDetailOut``
+    response_model。任何 _PAYLOAD_COLUMNS 欄位未在 schema 宣告 → Pydantic 靜默
+    丟棄 → detail API 少回該金額（值仍 persist，屬序列化契約漂移）。原漏宣告
+    extra_allowance / extra_allowance_label / appraisal_year_end_bonus /
+    supplementary_health_employee / unused_leave_payout 5 欄即如此。
+    """
+    from services.finance.salary_snapshot_service import _PAYLOAD_COLUMNS
+    from schemas.salary_snapshots import SalarySnapshotDetailOut
+
+    schema_fields = set(SalarySnapshotDetailOut.model_fields)
+    dropped = set(_PAYLOAD_COLUMNS) - schema_fields
+    assert not dropped, (
+        "SalarySnapshotDetailOut 漏宣告 _PAYLOAD_COLUMNS 欄位，detail API 會靜默"
+        f"少回這些值: {sorted(dropped)}；請在 schemas/salary_snapshots.py 補對應欄位。"
+    )
