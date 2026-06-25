@@ -2613,6 +2613,11 @@ class SalaryEngine:
         month: int,
     ) -> tuple:
         """曠職核心計算（純邏輯，不查 DB），回傳 (absent_count, absence_deduction_amount)。"""
+        # P2-G：只把「有實際打卡證據」的日子視為出勤。leave sync 對「半日假 + 當天完全
+        # 未打卡」會寫一筆 status=ABSENT、無 punch 的 Attendance row；若不過濾，該 row 會
+        # 讓當日落入 attendance_dates → 被當已出勤而遮蔽曠職判定（未請假未上班的另半天
+        # 漏扣）。改以 punch 在否判定出勤，與「無 attendance row」一致（整日曠職，反規避
+        # 設計見 leave_covered 註解）；整日請假則由下方 leave_covered 覆蓋，不受此過濾影響。
         attendance_dates = {
             (
                 a.attendance_date.date()
@@ -2620,6 +2625,8 @@ class SalaryEngine:
                 else a.attendance_date
             )
             for a in attendances
+            if getattr(a, "punch_in_time", None) is not None
+            or getattr(a, "punch_out_time", None) is not None
         }
 
         # 累計每日請假時數（支援同日多筆假單，例如上午 4h 事假 + 下午 4h 病假）。

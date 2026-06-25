@@ -1900,6 +1900,67 @@ class TestPartialDayLeaveAbsence:
         )
         assert absent_count == 0
 
+    def test_absent_status_row_without_punch_not_treated_as_attendance(self):
+        """P2-G：半日假未打卡時 leave sync 會寫一筆 status=absent、無 punch 的 Attendance
+        row；該 row 不得被當『已出勤』而遮蔽曠職判定，應與『無 attendance row』一致判
+        為整日曠職（反規避設計，與 test_half_day_leave_without_punch_still_absent 對齊）。"""
+        from types import SimpleNamespace
+
+        from services.salary.engine import SalaryEngine
+
+        d = date(2026, 1, 5)
+        absent_row = SimpleNamespace(
+            attendance_date=d,
+            punch_in_time=None,
+            punch_out_time=None,
+            status="absent",
+        )
+        absent_count, amount = SalaryEngine._compute_absence(
+            emp_id=1,
+            attendances=[absent_row],
+            approved_leaves=[self._FakeLeave(d, d, 4)],
+            expected_workdays={d},
+            daily_salary=1000,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 31),
+            year=2026,
+            month=1,
+        )
+        # 修補前：absent_row 進 attendance_dates → 該日被當已出勤 → count=0、amount=0
+        # 修補後：無 punch → 不算出勤；4h<8h 不整日覆蓋 → 曠職 1 天扣 1000（與無 row 一致）
+        assert (
+            absent_count == 1
+        ), f"status=absent 無打卡 row 不應遮蔽曠職，得 {absent_count}"
+        assert amount == 1000
+
+    def test_punched_row_counts_as_attendance(self):
+        """有實際打卡的 row → 視為出勤，當日不曠職。"""
+        from datetime import datetime as _dt
+        from types import SimpleNamespace
+
+        from services.salary.engine import SalaryEngine
+
+        d = date(2026, 1, 5)
+        punched = SimpleNamespace(
+            attendance_date=d,
+            punch_in_time=_dt(2026, 1, 5, 9, 0),
+            punch_out_time=_dt(2026, 1, 5, 17, 0),
+            status="normal",
+        )
+        absent_count, amount = SalaryEngine._compute_absence(
+            emp_id=1,
+            attendances=[punched],
+            approved_leaves=[],
+            expected_workdays={d},
+            daily_salary=1000,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 31),
+            year=2026,
+            month=1,
+        )
+        assert absent_count == 0
+        assert amount == 0
+
 
 # ──────────────────────────────────────────────
 # 月中離職底薪折算
