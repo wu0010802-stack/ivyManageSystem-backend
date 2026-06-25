@@ -550,6 +550,7 @@ def print_session_roll_pdf(
 def batch_update_attendance(
     session_id: int,
     body: BatchAttendanceUpdate,
+    request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """批次儲存點名記錄（upsert）"""
@@ -648,6 +649,42 @@ def batch_update_attendance(
         # activity_stats_attendance），否則出席率會 stale 到 TTL。
         _invalidate_activity_dashboard_caches(session)
         applied = sum(1 for item in records if item.registration_id in valid_reg_ids)
+
+        # AuditMiddleware 不涵蓋 /api/activity/attendance/*（ENTITY_PATTERNS 的
+        # /api/activity/sessions 以 re.match 對不上 /api/activity/attendance/...），
+        # 故顯式留稽核：點名直接影響退費比例（T_served）與出席統計，須可追溯誰把
+        # 哪名學生標成出席/缺席。records 記每筆 registration → 出席與否供鑑識。
+        course_name = (
+            session.query(ActivityCourse.name)
+            .filter(ActivityCourse.id == sess.course_id)
+            .scalar()
+        )
+        write_explicit_audit(
+            request,
+            action="UPDATE",
+            entity_type="activity_session",
+            entity_id=str(session_id),
+            summary=(
+                f"批次點名：「{course_name}」{sess.session_date.isoformat()} "
+                f"更新 {applied} 筆（跳過 {len(skipped)}）"
+            ),
+            changes={
+                "course_id": sess.course_id,
+                "course_name": course_name,
+                "session_date": sess.session_date.isoformat(),
+                "updated_count": applied,
+                "skipped_count": len(skipped),
+                "operator": operator,
+                "records": [
+                    {
+                        "registration_id": item.registration_id,
+                        "is_present": item.is_present,
+                    }
+                    for item in records
+                    if item.registration_id in valid_reg_ids
+                ],
+            },
+        )
         return {"ok": True, "updated": applied, "skipped": len(skipped)}
     finally:
         session.close()

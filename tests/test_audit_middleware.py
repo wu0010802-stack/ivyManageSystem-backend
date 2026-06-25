@@ -250,7 +250,13 @@ class TestActivityEntityTypeMapping:
             ("/api/activity/courses/1", "activity_course"),
             ("/api/activity/supplies/9", "activity_supply"),
             ("/api/activity/inquiries/5/reply", "activity_inquiry"),
-            ("/api/activity/sessions/1/records", "activity_session"),
+            # 真實點名路由在 /api/activity/attendance/sessions/{id}/records
+            # （非 /api/activity/sessions），re.match 對 /api/activity/sessions
+            # pattern 不命中 → 回 None。此為刻意：attendance 子套件全程走顯式
+            # write_explicit_audit（見 api/activity/attendance.py、test_activity_
+            # attendance_save_audit_2026_06_24.py），不靠 middleware mapping，
+            # 故新增 mapping 反會與既有顯式稽核 double-count。
+            ("/api/activity/attendance/sessions/1/records", None),
             ("/api/activity/settings/registration-time", "activity_settings"),
             # POS：daily-close 必須先於 pos 被匹配到（first match wins）
             ("/api/activity/pos/daily-close/2026-04-21", "activity_daily_close"),
