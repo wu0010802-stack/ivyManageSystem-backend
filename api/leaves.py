@@ -455,6 +455,7 @@ def _check_employee_has_conflicting_overtime(
     end_date: date,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
+    include_pending: bool = True,
 ) -> None:
     """申請請假時檢查同員工同時段是否已有 approved/pending 加班。
 
@@ -464,18 +465,22 @@ def _check_employee_has_conflicting_overtime(
     - leave 全日（start_time/end_time 為 None）→ 與 OT 同日就衝突
     - leave 半日（HH:MM）→ 與 OT 時段比對；OT 缺時段視為全日衝突
 
-    NOTE: 目前只在 create 路徑使用。若未來在 update 路徑也呼叫此 helper，需新增
-    exclude_overtime_id 參數避免自我衝突；同步調整 _check_employee_has_conflicting_leave。
+    include_pending：
+    - True（預設，create / import 路徑）→ 同時擋 pending + approved 加班。
+    - False（approve 路徑）→ 只擋「已核准」加班。create 守衛可被「reject→重建→
+      重核」或匯入繞過（rank 1/7），故核准請假落地前再驗一次「已核准加班」，封住
+      同時段請假與加班雙雙核准的雙重給付；只看 approved 可避免兩張 pending 互鎖。
     """
     from models.database import OvertimeRecord  # avoid circular import at module load
 
+    ot_statuses = [ApprovalStatus.APPROVED.value]
+    if include_pending:
+        ot_statuses.append(ApprovalStatus.PENDING.value)
     candidates = (
         session.query(OvertimeRecord)
         .filter(
             OvertimeRecord.employee_id == employee_id,
-            OvertimeRecord.status.in_(
-                [ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]
-            ),
+            OvertimeRecord.status.in_(ot_statuses),
             OvertimeRecord.overtime_date >= start_date,
             OvertimeRecord.overtime_date <= end_date,
         )
@@ -1509,6 +1514,19 @@ def approve_leave(
                     data.force_overlap_reason,
                 )
 
+            # ── 跨模組核准守衛：同時段不得已有「已核准」加班（rank 1/7）──────────
+            # 防「同日扣請假薪 + 付加班費」雙重給付。create 路徑已查 approved+pending，
+            # 但 reject→重建→重核 與匯入會繞過；核准落地前只查 approved 加班再擋一次。
+            _check_employee_has_conflicting_overtime(
+                session,
+                leave.employee_id,
+                leave.start_date,
+                leave.end_date,
+                leave.start_time,
+                leave.end_time,
+                include_pending=False,
+            )
+
             # ── 配額硬檢查（核准動作）──────────────────────────────────────────
             # 使用 include_pending=True + exclude_id=leave_id：
             # 計算「所有已核准 + 其他待審（排除本張）+ 本次時數」是否超出年度配額。
@@ -1967,6 +1985,17 @@ def batch_approve_leaves(
                                     "重疊；批次核准不支援強制過，請改用單筆核准並帶 force_overlap"
                                 ),
                             )
+                        # 跨模組核准守衛（rank 1/7）：同時段不得已有「已核准」加班，
+                        # 防同日扣請假薪 + 付加班費雙重給付。批次只查 approved。
+                        _check_employee_has_conflicting_overtime(
+                            session,
+                            leave.employee_id,
+                            leave.start_date,
+                            leave.end_date,
+                            leave.start_time,
+                            leave.end_time,
+                            include_pending=False,
+                        )
                     except HTTPException as e:
                         failed.append({"id": leave_id, "reason": e.detail})
                         continue
@@ -2530,6 +2559,14 @@ def _import_leaves_sync(content: bytes) -> dict:
                         f"與既有假單 #{conflict.id}"
                         f"（{conflict.start_date}~{conflict.end_date}）重疊"
                     )
+                # 跨模組衝突（rank 7）：匯入假單也需查同時段加班，否則匯入 pending →
+                # 核准時才爆。匯入無時段欄 → 全日語意（同日有加班即衝突）。
+                try:
+                    _check_employee_has_conflicting_overtime(
+                        session, emp.id, start_date, end_date
+                    )
+                except HTTPException as he:
+                    raise ValueError(he.detail)
                 _check_leave_limits(
                     session,
                     emp.id,

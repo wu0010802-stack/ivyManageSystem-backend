@@ -120,6 +120,7 @@ def check_employee_has_conflicting_leave(
     overtime_date: date,
     start_time,  # datetime | None
     end_time,  # datetime | None
+    include_pending: bool = True,
 ) -> None:
     """申請加班時檢查同員工同時段是否已有 approved/pending 請假。
 
@@ -129,19 +130,20 @@ def check_employee_has_conflicting_leave(
     - OT 全日（start_time/end_time 為 None）→ 與 leave 同日就衝突
     - OT 半日 → 與 leave 時段比對；leave 缺時段視為全日衝突
 
-    NOTE: 目前只在 create 路徑使用。若未來在 update 路徑也呼叫此 helper，需新增
-    exclude_leave_id 參數避免自我衝突；同步調整 check_employee_has_conflicting_overtime。
+    include_pending：
+    - True（預設，create / import 路徑）→ 同時擋 pending + approved 請假。
+    - False（approve 路徑）→ 只擋「已核准」請假。create 守衛可被「reject→重建→
+      重核」或匯入繞過（rank 1/7），故核准加班落地前再驗一次「已核准請假」，封住
+      同時段請假與加班雙雙核准的雙重給付；只看 approved 可避免兩張 pending 互鎖。
     """
+    leave_statuses = [ApprovalStatus.APPROVED.value]
+    if include_pending:
+        leave_statuses.append(ApprovalStatus.PENDING.value)
     candidates = (
         session.query(LeaveRecord)
         .filter(
             LeaveRecord.employee_id == employee_id,
-            LeaveRecord.status.in_(
-                [
-                    ApprovalStatus.PENDING.value,
-                    ApprovalStatus.APPROVED.value,
-                ]
-            ),
+            LeaveRecord.status.in_(leave_statuses),
             LeaveRecord.start_date <= overtime_date,
             LeaveRecord.end_date >= overtime_date,
         )

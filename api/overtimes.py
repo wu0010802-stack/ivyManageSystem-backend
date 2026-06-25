@@ -1441,6 +1441,17 @@ def approve_overtime(
                 exclude_id=overtime_id,
             )
             _check_overtime_type_calendar(session, ot.overtime_date, ot.overtime_type)
+            # 跨模組核准守衛（rank 1）：同時段不得已有「已核准」請假，防同日扣請假薪
+            # + 付加班費雙重給付。create 守衛可被 reject→重建→重核/匯入繞過，故核准
+            # 加班落地前只查 approved 請假再擋一次（include_pending=False 避免 pending 互鎖）。
+            _check_employee_has_conflicting_leave(
+                session,
+                ot.employee_id,
+                ot.overtime_date,
+                ot.start_time,
+                ot.end_time,
+                include_pending=False,
+            )
 
         ot.status = (
             ApprovalStatus.APPROVED.value if approved else ApprovalStatus.REJECTED.value
@@ -1663,6 +1674,16 @@ def batch_approve_overtimes(
                     )
                     _check_overtime_type_calendar(
                         session, ot.overtime_date, ot.overtime_type
+                    )
+                    # 跨模組核准守衛（rank 1）：同時段不得已有「已核准」請假，防同日
+                    # 扣請假薪 + 付加班費雙付。批次只查 approved，衝突則該筆 failed。
+                    _check_employee_has_conflicting_leave(
+                        session,
+                        ot.employee_id,
+                        ot.overtime_date,
+                        ot.start_time,
+                        ot.end_time,
+                        include_pending=False,
                     )
 
                 is_reject_of_approved = was_approved and not data.approved
@@ -2031,6 +2052,14 @@ def _import_overtimes_sync(content: bytes) -> dict:
                 _check_monthly_overtime_cap(session, emp.id, overtime_date, hours)
                 _check_quarterly_overtime_cap(session, emp.id, overtime_date, hours)
                 _check_overtime_type_calendar(session, overtime_date, ot_type_raw)
+                # 跨模組衝突（rank 1/7）：匯入加班也需查同時段請假，否則匯入 pending →
+                # 核准時才爆 / 漏擋。沿用 create 語意（approved+pending）。
+                try:
+                    _check_employee_has_conflicting_leave(
+                        session, emp.id, overtime_date, start_dt, end_dt
+                    )
+                except HTTPException as he:
+                    raise ValueError(he.detail)
 
                 reason_raw = row.reason
                 reason = str(reason_raw).strip() if reason_raw is not None else None
