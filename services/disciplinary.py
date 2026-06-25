@@ -72,6 +72,37 @@ def get_pending_actions(
     )
 
 
+def get_deductible_actions(
+    session: Session, employee_id: int, until_date, salary_record_id=None
+) -> list[DisciplinaryAction]:
+    """發放月薪資（重）計算可抵扣的懲處：pending（未抵扣）+ 已抵扣到本 record 者。
+
+    Why（2026-06-25 修補）：發放月薪資首次計算後，懲處被標 applied 綁定到當月
+    SalaryRecord；之後該月任何假單/加班/考勤異動會觸發「重算」。若重算只取
+    pending（applied_to_salary_id IS NULL），已 applied 的懲處取不到 → 不再扣減
+    → festival/overtime 以 raw 覆寫先前 reduced 值 → 懲處被靜默還原、員工多領。
+
+    納入「已抵扣到 salary_record_id」者，使重算可重複扣減同一筆懲處（冪等），且
+    不會誤抓別月 record 的懲處（applied_to_salary_id 指向別 record 者排除）。
+    salary_record_id=None（首次計算、record 尚未存在）時退化為僅 pending。
+    """
+    from sqlalchemy import or_
+
+    cond = DisciplinaryAction.applied_to_salary_id.is_(None)
+    if salary_record_id is not None:
+        cond = or_(cond, DisciplinaryAction.applied_to_salary_id == salary_record_id)
+    return (
+        session.query(DisciplinaryAction)
+        .filter(
+            DisciplinaryAction.employee_id == employee_id,
+            DisciplinaryAction.action_date <= until_date,
+            cond,
+        )
+        .order_by(DisciplinaryAction.action_date, DisciplinaryAction.id)
+        .all()
+    )
+
+
 def compute_total_pending_deduction(
     session: Session,
     employee_id: int,
@@ -104,7 +135,10 @@ def apply_deductions(
         bonus_config: BonusConfig instance（讀預設金額）
         actor: 操作者 username（寫入 updated_by）
     """
-    actions = get_pending_actions(session, employee_id, until_date)
+    # 用 deductible（pending + 已抵扣到本 record）而非僅 pending：重算發放月時
+    # 已 applied 的懲處須被重新標記到同一 record（冪等），否則 _adjust 已重新扣減、
+    # 此處卻取不到 → applied_amount 不更新、ledger 與實際扣薪脫節。
+    actions = get_deductible_actions(session, employee_id, until_date, salary_record_id)
     if not actions:
         return 0.0
 

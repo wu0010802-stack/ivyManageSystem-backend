@@ -359,6 +359,10 @@ class SalaryEngine:
         self.insurance_service = insurance_service or InsuranceService()
         # 記錄目前載入的設定版本 ID，供薪資紀錄稽核用
         self._bonus_config_id: Optional[int] = None
+        # 目前載入的 BonusConfig instance（懲處預設扣款金額 warning/minor/major_
+        # offense_deduction 由此讀取）。⚠ 必須與 _bonus_config_id 同步賦值，否則
+        # deduction_amount=0 的懲處會 fallback 到 hardcode 1000/3000，忽略 admin 設定。
+        self._bonus_config = None
         self._attendance_policy_id: Optional[int] = None
         # deduction_rules 為歷史相容 stub：實際扣款由 services.salary.deduction
         # 直接以勞基法基準（month_salary / 30 / 8 / 60）計算，AttendancePolicy
@@ -429,6 +433,9 @@ class SalaryEngine:
         """快照所有受 load_config_from_db() 影響的 engine 屬性,供 restore 使用。"""
         return {
             "bonus_config_id": self._bonus_config_id,
+            # BonusConfig instance（懲處預設金額來源）；歷史月 swap 後須還原，
+            # 否則離開 config_for_month 仍指向歷史月版本，下次 baseline 懲處金額漂移。
+            "bonus_config": self._bonus_config,
             "attendance_policy_id": self._attendance_policy_id,
             "bonus_base": copy.deepcopy(self._bonus_base),
             "supervisor_festival_bonus": dict(self._supervisor_festival_bonus),
@@ -471,6 +478,8 @@ class SalaryEngine:
     def _restore_config_state(self, snapshot: dict) -> None:
         """以 snapshot 還原 engine + insurance_service 屬性。"""
         self._bonus_config_id = snapshot["bonus_config_id"]
+        # .get 防舊 snapshot 無此 key（KeyError 防禦，退回 None）
+        self._bonus_config = snapshot.get("bonus_config")
         self._attendance_policy_id = snapshot["attendance_policy_id"]
         self._bonus_base = snapshot["bonus_base"]
         self._supervisor_festival_bonus = snapshot["supervisor_festival_bonus"]
@@ -535,6 +544,8 @@ class SalaryEngine:
             的歷史 bug（art_teacher 基數曾因此被歸零）。
         """
         self._bonus_config_id = bonus.id
+        # 懲處預設扣款金額讀此 instance；與 _bonus_config_id 同步賦值（見 __init__ 註解）。
+        self._bonus_config = bonus
         # art_teacher 基數來自 bonus.art_teacher_festival（NULL → 模組預設 2000）；
         # 必須在 _bonus_base 內保留 art_teacher key，否則 festival.py 取不到會回 0
         art_base = bonus.art_teacher_festival
@@ -2846,6 +2857,7 @@ class SalaryEngine:
         festival_total,
         overtime_total,
         pending_actions=_PREFETCH_UNSET,
+        salary_record_id=None,
     ):
         """從發放月累積總額中扣減 pending 懲處。
 
@@ -2853,7 +2865,12 @@ class SalaryEngine:
         非發放月（totals 為 None）或無 pending 懲處直接 pass-through。
 
         qa-loop #6：bulk 路徑經 pending_actions= 傳預載懲處清單，免每位員工重查
-        get_pending_actions（read-N+1）；single 路徑不傳（哨兵）→ 即時 query。
+        （read-N+1）；single 路徑不傳（哨兵）→ 即時 query。
+
+        重算冪等（2026-06-25）：single 路徑改用 get_deductible_actions(salary_record_id)
+        ——除 pending 外，也納入「已抵扣到本月 record」的懲處，使發放月重算時懲處
+        仍被扣減（否則 raw 覆寫 reduced、懲處被還原）。bulk 路徑的 prefetched 清單
+        已由 _bulk_preload_for_salary_month 同步納入該集合。
 
         Returns:
             (festival_after, overtime_after, total_deducted)
@@ -2866,11 +2883,13 @@ class SalaryEngine:
         from services.disciplinary import _effective_amount
 
         if pending_actions is _PREFETCH_UNSET:
-            from services.disciplinary import get_pending_actions
+            from services.disciplinary import get_deductible_actions
 
             _, last_day = calendar.monthrange(year, month)
             until_date = date(year, month, last_day)
-            actions = get_pending_actions(session, emp.id, until_date)
+            actions = get_deductible_actions(
+                session, emp.id, until_date, salary_record_id
+            )
         else:
             actions = pending_actions
         if not actions:
@@ -2903,11 +2922,17 @@ class SalaryEngine:
         year: int,
         month: int,
         salary_record_id: int,
+        available_bonus=None,
     ) -> None:
         """發放月寫入 record 後標記 pending 懲處為已抵扣。
 
         非發放月（period_accrual 不適用）自動 no-op。實際抵扣金額按
         _adjust_period_totals_for_discipline 的同樣語意分配（節慶優先）。
+
+        P2-D：available_bonus 應傳「扣減前 raw 節慶+超額」（由 breakdown.
+        _disc_raw_bonus_available 帶入），使 ledger applied_amount 等於實際扣薪
+        金額；未傳（None）時退回以 record 上 reduced 值計算（會在 target>reduced
+        時截斷少記，僅保留作為向後相容 fallback）。
         """
         import calendar as _cal
         from services.disciplinary import apply_deductions
@@ -2925,7 +2950,11 @@ class SalaryEngine:
         _, last_day = _cal.monthrange(year, month)
         until_date = date(year, month, last_day)
         bonus_config = getattr(self, "_bonus_config", None)
-        available = float(rec.festival_bonus or 0) + float(rec.overtime_bonus or 0)
+        if available_bonus is None:
+            available_bonus = float(rec.festival_bonus or 0) + float(
+                rec.overtime_bonus or 0
+            )
+        available = available_bonus
         try:
             apply_deductions(
                 session,
@@ -3041,6 +3070,7 @@ class SalaryEngine:
         ytd_before: float | None = None,
         prefetched_record=_PREFETCH_UNSET,
         prefetched_pending_actions=_PREFETCH_UNSET,
+        recompute_salary_record_id=None,
     ):
         """single 與 bulk 共用的「計算尾段」：懲處扣減 → calculate_salary →
         二代健保補充保費 → 曠職扣款 → net + 守衛，回傳 breakdown（不 persist）。
@@ -3054,6 +3084,10 @@ class SalaryEngine:
         """
         # 懲處：從發放月累積扣 pending（節慶優先扣完才動超額）；非發放月 totals=None
         # → _adjust 直接 pass-through 不查 DB。
+        # P2-D：保留扣減前 raw 可用額（= raw 節慶+超額），供 _mark_discipline_applied
+        # 以 raw 而非 reduced 值記 ledger applied_amount（否則 target>reduced 時截斷少記）。
+        _raw_disc_festival = period_festival_total
+        _raw_disc_overtime = period_overtime_total
         period_festival_total, period_overtime_total, _disc_deducted = (
             self._adjust_period_totals_for_discipline(
                 session,
@@ -3063,6 +3097,7 @@ class SalaryEngine:
                 period_festival_total,
                 period_overtime_total,
                 pending_actions=prefetched_pending_actions,
+                salary_record_id=recompute_salary_record_id,
             )
         )
 
@@ -3117,6 +3152,16 @@ class SalaryEngine:
             )
         if breakdown.net_salary < 0:
             raise ValueError(f"net_salary 異常負值（含曠職）: {breakdown.net_salary}")
+
+        # P2-D：把扣減前 raw 可用獎金總額掛在 breakdown 上，供呼叫端的
+        # _mark_discipline_applied 以 raw（非 record 上已扣減的 reduced）值記 ledger。
+        # 非發放月（raw=None）→ None，_mark 退回以 record 值計算（no-op 路徑）。
+        if _raw_disc_festival is not None and _raw_disc_overtime is not None:
+            breakdown._disc_raw_bonus_available = float(_raw_disc_festival) + float(
+                _raw_disc_overtime
+            )
+        else:
+            breakdown._disc_raw_bonus_available = None
 
         return breakdown
 
@@ -3180,6 +3225,20 @@ class SalaryEngine:
                 self._compute_period_accrual_totals(session, emp, year, month)
             )
 
+            # 重算冪等（P1-A）：查既有當月 record id，傳入讓 _adjust 把「已抵扣到本
+            # record」的懲處也納入扣減集合（首算尚無 record → None → 僅 pending）。
+            from models.database import SalaryRecord as _SR
+
+            _existing_rec_id = (
+                session.query(_SR.id)
+                .filter(
+                    _SR.employee_id == emp.id,
+                    _SR.salary_year == year,
+                    _SR.salary_month == month,
+                )
+                .scalar()
+            )
+
             # period accrual 為 raw（未扣懲處）；懲處與其後尾段由共用
             # _finalize_breakdown 處理（與 bulk 路徑同一份計算尾段）。
             return self._finalize_breakdown(
@@ -3199,6 +3258,7 @@ class SalaryEngine:
                 period_overtime_total=period_overtime_total,
                 absent_count=absent_count,
                 absence_deduction_amount=absence_deduction_amount,
+                recompute_salary_record_id=_existing_rec_id,
             )
 
     def preview_salary_calculation(self, employee_id: int, year: int, month: int):
@@ -3271,10 +3331,20 @@ class SalaryEngine:
             )
             session.flush()  # 取得 salary_record.id 供 discipline mark applied 用
 
-            # 發放月才會有 period 累積 → 此時 mark applied pending 懲處
-            self._mark_discipline_applied(
-                session, emp.id, year, month, salary_record.id
-            )
+            # 發放月才會有 period 累積 → 此時 mark applied pending 懲處。
+            # 包 config_for_month 使 apply_deductions 解析懲處預設金額時用發放月的
+            # BonusConfig（與 _adjust 同設定版本）；available_bonus 用 raw 可用額（P2-D）。
+            with self.config_for_month(session, year, month):
+                self._mark_discipline_applied(
+                    session,
+                    emp.id,
+                    year,
+                    month,
+                    salary_record.id,
+                    available_bonus=getattr(
+                        breakdown, "_disc_raw_bonus_available", None
+                    ),
+                )
 
             try:
                 session.commit()
@@ -3299,9 +3369,17 @@ class SalaryEngine:
                     session, emp.id, year, month, _before_bonus, salary_record
                 )
                 session.flush()
-                self._mark_discipline_applied(
-                    session, emp.id, year, month, salary_record.id
-                )
+                with self.config_for_month(session, year, month):
+                    self._mark_discipline_applied(
+                        session,
+                        emp.id,
+                        year,
+                        month,
+                        salary_record.id,
+                        available_bonus=getattr(
+                            breakdown, "_disc_raw_bonus_available", None
+                        ),
+                    )
                 session.commit()
 
             return breakdown
@@ -3583,17 +3661,36 @@ class SalaryEngine:
 
         # qa-loop #6：批次預載發放月懲處（一次 query 取代 _adjust_period_totals_for_discipline
         # 逐員工 get_pending_actions 的 read-N+1）；按 emp 分組、保留 (action_date, id) 排序。
+        # 重算冪等（P1-A）：除 pending（IS NULL）外，也納入「已抵扣到本月既有 record」
+        # 的懲處（applied_to_salary_id IN 本月 record ids），使 bulk 重算時懲處仍被
+        # 扣減，與 single 路徑 get_deductible_actions 同集合語意。
         from models.disciplinary import DisciplinaryAction
+        from models.database import SalaryRecord as _SRForDisc
+        from sqlalchemy import or_ as _or
 
         _, _disc_last_day = calendar.monthrange(year, month)
         _disc_until = date(year, month, _disc_last_day)
+        _existing_rec_ids = [
+            rid
+            for (rid,) in session.query(_SRForDisc.id).filter(
+                _SRForDisc.salary_year == year,
+                _SRForDisc.salary_month == month,
+                _SRForDisc.employee_id.in_(employee_ids),
+            )
+        ]
+        _disc_cond = DisciplinaryAction.applied_to_salary_id.is_(None)
+        if _existing_rec_ids:
+            _disc_cond = _or(
+                _disc_cond,
+                DisciplinaryAction.applied_to_salary_id.in_(_existing_rec_ids),
+            )
         pending_actions_by_emp: dict = {eid: [] for eid in employee_ids}
         for _disc_action in (
             session.query(DisciplinaryAction)
             .filter(
                 DisciplinaryAction.employee_id.in_(employee_ids),
                 DisciplinaryAction.action_date <= _disc_until,
-                DisciplinaryAction.applied_to_salary_id.is_(None),
+                _disc_cond,
             )
             .order_by(DisciplinaryAction.action_date, DisciplinaryAction.id)
             .all()
@@ -4064,6 +4161,8 @@ class SalaryEngine:
             prefetched_record=_existing_rec,
             # qa-loop #6：傳預載發放月懲處，免 _adjust_period_totals_for_discipline 每人重查。
             prefetched_pending_actions=preload.pending_actions_by_emp.get(emp.id, []),
+            # P1-A：既有 record id（重算時讓 _adjust/ledger 對齊「已抵扣到本 record」集合）。
+            recompute_salary_record_id=(_existing_rec.id if _existing_rec else None),
         )
 
         # ── SalaryRecord upsert（延後至外層 commit）
@@ -4099,7 +4198,17 @@ class SalaryEngine:
         # flush 取得 salary_record.id；非發放月 _mark_discipline_applied 自動 no-op。
         # 在 SAVEPOINT 內執行，失敗時隨該員工 rollback。
         session.flush()
-        self._mark_discipline_applied(session, emp.id, year, month, salary_record.id)
+        # bulk loop 已在 config_for_month(year, month) 內（process_bulk_salary_calculation）
+        # → self._bonus_config 即發放月版本，apply_deductions 解析懲處金額正確。
+        # available_bonus 用 raw 可用額（P2-D），ledger applied_amount 等於實際扣薪。
+        self._mark_discipline_applied(
+            session,
+            emp.id,
+            year,
+            month,
+            salary_record.id,
+            available_bonus=getattr(breakdown, "_disc_raw_bonus_available", None),
+        )
         return emp, breakdown
 
     def process_bulk_salary_calculation(
