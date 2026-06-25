@@ -90,16 +90,45 @@ AUDIT_EXEMPT: dict[str, str] = {
 }
 
 
+# 宣告式稽核偵測（MID-1）：audit_entity(...) 回傳 closure 的 __qualname__ 帶外層工廠名
+# 'audit_entity.<locals>._set_audit_entity_type'，以子字串比對辨識（同 mutation_guard 模板）。
+_AUDIT_ENTITY_MARKER = "audit_entity"
+
+
+def _collect_dependency_qualnames(dependant, acc: list[str]) -> None:
+    for sub in dependant.dependencies:
+        call = getattr(sub, "call", None)
+        if call is not None:
+            acc.append(getattr(call, "__qualname__", str(call)))
+        _collect_dependency_qualnames(sub, acc)
+
+
+def _route_has_audit_entity_dep(route: APIRoute) -> bool:
+    """route 是否掛宣告式 Depends(audit_entity(...))（router-level 或端點 level 皆可）。"""
+    quals: list[str] = []
+    if route.dependant is not None:
+        _collect_dependency_qualnames(route.dependant, quals)
+    return any(_AUDIT_ENTITY_MARKER in q for q in quals)
+
+
 def _uncovered_mutation_paths() -> set[str]:
-    """所有『不會被 AuditMiddleware 稽核』的 mutation 端點 path。"""
+    """所有『不會被 AuditMiddleware 稽核』的 mutation 端點 path。
+
+    覆蓋來源有二：① ENTITY_PATTERNS path 比對（_parse_entity_type）② 宣告式
+    Depends(audit_entity(...))（MID-1，把『該端點稽核什麼』寫在端點旁）。兩者皆無
+    → 視為未稽核，須在 AUDIT_EXEMPT 顯式豁免。
+    """
     paths: set[str] = set()
     for r in main.app.routes:
         if not isinstance(r, APIRoute):
             continue
         if not ((r.methods or set()) & _MUTATING):
             continue
-        if _parse_entity_type(r.path) is None:
-            paths.add(r.path)
+        if _parse_entity_type(r.path) is not None:
+            continue
+        if _route_has_audit_entity_dep(r):
+            continue
+        paths.add(r.path)
     return paths
 
 

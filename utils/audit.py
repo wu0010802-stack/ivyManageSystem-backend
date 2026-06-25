@@ -244,7 +244,8 @@ ENTITY_PATTERNS = [
     # 已自行 write_explicit_audit / write_audit_in_session 的端點（roles、policies、
     # dsr、activity/attendance、portal reveal-phone）刻意不在此處重複攔截，列於
     # 該 sweep 的 AUDIT_EXEMPT 並註明「端點自審」。
-    (r"/api/shifts", "shift"),  # 班別/排班（異動牽動薪資 stale）
+    # 注意：/api/shifts 已改宣告式 Depends(audit_entity("shift"))（MID-1 示範），
+    # 故不在此 path-pattern 清單；其稽核覆蓋由 audit_entity dependency + sweep 保證。
     (r"/api/dismissal-calls", "dismissal_call"),  # 接送通知（兒童安全/監護爭議溯源）
     (r"/api/data-quality", "data_quality_report"),  # 資料品質告警處置
     (r"/api/disciplinary-actions", "disciplinary_action"),  # 員工懲處（HR 敏感）
@@ -403,6 +404,29 @@ def _parse_entity_id(path):
     # Match patterns like /api/employees/5 or /api/leaves/12/approve
     match = re.search(r"/(\d+)(?:/[a-z-]+)?$", path)
     return match.group(1) if match else None
+
+
+def audit_entity(entity_type: str):
+    """宣告式稽核 opt-in：在 router / 端點掛 ``Depends(audit_entity("shift"))`` 即讓
+    AuditMiddleware 以指定 entity_type 對該端點的 mutation 落 audit_logs，取代靠
+    ENTITY_PATTERNS path 比對推導（path 比對仍為未掛此 dependency 的既有路由 fallback）。
+
+    設計審查 2026-06-25 主題 A：path-pattern 推導是 opt-out 反模式——新增 router 漏配
+    pattern 即靜默零稽核且零訊號。宣告式把「該端點稽核什麼」寫在端點旁、與授權守衛同
+    位置，且可被 tests/test_audit_route_coverage.py 的 route-enum sweep 直接驗證。
+
+    用法（router-level，套用該 router 全部端點；GET 仍因 method 守衛不落 audit）：
+        router = APIRouter(prefix="/api/shifts",
+                           dependencies=[Depends(audit_entity("shift"))])
+    或單一端點 ``@router.post(..., dependencies=[Depends(audit_entity("shift"))])``。
+
+    entity_type 須有對應 ENTITY_LABELS 中文標籤（test_audit_entity_labels_coverage 守）。
+    """
+
+    def _set_audit_entity_type(request: Request) -> None:
+        request.state.audit_entity_type = entity_type
+
+    return _set_audit_entity_type
 
 
 def mark_soft_delete(request: Request, entity_type: str, entity_label: str) -> None:
@@ -879,13 +903,18 @@ class AuditMiddleware(BaseHTTPMiddleware):
         if path in SKIP_PATHS:
             return await call_next(request)
 
-        # Parse entity info before calling next
-        entity_type = _parse_entity_type(path)
-        if not entity_type:
-            return await call_next(request)
-
-        # Execute the actual request
+        # 先跑請求，再 resolve entity_type——讓 endpoint 的 Depends(audit_entity("X"))
+        # 能以 request.state 覆寫（宣告式 opt-in）；ENTITY_PATTERNS path 比對退為「未掛
+        # 此 dependency 的既有路由」fallback（非破壞性）。設計審查 2026-06-25 主題 A：
+        # path-pattern 推導是 opt-out 反模式（漏配靜默無訊號），宣告式把「該端點稽核
+        # 什麼」寫在端點旁、可被 route-enum sweep 驗證。
         response = await call_next(request)
+
+        entity_type = getattr(
+            request.state, "audit_entity_type", None
+        ) or _parse_entity_type(path)
+        if not entity_type:
+            return response
 
         status = response.status_code
         # 2xx：原本就 audit 的成功路徑（CREATE/UPDATE/DELETE）
