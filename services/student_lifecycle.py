@@ -129,6 +129,19 @@ def transition(
     event_type = get_event_type_for_transition(current, to_status)
     event_date = effective_date or today_taipei()
 
+    # 終態日期守衛（對齊 graduate_student / bulk_graduate 端點，api/students.py）：
+    # 離園/畢業/轉出/退學日不可早於入學日。event_date 會寫成 graduation_date /
+    # withdrawal_date，且作為 mark_salary_stale_for_enrollment_event 的事件日 —— 早於
+    # 入學日會污染在籍報表與年資/年終日期基準。enrollment_date 為 None 時不擋（對齊
+    # 既有端點的 `student.enrollment_date and ...`）。
+    if to_status in (
+        LIFECYCLE_GRADUATED,
+        LIFECYCLE_TRANSFERRED,
+        LIFECYCLE_WITHDRAWN,
+    ):
+        if student.enrollment_date and event_date < student.enrollment_date:
+            raise LifecycleTransitionError("離園/畢業日期不可早於入學日期")
+
     # 更新 student 欄位（連動舊 is_active/status/graduation/withdrawal_date）
     # set_lifecycle_status 維護 terminal_entered_at；audit=False 因呼叫端已寫
     # StudentChangeLog（稽核軌跡），API 端有 AuditMiddleware，不重複寫 AuditLog
