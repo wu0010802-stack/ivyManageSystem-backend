@@ -240,6 +240,21 @@ def on_startup():
     except Exception as e:
         logger.warning("scope_options sanity check skipped: %s", e)
 
+    # insurance_brackets seed-presence 檢查（設計審查 2026-06-25 主題 B）：整表空 →
+    # 薪資保費靜默走 hardcode 級距（prod create_all+stamp / fresh DR 漏 seed 風險）→
+    # logger.warning + Sentry capture_message，讓「漏 seed」在 prod 可見而非靜默錯帳。
+    try:
+        from services.insurance_service import check_insurance_brackets_seeded
+        from models.database import get_session as _get_session_for_ins
+
+        _ins_session = _get_session_for_ins()
+        try:
+            check_insurance_brackets_seeded(_ins_session)
+        finally:
+            _ins_session.close()
+    except Exception as e:
+        logger.warning("insurance_brackets seed check skipped: %s", e)
+
     # P2-7（2026-06-23 資安掃描）：未明設可信代理時啟動告警，讓「per-IP 限流在反向代理後
     # 塌成單桶」的風險在 prod log 可見（修正 runbook「看 log 無警告＝生效」原為死碼）。
     from utils.request_ip import warn_if_trusted_proxies_unset
