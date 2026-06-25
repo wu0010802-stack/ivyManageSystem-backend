@@ -41,6 +41,10 @@ _TEACHER_BLOCKED_LIFECYCLE = frozenset(
 #   2026-06-24 首批（verified-safe）：PORTFOLIO_* / DISMISSAL_CALLS_*。
 #   2026-06-25 擴充 STUDENTS_* 逐筆資料碼（teacher 模板皆 :own_class）：READ/WRITE/
 #     HEALTH_READ/MEDICATION_ADMINISTER/SPECIAL_NEEDS_READ。
+#   2026-06-25 補列 PORTFOLIO_PUBLISH（首批「PORTFOLIO_*」漏列）：reports.py
+#     create/delete/send-line 經 assert_student_access(code=PUBLISH) 逐筆操作他班學生
+#     成長報告，與 PORTFOLIO_READ/WRITE 同家族。teacher 模板未持 PUBLISH（收斂不影響
+#     教師）；supervisor 模板持 bare PUBLISH 為管理角色 → is_row_unrestricted 仍 True。
 #
 # ⚠ 刻意**不含**「全校 workflow / 管理職全校」型 scope-aware code——這些 code 在
 # supervisor 模板為 bare 且**管理職正當依賴 bare=all 取全校**（含 role≠admin/hr/supervisor
@@ -51,6 +55,7 @@ _ROW_SCOPED_DATA_CODES = frozenset(
     {
         Permission.PORTFOLIO_READ.value,
         Permission.PORTFOLIO_WRITE.value,
+        Permission.PORTFOLIO_PUBLISH.value,
         Permission.DISMISSAL_CALLS_READ.value,
         Permission.DISMISSAL_CALLS_WRITE.value,
         Permission.STUDENTS_READ.value,

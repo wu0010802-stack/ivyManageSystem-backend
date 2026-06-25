@@ -511,12 +511,14 @@ class TestF026_RegistrationsList:
         client, sf = pii_client
         with sf() as s:
             reg = _setup_activity_reg(s, pending=True)
-            # 自訂角色僅 ACTIVITY_READ + STUDENTS_READ（缺 GUARDIANS_READ）
+            # 自訂角色 ACTIVITY_READ + STUDENTS_READ:all（缺 GUARDIANS_READ）。
+            # P2-1：bare STUDENTS_READ 非管理角色經才藝端點已收斂 own_class，
+            # 全校才藝管理員須顯式授 :all 才看跨班學生 PII（2026-06-25 補修對齊）。
             _create_user(
                 s,
                 username="act_no_gd",
                 role="activity_admin",
-                permission_names=["ACTIVITY_READ", "STUDENTS_READ"],
+                permission_names=["ACTIVITY_READ", "STUDENTS_READ:all"],
             )
             s.commit()
             reg_id = reg.id
@@ -571,7 +573,11 @@ class TestF026_RegistrationsList:
                 s,
                 username="act_full",
                 role="activity_admin",
-                permission_names=["ACTIVITY_READ", "STUDENTS_READ", "GUARDIANS_READ"],
+                permission_names=[
+                    "ACTIVITY_READ",
+                    "STUDENTS_READ:all",
+                    "GUARDIANS_READ",
+                ],
             )
             s.commit()
             reg_id = reg.id
@@ -634,7 +640,7 @@ class TestF027_RegistrationsStudentsSearch:
                 s,
                 username="search_yes",
                 role="activity_admin",
-                permission_names=["ACTIVITY_WRITE", "STUDENTS_READ"],
+                permission_names=["ACTIVITY_WRITE", "STUDENTS_READ:all"],
             )
             s.commit()
 
