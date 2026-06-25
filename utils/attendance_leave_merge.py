@@ -73,7 +73,11 @@ def merge_attendance_with_leave(att: Attendance, session: Session) -> None:
             # status / late_minutes 保留 caller 算好的
     else:
         # 部分請假（半天/小時）
-        att.partial_leave_hours = Decimal(str(leave.leave_hours))
+        # F-B：多日部分假 per-day 攤分，避免每天各寫整筆 leave_hours 導致扣薪乘以天數
+        # （對齊 services/employee_leave_attendance_sync._per_day_partial_hours 與曠職側
+        # engine._compute_absence 的 per_day = lv_hours/span_days）。單日 span=1 不變。
+        span_days = max(1, (leave.end_date - leave.start_date).days + 1)
+        att.partial_leave_hours = Decimal(str(leave.leave_hours)) / Decimal(span_days)
         lv_start = _parse_hhmm(leave.start_time)
         lv_end = _parse_hhmm(leave.end_time)
 

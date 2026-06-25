@@ -74,6 +74,21 @@ def _iter_dates(leave: LeaveRecord) -> Iterable[date]:
         d += timedelta(days=1)
 
 
+def _span_days(leave: LeaveRecord) -> int:
+    """請假涵蓋天數（含頭尾）。供多日部分假 per-day 攤分用，最小 1。"""
+    return max(1, (leave.end_date - leave.start_date).days + 1)
+
+
+def _per_day_partial_hours(leave: LeaveRecord) -> Decimal:
+    """多日部分假 per-day 攤分時數 = leave_hours / span_days（單日 span=1 不變）。
+
+    F-B：原本每天各寫整筆 leave_hours，薪資逐列加總 → N 天 × leave_hours
+    （扣薪乘以天數），與曠職側 engine._compute_absence 的 per_day=lv_hours/span_days
+    口徑相反。改為攤分，總和回到單筆 leave_hours。
+    """
+    return Decimal(str(leave.leave_hours)) / Decimal(_span_days(leave))
+
+
 def _parse_hhmm(s: str | None) -> time | None:
     """解析 "HH:MM" 字串成 time；None 或格式不合一律回 None。
 
@@ -267,7 +282,8 @@ def _apply_partial(session: Session, leave: LeaveRecord, d: date) -> None:
         )
 
     row.leave_record_id = leave.id
-    row.partial_leave_hours = Decimal(str(leave.leave_hours))
+    # F-B：多日部分假 per-day 攤分，避免每天各寫整筆 leave_hours 導致扣薪乘以天數
+    row.partial_leave_hours = _per_day_partial_hours(leave)
 
     # 解析 leave start/end time（String "HH:MM" → time）
     lv_start = _parse_hhmm(leave.start_time)
