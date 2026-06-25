@@ -168,9 +168,7 @@ def test_batch_sign_supervisor_happy(client_with_db):
     """3 個 DRAFT summary 全部 sign SUPERVISOR → succeeded=3, failed=0。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer1", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
-        )
+        _create_user(s, "reviewer1", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         cycle, ids = _seed_n_summaries(s, 3, SummaryStatus.DRAFT)
         cycle_id = cycle.id
@@ -194,9 +192,7 @@ def test_batch_sign_partial_failure(client_with_db):
     """3 個 summary，其中 1 個已 SUPERVISOR_SIGNED 無法再 sign supervisor。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer2", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
-        )
+        _create_user(s, "reviewer2", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         cycle, ids = _seed_n_summaries(s, 3, SummaryStatus.DRAFT)
         cycle_id = cycle.id
@@ -220,9 +216,7 @@ def test_batch_sign_finalize_requires_finalize_permission(client_with_db):
     """沒 APPRAISAL_FINALIZE 不可批次 FINALIZE → 403。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer3", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
-        )
+        _create_user(s, "reviewer3", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         cycle, ids = _seed_n_summaries(s, 2, SummaryStatus.ACCOUNTING_SIGNED)
         cycle_id = cycle.id
@@ -238,9 +232,7 @@ def test_batch_sign_cycle_locked_blocked(client_with_db):
     """cycle.status != OPEN → 400 整批拒絕。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer4", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
-        )
+        _create_user(s, "reviewer4", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         cycle, ids = _seed_n_summaries(s, 2, SummaryStatus.DRAFT)
         cycle_id = cycle.id
@@ -258,9 +250,7 @@ def test_batch_sign_writes_log_per_summary(client_with_db):
     """每筆成功 sign 都寫 1 條 AppraisalSummaryLog。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer5", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
-        )
+        _create_user(s, "reviewer5", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         cycle, ids = _seed_n_summaries(s, 3, SummaryStatus.DRAFT)
         cycle_id = cycle.id
@@ -286,9 +276,7 @@ def test_batch_sign_unknown_summary_in_list(client_with_db):
     """list 含不存在的 summary_id → 該筆 failed，其他成功。"""
     client, sf = client_with_db
     with sf() as s:
-        _create_user(
-            s, "reviewer6", ["APPRAISAL_READ", "APPRAISAL_REVIEW"]
-        )
+        _create_user(s, "reviewer6", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
         s.commit()
         cycle, ids = _seed_n_summaries(s, 2, SummaryStatus.DRAFT)
         cycle_id = cycle.id
@@ -301,3 +289,31 @@ def test_batch_sign_unknown_summary_in_list(client_with_db):
     body = r.json()
     assert sorted(body["succeeded"]) == sorted(ids)
     assert any(f["summary_id"] == 99999 for f in body["failed"])
+
+
+def test_batch_sign_locks_in_sorted_id_order_regardless_of_input(client_with_db):
+    """ABBA 防呆（行為層）：傳入反序 summary_ids，逐筆取鎖（處理）順序仍為 id 升冪。
+
+    succeeded 依處理順序 append（= 逐筆 with_for_update 取鎖順序）；反序輸入下仍回升冪，
+    證明鎖以 sorted(id) 取得 → 兩批次重疊反序不會 ABBA 死鎖。此案為 Python 迴圈順序
+    （非 PG 鎖序），SQLite 即可重現。
+    """
+    client, sf = client_with_db
+    with sf() as s:
+        _create_user(s, "reviewer_order", ["APPRAISAL_READ", "APPRAISAL_REVIEW"])
+        s.commit()
+        cycle, ids = _seed_n_summaries(s, 3, SummaryStatus.DRAFT)
+        cycle_id = cycle.id
+    _login(client, "reviewer_order")
+    reversed_ids = list(reversed(ids))  # 反序輸入
+    r = client.post(
+        f"/api/appraisal/cycles/{cycle_id}/summaries:batch_sign",
+        json={"summary_ids": reversed_ids, "stage": "SUPERVISOR"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["failed"] == []
+    assert body["succeeded"] == sorted(ids), (
+        f"反序輸入 {reversed_ids} 下 succeeded 應為升冪 {sorted(ids)}（鎖以 sorted id 取得），"
+        f"實得 {body['succeeded']}"
+    )

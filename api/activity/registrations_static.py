@@ -119,6 +119,9 @@ def batch_update_payment(
                 ActivityRegistration.id.in_(body.ids),
                 ActivityRegistration.is_active.is_(True),
             )
+            # 全系統 row-lock 取鎖序不變量：先 order_by(id) 再 FOR UPDATE，避免與
+            # POS checkout / 離園同步（皆 order_by(id)）反序鎖同批 reg 形成 ABBA 死鎖。
+            .order_by(ActivityRegistration.id)
             .with_for_update()
             .all()
         )

@@ -1257,7 +1257,9 @@ def batch_sign_summaries(
 
     # bug sweep 2026-05-18 P1-1：每筆獨立 savepoint，避免單筆 DB error
     # 牽連整批 rollback（PendingRollbackError）。
-    for sid in payload.summary_ids:
+    # 2026-06-25：逐筆 with_for_update 以 id 排序取鎖，避免兩個併發批次帶重疊
+    # summary_ids 但順序不同時 ABBA 死鎖（對齊 year_end._process_settlement_batch）。
+    for sid in sorted(payload.summary_ids):
         try:
             with session.begin_nested():
                 summary = (
