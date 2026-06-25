@@ -27,7 +27,10 @@ from utils.taipei_time import now_taipei_naive
 def test_retention_days_finance():
     assert _retention_days_for("salary") == _FINANCE_DAYS
     assert _retention_days_for("fee") == _FINANCE_DAYS
-    assert _retention_days_for("salary_record") == _FINANCE_DAYS
+    # 設計審查 2026-06-25 Finding D：原斷言用 "salary_record"，但該值從不被
+    # AuditMiddleware 發出為 AuditLog.entity_type（僅 data_quality Violation /
+    # seedgen 假資料用），是死值已移除。改用實際會發出的金流 entity_type。
+    assert _retention_days_for("year_end_settlement") == _FINANCE_DAYS
     assert _retention_days_for("vendor_payment") == _FINANCE_DAYS
 
 
@@ -45,6 +48,46 @@ def test_retention_days_student():
 def test_retention_days_fallback():
     assert _retention_days_for("unknown_type") == _FALLBACK_DAYS
     assert _retention_days_for("calendar_event") == _FALLBACK_DAYS
+
+
+def test_retention_days_finance_real_emitted_money_types():
+    """設計審查 2026-06-25 Finding D：_FINANCE_TYPES 原塞了從不發出的死值
+    （year_end / salary_record / payslip / bonus / fee_record / appraisal_year_end），
+    卻漏了 ENTITY_PATTERNS 實際會發出的金流 entity_type → 這些落 3 年 fallback
+    而非稅捐稽徵法 §30 要求的 7 年金流保留。
+
+    本測試鎖定「實際會發出且屬金流（牽動薪資/獎金/付款）」的 entity_type
+    必須走 7 年 _FINANCE_DAYS。RED（修前）：全部走 _FALLBACK_DAYS（3 年）。
+    """
+    money_types = [
+        # 年終獎金結算（獨立轉帳，金流）
+        "year_end_cycle",
+        "year_end_settlement",
+        "year_end_special_bonus",
+        "appraisal_payout",
+        # 考核結算 / 獎金率（影響獎金金額）
+        "appraisal_summary",
+        "appraisal_bonus_rate",
+        # 月度固定費用（金流）
+        "monthly_fixed_cost",
+        # 員工懲處扣薪 / 才藝鐘點費（皆牽動薪資）
+        "disciplinary_action",
+        "art_teacher_payroll",
+    ]
+    for et in money_types:
+        assert _retention_days_for(et) == _FINANCE_DAYS, (
+            f"{et} 屬金流，應走 7 年 _FINANCE_DAYS，"
+            f"實得 {_retention_days_for(et)} 天"
+        )
+
+
+def test_retention_days_medication_log_not_finance():
+    """給藥紀錄屬醫療紀錄，非金流，不應被誤分到 7 年金流組。
+
+    醫療類沿用 fallback（3 年）即可；明確鎖定避免日後誤把 medication_log
+    塞進 _FINANCE_TYPES。
+    """
+    assert _retention_days_for("medication_log") == _FALLBACK_DAYS
 
 
 # ── cleanup_audit_logs SQL 行為（用 SQLite in-memory）──
