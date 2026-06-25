@@ -2394,17 +2394,32 @@ def get_leave_import_template(
         "開始日期",
         "結束日期",
         "時數(可空)",
+        "開始時間(部分假必填HH:MM)",
+        "結束時間(部分假必填HH:MM)",
         "原因(可空)",
     ]
     _lv_write_header(ws, 1, headers)
 
+    # 範例 1：全日特休（時段留空）
     ws.cell(row=2, column=1, value="E001")
     ws.cell(row=2, column=2, value="王小明")
     ws.cell(row=2, column=3, value="annual")
     ws.cell(row=2, column=4, value="2026-03-15")
     ws.cell(row=2, column=5, value="2026-03-15")
     ws.cell(row=2, column=6, value=8)
-    ws.cell(row=2, column=7, value="年度特休")
+    ws.cell(row=2, column=7, value="")
+    ws.cell(row=2, column=8, value="")
+    ws.cell(row=2, column=9, value="年度特休")
+    # 範例 2：半日事假（時數<8 必填時段）
+    ws.cell(row=3, column=1, value="E002")
+    ws.cell(row=3, column=2, value="李小華")
+    ws.cell(row=3, column=3, value="personal")
+    ws.cell(row=3, column=4, value="2026-03-16")
+    ws.cell(row=3, column=5, value="2026-03-16")
+    ws.cell(row=3, column=6, value=4)
+    ws.cell(row=3, column=7, value="08:00")
+    ws.cell(row=3, column=8, value="12:00")
+    ws.cell(row=3, column=9, value="上午半天事假")
 
     ws2 = SafeWorksheet(wb.create_sheet("假別代碼說明"))
     ws2.cell(row=1, column=1, value="假別代碼")
@@ -2430,6 +2445,10 @@ class LeaveImportRow(ExcelImportSchema):
     start_date: Any = Field(default=None, alias="開始日期")
     end_date: Any = Field(default=None, alias="結束日期")
     leave_hours: Any = Field(default=None, alias="時數(可空)")
+    # rank 14：部分假（時數<8）必填時段，否則匯入後 status=pending 永遠無法核准
+    # （sync.apply 對部分假缺時段 raise → 422），成為占配額的孤兒假單。
+    start_time: Any = Field(default=None, alias="開始時間(部分假必填HH:MM)")
+    end_time: Any = Field(default=None, alias="結束時間(部分假必填HH:MM)")
     reason: Any = Field(default=None, alias="原因(可空)")
 
 
@@ -2443,6 +2462,29 @@ async def import_leaves(
     # parse + DB 迴圈為同步 CPU/IO，卸載到 executor 避免阻塞 event loop（行為不變）
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _import_leaves_sync, content)
+
+
+def _parse_import_leave_time(label: str, raw) -> "str | None":
+    """匯入時段解析：接受空值 / Excel time 物件 / "HH:MM" 字串，回傳零補位 "HH:MM" 或 None。
+
+    零補位與 leave_overlap_service 的字串字典序比較前提一致；格式不合即 ValueError
+    （由匯入迴圈轉成該列失敗訊息）。
+    """
+    import re
+    from datetime import time as _time, datetime as _dt
+
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    if isinstance(raw, (_time, _dt)):
+        return f"{raw.hour:02d}:{raw.minute:02d}"
+    s = str(raw).strip()
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", s)
+    if not m:
+        raise ValueError(f"{label}格式錯誤，須為 HH:MM（如 08:00）")
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise ValueError(f"{label}超出範圍（00:00–23:59）")
+    return f"{hh:02d}:{mm:02d}"
 
 
 def _import_leaves_sync(content: bytes) -> dict:
@@ -2530,6 +2572,18 @@ def _import_leaves_sync(content: bytes) -> dict:
                     # 不可在驗證失敗時 fallback 成 8h（會把非法時數靜默變全日扣薪假）。
                     leave_hours = validate_leave_hours_value(leave_hours)
 
+                # rank 14：解析時段並對齊 LeaveCreate._validate_partial_leave_times
+                # ——部分假（時數<8）必填時段，匯入時即擋，否則匯入 pending 後核准必
+                # 422（sync 對部分假缺時段 raise）→ 成占配額的孤兒假單。
+                start_time = _parse_import_leave_time("開始時間", row.start_time)
+                end_time = _parse_import_leave_time("結束時間", row.end_time)
+                if leave_hours < 8 and (not start_time or not end_time):
+                    raise ValueError(
+                        "部分請假（時數<8）必須填開始時間與結束時間（HH:MM），否則無法核准"
+                    )
+                if start_time and end_time and start_time >= end_time:
+                    raise ValueError("開始時間必須早於結束時間")
+
                 reason_raw = row.reason
                 reason = str(reason_raw).strip() if reason_raw is not None else None
 
@@ -2560,10 +2614,10 @@ def _import_leaves_sync(content: bytes) -> dict:
                         f"（{conflict.start_date}~{conflict.end_date}）重疊"
                     )
                 # 跨模組衝突（rank 7）：匯入假單也需查同時段加班，否則匯入 pending →
-                # 核准時才爆。匯入無時段欄 → 全日語意（同日有加班即衝突）。
+                # 核准時才爆。帶時段時做精確比對，全日（無時段）則同日有加班即衝突。
                 try:
                     _check_employee_has_conflicting_overtime(
-                        session, emp.id, start_date, end_date
+                        session, emp.id, start_date, end_date, start_time, end_time
                     )
                 except HTTPException as he:
                     raise ValueError(he.detail)
@@ -2601,6 +2655,8 @@ def _import_leaves_sync(content: bytes) -> dict:
                     start_date=start_date,
                     end_date=end_date,
                     leave_hours=leave_hours,
+                    start_time=start_time,
+                    end_time=end_time,
                     is_deductible=effective_ratio > 0,
                     deduction_ratio=effective_ratio,
                     reason=reason,
