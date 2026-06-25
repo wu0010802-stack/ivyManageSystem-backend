@@ -187,6 +187,80 @@ def test_simulate_deducts_pending_discipline_from_bonus(sim_client):
         ), "simulate 不應標記懲處為已抵扣（no-write 沙盒）"
 
 
+def _simulate(client, emp_id, year=2026, month=2):
+    res = client.post(
+        "/api/salaries/simulate",
+        json={"employee_id": emp_id, "year": year, "month": month},
+    )
+    assert res.status_code == 200, res.text
+    return res.json()["simulated"]
+
+
+def test_simulate_includes_manual_performance_bonus_in_gross(sim_client):
+    """P2-F：simulate 須載入 HR 手填的 performance_bonus（_load_manual_salary_fields），
+    否則 simulated gross 系統性低於正式落帳值。"""
+    client, sf = sim_client
+    with sf() as s:
+        emp_id = _seed_teacher_with_class(s)
+        s.commit()
+    _login_admin(client, sf)
+
+    g0 = float(_simulate(client, emp_id)["gross_salary"])
+
+    with sf() as s:
+        s.add(
+            SalaryRecord(
+                employee_id=emp_id,
+                salary_year=2026,
+                salary_month=2,
+                performance_bonus=20000,
+                manual_overrides=["performance_bonus"],
+            )
+        )
+        s.commit()
+
+    g1 = float(_simulate(client, emp_id)["gross_salary"])
+    assert g1 - g0 == 20000, (
+        f"simulate gross 未含 HR 手填 performance_bonus：g0={g0} g1={g1}"
+        f"（應差 20000）"
+    )
+
+
+def test_simulate_wraps_computation_in_config_for_month(sim_client, monkeypatch):
+    """P2-E：simulate 主體計算須包在 engine.config_for_month(year, month) 內，與
+    /calculate 用同一設定版本（base/保險/紅利），否則歷史月試算用 live 設定。
+
+    驗法：spy config_for_month，斷言它以 (year, month)=(2026, 2) 被呼叫（修補前只有
+    period accrual 對累積月 2025/12、2026/1 呼叫，不含 2026/2）。"""
+    client, sf = sim_client
+    with sf() as s:
+        emp_id = _seed_teacher_with_class(s)
+        s.commit()
+    _login_admin(client, sf)
+
+    import api.salary as salary_pkg
+
+    engine = salary_pkg._salary_engine
+    calls = []
+    orig = engine.config_for_month
+
+    def _spy(session, year, month):
+        calls.append((year, month))
+        return orig(session, year, month)
+
+    monkeypatch.setattr(engine, "config_for_month", _spy)
+
+    res = client.post(
+        "/api/salaries/simulate",
+        json={"employee_id": emp_id, "year": 2026, "month": 2},
+    )
+    assert res.status_code == 200, res.text
+    assert (2026, 2) in calls, (
+        "simulate 未以 (2026, 2) 進入 config_for_month（主體計算未包在發放/歷史月"
+        f"設定版本內）；實際呼叫：{calls}"
+    )
+
+
 def test_simulate_passes_override_aware_supplementary_basis(sim_client, monkeypatch):
     """qa-loop #7：simulate 的補充保費基底須傳「覆寫感知總額」，與 _finalize_breakdown 口徑一致。
 

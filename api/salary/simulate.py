@@ -212,7 +212,16 @@ def simulate_salary(
         if emp.employee_type == "hourly":
             raise HTTPException(status_code=422, detail="時薪制員工不支援試算功能")
 
-        emp_dict = engine._load_emp_dict(emp)
+        # P2-E：emp_dict 的 base_salary（_resolve_standard_base）須用 (year, month)
+        # 設定版本，與 /calculate 對齊；config_for_month 為 reentrant context，內層
+        # _compute_period_accrual_totals 對各累積月再 swap 不受影響。
+        # P2-F：併載 HR 手填 performance/special bonus（與 _build_breakdown_for_month
+        # 對齊），否則 simulated gross/net 系統性低於正式落帳值。
+        with engine.config_for_month(session, year, month):
+            emp_dict = engine._load_emp_dict(emp)
+            emp_dict.update(
+                engine._load_manual_salary_fields(session, emp.id, year, month)
+            )
 
         # 查詢實際考勤
         attendances = (
@@ -336,26 +345,34 @@ def simulate_salary(
         # 顯示的 festival/overtime/gross 會高於實際 /calculate 落帳值（simulate↔actual
         # 不對稱）。_adjust_period_totals_for_discipline 為純讀取、不寫 DB；simulate 是
         # 沙盒，刻意不呼叫 _mark_discipline_applied（不標記抵扣、不留副作用）。
-        period_festival_total, period_overtime_total, _ = (
-            engine._adjust_period_totals_for_discipline(
-                session, emp, year, month, period_festival_total, period_overtime_total
+        # P2-E：懲處預設金額（_bonus_config）與底薪/紅利/級距（calculate_salary 讀
+        # engine state）須用 (year, month) 設定版本，與 /calculate 對齊。
+        with engine.config_for_month(session, year, month):
+            period_festival_total, period_overtime_total, _ = (
+                engine._adjust_period_totals_for_discipline(
+                    session,
+                    emp,
+                    year,
+                    month,
+                    period_festival_total,
+                    period_overtime_total,
+                )
             )
-        )
 
-        breakdown = engine.calculate_salary(
-            employee=emp_dict,
-            year=year,
-            month=month,
-            attendance=attendance_result,
-            leave_deduction=leave_deduction,
-            classroom_context=classroom_context,
-            office_staff_context=office_staff_context,
-            meeting_context=period_records["meeting_context"],
-            overtime_work_pay=overtime_pay,
-            personal_sick_leave_hours=personal_sick_hours,
-            period_festival_override=period_festival_total,
-            period_overtime_override=period_overtime_total,
-        )
+            breakdown = engine.calculate_salary(
+                employee=emp_dict,
+                year=year,
+                month=month,
+                attendance=attendance_result,
+                leave_deduction=leave_deduction,
+                classroom_context=classroom_context,
+                office_staff_context=office_staff_context,
+                meeting_context=period_records["meeting_context"],
+                overtime_work_pay=overtime_pay,
+                personal_sick_leave_hours=personal_sick_hours,
+                period_festival_override=period_festival_total,
+                period_overtime_override=period_overtime_total,
+            )
 
         # 二代健保補充保費（獎金路徑）：與 _build_breakdown_for_month 口徑一致
         from services.salary.supplementary_premium import (
@@ -368,16 +385,18 @@ def simulate_salary(
         bonus_total_override = engine._bonus_total_with_manual_overrides(
             session, emp.id, year, month, breakdown
         )
-        apply_bonus_supplementary_to_breakdown(
-            session,
-            emp_dict,
-            breakdown,
-            year,
-            month,
-            engine.insurance_service,
-            emp.id,
-            breakdown_bonus_total_override=bonus_total_override,
-        )
+        # P2-E：補充保費用 (year, month) 的健保費率/級距版本，與 /calculate 對齊。
+        with engine.config_for_month(session, year, month):
+            apply_bonus_supplementary_to_breakdown(
+                session,
+                emp_dict,
+                breakdown,
+                year,
+                month,
+                engine.insurance_service,
+                emp.id,
+                breakdown_bonus_total_override=bonus_total_override,
+            )
 
         breakdown.absent_count = absent_count
         breakdown.absence_deduction = round_half_up(absence_amount)
