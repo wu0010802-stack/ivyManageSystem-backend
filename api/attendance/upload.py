@@ -2,6 +2,7 @@
 Attendance - upload endpoints (Excel and CSV)
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -121,6 +122,24 @@ async def upload_attendance(
 
     # 先讀取檔案內容並檢查大小，防止超大檔案耗盡磁碟空間或記憶體
     content = await read_upload_with_size_check(file)
+    # R-perf（2026-06-25 嚴重度稽核根因 B）：pandas 解析 + 全表查詢 + 逐列 LeaveRecord
+    # 合併 + commit 皆同步重工作；單一 uvicorn worker 部署下若留在 async handler 會凍結
+    # event loop（大量考勤匯入時全站停擺 + /health 逾時致容器重啟）。一律丟 threadpool
+    # 執行（對照同檔 CSV 版 upload_attendance_csv 即為同步 def，由 FastAPI 丟 threadpool）。
+    return await asyncio.to_thread(
+        _process_attendance_upload, content, raw_ext, current_user
+    )
+
+
+def _process_attendance_upload(
+    content: bytes, raw_ext: str, current_user: dict
+) -> dict:
+    """同步處理考勤 Excel 匯入（magic 驗證 + 解析 + DB 寫入 + 標 stale）。
+
+    經 asyncio.to_thread 在 threadpool 執行，不阻塞單 worker 的 event loop。所有重工作
+    （pd.read_excel / 全表查詢 / 逐列 LeaveRecord 合併 / commit）皆在此；僅依賴
+    content / raw_ext / current_user（不碰 UploadFile / Request）。
+    """
     validate_file_signature(content, raw_ext)
 
     import io
