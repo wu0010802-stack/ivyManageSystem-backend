@@ -75,11 +75,20 @@ def _iter_dates(leave: LeaveRecord) -> Iterable[date]:
 
 
 def _parse_hhmm(s: str | None) -> time | None:
-    """解析 "HH:MM" 字串成 time，None 回傳 None。"""
+    """解析 "HH:MM" 字串成 time；None 或格式不合一律回 None。
+
+    防護：work_start_time/work_end_time 為 String(5) 無 DB CHECK，畸形舊資料
+    （"0800"/"8"/"08:30:00"/"25:00" 等）原本會在 split(":") 解包或 int()/time()
+    raise ValueError → 上游請假寫考勤路徑 500。解析失敗回 None 與「None 字串回 None」
+    語義一致，呼叫端（`or DEFAULT_*` / compute_*_with_leave）對 None 已有 fallback。
+    """
     if s is None:
         return None
-    hh, mm = s.split(":")
-    return time(int(hh), int(mm))
+    try:
+        hh, mm = s.split(":")
+        return time(int(hh), int(mm))
+    except (ValueError, TypeError):
+        return None
 
 
 def _get_employee_schedule(session: Session, employee_id: int) -> tuple[time, time]:
