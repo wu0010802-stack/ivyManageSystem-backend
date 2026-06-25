@@ -266,15 +266,23 @@ def _apply_correction_decision(
     # 薪資 engine（services/salary/engine.py:2099+）讀到，造成補卡通過卻仍
     # 扣遲到金的真實漏帳（audit 2026-05-07 P0 #6）。
     from utils.attendance_calc import apply_attendance_status
+    from utils.attendance_leave_merge import (
+        reset_confirmation_if_changed,
+        snapshot_attendance_confirmation_inputs,
+    )
 
     # 取員工排班時間（caller 已驗 employee 存在於 correction）
     emp = session.query(Employee).filter(Employee.id == correction.employee_id).first()
+    # F-D：補卡核准重算前快照 punch/旗標，重算後若實質變動則清 admin_waive 等確認，
+    # 否則先豁免、後補卡改寫成有真實遲到的打卡仍被永久豁免（漏扣）。
+    _confirm_before = snapshot_attendance_confirmation_inputs(att)
     apply_attendance_status(
         att,
         work_start_str=emp.work_start_time if emp else None,
         work_end_str=emp.work_end_time if emp else None,
         session=session,
     )
+    reset_confirmation_if_changed(att, _confirm_before)
 
     # 更新申請狀態
     correction.status = ApprovalStatus.APPROVED.value

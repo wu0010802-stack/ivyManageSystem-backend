@@ -395,7 +395,16 @@ def create_or_update_attendance_record(
             .first()
         )
 
+        from utils.attendance_leave_merge import (
+            merge_attendance_with_leave,
+            reset_confirmation_if_changed,
+            snapshot_attendance_confirmation_inputs,
+        )
+
         if existing:
+            # F-D：覆寫前快照 punch/旗標，覆寫後若實質變動則清 admin_waive 等確認，
+            # 否則先豁免、後改寫成有真實遲到的打卡仍被永久豁免（漏扣）。
+            _confirm_before = snapshot_attendance_confirmation_inputs(existing)
             existing.punch_in_time = punch_in_time
             existing.punch_out_time = punch_out_time
             existing.status = status
@@ -405,6 +414,7 @@ def create_or_update_attendance_record(
             existing.is_missing_punch_out = is_missing_punch_out
             existing.late_minutes = late_minutes
             existing.early_leave_minutes = early_leave_minutes
+            reset_confirmation_if_changed(existing, _confirm_before)
             att_row = existing
             message = "考勤記錄已更新"
         else:
@@ -427,8 +437,6 @@ def create_or_update_attendance_record(
 
         # leave-aware 合併:在 commit 前把當日有效 leave 的 leave_record_id /
         # partial_leave_hours 寫入 att_row,避免 sync 寫入的欄位被 admin 手動編輯蓋掉。
-        from utils.attendance_leave_merge import merge_attendance_with_leave
-
         merge_attendance_with_leave(att_row, session)
 
         # 考勤異動會改變遲到/早退/缺打卡計數,進而影響薪資扣款計算;
