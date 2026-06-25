@@ -1098,27 +1098,36 @@ class TestDistributionPeriodAccrual:
 def test_leave_deduction_rows_floor_matches_engine():
     """P2-I（金流審查 2026-06-05）：薪資明細頁的請假扣款逐筆進位須與引擎一致
     （round_down/floor，業主 2026-06-04 決策），否則明細列與已落帳的
-    record.leave_deduction 對不上（顯示層曾用 round_half_up）。"""
+    record.leave_deduction 對不上（顯示層曾用 round_half_up）。
+
+    F-E 後 _calc_leave_deductions 改以 Attendance 為 SoT（(Attendance, LeaveRecord)
+    pairs），故對比改用同源的 _sum_leave_deduction（新版）。"""
     from types import SimpleNamespace
 
     from services.finance.salary_field_breakdown import _calc_leave_deductions
-    from services.salary.utils import _sum_leave_deduction_legacy
+    from services.salary.utils import _sum_leave_deduction
+    from models.attendance import AttendanceStatus
 
     # 事假 4h、日薪 1001 → (4/8)*1001*1.0 = 500.5
     #   floor（引擎 round_down）=500；round_half_up（舊顯示）=501 → 不一致
-    leaves = [
-        SimpleNamespace(
-            leave_type="personal",
-            leave_hours=4,
-            deduction_ratio=1.0,
-            start_date=date(2026, 3, 5),
-            end_date=date(2026, 3, 5),
-        )
-    ]
+    lv = SimpleNamespace(
+        id=1,
+        leave_type="personal",
+        leave_hours=4,
+        deduction_ratio=1.0,
+        start_date=date(2026, 3, 5),
+        end_date=date(2026, 3, 5),
+    )
+    # Attendance SoT：部分假 partial_leave_hours=4（無打卡 → ABSENT）
+    att = SimpleNamespace(
+        status=AttendanceStatus.ABSENT.value,
+        partial_leave_hours=4,
+    )
+    pairs = [(att, lv)]
     daily_salary = 1001.0
 
-    engine_total = _sum_leave_deduction_legacy(leaves, daily_salary, 0.0)
-    display = _calc_leave_deductions(leaves, daily_salary, 0.0)
+    engine_total = _sum_leave_deduction(pairs, daily_salary, 0.0)
+    display = _calc_leave_deductions(pairs, daily_salary, 0.0)
 
     assert engine_total == 500  # floor(500.5)
     assert display["leave_deduction_total"] == engine_total, (
