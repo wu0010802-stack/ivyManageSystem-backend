@@ -748,6 +748,10 @@ def get_activity_detail(session: Session, year: int, month: int) -> list[dict]:
                 "student_name": getattr(reg, "student_name", None) if reg else None,
                 "amount": round_half_up(rec.amount or 0),
                 "payment_method": rec.payment_method,
+                # operator 不遮罩屬刻意（業主裁定 2026-06-25）：本明細/匯出僅 REPORTS
+                # 財務管理權限可取，operator（經手人）對對帳/稽核有實益。與 POS 端
+                # （pos.py recent-transactions / 收據 PDF 補印）對低權限 ACTIVITY_READ
+                # 員工遮成「[已遮罩]」的口徑刻意不同——REPORTS 信任層高於 POS 列表可見者。
                 "operator": rec.operator,
                 "receipt_no": rec.receipt_no,
             }
