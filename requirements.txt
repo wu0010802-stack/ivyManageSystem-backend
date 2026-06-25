@@ -2,7 +2,7 @@ fastapi==0.136.1  # 釘版：fastapi 0.137+/0.138 的 include_router 產生 _Inc
 starlette==1.3.1  # 釘版：1.1.0/1.2.x 有 CVE-2026-54282/54283（fixed 1.3.0/1.3.1）。1.3.1 與 fastapi 0.136.1 相容（後者僅要求 starlette>=0.46.0）且不含 _IncludedRouter（那是 fastapi 端變更）。後續宜改用 lockfile 統一釘版
 uvicorn>=0.24.0
 sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.0
+psycopg2-binary>=2.9.12
 pandas>=2.0.0
 openpyxl>=3.1.0
 xlrd>=2.0  # 讀取 .xls (Excel 97-2003) 用於匯入舊版考核 / 年終經營績效表
