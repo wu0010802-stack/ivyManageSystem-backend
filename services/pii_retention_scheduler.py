@@ -36,6 +36,52 @@ _GC_INTERVAL_SEC = 24 * 60 * 60
 _INITIAL_DELAY_SEC = 60
 _BATCH_LIMIT = 500
 
+_PARENT_PII_PLACEHOLDER = "[已離校家長]"
+
+# 終態學生「家長 PII 去正規化副本」位置 — 單一事實來源（個資法 §11；系統設計審查
+# 2026-06-25 主題 B）。GC 抹除以此驅動：新增任何雙寫家長 PII 的表只要登記於此，GC
+# 自動涵蓋，且 tests/test_pii_retention_gc.py 的 completeness 守衛會掃 model 強制登記
+# （防再漏一張表，如 2026-06-25 前 activity_registrations 被漏抹）。
+#   - link_column：該表連到「終態學生 id」的欄位（students 為自身 id，副本表為 student_id）
+#   - null_columns / placeholder_columns：要抹的家長欄位
+# 注意：① 學生本人 PII（student_name/birthday/Student.name）不在此，依 retention 政策
+# 保留；② guardians 本身是 GC 驅動查詢（有 pii_redacted_at 冪等戳記），單獨處理不列此。
+PARENT_PII_DENORMALIZED_LOCATIONS: list[dict] = [
+    {
+        "table": "students",
+        "link_column": "id",
+        "null_columns": ["parent_phone"],
+        "placeholder_columns": {"parent_name": _PARENT_PII_PLACEHOLDER},
+    },
+    {
+        "table": "activity_registrations",
+        "link_column": "student_id",
+        "null_columns": ["parent_phone", "email"],
+        "placeholder_columns": {},
+    },
+]
+
+
+def _redact_denormalized_location(session, loc: dict, student_ids: list[int]) -> int:
+    """依 registry 抹單一去正規化表的家長 PII 副本，回傳受影響 row 數。
+
+    SQL 的表名/欄名全來自 PARENT_PII_DENORMALIZED_LOCATIONS 常數（非使用者輸入），
+    無注入風險；`AND (... IS NOT NULL)` 讓已抹的 row 不重複計數（冪等且 rowcount 準確）。
+    """
+    set_clauses = [f"{c} = NULL" for c in loc["null_columns"]]
+    params: dict = {"sids": tuple(student_ids)}
+    for col, val in loc["placeholder_columns"].items():
+        set_clauses.append(f"{col} = :_ph_{col}")
+        params[f"_ph_{col}"] = val
+    touched = list(loc["null_columns"]) + list(loc["placeholder_columns"])
+    guard = " OR ".join(f"{c} IS NOT NULL" for c in touched)
+    sql = (
+        f"UPDATE {loc['table']} SET {', '.join(set_clauses)} "
+        f"WHERE {loc['link_column']} IN :sids AND ({guard})"
+    )
+    stmt = text(sql).bindparams(bindparam("sids", expanding=True))
+    return session.execute(stmt, params).rowcount
+
 
 def scheduler_enabled() -> bool:
     return not bool(get_settings().scheduler.pii_retention_gc_disabled)
@@ -159,36 +205,18 @@ def _run_pii_retention_gc(session=None) -> None:
         """).bindparams(bindparam("ids", expanding=True))
         session.execute(stmt, {"ids": tuple(guardian_ids), "now": now})
 
-        # 同步抹除 students 表上的去正規化家長快照（parent_name / parent_phone 是
-        # is_primary guardian 的雙寫副本，見 api/students._sync_*）。只抹 guardians
-        # 會讓同一份家長 PII 以明文續存於 students，等同 GC 被繞過（個資法 §11）。
+        # 同步抹除「家長 PII 去正規化副本」（students.parent_*、activity_registrations
+        # 的 parent_phone/email…）。只抹 guardians 會讓同一份家長 PII 以明文續存於
+        # 副本表，等同 GC 被繞過（個資法 §11）。抹除位置由 PARENT_PII_DENORMALIZED_LOCATIONS
+        # registry 單一來源驅動——新增雙寫表只要登記即自動涵蓋（主題 B：副本散落多表）。
         student_ids = sorted({r[1] for r in rows if r[1] is not None})
-        areg_redacted = 0
+        denorm_redacted: dict[str, int] = {}
         if student_ids:
-            student_stmt = text("""
-                UPDATE students
-                SET parent_name = '[已離校家長]',
-                    parent_phone = NULL
-                WHERE id IN :sids
-            """).bindparams(bindparam("sids", expanding=True))
-            session.execute(student_stmt, {"sids": tuple(student_ids)})
-
-            # 同步抹除 activity_registrations 上去正規化的家長聯絡 PII（公開報名
-            # 表單雙寫的 parent_phone / email）。只抹 guardians/students 會讓同一份
-            # 家長 PII 以明文續存於才藝報名表 → 等同 GC 被繞過（個資法 §11；系統設計
-            # 審查 2026-06-25 主題 B：PII 去正規化副本散落多表）。student_name /
-            # birthday 屬學生本人 PII，依 retention 政策保留（與 students 表只抹
-            # parent_* 一致）。AND (... IS NOT NULL) 讓已抹的 row 不重複計數。
-            areg_stmt = text("""
-                UPDATE activity_registrations
-                SET parent_phone = NULL,
-                    email = NULL
-                WHERE student_id IN :sids
-                  AND (parent_phone IS NOT NULL OR email IS NOT NULL)
-            """).bindparams(bindparam("sids", expanding=True))
-            areg_redacted = session.execute(
-                areg_stmt, {"sids": tuple(student_ids)}
-            ).rowcount
+            for loc in PARENT_PII_DENORMALIZED_LOCATIONS:
+                denorm_redacted[loc["table"]] = _redact_denormalized_location(
+                    session, loc, student_ids
+                )
+        areg_redacted = denorm_redacted.get("activity_registrations", 0)
 
         # 寫 audit_log（每筆一條，changes 不含 PII）
         days = retention_days()

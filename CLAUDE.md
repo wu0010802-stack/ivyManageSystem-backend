@@ -151,7 +151,7 @@ type：`feat` / `fix` / `refactor` / `test` / `docs` / `chore`
 
 - **觸發**：學生 `lifecycle_status` 進入終態（graduated/transferred/withdrawn）寫 `terminal_entered_at` 戳記
 - **Retention 期**：預設 365 天（ENV `PII_RETENTION_TERMINAL_DAYS` 可調）
-- **抹除範圍**：Guardian.phone/email/relation/custody_note 設 NULL、name 改 `[已離校家長]`、user_id 解綁；**同步抹去正規化的家長 PII 副本**——`students.parent_name`（改 `[已離校家長]`）/`students.parent_phone`（NULL）與 `activity_registrations.parent_phone`/`email`（NULL）；不刪 Guardian row、不刪 User row；**不動學生本人 PII**（Student.name/birthday、activity_registrations.student_name/birthday 保留——僅抹「家長」欄位）。⚠ 舊敘述「不動 Student PII」已過時（2026-06-25 修正）：GC 會抹 students/activity_registrations 上的家長去正規化欄位，但不碰學生本人 PII。新增任何雙寫家長 PII 的表都要同步進 `_run_pii_retention_gc`
+- **抹除範圍**：Guardian.phone/email/relation/custody_note 設 NULL、name 改 `[已離校家長]`、user_id 解綁；**同步抹去正規化的家長 PII 副本**——`students.parent_name`（改 `[已離校家長]`）/`students.parent_phone`（NULL）與 `activity_registrations.parent_phone`/`email`（NULL）；不刪 Guardian row、不刪 User row；**不動學生本人 PII**（Student.name/birthday、activity_registrations.student_name/birthday 保留——僅抹「家長」欄位）。⚠ 舊敘述「不動 Student PII」已過時（2026-06-25 修正）：GC 會抹 students/activity_registrations 上的家長去正規化欄位，但不碰學生本人 PII。新增任何雙寫家長 PII 的表只要登記於 `services/pii_retention_scheduler.PARENT_PII_DENORMALIZED_LOCATIONS` registry，GC 即自動涵蓋；`tests/test_pii_retention_gc.py` 的 completeness 守衛會掃 model 強制登記（漏登 parent_name/parent_phone/parent_email 即 CI 紅）
 - **復學自動取消**：`set_lifecycle_status` 從終態回非終態時 `terminal_entered_at=NULL`
 - **GC scheduler**：`services/pii_retention_scheduler.py` 每日跑；ENV `PII_RETENTION_GC_DISABLED=1` 關閉、`PII_RETENTION_GC_DRY_RUN=1` 只 log 不寫
 - **上線啟用流程**：dry-run 看 log → 人工確認清單 → 改 `PII_RETENTION_GC_DRY_RUN=0` 正式抹

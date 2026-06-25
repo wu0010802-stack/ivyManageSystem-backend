@@ -138,6 +138,59 @@ def test_gc_redacts_activity_registration_parent_pii(test_db_session, monkeypatc
     assert reg.student_name == "小明"
 
 
+def test_registry_covers_all_parent_pii_columns_in_models():
+    """completeness 守衛（設計審查 2026-06-25 主題 B）：任何 model 上命名為
+    parent_name / parent_phone / parent_email 的家長 PII 欄位都必須登記於
+    PARENT_PII_DENORMALIZED_LOCATIONS，否則 GC 會漏抹該去正規化副本（個資法 §11）。
+    2026-06-25 前 activity_registrations.parent_phone 即因未登記被漏抹。"""
+    import models.database  # noqa: F401 觸發全 model 註冊
+    from models.base import Base
+    from services.pii_retention_scheduler import PARENT_PII_DENORMALIZED_LOCATIONS
+
+    parent_pii_names = {"parent_name", "parent_phone", "parent_email"}
+    registered = {
+        (loc["table"], c)
+        for loc in PARENT_PII_DENORMALIZED_LOCATIONS
+        for c in (loc["null_columns"] + list(loc["placeholder_columns"]))
+    }
+    found = set()
+    for mapper in Base.registry.mappers:
+        table = mapper.local_table.name if mapper.local_table is not None else None
+        if table is None:
+            continue
+        for col in mapper.columns:
+            if col.name in parent_pii_names:
+                found.add((table, col.name))
+    missing = found - registered
+    assert not missing, (
+        "以下 model 家長 PII 欄位未登記於 PARENT_PII_DENORMALIZED_LOCATIONS，"
+        f"GC 會漏抹（個資法 §11）: {sorted(missing)}；請補登記。"
+    )
+
+
+def test_registry_entries_reference_existing_columns():
+    """防腐：registry 的表 / link_column / 抹除欄位都必須真實存在於 model
+    （欄位改名後不致靜默失效、組出無效 UPDATE SQL）。"""
+    import models.database  # noqa: F401
+    from models.base import Base
+    from services.pii_retention_scheduler import PARENT_PII_DENORMALIZED_LOCATIONS
+
+    tables = {
+        m.local_table.name: m.local_table
+        for m in Base.registry.mappers
+        if m.local_table is not None
+    }
+    for loc in PARENT_PII_DENORMALIZED_LOCATIONS:
+        tbl = tables.get(loc["table"])
+        assert tbl is not None, f"registry 表不存在: {loc['table']}"
+        cols = {c.name for c in tbl.columns}
+        assert (
+            loc["link_column"] in cols
+        ), f"{loc['table']}.{loc['link_column']} (link_column) 不存在"
+        for c in loc["null_columns"] + list(loc["placeholder_columns"]):
+            assert c in cols, f"{loc['table']}.{c} 不存在於 model"
+
+
 def test_gc_skips_within_retention_window(test_db_session, monkeypatch):
     monkeypatch.setenv("PII_RETENTION_GC_DRY_RUN", "0")
     student, g = _make_guardian_pair(
