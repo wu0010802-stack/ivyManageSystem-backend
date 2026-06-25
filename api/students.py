@@ -44,7 +44,7 @@ from utils.portfolio_access import (
     accessible_classroom_ids,
     assert_student_access,
     emit_batch_medical_access_log,
-    is_unrestricted,
+    is_row_unrestricted,
     mask_student_health_fields,
     require_unrestricted_role,
 )
@@ -515,7 +515,7 @@ def get_students(
 
         # ── Scope 守衛 ────────────────────────────────────
         # teacher 角色限定自己的班級且非終態；admin/hr/supervisor 不變
-        if not is_unrestricted(current_user, code=Permission.STUDENTS_READ.value):
+        if not is_row_unrestricted(current_user, code=Permission.STUDENTS_READ.value):
             allowed_classroom_ids = accessible_classroom_ids(
                 session, current_user, code=Permission.STUDENTS_READ.value
             )

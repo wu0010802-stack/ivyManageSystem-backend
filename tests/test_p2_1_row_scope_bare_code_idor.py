@@ -220,6 +220,63 @@ def test_allowlist_membership_controls_bare_de_escalation():
     )
 
 
+def test_students_data_codes_de_escalate_but_workflow_codes_keep_all():
+    """2026-06-25 擴充：STUDENTS_* 逐筆資料碼（teacher 模板 :own_class）bare→收斂；
+    全校 workflow/管理職碼（IEP_APPROVE/SPECIAL_NEEDS_WRITE/HEALTH_WRITE/LIFECYCLE_WRITE）
+    維持 bare=all（主任靠 bare 取全校為正當設計）。"""
+    from utils.portfolio_access import is_row_unrestricted
+
+    P = Permission
+
+    def custom(code):
+        return {"role": "principal", "employee_id": None, "permission_names": [code]}
+
+    # 逐筆資料碼 in-set → bare 收斂（False）
+    for code in (
+        P.STUDENTS_READ.value,
+        P.STUDENTS_WRITE.value,
+        P.STUDENTS_HEALTH_READ.value,
+        P.STUDENTS_MEDICATION_ADMINISTER.value,
+        P.STUDENTS_SPECIAL_NEEDS_READ.value,
+    ):
+        assert (
+            is_row_unrestricted(custom(code), code) is False
+        ), f"{code} bare 應收斂 own_class"
+    # 全校 workflow/管理職碼 out-of-set → bare 維持 all（True）
+    for code in (
+        P.STUDENTS_IEP_APPROVE.value,
+        P.STUDENTS_SPECIAL_NEEDS_WRITE.value,
+        P.STUDENTS_HEALTH_WRITE.value,
+        P.STUDENTS_LIFECYCLE_WRITE.value,
+    ):
+        assert (
+            is_row_unrestricted(custom(code), code) is True
+        ), f"{code} bare 應維持全校（管理職正當）"
+
+
+def test_explicit_own_class_overrides_management_role():
+    """管理角色被顯式授 ``<code>:own_class`` → 仍收斂自班（顯式 scope 覆蓋角色預設）。
+
+    回歸：test_search 用 supervisor + STUDENTS_READ:own_class 期望限自班；
+    is_row_unrestricted 早期 role-first 短路會誤判全校 → 修為顯式 scope 先判。
+    """
+    from utils.portfolio_access import is_row_unrestricted
+
+    code = Permission.STUDENTS_READ.value
+    # 管理角色 + 顯式 :own_class → 收斂（False）
+    assert (
+        is_row_unrestricted(
+            {"role": "supervisor", "permission_names": [f"{code}:own_class"]}, code
+        )
+        is False
+    )
+    # 管理角色 + bare（無顯式 scope）→ 全校（True，角色預設）
+    assert (
+        is_row_unrestricted({"role": "supervisor", "permission_names": [code]}, code)
+        is True
+    )
+
+
 def test_assert_all_scope_still_treats_bare_as_all(db_session):
     """全園彙總守衛 assert_all_scope：bare 碼仍視為 all（零行為變更，不被本修法波及）。"""
     user = {

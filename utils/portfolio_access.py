@@ -35,18 +35,29 @@ _TEACHER_BLOCKED_LIFECYCLE = frozenset(
 
 # P2-1：哪些 scope-aware code 屬「逐筆學生資料」存取——對這些 code，bare（無 :scope）
 # **不**得自動視為全園（否則自訂角色持 bare 碼即可越權讀任一他班學生資料 = IDOR），
-# 須落回 own_class scoping。**僅列已驗證安全者**（verified-safe 窄修，2026-06-24）。
+# 須落回 own_class scoping。未列入者一律 delegate 回 is_unrestricted（bare=all 不變）。
 #
-# ⚠ 刻意**不含**「全校 workflow 批核」型 scope-aware code（如 STUDENTS_IEP_APPROVE）：
-# 主任等管理職以 bare 碼取得全校批核權是正當設計（test_gov_moe_iep），bare=all 須保留。
-# STUDENTS_READ/WRITE/HEALTH 等廣用資料碼亦暫不納入（需全套件驗證 + 角色模板審視），
-# 留待後續 per-code 收斂；未列入者一律 delegate 回 is_unrestricted（bare=all 不變）。
+# 納入準則：teacher 角色模板以 ``:own_class`` 持有者＝設計上即班級限定的「逐筆資料」碼。
+#   2026-06-24 首批（verified-safe）：PORTFOLIO_* / DISMISSAL_CALLS_*。
+#   2026-06-25 擴充 STUDENTS_* 逐筆資料碼（teacher 模板皆 :own_class）：READ/WRITE/
+#     HEALTH_READ/MEDICATION_ADMINISTER/SPECIAL_NEEDS_READ。
+#
+# ⚠ 刻意**不含**「全校 workflow / 管理職全校」型 scope-aware code——這些 code 在
+# supervisor 模板為 bare 且**管理職正當依賴 bare=all 取全校**（含 role≠admin/hr/supervisor
+# 的主任，test_gov_moe_iep 主任批核即此），收斂會誤限：
+#   STUDENTS_IEP_APPROVE / STUDENTS_SPECIAL_NEEDS_WRITE / STUDENTS_HEALTH_WRITE /
+#   STUDENTS_LIFECYCLE_WRITE（皆**不在** teacher 模板 → bare=all 保留）。
 _ROW_SCOPED_DATA_CODES = frozenset(
     {
         Permission.PORTFOLIO_READ.value,
         Permission.PORTFOLIO_WRITE.value,
         Permission.DISMISSAL_CALLS_READ.value,
         Permission.DISMISSAL_CALLS_WRITE.value,
+        Permission.STUDENTS_READ.value,
+        Permission.STUDENTS_WRITE.value,
+        Permission.STUDENTS_HEALTH_READ.value,
+        Permission.STUDENTS_MEDICATION_ADMINISTER.value,
+        Permission.STUDENTS_SPECIAL_NEEDS_READ.value,
     }
 )
 
@@ -89,15 +100,13 @@ def is_row_unrestricted(current_user: dict, code: str | None = None) -> bool:
     「全校 workflow 批核」（如 STUDENTS_IEP_APPROVE，主任以 bare 碼批核全校為正當設計）
     等以 bare 碼運作的管理流程。集合內 code 的判定：
 
-        - 管理角色（admin/hr/supervisor）        → True
-        - wildcard ``*``                          → True
-        - 顯式 ``<code>:all``                     → True（自訂角色明示跨班）
-        - bare ``<code>`` / ``<code>:own_class`` → False（落回 own_class scoping）
+        - wildcard ``*`` / 顯式 ``<code>:all``        → True（全校）
+        - 顯式 ``<code>:own_class``（或其他非-all scope）→ False（明示收斂，**覆蓋角色預設**：
+          即使 admin/hr/supervisor，被顯式授 ``:own_class`` 也須限自班，見 test_search）
+        - 無顯式 scope（bare 或未持）：管理角色 → True；非管理角色 → False（P2-1 收斂 bare）
     """
     if code is None or code not in _ROW_SCOPED_DATA_CODES:
         return is_unrestricted(current_user, code)
-    if current_user.get("role", "") in _UNRESTRICTED_ROLES:
-        return True
     from utils.permissions import WILDCARD  # noqa: WPS433  # 避免 import 循環
 
     if isinstance(current_user, dict):
@@ -106,9 +115,15 @@ def is_row_unrestricted(current_user: dict, code: str | None = None) -> bool:
         perm_names = getattr(current_user, "permission_names", None) or []
     if WILDCARD in perm_names:
         return True
-    # 只認「顯式 <code>:all」；bare <code>（resolve_grant 會 collapse 成 all）不算 →
-    # 落回 own_class scoping。
-    return f"{code}:all" in perm_names
+    # 該 code 的顯式 scope 限定詞（:all / :own_class …）。顯式限定**覆蓋角色預設**：
+    # 即使管理角色，被顯式授 <code>:own_class 仍須收斂（test_search supervisor 限自班）。
+    scoped_quals = [n.split(":", 1)[1] for n in perm_names if n.startswith(f"{code}:")]
+    if "all" in scoped_quals:
+        return True
+    if scoped_quals:  # 有顯式非-all scope（:own_class 等）→ 明示收斂
+        return False
+    # 無顯式 scope 限定詞（bare <code> 或未持）：管理角色全校預設；非管理角色 + bare → 收斂。
+    return current_user.get("role", "") in _UNRESTRICTED_ROLES
 
 
 def require_unrestricted_role(
