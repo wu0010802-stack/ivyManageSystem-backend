@@ -14,7 +14,7 @@ from datetime import date
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -176,3 +176,68 @@ def test_preview_month_finalized(client):
     assert body["summary"]["problems"] == 1
     # month_finalized 不進 normalized
     assert len(body["normalized"]) == 0
+
+
+class _SelectCounter:
+    """攔截 engine before_cursor_execute，只數 SELECT。"""
+
+    def __init__(self, engine):
+        self._engine = engine
+        self.count = 0
+
+    def _on(self, conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            self.count += 1
+
+    def __enter__(self):
+        event.listen(self._engine, "before_cursor_execute", self._on)
+        return self
+
+    def __exit__(self, *exc):
+        event.remove(self._engine, "before_cursor_execute", self._on)
+        return False
+
+
+def test_preview_query_count_independent_of_row_count(client):
+    """N+1 哨兵：preview 的封存檢查 + 既有記錄檢查須批次化，查詢數不隨列數成長。
+
+    修補前每有效列各發 2 次查詢（_get_finalized_salary_record + Attendance 既有檢查），
+    1 列 vs 20 列查詢數差約 +38；批次化後固定（pre-scan + 2 次批次查詢），差約 0。
+    """
+    import models.base as base_module
+
+    c, sf = client
+    _login(c, sf)  # 建 E01 + admin
+    with sf() as s:
+        for n in range(2, 11):
+            s.add(
+                Employee(
+                    employee_id=f"E{n:02d}",
+                    name=f"員工{n}",
+                    base_salary=30000,
+                    is_active=True,
+                )
+            )
+        s.commit()
+
+    engine = base_module._engine
+    header = "編號\t姓名\t日期\t上班時間\t下班時間"
+
+    def _count(raw_text):
+        with _SelectCounter(engine) as ctr:
+            res = c.post("/api/attendance/upload/preview", json={"raw_text": raw_text})
+            assert res.status_code == 200, res.text
+        return ctr.count
+
+    one = header + "\nE01\t員工\t2026/02/03\t08:00\t17:00"
+    many_lines = [header]
+    for n in range(1, 11):
+        many_lines.append(f"E{n:02d}\t員工\t2026/02/03\t08:00\t17:00")
+        many_lines.append(f"E{n:02d}\t員工\t2026/02/04\t08:00\t17:00")
+    many = "\n".join(many_lines)  # 20 列跨 10 員工 × 2 日
+
+    c1 = _count(one)
+    c20 = _count(many)
+    assert (
+        c20 - c1 <= 4
+    ), f"考勤預覽 per-row 查詢疑回歸：1 列={c1} 次、20 列={c20} 次（差 {c20 - c1}）"

@@ -25,7 +25,7 @@ from sqlalchemy.orm import joinedload
 from api.salary_fields import calculate_display_bonus_total, build_history_breakdown
 from models.base import session_scope
 from models.database import Employee, SalaryRecord
-from services.salary.breakdown_enrollment import compute_enrollment_breakdown
+from services.salary.breakdown_enrollment import compute_enrollment_breakdowns
 
 logger = logging.getLogger(__name__)
 from utils.auth import require_permission, require_staff_permission
@@ -77,9 +77,25 @@ def get_salary_records(
             query = query.filter(SalaryRecord.employee_id == viewer_employee_id)
         records = query.order_by(Employee.name).offset(skip).limit(limit).all()
 
-        # 一個 request 共用一個月底快照日；以下迴圈每列再呼叫 helper（< 30 員工的規模可接受）。
+        # 一個 request 共用一個月底快照日。enrollment breakdown 一次批次預載，
+        # 避免逐列 N+1：舊版每員工 3-5 查詢，全園 ~200 員工單頁達 600-1000 次
+        # 序列查詢。批次失敗則整頁 breakdown 降級為 None（不影響薪資金額本身）。
         last_day = monthrange(year, month)[1]
         snapshot_date = _date(year, month, last_day)
+
+        try:
+            breakdowns = compute_enrollment_breakdowns(
+                session, [emp.id for _, emp in records], snapshot_date
+            )
+        except Exception:
+            logger.warning(
+                "compute_enrollment_breakdowns 批次失敗 year=%s month=%s；"
+                "breakdown 全設為 None 不影響薪資列表",
+                year,
+                month,
+                exc_info=True,
+            )
+            breakdowns = {}
 
         results = []
         for record, emp in records:
@@ -89,18 +105,7 @@ def get_salary_records(
             elif emp.title:
                 job_title = emp.title
 
-            try:
-                breakdown = compute_enrollment_breakdown(session, emp.id, snapshot_date)
-            except Exception:
-                logger.warning(
-                    "compute_enrollment_breakdown 失敗 employee_id=%s year=%s "
-                    "month=%s；breakdown 設為 None 不影響薪資列表",
-                    emp.id,
-                    year,
-                    month,
-                    exc_info=True,
-                )
-                breakdown = None
+            breakdown = breakdowns.get(emp.id)
 
             results.append(
                 {

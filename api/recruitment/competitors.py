@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_
@@ -16,6 +17,29 @@ from utils.rounding import round_half_up
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/recruitment", tags=["recruitment-competitors"])
+
+
+def _bounding_box(
+    lat: float, lng: float, radius_km: float
+) -> tuple[float, float, float, float]:
+    """回傳涵蓋以 (lat,lng) 為圓心、radius_km 半徑之圓的 lat/lng bounding box
+    (lat_min, lat_max, lng_min, lng_max)。
+
+    box 必為該圓的超集（含 5% 餘裕吸收 111km/度 近似誤差），故 SQL 可先以 box 的
+    BETWEEN（cheap、btree-ready）預篩、AND 短路使 haversine trig 只算 box 內列，
+    再以精確 haversine <= radius 過濾，結果與全表 haversine 等價。
+    """
+    lat_delta = radius_km / 111.0
+    cos_lat = math.cos(math.radians(lat))
+    # 高緯 cos→0 時經度 delta 發散；夾住避免除零（本系統僅高雄，cos≈0.92 不觸發）
+    lng_delta = radius_km / (111.0 * cos_lat) if abs(cos_lat) > 1e-6 else 180.0
+    margin = 1.05
+    return (
+        lat - lat_delta * margin,
+        lat + lat_delta * margin,
+        lng - lng_delta * margin,
+        lng + lng_delta * margin,
+    )
 
 
 @router.get("/competitor-schools/geocode-pending")
@@ -92,6 +116,8 @@ def get_campus_competition(
                 WHERE cs.is_active
                   AND cs.latitude IS NOT NULL
                   AND cs.id != :ivy_id
+                  AND cs.latitude BETWEEN :lat_min AND :lat_max
+                  AND cs.longitude BETWEEN :lng_min AND :lng_max
                   AND (6371 * acos(
                         cos(radians(:lat)) * cos(radians(cs.latitude)) *
                         cos(radians(cs.longitude) - radians(:lng)) +
@@ -99,8 +125,22 @@ def get_campus_competition(
                       )) <= 6
                 ORDER BY distance_km
             """)
+            # bounding-box 預篩（box ⊇ 6km 圓）：cheap BETWEEN 先過濾、AND 短路使
+            # haversine trig 只算 box 內列；btree-ready，未來表長大可加 (lat,lng) 索引。
+            lat_min, lat_max, lng_min, lng_max = _bounding_box(
+                ivy.latitude, ivy.longitude, 6
+            )
             rows = session.execute(
-                sql, {"lat": ivy.latitude, "lng": ivy.longitude, "ivy_id": ivy.id}
+                sql,
+                {
+                    "lat": ivy.latitude,
+                    "lng": ivy.longitude,
+                    "ivy_id": ivy.id,
+                    "lat_min": lat_min,
+                    "lat_max": lat_max,
+                    "lng_min": lng_min,
+                    "lng_max": lng_max,
+                },
             ).fetchall()
 
             def classify(row):
