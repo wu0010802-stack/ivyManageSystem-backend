@@ -33,6 +33,23 @@ _TEACHER_BLOCKED_LIFECYCLE = frozenset(
     {LIFECYCLE_GRADUATED, LIFECYCLE_TRANSFERRED, LIFECYCLE_WITHDRAWN}
 )
 
+# P2-1：哪些 scope-aware code 屬「逐筆學生資料」存取——對這些 code，bare（無 :scope）
+# **不**得自動視為全園（否則自訂角色持 bare 碼即可越權讀任一他班學生資料 = IDOR），
+# 須落回 own_class scoping。**僅列已驗證安全者**（verified-safe 窄修，2026-06-24）。
+#
+# ⚠ 刻意**不含**「全校 workflow 批核」型 scope-aware code（如 STUDENTS_IEP_APPROVE）：
+# 主任等管理職以 bare 碼取得全校批核權是正當設計（test_gov_moe_iep），bare=all 須保留。
+# STUDENTS_READ/WRITE/HEALTH 等廣用資料碼亦暫不納入（需全套件驗證 + 角色模板審視），
+# 留待後續 per-code 收斂；未列入者一律 delegate 回 is_unrestricted（bare=all 不變）。
+_ROW_SCOPED_DATA_CODES = frozenset(
+    {
+        Permission.PORTFOLIO_READ.value,
+        Permission.PORTFOLIO_WRITE.value,
+        Permission.DISMISSAL_CALLS_READ.value,
+        Permission.DISMISSAL_CALLS_WRITE.value,
+    }
+)
+
 
 def is_unrestricted(current_user: dict, code: str | None = None) -> bool:
     """管理角色不受班級限制。
@@ -50,6 +67,48 @@ def is_unrestricted(current_user: dict, code: str | None = None) -> bool:
         grant = resolve_grant(current_user, code)
         return grant is not None and grant.scope == "all"
     return current_user.get("role", "") in _UNRESTRICTED_ROLES
+
+
+def is_row_unrestricted(current_user: dict, code: str | None = None) -> bool:
+    """逐筆學生存取的「全放行」判斷——比 is_unrestricted 嚴格（P2-1 IDOR 修補）。
+
+    與 is_unrestricted 的差異：對「自訂角色持 bare ``<code>``（無 :scope）」**不**視為
+    全園。bare=all 是 resolve_grant 的向後相容約定，對「全園彙總/匯出」端點
+    （assert_all_scope）無害（語意上本就回全校）；但對「逐筆學生」端點，會讓被授予
+    bare scope-aware 碼（如 ``PORTFOLIO_READ``）的自訂角色越權讀任一他班學生 → IDOR。
+    故 row-level helper（assert_student_access / accessible_classroom_ids /
+    filter_student_ids_by_access / student_ids_in_scope）改用本函式判斷：
+
+        - 管理角色（admin/hr/supervisor）        → True（含 code=None 的既有 caller）
+        - wildcard ``*``                          → True
+        - 顯式 ``<code>:all``                     → True（自訂角色明示跨班）
+        - bare ``<code>`` / ``<code>:own_class`` / 無 → False（落回 own_class scoping）
+
+    僅對 ``_ROW_SCOPED_DATA_CODES`` 內的「逐筆學生資料」code 收斂 bare→own_class；
+    code=None 或 code 不在該集合 → 退回 ``is_unrestricted``（bare=all 不變），避免破壞
+    「全校 workflow 批核」（如 STUDENTS_IEP_APPROVE，主任以 bare 碼批核全校為正當設計）
+    等以 bare 碼運作的管理流程。集合內 code 的判定：
+
+        - 管理角色（admin/hr/supervisor）        → True
+        - wildcard ``*``                          → True
+        - 顯式 ``<code>:all``                     → True（自訂角色明示跨班）
+        - bare ``<code>`` / ``<code>:own_class`` → False（落回 own_class scoping）
+    """
+    if code is None or code not in _ROW_SCOPED_DATA_CODES:
+        return is_unrestricted(current_user, code)
+    if current_user.get("role", "") in _UNRESTRICTED_ROLES:
+        return True
+    from utils.permissions import WILDCARD  # noqa: WPS433  # 避免 import 循環
+
+    if isinstance(current_user, dict):
+        perm_names = current_user.get("permission_names") or []
+    else:
+        perm_names = getattr(current_user, "permission_names", None) or []
+    if WILDCARD in perm_names:
+        return True
+    # 只認「顯式 <code>:all」；bare <code>（resolve_grant 會 collapse 成 all）不算 →
+    # 落回 own_class scoping。
+    return f"{code}:all" in perm_names
 
 
 def require_unrestricted_role(
@@ -101,7 +160,7 @@ def accessible_classroom_ids(
         code: 若提供，以 PermissionGrant.scope == 'all' 判斷是否 unrestricted；
               否則回退到 role-based 判斷（向後相容）
     """
-    if is_unrestricted(current_user, code=code):
+    if is_row_unrestricted(current_user, code=code):
         return []
     emp_id = current_user.get("employee_id")
     if not emp_id:
@@ -138,7 +197,7 @@ def assert_student_access(
     student = session.query(Student).filter(Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="學生不存在")
-    if is_unrestricted(current_user, code=code):
+    if is_row_unrestricted(current_user, code=code):
         return student
     # teacher 路徑：終態學生立即失效（audit 2026-05-07 P0 #5）
     if student.lifecycle_status in _TEACHER_BLOCKED_LIFECYCLE:
@@ -166,7 +225,7 @@ def filter_student_ids_by_access(
         code: 若提供，以 PermissionGrant.scope 判斷 unrestricted；
               否則回退到 role-based 判斷（向後相容 ~30 個既有 caller）。
     """
-    if is_unrestricted(current_user, code=code):
+    if is_row_unrestricted(current_user, code=code):
         return set(candidate_ids)
     allowed_classrooms = accessible_classroom_ids(session, current_user, code=code)
     if not allowed_classrooms:
@@ -336,7 +395,7 @@ def student_ids_in_scope(
         code: 若提供，以 PermissionGrant.scope 判斷 unrestricted；
               否則回退到 role-based 判斷（向後相容 ~30 個既有 caller）。
     """
-    if is_unrestricted(current_user, code=code):
+    if is_row_unrestricted(current_user, code=code):
         return None
     allowed_classrooms = accessible_classroom_ids(session, current_user, code=code)
     if not allowed_classrooms:
