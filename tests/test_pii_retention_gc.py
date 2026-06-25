@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from models.activity import ActivityRegistration
 from models.audit import AuditLog
 from models.classroom import Student, LIFECYCLE_ACTIVE, LIFECYCLE_GRADUATED
 from models.guardian import Guardian
@@ -100,6 +101,41 @@ def test_gc_redacts_student_parent_snapshot(test_db_session, monkeypatch):
     test_db_session.refresh(student)
     assert student.parent_name == "[已離校家長]"
     assert student.parent_phone is None
+
+
+def test_gc_redacts_activity_registration_parent_pii(test_db_session, monkeypatch):
+    """GC 抹 Guardian 時，也要抹 activity_registrations 上去正規化的家長聯絡 PII
+    （公開報名表單雙寫的 parent_phone / email）。否則終態學生的家長 PII 以明文
+    續存於才藝報名表，等同 GC 被繞過（個資法 §11；設計審查 2026-06-25 主題 B）。
+    student_name / birthday 屬學生本人 PII，依 retention 政策保留。"""
+    monkeypatch.setattr(
+        "services.pii_retention_scheduler.dry_run_enabled", lambda: False
+    )
+    student, g = _make_guardian_pair(
+        test_db_session,
+        lifecycle=LIFECYCLE_GRADUATED,
+        days_ago=400,
+        user_id=7,
+    )
+    reg = ActivityRegistration(
+        student_name="小明",
+        parent_phone="0912345678",
+        email="mom@example.com",
+        student_id=student.id,
+        school_year=113,
+        semester=1,
+    )
+    test_db_session.add(reg)
+    test_db_session.commit()
+
+    _run_pii_retention_gc(session=test_db_session)
+
+    test_db_session.expire_all()
+    test_db_session.refresh(reg)
+    assert reg.parent_phone is None
+    assert reg.email is None
+    # 學生本人 PII 保留（與 students 表只抹 parent_* 一致）
+    assert reg.student_name == "小明"
 
 
 def test_gc_skips_within_retention_window(test_db_session, monkeypatch):

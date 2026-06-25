@@ -4,7 +4,11 @@
 
 - 對象：Guardian 表中 student 已進終態且 terminal_entered_at < NOW - 365 天
 - 動作：抹 phone/email/relation/custody_note，name 改 '[已離校家長]'，user_id 解綁
-- 不刪 Guardian row、不動 Student PII、不刪 User row
+- 同步抹去正規化的「家長」PII 副本：students.parent_name/parent_phone、
+  activity_registrations.parent_phone/email（否則同一份家長 PII 以明文續存於
+  雙寫副本表，等同 GC 被繞過，個資法 §11）
+- 不刪 Guardian row、不刪 User row；**不動學生本人 PII**（Student.name/birthday、
+  activity_registrations.student_name/birthday 皆保留——只抹「家長」欄位）
 - ENV：PII_RETENTION_GC_DISABLED=1（關閉）/ PII_RETENTION_GC_DRY_RUN=1（只 log）
        / PII_RETENTION_TERMINAL_DAYS=365（可調）
 
@@ -159,6 +163,7 @@ def _run_pii_retention_gc(session=None) -> None:
         # is_primary guardian 的雙寫副本，見 api/students._sync_*）。只抹 guardians
         # 會讓同一份家長 PII 以明文續存於 students，等同 GC 被繞過（個資法 §11）。
         student_ids = sorted({r[1] for r in rows if r[1] is not None})
+        areg_redacted = 0
         if student_ids:
             student_stmt = text("""
                 UPDATE students
@@ -167,6 +172,23 @@ def _run_pii_retention_gc(session=None) -> None:
                 WHERE id IN :sids
             """).bindparams(bindparam("sids", expanding=True))
             session.execute(student_stmt, {"sids": tuple(student_ids)})
+
+            # 同步抹除 activity_registrations 上去正規化的家長聯絡 PII（公開報名
+            # 表單雙寫的 parent_phone / email）。只抹 guardians/students 會讓同一份
+            # 家長 PII 以明文續存於才藝報名表 → 等同 GC 被繞過（個資法 §11；系統設計
+            # 審查 2026-06-25 主題 B：PII 去正規化副本散落多表）。student_name /
+            # birthday 屬學生本人 PII，依 retention 政策保留（與 students 表只抹
+            # parent_* 一致）。AND (... IS NOT NULL) 讓已抹的 row 不重複計數。
+            areg_stmt = text("""
+                UPDATE activity_registrations
+                SET parent_phone = NULL,
+                    email = NULL
+                WHERE student_id IN :sids
+                  AND (parent_phone IS NOT NULL OR email IS NOT NULL)
+            """).bindparams(bindparam("sids", expanding=True))
+            areg_redacted = session.execute(
+                areg_stmt, {"sids": tuple(student_ids)}
+            ).rowcount
 
         # 寫 audit_log（每筆一條，changes 不含 PII）
         days = retention_days()
@@ -196,7 +218,11 @@ def _run_pii_retention_gc(session=None) -> None:
             session.commit()
         else:
             session.flush()
-        logger.info("pii_retention GC: 已抹 %s 筆 Guardian PII", len(guardian_ids))
+        logger.info(
+            "pii_retention GC: 已抹 %s 筆 Guardian PII（含 %s 筆才藝報名去正規化副本）",
+            len(guardian_ids),
+            areg_redacted,
+        )
         record_rows("pii_retention", len(guardian_ids))
     except Exception as e:
         # Downgraded：scheduler 端 wrapper 會做 throttled Sentry 上報
