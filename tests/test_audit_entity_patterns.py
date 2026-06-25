@@ -170,6 +170,57 @@ class TestContactBookTemplateAuditCoverage:
         assert ENTITY_LABELS.get("contact_book_template") == "聯絡簿範本"
 
 
+class TestSensitiveWriteAuditCoverage:
+    """設計審查 2026-06-25 Finding A/B/C：懲處扣薪 / 才藝鐘點費 / 兒童用藥
+    三類敏感寫端點原本不在 ENTITY_PATTERNS → _parse_entity_type 回 None →
+    AuditMiddleware 短路、零 audit_logs。本測試鎖定其 pattern 與 label，
+    並驗證未遮蔽既有更廣 pattern（first-match wins）。
+    """
+
+    def test_disciplinary_actions_mapped(self):
+        """POST/PUT/DELETE /api/disciplinary-actions → disciplinary_action
+        （deduction_amount 直接扣薪，金流舞弊盲區必留稽核）。"""
+        assert _parse_entity_type("/api/disciplinary-actions") == "disciplinary_action"
+        assert (
+            _parse_entity_type("/api/disciplinary-actions/12") == "disciplinary_action"
+        )
+
+    def test_art_teacher_payroll_mapped(self):
+        """才藝老師鐘點費（金流）→ art_teacher_payroll。"""
+        assert _parse_entity_type("/api/art-teacher-payroll") == "art_teacher_payroll"
+        assert _parse_entity_type("/api/art-teacher-payroll/7") == "art_teacher_payroll"
+
+    def test_medication_log_administer_skip_correct_mapped(self):
+        """給藥/略過/補登三端點 → medication_log（醫療，兒童安全）。"""
+        assert (
+            _parse_entity_type("/api/medication-logs/5/administer") == "medication_log"
+        )
+        assert _parse_entity_type("/api/medication-logs/5/skip") == "medication_log"
+        assert _parse_entity_type("/api/medication-logs/5/correct") == "medication_log"
+
+    def test_sensitive_write_entity_labels_present(self):
+        assert ENTITY_LABELS.get("disciplinary_action") == "員工懲處"
+        assert ENTITY_LABELS.get("art_teacher_payroll") == "才藝老師鐘點費"
+        assert ENTITY_LABELS.get("medication_log") == "給藥紀錄"
+
+    def test_existing_patterns_not_shadowed(self):
+        """加入新 pattern 不得破壞既有更廣/更具體 pattern 的解析。"""
+        # 員工主檔不應被 disciplinary 規則吃掉
+        assert _parse_entity_type("/api/employees/5") == "employee"
+        # 薪資仍歸 salary（art-teacher-payroll 不在 /api/salary 前綴內，互不干擾）
+        assert _parse_entity_type("/api/salaries/12") == "salary"
+        # 才藝主模組未被 art-teacher-payroll 規則誤吃
+        assert (
+            _parse_entity_type("/api/activity/registrations/3")
+            == "activity_registration"
+        )
+        # parent medication-orders 與 medication-logs 是不同路徑，不互相吃
+        assert (
+            _parse_entity_type("/api/parent/medication-orders")
+            == "parent_medication_order"
+        )
+
+
 class TestReadDedup:
     """audit 2026-05-25：write_explicit_audit(dedup=True) 同 (user, entity_type,
     entity_id) 60s 內只記第一筆，避免家長端 list endpoint 量爆。"""
