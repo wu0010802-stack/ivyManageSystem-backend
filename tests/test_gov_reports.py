@@ -244,3 +244,108 @@ class TestHealthInsuranceExcludesSupplementaryPremium:
 
         assert resp.status_code == 200, resp.text
         assert _read_health_emp_cell(resp.content) == 1000
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# P1：扣繳憑單「全年給付總額」須納入特休未休折現（unused_leave_payout，屬§38 薪資所得）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _read_withholding_annual_income_cell(content: bytes):
+    """讀回扣繳憑單 xlsx 第一筆資料列的「全年給付總額」欄（E4）。
+
+    版面：row1 標題 / row2 扣繳義務人 / row3 表頭 / row4 起為資料。
+    全年給付總額為第 5 欄（E，header「全年給付\\n總額」）。
+    """
+    wb = load_workbook(BytesIO(content))
+    ws = wb.active
+    return ws.cell(row=4, column=5).value
+
+
+class TestWithholdingIncludesUnusedLeavePayout:
+    """扣繳憑單逐 SalaryRecord 聚合年度所得時，須納入 unused_leave_payout
+    （特休未休折現，屬薪資所得§38）。漏報即對國稅局少報員工所得。"""
+
+    def _build_app_and_records(self, *, unused_leave_payout: float):
+        from api import gov_reports
+        from api.gov_reports import router, init_gov_report_services
+
+        init_gov_report_services(MagicMock())
+
+        app = FastAPI()
+        from utils.auth import get_current_user
+
+        async def _mock_user():
+            return {
+                "id": 1,
+                "username": "test",
+                "role": "admin",
+                "permission_names": ["*"],
+            }
+
+        app.dependency_overrides[get_current_user] = _mock_user
+        app.dependency_overrides[gov_reports._rate_limit] = lambda: None
+        app.include_router(router)
+
+        emp = SimpleNamespace(
+            id=1,
+            name="王小明",
+            id_number="A123456789",
+            unreported_for_tax=False,
+        )
+        # 一名員工、一筆 record：底薪所得 500_000，加上特休未休折現
+        sr = SimpleNamespace(
+            employee_id=1,
+            gross_salary=500_000,
+            festival_bonus=0,
+            overtime_bonus=0,
+            unused_leave_payout=unused_leave_payout,
+            labor_insurance_employee=0,
+            health_insurance_employee=0,
+            pension_employee=0,
+        )
+        return app, [(sr, emp)]
+
+    def _mock_session_with(self, records):
+        """建出讓 query(SalaryRecord, Employee).join(...).filter(...).all()
+        回傳指定 (sr, emp) tuple list 的 mock session。"""
+        sess = MagicMock()
+        sess.query.return_value.join.return_value.filter.return_value.all.return_value = (
+            records
+        )
+        return sess
+
+    def test_annual_income_includes_unused_leave_payout(self):
+        """RED 證明：修前「全年給付總額」漏算 unused_leave_payout。
+
+        gross 500_000 + 特休未休折現 80_000 = 580_000。
+        修前公式只算 gross + festival + overtime = 500_000（少報 80_000）。
+        """
+        app, records = self._build_app_and_records(unused_leave_payout=80_000)
+        sess = self._mock_session_with(records)
+
+        with (
+            patch("api.gov_reports.get_session", return_value=sess),
+            patch("api.gov_reports._assert_salary_period_finalized", return_value=None),
+        ):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.get("/api/gov-reports/withholding?year=2026")
+
+        assert resp.status_code == 200, resp.text
+        # 500_000（gross）+ 80_000（特休未休折現）= 580_000
+        assert _read_withholding_annual_income_cell(resp.content) == 580_000
+
+    def test_zero_unused_leave_payout_unchanged(self):
+        """無特休未休折現時，全年給付總額 = gross（行為不變）。"""
+        app, records = self._build_app_and_records(unused_leave_payout=0)
+        sess = self._mock_session_with(records)
+
+        with (
+            patch("api.gov_reports.get_session", return_value=sess),
+            patch("api.gov_reports._assert_salary_period_finalized", return_value=None),
+        ):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.get("/api/gov-reports/withholding?year=2026")
+
+        assert resp.status_code == 200, resp.text
+        assert _read_withholding_annual_income_cell(resp.content) == 500_000

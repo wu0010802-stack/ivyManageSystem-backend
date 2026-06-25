@@ -770,6 +770,7 @@ def export_withholding(
                     "gross": 0.0,
                     "festival_bonus": 0.0,
                     "overtime_bonus": 0.0,
+                    "unused_leave_payout": 0.0,
                     "labor_emp": 0.0,
                     "health_emp": 0.0,
                     "pension_emp": 0.0,
@@ -778,15 +779,21 @@ def export_withholding(
             d["gross"] += sr.gross_salary or 0
             d["festival_bonus"] += sr.festival_bonus or 0
             d["overtime_bonus"] += sr.overtime_bonus or 0
+            d["unused_leave_payout"] += sr.unused_leave_payout or 0
             d["labor_emp"] += sr.labor_insurance_employee or 0
             d["health_emp"] += sr.health_insurance_employee or 0
             d["pension_emp"] += sr.pension_employee or 0
 
         rows = []
         for _emp_id, data in sorted(agg.items(), key=lambda x: x[1]["name"]):
-            # 全年所得 = 月薪合計 + 節慶獎金 + 超額獎金（均屬薪資所得）
+            # 全年所得 = 月薪合計 + 節慶獎金 + 超額獎金 + 特休未休折現
+            # （均屬薪資所得；unused_leave_payout 屬所得稅法§38 薪資所得，
+            #  不進 gross_salary 故須在此另行加入，否則對國稅局少報）
             annual_income = round_half_up(
-                data["gross"] + data["festival_bonus"] + data["overtime_bonus"]
+                data["gross"]
+                + data["festival_bonus"]
+                + data["overtime_bonus"]
+                + data["unused_leave_payout"]
             )
             withholding = _estimate_withholding(annual_income)
             rows.append(
