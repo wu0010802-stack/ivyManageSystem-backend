@@ -30,20 +30,26 @@ def tick_pending_uploads(now_provider=lambda: datetime.now(timezone.utc)) -> dic
     metric = {"attempted": 0, "succeeded": 0, "failed": 0, "final_failed": 0}
     try:
         now = now_provider()
-        rows = (
-            session.query(PendingUpload)
-            .filter(
-                PendingUpload.succeeded_at.is_(None),
-                PendingUpload.next_retry_at <= now,
-                PendingUpload.attempts < _MAX_ATTEMPTS,
+        # 先取候選 id（不鎖），再逐筆 re-lock + 處理 + commit。
+        # 逐筆短交易：每筆成功狀態即時落地，進程在 tick 中途崩潰 / 被部署重啟時，
+        # 已上傳的 row 不會在下個 tick 重複上傳。attempted 仍以「候選列數」計
+        # （維持 backend 非 Supabase 時 short-circuit 仍回報撈到列數的既有語義）。
+        candidate_ids = [
+            r_id
+            for (r_id,) in (
+                session.query(PendingUpload.id)
+                .filter(
+                    PendingUpload.succeeded_at.is_(None),
+                    PendingUpload.next_retry_at <= now,
+                    PendingUpload.attempts < _MAX_ATTEMPTS,
+                )
+                .order_by(PendingUpload.id)
+                .limit(_TICK_LIMIT)
+                .all()
             )
-            .limit(_TICK_LIMIT)
-            # 多 worker 時避免兩個 worker 撈到同批 pending_upload 而重複上傳。
-            # SQLite 測試環境會忽略 FOR UPDATE；PostgreSQL 會用 SKIP LOCKED claim row。
-            .with_for_update(skip_locked=True)
-            .all()
-        )
-        metric["attempted"] = len(rows)
+        ]
+        session.rollback()  # 結束唯讀候選查詢交易
+        metric["attempted"] = len(candidate_ids)
 
         from utils.storage import get_backend
 
@@ -52,7 +58,23 @@ def tick_pending_uploads(now_provider=lambda: datetime.now(timezone.utc)) -> dic
         if backend.__class__.__name__ != "SupabaseStorage":
             return metric
 
-        for row in rows:
+        for row_id in candidate_ids:
+            # 單列 claim（skip_locked）+ 合格性 re-check 折進同一 SQL filter（DB 層比較，
+            # 跨 SQLite/PG 安全）：row is None 同時涵蓋「他 worker 鎖住」與「候選成形後
+            # 已被推進」兩種情形，皆跳過不重傳。
+            row = (
+                session.query(PendingUpload)
+                .filter(
+                    PendingUpload.id == row_id,
+                    PendingUpload.succeeded_at.is_(None),
+                    PendingUpload.next_retry_at <= now,
+                    PendingUpload.attempts < _MAX_ATTEMPTS,
+                )
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+            if row is None:
+                continue
             try:
                 with open(row.local_path, "rb") as f:
                     data = f.read()
@@ -90,7 +112,7 @@ def tick_pending_uploads(now_provider=lambda: datetime.now(timezone.utc)) -> dic
                     row.last_error = str(exc)[:500]
                     metric["failed"] += 1
                     tagged_capture(exc, tag="supabase", level="warning")
-        session.commit()
+            session.commit()  # 本筆狀態即時落地 + 釋放鎖
     finally:
         session.close()
     return metric

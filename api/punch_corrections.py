@@ -89,8 +89,8 @@ def _format_correction(c: PunchCorrectionRequest, employee_name: str = "") -> di
 @router.get("/punch-corrections")
 def list_punch_corrections(
     status: Optional[str] = Query(None, description="pending / approved / rejected"),
-    year: Optional[int] = Query(None),
-    month: Optional[int] = Query(None),
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
     employee_id: Optional[int] = Query(None),
     current_user: dict = Depends(require_staff_permission(Permission.APPROVALS)),
 ):

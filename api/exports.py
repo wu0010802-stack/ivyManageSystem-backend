@@ -552,7 +552,7 @@ def export_calendar(
     request: Request,
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
-    year: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
 ):
     """匯出行事曆 Excel"""
@@ -970,7 +970,7 @@ def export_employee_attendance(
     _rl=Depends(_export_rate_limit),
     current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_READ)),
     employee_id: int = Query(...),
-    year: int = Query(...),
+    year: int = Query(..., ge=2000, le=2100),
     month: int = Query(..., ge=1, le=12),
 ):
     """匯出指定員工的個人出勤月報 Excel（逐日打卡明細）"""

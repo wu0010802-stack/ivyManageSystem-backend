@@ -37,22 +37,44 @@ def tick_line_retry(now_provider=lambda: datetime.now(timezone.utc)) -> dict:
     metric = {"attempted": 0, "succeeded": 0, "failed": 0, "final_failed": 0}
     try:
         now = now_provider()
-        rows = (
-            session.query(NotificationLog)
-            .filter(
-                NotificationLog.line_next_retry_at.is_not(None),
-                NotificationLog.line_next_retry_at <= now,
-                NotificationLog.line_retry_count < _MAX_RETRIES,
+        # 先取候選 id（不鎖），再逐筆 re-lock + 處理 + commit。
+        # 逐筆短交易：每筆成功狀態即時落地，進程在 tick 中途崩潰 / 被部署重啟時，
+        # 已送出的 row 不會在下個 tick 重送（避免家長收重複 LINE 通知）。
+        candidate_ids = [
+            r_id
+            for (r_id,) in (
+                session.query(NotificationLog.id)
+                .filter(
+                    NotificationLog.line_next_retry_at.is_not(None),
+                    NotificationLog.line_next_retry_at <= now,
+                    NotificationLog.line_retry_count < _MAX_RETRIES,
+                )
+                .order_by(NotificationLog.id)
+                .limit(_TICK_LIMIT)
+                .all()
             )
-            .limit(_TICK_LIMIT)
-            # row-level claim：多 worker 部署時各自鎖住並處理不同 row（skip 其他 worker
-            # 已鎖的），避免兩個 worker 撈到同批 row 而雙發 LINE。鎖持有至本 tick commit。
-            .with_for_update(skip_locked=True)
-            .all()
-        )
-        metric["attempted"] = len(rows)
+        ]
+        session.rollback()  # 結束唯讀候選查詢交易，後續每筆走獨立短交易
 
-        for row in rows:
+        for row_id in candidate_ids:
+            # 單列 claim（skip_locked）+ 合格性 re-check 折進同一 SQL filter（DB 層比較，
+            # 跨 SQLite/PG 安全）：row is None 同時涵蓋「他 worker 鎖住」與「候選成形後
+            # 已被推進而不再合格」兩種情形，皆跳過不重送。逐筆 commit 即釋放，不持整批鎖。
+            row = (
+                session.query(NotificationLog)
+                .filter(
+                    NotificationLog.id == row_id,
+                    NotificationLog.line_next_retry_at.is_not(None),
+                    NotificationLog.line_next_retry_at <= now,
+                    NotificationLog.line_retry_count < _MAX_RETRIES,
+                )
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+            if row is None:
+                continue
+
+            metric["attempted"] += 1
             try:
                 ok = _retry_line_push(session, row)
                 if ok is True:
@@ -75,8 +97,7 @@ def tick_line_retry(now_provider=lambda: datetime.now(timezone.utc)) -> dict:
                 tagged_capture(exc, tag="line", level="error")
                 _schedule_next_or_final(row, now)
                 metric["failed"] += 1
-
-        session.commit()
+            session.commit()  # 本筆狀態即時落地 + 釋放鎖
     finally:
         session.close()
     return metric
