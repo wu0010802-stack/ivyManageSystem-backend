@@ -245,12 +245,27 @@ def _revoke_comp_leave_grant(
             ),
         )
 
-    # ── 新增：mark grant ledger row 為 revoked（不刪除留 audit） ──
+    # ── grant ledger:已被消耗的 grant 不可撤銷（rank 5）──────────────────────
+    # 上方 linked_approved 只擋 source_overtime_id 明確關聯的已核准假；但 admin 建立
+    # 的補休假 source_overtime_id=NULL，由 _consume_compensatory_grants_fifo 以員工
+    # 為單位 FIFO 扣到 grant.consumed_hours，與 source_overtime_id 脫鉤。linked 與
+    # committed 兩道守衛都可能放行，而此 grant 實際已被 FIFO 消耗；撤銷/刪除（CASCADE
+    # 刪 grant）會讓 consumed 帳蒸發 → surviving grant 到期重複折現付現（員工 8h 加班
+    # 拿到 8h 已休假 + 8h 現金）。比照 linked_approved 硬擋，要求先撤銷已使用的補休假。
     grant = (
         session.query(OvertimeCompLeaveGrant)
         .filter(OvertimeCompLeaveGrant.overtime_record_id == ot.id)
         .first()
     )
+    _grant_consumed = float(getattr(grant, "consumed_hours", 0) or 0) if grant else 0.0
+    if _grant_consumed > 1e-9:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"此筆加班的補休額度已被使用 {_grant_consumed:.1f} 小時"
+                "（含未明確關聯假單的 FIFO 消耗），請先撤銷已使用的補休假單後再操作"
+            ),
+        )
     if grant is not None:
         grant.status = "revoked"
 
