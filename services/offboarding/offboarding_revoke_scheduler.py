@@ -80,7 +80,9 @@ async def run_offboarding_revoke_scheduler(stop_event: asyncio.Event) -> None:
             with scheduler_iteration(
                 "offboarding_revoke", expected_interval_seconds=check_interval
             ):
-                result = run_offboarding_revoke_due_once()
+                # 同步 psycopg2 批次（自帶 session）一律經 asyncio.to_thread 丟 threadpool，
+                # 避免到期撤帳的阻塞 DB IO 凍結 event loop（對齊其餘排程器，如 security_gc）。
+                result = await asyncio.to_thread(run_offboarding_revoke_due_once)
                 record_rows("offboarding_revoke", int(result.get("revoked", 0)))
         except Exception:
             logger.exception("offboarding revoke scheduler tick 失敗")
