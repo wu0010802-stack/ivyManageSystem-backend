@@ -5,8 +5,14 @@
 此前靠註解「兩端同步」維護、無 CI 攔截，新增權限只改一邊會靜默 drift——例：2026-05-29
 後端加 ``DATA_QUALITY_READ`` / ``DATA_QUALITY_WRITE``，前端漏同步造成 68 vs 70，
 管理端權限設定 UI 會漏列該權限、admin 無法在前端把它指派給角色（後端守衛仍在，
-方向 fail-closed 不洩漏，但功能漏接）。本 gate 補上 PII denylist parity
-（``test_pii_denylist_parity.py``）與 scope-aware parity 之外缺的「全表」缺口。
+方向 fail-closed 不洩漏，但功能漏接）。本檔涵蓋兩項 FE/BE 跨 repo parity，與 PII
+denylist parity（``test_pii_denylist_parity.py``）並列：
+  ① ``PERMISSION_NAMES`` 全表（``src/constants/permissions.ts``，70 碼）
+  ② ``SCOPE_AWARE_CODES``（``src/utils/auth.ts``，13 碼，前端手抄；row-level scope
+     判斷 ``getPermissionScope`` 需與後端 ``SCOPE_AWARE_CODES`` 對齊，否則前端對
+     scope-qualified 後綴的認定會與後端守衛不一致。設計審查 2026-06-25 主題 C）。
+  （既有 ``test_scope_filter_guard.py`` 只校驗後端內部 lint 用同一份 SCOPE_AWARE_CODES，
+   非跨 repo；FE↔BE 的 scope 碼 parity 此前無守衛。）
 
 策略：用 regex 從 permissions.ts 抽出 ``PERMISSION_NAMES`` 的值，跟 backend enum value
 雙向比對。此為 **CI-only gate**（對齊 ``openapi-drift`` 的 CI-enforced 模式）：未設
@@ -26,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from utils.permissions import Permission
+from utils.permissions import Permission, SCOPE_AWARE_CODES
 
 # backend repo root → workspace sibling 'ivy-frontend'；可用 env 覆寫
 _FRONTEND_PERMS = (
@@ -38,6 +44,9 @@ _FRONTEND_PERMS = (
     / "constants"
     / "permissions.ts"
 )
+# auth.ts 與 permissions.ts 同在 src/ 下（constants/ 與 utils/ 為 sibling 目錄），故
+# 自 permissions.ts 推導 → 沿用同一份 PERMISSION_PARITY_FRONTEND 覆寫不另設 env。
+_FRONTEND_AUTH = _FRONTEND_PERMS.parent.parent / "utils" / "auth.ts"
 
 # 抓 `export const PERMISSION_NAMES = { ... } as const`（物件為扁平、無巢狀 `}`）
 _OBJECT_RE = re.compile(
@@ -46,6 +55,10 @@ _OBJECT_RE = re.compile(
 )
 # 物件內每筆 `KEY: 'VALUE'`；限定 KEY 為大寫識別字 + 引號值，避開註解文字
 _ENTRY_RE = re.compile(r"""(?P<key>[A-Z][A-Z0-9_]*)\s*:\s*['"](?P<val>[^'"]+)['"]""")
+
+# auth.ts 內 `SCOPE_AWARE_CODES ... new Set([ '...', '...' ])`
+_SCOPE_BLOCK_RE = re.compile(r"SCOPE_AWARE_CODES[^\[]*\[(?P<body>.*?)\]", re.DOTALL)
+_SCOPE_LITERAL_RE = re.compile(r"""['"]([A-Z][A-Z0-9_]+)['"]""")
 
 
 def _parse_fe_permission_names() -> frozenset[str]:
@@ -64,6 +77,17 @@ def _parse_fe_permission_names() -> frozenset[str]:
     mismatched = [(k, v) for k, v in entries if k != v]
     assert not mismatched, f"前端 PERMISSION_NAMES key != value：{mismatched}"
     return frozenset(v for _, v in entries)
+
+
+def _parse_fe_scope_aware_codes() -> frozenset[str]:
+    text = _FRONTEND_AUTH.read_text(encoding="utf-8")
+    m = _SCOPE_BLOCK_RE.search(text)
+    if not m:
+        pytest.fail(f"無法從 {_FRONTEND_AUTH} 抽出 SCOPE_AWARE_CODES（格式變動？）。")
+    codes = frozenset(_SCOPE_LITERAL_RE.findall(m.group("body")))
+    if not codes:
+        pytest.fail(f"{_FRONTEND_AUTH} 的 SCOPE_AWARE_CODES 抽不到任何碼。")
+    return codes
 
 
 def _requires_frontend():
@@ -99,4 +123,29 @@ class TestPermissionParity:
             f"  frontend 有但 backend 缺：{sorted(extra_in_fe)}\n"
             f"修正：同步更新 utils/permissions.py 的 Permission enum 與 "
             f"../ivy-frontend/src/constants/permissions.ts 的 PERMISSION_NAMES。"
+        )
+
+    def test_scope_aware_codes_match(self):
+        """前端 src/utils/auth.ts 的 SCOPE_AWARE_CODES 必須等於後端 SCOPE_AWARE_CODES。
+
+        前端 getPermissionScope 只對這份集合認 scope-qualified 後綴（<CODE>:own_class
+        /:all）；與後端 resolve_grant 的 SCOPE_AWARE_CODES 漂移時，前端對 row-level
+        scope 的判斷會與後端守衛不一致（設計審查 2026-06-25 主題 C，此前無 FE↔BE 守衛）。
+        """
+        _requires_frontend()
+        if not _FRONTEND_AUTH.exists():
+            pytest.fail(
+                f"PERMISSION_PARITY_REQUIRE_FRONTEND 已設，但前端 auth.ts 不在預期路徑 "
+                f"{_FRONTEND_AUTH}（與 permissions.ts 同 src/ 下）。"
+            )
+        fe = _parse_fe_scope_aware_codes()
+        be = frozenset(SCOPE_AWARE_CODES)
+        missing_in_fe = be - fe
+        extra_in_fe = fe - be
+        assert not missing_in_fe and not extra_in_fe, (
+            f"FE/BE SCOPE_AWARE_CODES drift：\n"
+            f"  backend 有但 frontend 缺：{sorted(missing_in_fe)}\n"
+            f"  frontend 有但 backend 缺：{sorted(extra_in_fe)}\n"
+            f"修正：同步更新 utils/permissions.py 的 SCOPE_AWARE_CODES 與 "
+            f"../ivy-frontend/src/utils/auth.ts 的 SCOPE_AWARE_CODES。"
         )
