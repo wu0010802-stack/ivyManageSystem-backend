@@ -97,8 +97,8 @@ def _event_to_dict(ev: SchoolEvent) -> dict:
 
 @router.get("/events", response_model=list[EventOut])
 def get_events(
-    year: Optional[int] = Query(None),
-    month: Optional[int] = Query(None),
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
     event_type: Optional[str] = Query(None),
     current_user: dict = Depends(require_staff_permission(Permission.CALENDAR)),
 ):

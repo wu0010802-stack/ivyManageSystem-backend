@@ -103,8 +103,8 @@ def _format_correction(c: PunchCorrectionRequest) -> dict:
 
 @router.get("/my-punch-corrections")
 def get_my_punch_corrections(
-    year: Optional[int] = Query(None),
-    month: Optional[int] = Query(None),
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
     current_user: dict = Depends(get_current_user),
 ):
     """取得個人補打卡申請記錄"""
