@@ -1069,10 +1069,19 @@ def check_permission_definition_drift(session) -> List[str]:
     drift = find_permission_definition_drift({r[0] for r in rows})
     missing = drift["missing_in_db"]
     if missing:
-        _logger.warning(
-            "permission_definitions 與 Permission enum 漂移：DB 缺 %d 碼 %s；"
-            "請跑 backfill migration（非 wildcard admin 會對這些功能 403、admin UI 無法授權）",
-            len(missing),
-            missing,
+        msg = (
+            f"permission_definitions 與 Permission enum 漂移：DB 缺 {len(missing)} "
+            f"碼 {missing}；請跑 backfill migration（非 wildcard admin 會對這些功能 "
+            f"403、admin UI 無法授權）"
         )
+        _logger.warning(msg)
+        # 設計審查 2026-06-25 QW3：drift 是「監控自己瞎掉」類訊號，logger.warning
+        # 不會進 Sentry（event_level=ERROR），故顯式 capture_message 推上去，讓
+        # backfill 漏跑在 prod 可被看見而非靜默 403。capture_message 未 init 時 no-op。
+        try:
+            from utils.sentry_init import capture_message
+
+            capture_message(msg, level="warning")
+        except Exception:  # noqa: BLE001 — 告警上報失敗不可傳染回啟動主邏輯
+            pass
     return missing

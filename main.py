@@ -405,9 +405,11 @@ async def app_lifespan(app_instance: FastAPI):
         _probe_parent_rls_ready()
     )
 
-    # ── 權限定義漂移自檢（2026-06-15 運作探測 P2-2）──
+    # ── 權限定義漂移自檢（2026-06-15 運作探測 P2-2；2026-06-25 QW3 補 Sentry）──
     # Permission enum 與 DB permission_definitions 不符（新增權限後未補 backfill
-    # migration）會使非 wildcard admin 對該功能 403、admin UI 無法授權；僅 WARNING。
+    # migration）會使非 wildcard admin 對該功能 403、admin UI 無法授權。漂移時
+    # check_permission_definition_drift 內部會 logger.warning + Sentry capture_message
+    # （logger.warning 不進 Sentry，需顯式上報才不會「監控自己瞎掉」）。
     try:
         from models.database import get_session
         from utils.permissions import check_permission_definition_drift
