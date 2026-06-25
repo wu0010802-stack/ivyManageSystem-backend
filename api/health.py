@@ -22,6 +22,7 @@ from sqlalchemy import text
 from models.base import get_engine, get_session
 from models.scheduler_heartbeat import SchedulerHeartbeat
 from schemas._common import OkStatusOut
+from utils.scheduler_observability import ALERT_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -271,10 +272,11 @@ def schedulers_health():
     """
     now = datetime.now(timezone.utc)
     schedulers: list[dict] = []
-    lagging: list[dict] = []
+    degraded: list[dict] = []
     with get_session() as s:
         rows = s.query(SchedulerHeartbeat).all()
         for row in rows:
+            cf = row.consecutive_failures or 0
             if row.last_success_at is None:
                 lag_seconds: float | None = None
                 is_lagging = False
@@ -285,6 +287,13 @@ def schedulers_health():
                     last_success = last_success.replace(tzinfo=timezone.utc)
                 lag_seconds = (now - last_success).total_seconds()
                 is_lagging = lag_seconds > 2 * row.expected_interval_seconds
+            # QW4（設計審查 2026-06-25）：原本只看 lag → 「註冊了但每次都失敗
+            # （last_success_at 永遠 NULL）」的 scheduler，consecutive_failures 一直
+            # 累積卻仍回 200 綠燈，對外部 watchdog 隱形。改為連續失敗達 ALERT_THRESHOLD
+            # （與 LINE/Sentry 告警同門檻）也視為 degraded，與 lag 條件並聯。剛啟動
+            # 尚未跑（NULL + 0 失敗）仍視為健康，避免冷啟動誤報。
+            is_failing = cf >= ALERT_THRESHOLD
+            is_degraded = is_lagging or is_failing
             item = {
                 "name": row.scheduler_name,
                 "last_success_at": (
@@ -292,27 +301,32 @@ def schedulers_health():
                 ),
                 "lag_seconds": lag_seconds,
                 "expected_interval_seconds": row.expected_interval_seconds,
-                "consecutive_failures": row.consecutive_failures,
+                "consecutive_failures": cf,
+                "reason": (
+                    "lagging" if is_lagging else ("failing" if is_failing else None)
+                ),
             }
             schedulers.append(item)
-            if is_lagging:
-                lagging.append(item)
+            if is_degraded:
+                degraded.append(item)
     total = len(schedulers)
-    if lagging:
+    if degraded:
+
+        def _fmt(x: dict) -> str:
+            lag = "NULL" if x["lag_seconds"] is None else f"{x['lag_seconds']:.0f}s"
+            return (
+                f"{x['name']}(reason={x['reason']},lag={lag},"
+                f"fail={x['consecutive_failures']})"
+            )
+
         # 明細（名稱/lag/失敗數）僅入 server log 供 ops 排查，不對未認證公開端外洩
-        logger.warning(
-            "scheduler 健康降級：%s",
-            ", ".join(
-                f"{x['name']}(lag={x['lag_seconds']:.0f}s,fail={x['consecutive_failures']})"
-                for x in lagging
-            ),
-        )
+        logger.warning("scheduler 健康降級：%s", ", ".join(_fmt(x) for x in degraded))
         return JSONResponse(
             status_code=503,
             content={
                 "status": "degraded",
                 "total": total,
-                "lagging_count": len(lagging),
+                "lagging_count": len(degraded),
             },
         )
     return {"status": "ok", "total": total, "lagging_count": 0}

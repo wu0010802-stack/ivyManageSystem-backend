@@ -236,6 +236,31 @@ ENTITY_PATTERNS = [
     # 附件軟刪：缺此規則時 middleware _parse_entity_type 回 None → 短路跳過，
     # 導致 DELETE /api/attachments/{id} 產生零 audit_logs row。
     (r"/api/attachments", "attachment"),
+    # ── 設計審查 2026-06-25：補稽核覆蓋缺口 ────────────────────────────────
+    # 下列寫端點原本不在 ENTITY_PATTERNS，_parse_entity_type 回 None → middleware
+    # 靜默跳過、零 audit_logs。多為金流 / HR / 醫療 / 權限 / 個資類敏感寫入，補上
+    # pattern；整體覆蓋率由 tests/test_audit_route_coverage.py sweep 護線（任何新增
+    # 寫端點漏配 pattern 又不在 AUDIT_EXEMPT 白名單即 CI 紅）。
+    # 已自行 write_explicit_audit / write_audit_in_session 的端點（roles、policies、
+    # dsr、activity/attendance、portal reveal-phone）刻意不在此處重複攔截，列於
+    # 該 sweep 的 AUDIT_EXEMPT 並註明「端點自審」。
+    # 注意：/api/shifts 已改宣告式 Depends(audit_entity("shift"))（MID-1 示範），
+    # 故不在此 path-pattern 清單；其稽核覆蓋由 audit_entity dependency + sweep 保證。
+    (r"/api/dismissal-calls", "dismissal_call"),  # 接送通知（兒童安全/監護爭議溯源）
+    (r"/api/data-quality", "data_quality_report"),  # 資料品質告警處置
+    (r"/api/disciplinary-actions", "disciplinary_action"),  # 員工懲處（HR 敏感）
+    (r"/api/art-teacher-payroll", "art_teacher_payroll"),  # 才藝老師鐘點費（金流）
+    (r"/api/system-configs", "system_config"),  # 系統參數
+    (r"/api/grades", "class_grade"),  # 班級年段設定
+    (r"/api/events", "event"),  # 校園活動/國定假日匯入（牽動工作日→薪資）
+    (r"/api/medication-logs", "medication_log"),  # 給藥/補登/略過（醫療，兒童安全）
+    (r"/api/guardians", "guardian"),  # 監護人綁定碼/裝置碼/撤銷（家長存取控制）
+    (r"/api/punch-corrections", "punch_correction"),  # 補打卡核准（牽動考勤→薪資）
+    (r"/api/appraisal/scoring_rules", "appraisal_scoring_rule"),  # 考核評分規則
+    # 尾斜線錨定：避免 re.match prefix 誤吃 /api/parent/messages|milestones 等
+    (r"/api/parent/me/", "parent_data_rights"),  # 家長個資權利（同意/退出/更正/刪除）
+    (r"/api/portal/assessments", "student_assessment"),  # 教師端建發展評估
+    (r"/api/portal/incidents", "student_incident"),  # 教師端建學生事件（受傷/衝突）
 ]
 
 # Skip these paths (login should not be audited as sensitive)
@@ -330,6 +355,19 @@ ENTITY_LABELS = {
     # 廠商付款簽收
     "vendor_payment": "廠商付款簽收",
     "monthly_fixed_cost": "月度固定費用",
+    # 設計審查 2026-06-25：補稽核覆蓋缺口（敏感寫端點原本 _parse_entity_type 回 None）
+    "shift": "班別/排班設定",
+    "dismissal_call": "接送通知",
+    "data_quality_report": "資料品質報告",
+    "disciplinary_action": "員工懲處",
+    "art_teacher_payroll": "才藝老師鐘點費",
+    "system_config": "系統參數設定",
+    "class_grade": "班級年段設定",
+    "event": "校園活動/行事",
+    "medication_log": "給藥紀錄",
+    "punch_correction": "補打卡更正",
+    "appraisal_scoring_rule": "考核評分規則",
+    "parent_data_rights": "家長個資權利請求",
 }
 
 ACTION_LABELS = {
@@ -366,6 +404,29 @@ def _parse_entity_id(path):
     # Match patterns like /api/employees/5 or /api/leaves/12/approve
     match = re.search(r"/(\d+)(?:/[a-z-]+)?$", path)
     return match.group(1) if match else None
+
+
+def audit_entity(entity_type: str):
+    """宣告式稽核 opt-in：在 router / 端點掛 ``Depends(audit_entity("shift"))`` 即讓
+    AuditMiddleware 以指定 entity_type 對該端點的 mutation 落 audit_logs，取代靠
+    ENTITY_PATTERNS path 比對推導（path 比對仍為未掛此 dependency 的既有路由 fallback）。
+
+    設計審查 2026-06-25 主題 A：path-pattern 推導是 opt-out 反模式——新增 router 漏配
+    pattern 即靜默零稽核且零訊號。宣告式把「該端點稽核什麼」寫在端點旁、與授權守衛同
+    位置，且可被 tests/test_audit_route_coverage.py 的 route-enum sweep 直接驗證。
+
+    用法（router-level，套用該 router 全部端點；GET 仍因 method 守衛不落 audit）：
+        router = APIRouter(prefix="/api/shifts",
+                           dependencies=[Depends(audit_entity("shift"))])
+    或單一端點 ``@router.post(..., dependencies=[Depends(audit_entity("shift"))])``。
+
+    entity_type 須有對應 ENTITY_LABELS 中文標籤（test_audit_entity_labels_coverage 守）。
+    """
+
+    def _set_audit_entity_type(request: Request) -> None:
+        request.state.audit_entity_type = entity_type
+
+    return _set_audit_entity_type
 
 
 def mark_soft_delete(request: Request, entity_type: str, entity_label: str) -> None:
@@ -842,13 +903,18 @@ class AuditMiddleware(BaseHTTPMiddleware):
         if path in SKIP_PATHS:
             return await call_next(request)
 
-        # Parse entity info before calling next
-        entity_type = _parse_entity_type(path)
-        if not entity_type:
-            return await call_next(request)
-
-        # Execute the actual request
+        # 先跑請求，再 resolve entity_type——讓 endpoint 的 Depends(audit_entity("X"))
+        # 能以 request.state 覆寫（宣告式 opt-in）；ENTITY_PATTERNS path 比對退為「未掛
+        # 此 dependency 的既有路由」fallback（非破壞性）。設計審查 2026-06-25 主題 A：
+        # path-pattern 推導是 opt-out 反模式（漏配靜默無訊號），宣告式把「該端點稽核
+        # 什麼」寫在端點旁、可被 route-enum sweep 驗證。
         response = await call_next(request)
+
+        entity_type = getattr(
+            request.state, "audit_entity_type", None
+        ) or _parse_entity_type(path)
+        if not entity_type:
+            return response
 
         status = response.status_code
         # 2xx：原本就 audit 的成功路徑（CREATE/UPDATE/DELETE）

@@ -67,10 +67,13 @@ class SalarySnapshotDetailOut(IvyBaseModel):
     """單筆快照完整欄位（summary + 全部 SalaryRecord 反射複製欄位）。
 
     Payload 欄位來源：service ``_PAYLOAD_COLUMNS``（SalarySnapshot 與
-    SalaryRecord 欄位交集，扣掉 metadata）。SalarySnapshot model 目前未含
-    ``supplementary_health_employee`` / ``appraisal_year_end_bonus`` /
-    ``unused_leave_payout`` — 故本 schema 也不暴露。新增 SalaryRecord/Snapshot
-    Money 欄位時須同步補上對應欄位（PR checklist 提醒）。
+    SalaryRecord 欄位交集，扣掉 metadata）。本 schema **必須宣告 _PAYLOAD_COLUMNS
+    的每一欄**，否則該欄值雖 persist 且已進 payload dict，仍會被 response_model
+    靜默丟棄、detail API 少回（2026-06-25 設計審查：原漏宣告 extra_allowance /
+    extra_allowance_label / appraisal_year_end_bonus / supplementary_health_employee
+    / unused_leave_payout 5 欄即如此，舊註解誤稱「SalarySnapshot model 未含」已過時）。
+    新增 SalaryRecord/Snapshot 欄位時須同步補上對應欄位；
+    tests/test_salary_snapshot_column_parity.py 已加 schema↔payload parity 守衛強制。
     """
 
     # ── summary 部分 ──────────────────────────────────────────────────
@@ -121,6 +124,15 @@ class SalarySnapshotDetailOut(IvyBaseModel):
     net_salary: Optional[float] = None  # pii-allow: 實發金額
     bonus_amount: Optional[float] = None  # pii-allow: 獨立轉帳獎金金額
     supervisor_dividend: Optional[float] = None  # pii-allow: 主管紅利
+    # 設計審查 2026-06-25 QW5：以下 5 欄已在 SalarySnapshot model 並進 _PAYLOAD_COLUMNS
+    # 序列化，但本 schema 原漏宣告 → response_model 靜默丟棄，detail API 該回卻沒回。
+    extra_allowance: Optional[float] = None  # pii-allow: 額外加給
+    extra_allowance_label: Optional[str] = (
+        None  # 額外加給標籤（admin 自定，非家長/學生 PII）
+    )
+    appraisal_year_end_bonus: Optional[float] = None  # pii-allow: 考核年終獎金
+    supplementary_health_employee: Optional[float] = None  # pii-allow: 二代健保補充保費
+    unused_leave_payout: Optional[float] = None  # pii-allow: 未休假折現
 
     # ── 計數 / Float / Bool / 備註 ─────────────────────────────────
     work_hours: Optional[float] = None

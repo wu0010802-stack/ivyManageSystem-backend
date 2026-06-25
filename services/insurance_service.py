@@ -20,6 +20,40 @@ logger = logging.getLogger(__name__)
 CURRENT_INSURANCE_YEAR = 2026
 
 
+def check_insurance_brackets_seeded(session) -> bool:
+    """啟動期 seed-presence 檢查：insurance_brackets 整表為空時 logger.warning +
+    Sentry capture_message。回傳 True=有資料 / False=整表空（薪資保費沿用 hardcode）。
+
+    設計審查 2026-06-25 主題 B：prod 曾以 create_all + alembic stamp 建立，跳過所有
+    migration 的 op.execute 與 seed → fresh/DR DB 的 insurance_brackets 整表空 →
+    薪資保費計算靜默走 hardcode 舊年度級距（INSURANCE_TABLE_2026），保費可能算錯卻
+    無訊號。load_brackets_from_db 的空表 fallback 只 logger.warning（不進 Sentry），
+    且該函式 per-calc 也會被呼叫，不宜在熱路徑推 Sentry；故獨立一個「啟動跑一次」的
+    檢查在此顯式 capture_message。讀取失敗（表不存在等）回 True 不阻擋啟動。
+    """
+    from sqlalchemy import text
+
+    try:
+        n = session.execute(text("SELECT COUNT(*) FROM insurance_brackets")).scalar()
+    except Exception:  # 表不存在 / 連線問題 → 不阻擋啟動（與其他 startup 檢查一致）
+        return True
+    if not n:
+        msg = (
+            "insurance_brackets 整表無資料 → 薪資保費計算沿用 hardcode 級距表"
+            "（INSURANCE_TABLE_2026）。fresh/DR 部署可能漏 seed，請確認已灌入正確"
+            "年度級距，否則保費可能算錯。"
+        )
+        logger.warning(msg)
+        try:
+            from utils.sentry_init import capture_message
+
+            capture_message(msg, level="warning")
+        except Exception:  # noqa: BLE001 — 告警上報失敗不可傳染回啟動主邏輯
+            pass
+        return False
+    return True
+
+
 @dataclass
 class InsuranceCalculation:
     """勞健保計算結果

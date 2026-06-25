@@ -40,6 +40,7 @@ from schemas.shifts import (
     ShiftImportResultOut,
 )
 from utils.auth import require_staff_permission
+from utils.audit import audit_entity
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
 from utils.file_upload import read_upload_with_size_check, validate_file_signature
@@ -151,7 +152,14 @@ def _get_shift_type_id_map_cached(session) -> dict:
     return result
 
 
-router = APIRouter(prefix="/api/shifts", tags=["shifts"])
+# 宣告式稽核（設計審查 2026-06-25 主題 A MID-1）：router-level Depends(audit_entity)
+# 讓本 router 全部寫端點以 entity_type="shift" 落 audit_logs，取代靠 ENTITY_PATTERNS
+# path 比對（已從 utils/audit.py ENTITY_PATTERNS 移除 /api/shifts，改宣告式示範）。
+router = APIRouter(
+    prefix="/api/shifts",
+    tags=["shifts"],
+    dependencies=[Depends(audit_entity("shift"))],
+)
 
 # 每日排班查詢的範圍/列數上限（防超寬日期範圍把整表 + eager join 載入 OOM）。
 _DAILY_SHIFT_MAX_SPAN_DAYS = 366

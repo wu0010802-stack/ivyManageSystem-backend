@@ -339,3 +339,26 @@ def capture_exception(exc: BaseException, level: str = "error") -> None:
             sentry_sdk.capture_exception(exc)
     except Exception:  # noqa: BLE001 — 上報失敗不能傳染回主邏輯
         pass
+
+
+def capture_message(message: str, level: str = "warning") -> None:
+    """便利包裝：非 exception 的「該被看見」事件顯式上報（與 capture_exception 對稱）。
+
+    給沒有 exception 物件的告警用——例如啟動期偵測到 DB permission_definitions 與
+    Permission enum 漂移。``logger.warning`` 本身不會被 LoggingIntegration 上報
+    （event_level=ERROR），故這類「監控自己瞎掉」的訊號需顯式呼叫才會進 Sentry。
+
+    Args:
+        message: 告警訊息（勿夾帶 PII；scrubber 仍會跑但訊息應本就安全）
+        level: Sentry event level（預設 `warning`）
+
+    sentry-sdk 未 init 時內部自動 no-op；不需在呼叫端守 DSN。
+    """
+    try:
+        import sentry_sdk
+
+        with sentry_sdk.new_scope() as scope:
+            scope.level = level
+            sentry_sdk.capture_message(message, level=level)
+    except Exception:  # noqa: BLE001 — 上報失敗不能傳染回主邏輯
+        pass

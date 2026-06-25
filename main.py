@@ -240,6 +240,36 @@ def on_startup():
     except Exception as e:
         logger.warning("scope_options sanity check skipped: %s", e)
 
+    # insurance_brackets seed-presence 檢查（設計審查 2026-06-25 主題 B）：整表空 →
+    # 薪資保費靜默走 hardcode 級距（prod create_all+stamp / fresh DR 漏 seed 風險）→
+    # logger.warning + Sentry capture_message，讓「漏 seed」在 prod 可見而非靜默錯帳。
+    try:
+        from services.insurance_service import check_insurance_brackets_seeded
+        from models.database import get_session as _get_session_for_ins
+
+        _ins_session = _get_session_for_ins()
+        try:
+            check_insurance_brackets_seeded(_ins_session)
+        finally:
+            _ins_session.close()
+    except Exception as e:
+        logger.warning("insurance_brackets seed check skipped: %s", e)
+
+    # DB 基礎建設 schema-drift 偵測（設計審查 2026-06-25 主題 B）：prod create_all+stamp
+    # 跳過 migration op.execute → fresh/DR DB 可能缺稽核/給藥不可竄改 trigger 與家長 RLS
+    # policy，卻被 stamp 成 head。唯讀偵測缺漏 → logger.warning + Sentry（非 PG 回空）。
+    try:
+        from startup.infra_check import check_db_infra_present
+        from models.database import get_session as _get_session_for_infra
+
+        _infra_session = _get_session_for_infra()
+        try:
+            check_db_infra_present(_infra_session)
+        finally:
+            _infra_session.close()
+    except Exception as e:
+        logger.warning("DB infra check skipped: %s", e)
+
     # P2-7（2026-06-23 資安掃描）：未明設可信代理時啟動告警，讓「per-IP 限流在反向代理後
     # 塌成單桶」的風險在 prod log 可見（修正 runbook「看 log 無警告＝生效」原為死碼）。
     from utils.request_ip import warn_if_trusted_proxies_unset
@@ -364,6 +394,14 @@ async def app_lifespan(app_instance: FastAPI):
     app_instance.state.main_loop = _main_loop
     set_main_loop(_main_loop)
 
+    # Scale-out 協調 gate（設計審查 2026-06-25 LONG-1）：DEPLOYMENT_MODE=multi 時，任一
+    # 跨 worker backend（cache/broadcast/rate-limit）仍 in-process memory → fail-fast 拒
+    # 啟動（避免多 worker 靜默快取分裂 / WS 廣播失效 / 限流塌單桶）。single（當前 prod）
+    # → 直接 return 零行為改變。盡早於做任何 DB/seed 工作前檢查。
+    from startup.scale_out_gate import check_scale_out_backends
+
+    check_scale_out_backends(settings)
+
     # 通知中央 dispatcher：把 after_commit / after_rollback hook 綁到主庫 session factory
     from services.notification import dispatch as _notification_dispatch
     from models.base import get_session_factory as _get_factory
@@ -393,11 +431,13 @@ async def app_lifespan(app_instance: FastAPI):
         settings.cache.backend == "memory"
         or settings.cache.effective_broadcast_backend == "memory"
     ):
+        # DEPLOYMENT_MODE=single（預設/當前 prod）的資訊性警告；multi+memory 已在上方
+        # check_scale_out_backends fail-fast 拒啟動，不會走到這裡。
         logger.warning(
             "cache backend = in-process memory：本服務假設【單 uvicorn worker】部署。"
             "多 worker 會造成各 worker 快取分裂或 WS 廣播無法跨 worker。"
-            "若要開 --workers N，請設 CACHE_BACKEND=redis 並確認 BROADCAST_BACKEND "
-            "未覆寫為 memory（或顯式設 BROADCAST_BACKEND=redis）。"
+            "若要開多 worker / 多 pod，請設 DEPLOYMENT_MODE=multi（會強制 CACHE_BACKEND/"
+            "BROADCAST_BACKEND=redis 與 RATE_LIMIT_BACKEND=postgres，否則拒啟動）。"
         )
 
     # ── 家長端 RLS 上線自檢（系統設計審查 2026-06-14, top#7）──
@@ -405,9 +445,11 @@ async def app_lifespan(app_instance: FastAPI):
         _probe_parent_rls_ready()
     )
 
-    # ── 權限定義漂移自檢（2026-06-15 運作探測 P2-2）──
+    # ── 權限定義漂移自檢（2026-06-15 運作探測 P2-2；2026-06-25 QW3 補 Sentry）──
     # Permission enum 與 DB permission_definitions 不符（新增權限後未補 backfill
-    # migration）會使非 wildcard admin 對該功能 403、admin UI 無法授權；僅 WARNING。
+    # migration）會使非 wildcard admin 對該功能 403、admin UI 無法授權。漂移時
+    # check_permission_definition_drift 內部會 logger.warning + Sentry capture_message
+    # （logger.warning 不進 Sentry，需顯式上報才不會「監控自己瞎掉」）。
     try:
         from models.database import get_session
         from utils.permissions import check_permission_definition_drift

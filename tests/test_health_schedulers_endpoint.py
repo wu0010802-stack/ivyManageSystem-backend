@@ -87,6 +87,52 @@ def test_schedulers_health_never_ran_not_lagging(health_client, test_db_session)
     assert data["lagging_count"] == 0
 
 
+def test_schedulers_health_failing_null_success_returns_503(
+    health_client, test_db_session
+):
+    """設計審查 2026-06-25 QW4：註冊了但每次都失敗（last_success_at 永遠 NULL、
+    consecutive_failures 累積到 ALERT_THRESHOLD）→ 須 degraded（原本只看 lag →
+    NULL 永遠不算 lagging → 回 200 綠燈，對 watchdog 隱形）。"""
+    from utils.scheduler_observability import ALERT_THRESHOLD
+
+    test_db_session.add(
+        SchedulerHeartbeat(
+            scheduler_name="sched_failing",
+            expected_interval_seconds=300,
+            last_success_at=None,
+            consecutive_failures=ALERT_THRESHOLD,
+        )
+    )
+    test_db_session.commit()
+
+    r = health_client.get("/health/schedulers")
+    assert r.status_code == 503
+    data = r.json()
+    assert data["status"] == "degraded"
+    assert data["lagging_count"] == 1
+
+
+def test_schedulers_health_few_failures_below_threshold_still_green(
+    health_client, test_db_session
+):
+    """連續失敗未達門檻（偶發失敗 / 剛啟動）→ 仍綠，避免冷啟動誤報。"""
+    from utils.scheduler_observability import ALERT_THRESHOLD
+
+    test_db_session.add(
+        SchedulerHeartbeat(
+            scheduler_name="sched_flaky",
+            expected_interval_seconds=300,
+            last_success_at=None,
+            consecutive_failures=ALERT_THRESHOLD - 1,
+        )
+    )
+    test_db_session.commit()
+
+    r = health_client.get("/health/schedulers")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+
 def test_schedulers_health_mixed_green_and_lagging(health_client, test_db_session):
     now = datetime.now(timezone.utc)
     test_db_session.add(
