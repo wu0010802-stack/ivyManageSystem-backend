@@ -247,7 +247,14 @@ def update_bonus_config(
             new_config.version = (old_config.version or 1) + 1
         else:
             new_config.version = 1
-            new_config.config_year = 2026
+
+        # P2-H：新版本 config_year 預設為當前台北年度（而非沿用舊版複製值或硬編 2026）。
+        # 否則跨年後 admin 任何編輯仍把 config_year 留在舊年度 → resolve_config(新年度)
+        # 找不到該年度設定列（fail-loud）→ /calculate 整批 422。payload 顯式提供
+        # config_year 時尊重之（下方 update_data 迴圈會覆寫此預設）。
+        from utils.taipei_time import today_taipei
+
+        new_config.config_year = today_taipei().year
 
         new_config.changed_by = current_user.get("username")
 

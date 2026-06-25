@@ -563,7 +563,13 @@ def update_insurance_rates(
             new_rate.version = (old_rate.version or 1) + 1
         else:
             new_rate.version = 1
-            new_rate.rate_year = 2026
+
+        # P2-H：新版本 rate_year 預設為當前台北年度（而非沿用舊版複製值或硬編 2026）。
+        # 否則跨年後 admin 任何編輯仍把 rate_year 留在舊年度 → resolve_config(新年度)
+        # 找不到該年度費率列（fail-loud）→ /calculate 整批 422。data 顯式提供 rate_year
+        # 時尊重之（下方 update_data 迴圈會覆寫此預設）。與 BonusConfig / AttendancePolicy
+        # 三表一致處理。
+        new_rate.rate_year = today_taipei().year
 
         new_rate.changed_by = current_user.get("username")
 

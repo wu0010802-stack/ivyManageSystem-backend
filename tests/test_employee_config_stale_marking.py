@@ -389,6 +389,36 @@ class TestUpdateInsuranceRatesMarksStale:
                 is False
             )
 
+    def test_insurance_rate_writer_advances_rate_year(self, stale_client, monkeypatch):
+        """P2-H：跨年後 admin 改費率（未顯式提供 rate_year）→ 新版本 rate_year 應為
+        當前台北年度（而非沿用舊版/硬編 2026），否則 resolve_config(新年度) 找不到
+        該年度費率 → /calculate 整批 422。"""
+        from datetime import date as _date
+
+        from models.config import InsuranceRate
+
+        client, sf, _ = stale_client
+        _login_admin(client, sf)
+        # 模擬「現在是 2027 年」（writer 用 api.config 模組級 today_taipei）
+        monkeypatch.setattr("api.config.today_taipei", lambda: _date(2027, 3, 15))
+
+        res = client.put(
+            "/api/config/insurance-rates",
+            json={"labor_rate": 0.115},
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as session:
+            active = (
+                session.query(InsuranceRate)
+                .filter(InsuranceRate.is_active == True)  # noqa: E712
+                .order_by(InsuranceRate.id.desc())
+                .first()
+            )
+            assert (
+                active.rate_year == 2027
+            ), f"跨年改費率後 rate_year 應前進為 2027，實得 {active.rate_year}"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # sync_position_salary：把員工底薪同步至職位標準後 → mark stale（#1 P0）

@@ -134,3 +134,82 @@ class TestBonusConfigFinanceGuard:
         assert res.status_code == 200, res.text
         body = res.json()
         assert body["version"] >= 1
+
+    def test_writer_advances_config_year_to_current_when_not_provided(
+        self, client_with_db, monkeypatch
+    ):
+        """P2-H：跨年後 admin 編輯（未顯式提供 config_year）→ 新版本 config_year 應為
+        當前台北年度（而非沿用舊版 2026），否則 resolve_config(新年度) 找不到該年度
+        設定列 → /calculate 整批 422。"""
+        from datetime import date as _date
+
+        from models.config import BonusConfig
+
+        client, sf = client_with_db
+        with sf() as s:
+            s.add(
+                BonusConfig(
+                    config_year=2026,
+                    version=1,
+                    head_teacher_ab=2000,
+                    is_active=True,
+                )
+            )
+            s.commit()
+        _login(client, sf, with_finance=True)
+
+        # 模擬「現在是 2027 年」
+        monkeypatch.setattr(
+            "utils.taipei_time.today_taipei", lambda: _date(2027, 3, 15)
+        )
+
+        res = client.put(
+            "/api/config/bonus",
+            json={
+                "head_teacher_ab": 2500,
+                "reason": "2027 年度依新獎金條例調整班導 ab 級基數",
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as s:
+            active = (
+                s.query(BonusConfig)
+                .filter(BonusConfig.is_active == True)  # noqa: E712
+                .order_by(BonusConfig.id.desc())
+                .first()
+            )
+            assert active.config_year == 2027, (
+                f"跨年編輯後 config_year 應前進為 2027（payroll 才找得到），"
+                f"實得 {active.config_year}"
+            )
+
+    def test_writer_respects_explicit_config_year(self, client_with_db, monkeypatch):
+        """P2-H：payload 顯式提供 config_year 時尊重之（不被當前年度預設覆蓋）。"""
+        from datetime import date as _date
+
+        from models.config import BonusConfig
+
+        client, sf = client_with_db
+        _login(client, sf, with_finance=True)
+        monkeypatch.setattr(
+            "utils.taipei_time.today_taipei", lambda: _date(2027, 3, 15)
+        )
+
+        res = client.put(
+            "/api/config/bonus",
+            json={
+                "head_teacher_ab": 2500,
+                "config_year": 2028,
+                "reason": "預先建立 2028 年度獎金設定",
+            },
+        )
+        assert res.status_code == 200, res.text
+        with sf() as s:
+            active = (
+                s.query(BonusConfig)
+                .filter(BonusConfig.is_active == True)  # noqa: E712
+                .order_by(BonusConfig.id.desc())
+                .first()
+            )
+            assert active.config_year == 2028
