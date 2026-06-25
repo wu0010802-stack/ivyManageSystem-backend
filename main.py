@@ -255,6 +255,21 @@ def on_startup():
     except Exception as e:
         logger.warning("insurance_brackets seed check skipped: %s", e)
 
+    # DB 基礎建設 schema-drift 偵測（設計審查 2026-06-25 主題 B）：prod create_all+stamp
+    # 跳過 migration op.execute → fresh/DR DB 可能缺稽核/給藥不可竄改 trigger 與家長 RLS
+    # policy，卻被 stamp 成 head。唯讀偵測缺漏 → logger.warning + Sentry（非 PG 回空）。
+    try:
+        from startup.infra_check import check_db_infra_present
+        from models.database import get_session as _get_session_for_infra
+
+        _infra_session = _get_session_for_infra()
+        try:
+            check_db_infra_present(_infra_session)
+        finally:
+            _infra_session.close()
+    except Exception as e:
+        logger.warning("DB infra check skipped: %s", e)
+
     # P2-7（2026-06-23 資安掃描）：未明設可信代理時啟動告警，讓「per-IP 限流在反向代理後
     # 塌成單桶」的風險在 prod log 可見（修正 runbook「看 log 無警告＝生效」原為死碼）。
     from utils.request_ip import warn_if_trusted_proxies_unset
