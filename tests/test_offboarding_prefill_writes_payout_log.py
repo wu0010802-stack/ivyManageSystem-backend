@@ -377,3 +377,63 @@ def test_prefill_salary_idempotent_no_double_add(
         .count()
     )
     assert logs == 1, "重跑不可寫第二筆 offboarding log"
+
+
+# ── Test 6 (rank 6): 離職未消耗補休須折現，不可直接 revoke 蒸發 ──
+
+
+def test_prefill_salary_cashes_out_unconsumed_comp_leave(
+    session,
+    employee_factory,
+    user_factory,
+    leave_quota_factory,
+    salary_record_factory,
+    ot_grant_factory,
+):
+    """rank 6：離職時未消耗補休 grant 應以時薪折現併入 unused_leave_payout（勞基法§32-1），
+    而非只 revoke 讓時數蒸發。grant 仍須 revoke 防 scheduler 重撈。"""
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+    from services.offboarding.steps.snapshot_leave import run, prefill_salary
+
+    emp = employee_factory(daily_wage=1800)  # hourly_wage = 225
+    user = user_factory()
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=112
+    )
+    sr = salary_record_factory(employee_id=emp.id, salary_year=2026, salary_month=6)
+    record = _make_offboarding_record(session, emp.id, user.id)
+
+    # A: 8h 未消耗；B: 4h 已消耗 1h（net 3h）→ 未消耗合計 11h
+    grant_a = ot_grant_factory(emp.id, granted_hours=8.0, status="active")
+    grant_b = ot_grant_factory(emp.id, granted_hours=4.0, status="active")
+    grant_b.consumed_hours = 1.0
+    session.flush()
+
+    run(session, record)
+    annual_payout = float(record.leave_balance_snapshot["payout_amount"])
+
+    prefill_salary(session, record)
+    session.refresh(sr)
+
+    expected_comp = 11.0 * 225.0  # 2475.0
+    assert float(sr.unused_leave_payout) == pytest.approx(
+        annual_payout + expected_comp
+    ), (
+        f"未消耗補休 11h 應折現 {expected_comp}；得 {float(sr.unused_leave_payout)}，"
+        f"annual={annual_payout}"
+    )
+
+    comp_logs = (
+        session.query(UnusedLeavePayoutLog)
+        .filter_by(employee_id=emp.id, source_type="offboarding_comp_leave")
+        .all()
+    )
+    assert len(comp_logs) == 1, "應寫一筆 offboarding_comp_leave 折現 log"
+    assert float(comp_logs[0].hours) == pytest.approx(11.0)
+    assert float(comp_logs[0].amount) == pytest.approx(expected_comp)
+
+    session.refresh(grant_a)
+    session.refresh(grant_b)
+    assert (
+        grant_a.status == "revoked" and grant_b.status == "revoked"
+    ), "折現後 grant 仍須 revoke 防 scheduler 重撈"

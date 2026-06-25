@@ -193,12 +193,47 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
     )
     session.add(log)
 
-    # ── Revoke active grants 防 scheduler 重複結算 ──
+    # ── 未消耗補休 grant 折現（rank 6，勞基法§32-1）+ revoke ───────────────
+    # 原本只折現特休、把 active grant 直接 revoke → 未消耗補休時數蒸發（員工白損；
+    # scheduler expire_comp_leave_grants 因員工停用 + grant 已 revoke 也永遠撈不到）。
+    # 離職時先以時薪折現未消耗補休（Σ granted-consumed），併入 unused_leave_payout
+    # （同特休累加、不覆寫），再 revoke 防 scheduler 重撈。折現與 revoke 共用同一份
+    # active_grants 查詢；函式層冪等守衛（上方 offboarding log）已防重跑雙加。
     active_grants = (
         session.query(OvertimeCompLeaveGrant)
         .filter_by(employee_id=record.employee_id, status="active")
         .all()
     )
+    comp_unconsumed_hours = sum(
+        max(0.0, float(g.granted_hours or 0) - float(g.consumed_hours or 0))
+        for g in active_grants
+    )
+    if comp_unconsumed_hours > 0:
+        comp_payout = Decimal(
+            str(round_half_up(comp_unconsumed_hours * float(hourly_wage), 2))
+        )
+        target.unused_leave_payout = (
+            Decimal(str(target.unused_leave_payout or 0)) + comp_payout
+        )
+        session.add(
+            UnusedLeavePayoutLog(
+                employee_id=record.employee_id,
+                source_type="offboarding_comp_leave",
+                source_ref_id=record.employee_id,
+                hours=comp_unconsumed_hours,
+                hourly_wage=hourly_wage,
+                amount=comp_payout,
+                wage_basis_date=record.resign_date,
+                salary_record_id=target.id,
+                salary_period_year=target.salary_year,
+                salary_period_month=target.salary_month,
+                meta={
+                    "offboarding_record_id": record.employee_id,
+                    "active_grant_count": len(active_grants),
+                },
+            )
+        )
+
     for g in active_grants:
         g.status = "revoked"
     session.flush()
