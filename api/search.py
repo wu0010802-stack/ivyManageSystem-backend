@@ -30,7 +30,11 @@ from utils.audit import write_explicit_audit
 from utils.auth import get_current_user
 from utils.masking import mask_phone
 from utils.permissions import Permission, has_permission
-from utils.portfolio_access import accessible_classroom_ids, is_row_unrestricted
+from utils.portfolio_access import (
+    accessible_classroom_ids,
+    can_view_guardian_pii,
+    is_row_unrestricted,
+)
 from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
 
 logger = logging.getLogger(__name__)
@@ -259,20 +263,24 @@ def _search_fees(session, pattern: str) -> list[dict]:
     ]
 
 
-def _search_activity(session, pattern: str) -> list[dict]:
+def _search_activity(session, pattern: str, current_user: dict) -> list[dict]:
+    # parent_phone 屬家長 PII：比照才藝列表 PII policy（_build_registration_filter_query
+    # 依 GUARDIANS_READ 收斂手機 clause），缺 GUARDIANS_READ 者不得以部分手機號反查報名
+    # 是否命中（側信道反查 student_name / class_name / match_status）。姓名/班級搜尋不受
+    # 影響——僅移除手機 clause，非關閉整個才藝搜尋。
+    search_cols = [
+        ActivityRegistration.student_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+        ActivityRegistration.class_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+    ]
+    if can_view_guardian_pii(current_user):
+        search_cols.append(
+            ActivityRegistration.parent_phone.ilike(pattern, escape=LIKE_ESCAPE_CHAR)
+        )
     rows = (
         session.query(ActivityRegistration)
         .filter(
             ActivityRegistration.is_active.is_(True),
-            or_(
-                ActivityRegistration.student_name.ilike(
-                    pattern, escape=LIKE_ESCAPE_CHAR
-                ),
-                ActivityRegistration.class_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                ActivityRegistration.parent_phone.ilike(
-                    pattern, escape=LIKE_ESCAPE_CHAR
-                ),
-            ),
+            or_(*search_cols),
         )
         .order_by(ActivityRegistration.id.desc())
         .limit(SECTION_LIMIT)
@@ -403,7 +411,7 @@ def global_search(
             else []
         )
         activity_registrations = (
-            _search_activity(session, pattern)
+            _search_activity(session, pattern, current_user)
             if has_permission(perms, Permission.ACTIVITY_READ)
             else []
         )

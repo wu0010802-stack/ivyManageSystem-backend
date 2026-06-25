@@ -418,6 +418,95 @@ def test_per_category_limit(client_with_db):
     assert len(rows) == 8
 
 
+def test_activity_phone_reverse_lookup_blocked_without_guardians_read(client_with_db):
+    """缺 GUARDIANS_READ：只有 ACTIVITY_READ 不應能用家長手機反查才藝報名學生。
+
+    與才藝列表 PII policy（_build_registration_filter_query / GUARDIANS_READ）一致，
+    全域搜尋的 _search_activity 同樣須把 parent_phone clause 收進 GUARDIANS_READ。
+    """
+    client, sf = client_with_db
+    from models.activity import ActivityRegistration
+
+    s = sf()
+    # 姓名/班級皆不含手機字串，故命中只可能來自 parent_phone 比對（側信道反查）
+    s.add(
+        ActivityRegistration(
+            student_name="林大華",
+            class_name="大班",
+            parent_phone="0988777666",
+            is_active=True,
+            match_status="matched",
+        )
+    )
+    s.commit()
+    s.close()
+    uid, eid = _make_user(
+        sf, username="actonly", role="hr", permission_names=["ACTIVITY_READ"]
+    )
+    h = _login(uid, eid, role="hr", permission_names=["ACTIVITY_READ"])
+    rows = client.get("/api/search", params={"q": "0988"}, headers=h).json()[
+        "activity_registrations"
+    ]
+    assert rows == [], "缺 GUARDIANS_READ 不應能以家長手機反查才藝報名學生"
+
+
+def test_activity_phone_search_allowed_with_guardians_read(client_with_db):
+    """持 GUARDIANS_READ：仍可用家長手機搜尋才藝報名（與才藝列表 PII policy 一致）。"""
+    client, sf = client_with_db
+    from models.activity import ActivityRegistration
+
+    s = sf()
+    s.add(
+        ActivityRegistration(
+            student_name="林大華",
+            class_name="大班",
+            parent_phone="0988777666",
+            is_active=True,
+            match_status="matched",
+        )
+    )
+    s.commit()
+    s.close()
+    perms = ["ACTIVITY_READ", "GUARDIANS_READ"]
+    uid, eid = _make_user(sf, username="actguard", role="hr", permission_names=perms)
+    h = _login(uid, eid, role="hr", permission_names=perms)
+    rows = client.get("/api/search", params={"q": "0988"}, headers=h).json()[
+        "activity_registrations"
+    ]
+    assert (
+        len(rows) == 1 and rows[0]["student_name"] == "林大華"
+    ), "持 GUARDIANS_READ 仍可用家長手機搜尋才藝報名"
+
+
+def test_activity_name_search_unaffected_by_guardian_perm(client_with_db):
+    """姓名搜尋與 GUARDIANS_READ 無關（修法只移除手機 clause，不關閉整個才藝搜尋）。"""
+    client, sf = client_with_db
+    from models.activity import ActivityRegistration
+
+    s = sf()
+    s.add(
+        ActivityRegistration(
+            student_name="林大華",
+            class_name="大班",
+            parent_phone="0988777666",
+            is_active=True,
+            match_status="matched",
+        )
+    )
+    s.commit()
+    s.close()
+    uid, eid = _make_user(
+        sf, username="actname", role="hr", permission_names=["ACTIVITY_READ"]
+    )
+    h = _login(uid, eid, role="hr", permission_names=["ACTIVITY_READ"])
+    rows = client.get("/api/search", params={"q": "林大華"}, headers=h).json()[
+        "activity_registrations"
+    ]
+    assert (
+        len(rows) == 1 and rows[0]["student_name"] == "林大華"
+    ), "姓名搜尋不受 GUARDIANS_READ 影響"
+
+
 def test_wildcard_query_is_escaped_not_match_all(client_with_db):
     """搜 `%%` / `__` 不得 match-all；萬用字元應視為字面字元（LIKE escape）。"""
     client, sf = client_with_db
