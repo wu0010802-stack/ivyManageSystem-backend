@@ -26,6 +26,7 @@ from utils.auth import get_current_user
 from ._shared import _get_employee
 from api.activity._shared import (
     _build_session_detail_response,
+    _invalidate_activity_dashboard_caches,
     build_session_rows_with_stats,
     query_valid_session_registrations,
     resolve_student_pii_scope,
@@ -443,6 +444,9 @@ def portal_batch_update_attendance(
                         existing.student_id = reg_student_map.get(item.registration_id)
 
         session.commit()
+        # 點名異動改變出席率聚合 → 失效 dashboard 快取（含 activity_stats_attendance），
+        # 否則出席率會 stale 到 TTL（對齊 admin 端 batch_update_attendance）。
+        _invalidate_activity_dashboard_caches(session)
         applied = sum(1 for item in records if item.registration_id in valid_reg_ids)
         return {"ok": True, "updated": applied, "skipped": len(skipped)}
     finally:

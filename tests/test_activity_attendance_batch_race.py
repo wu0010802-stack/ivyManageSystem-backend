@@ -377,3 +377,49 @@ class TestPortalBatchRace:
                 .one()
             )
             assert att.is_present is False
+
+
+# ── 教師端點名後須失效 dashboard 快取（Finding 1，2026-06-25）─────────────────
+
+
+class TestPortalBatchCacheInvalidation:
+    """教師端批次點名 commit 後須觸發 dashboard 快取失效（對齊 admin 端）。
+
+    Bug：portal_batch_update_attendance commit 後直接 return，未呼叫
+    _invalidate_activity_dashboard_caches；admin 端 batch_update_attendance 有清，
+    教師端漏接，導致出席率聚合（activity_stats_attendance）陳舊到 TTL。
+    """
+
+    def test_portal_batch_attendance_invalidates_dashboard_caches(
+        self, client, monkeypatch
+    ):
+        from services.activity_service import activity_service
+
+        c, sf = client
+        _, session_id, reg_id = _setup_scene(sf)
+
+        calls = []
+        orig = activity_service.invalidate_dashboard_caches
+
+        def spy(session):
+            calls.append(True)
+            try:
+                return orig(session)
+            except Exception:
+                # SQLite 測試下 report_cache 的 DELETE 可能 fail-soft；本測試只驗
+                # 「點名後有觸發失效」這個行為（對齊 test_parent_activity 的 spy 慣例）。
+                return 0
+
+        monkeypatch.setattr(activity_service, "invalidate_dashboard_caches", spy)
+
+        _login(c)
+        resp = c.put(
+            f"/api/portal/activity/attendance/sessions/{session_id}/records",
+            json={
+                "records": [
+                    {"registration_id": reg_id, "is_present": True, "notes": ""}
+                ]
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert calls, "教師端批次點名應在 commit 後觸發 dashboard 快取失效"
