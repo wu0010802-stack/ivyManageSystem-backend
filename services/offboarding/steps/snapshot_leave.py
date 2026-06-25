@@ -139,7 +139,36 @@ def prefill_salary(session: Session, record: EmployeeOffboardingRecord) -> StepR
             "error": None,
         }
 
-    target.unused_leave_payout = snap["payout_amount"]
+    # 冪等守衛：若本 SalaryRecord 已有 offboarding 折現 log，代表 prefill 已執行過，
+    # 直接 SKIP，避免步驟重跑導致 unused_leave_payout 雙加 + 重複寫 log。
+    existing_offboarding_log = (
+        session.query(UnusedLeavePayoutLog)
+        .filter_by(
+            employee_id=record.employee_id,
+            salary_record_id=target.id,
+            source_type="offboarding",
+        )
+        .first()
+    )
+    if existing_offboarding_log is not None:
+        return {
+            "step": "prefill_leave_payout",
+            "status": "skipped",
+            "completed_at": now_taipei_naive(),
+            "payload": {
+                "reason": "already_prefilled",
+                "salary_record_id": target.id,
+            },
+            "error": None,
+        }
+
+    # 累加而非覆寫：scheduler（comp_leave_expiry / annual_cutover）與 salary engine
+    # （_pull_pending_payout_logs）皆以 `+= amount` 累計 unused_leave_payout（field 為
+    # 各來源折現金額的累計器）。此處若用 `=` 直接賦值會抹掉同月 scheduler 已寫入的
+    # 補休/特休到期折現（員工漏領 + log 與欄位脫節 + 扣繳憑單少報）。改為累加對齊語意。
+    target.unused_leave_payout = Decimal(
+        str(target.unused_leave_payout or 0)
+    ) + Decimal(str(snap["payout_amount"]))
     _mark_employee_salary_stale(session, record.employee_id)
 
     # ── 寫 UnusedLeavePayoutLog 留證據鏈 ──

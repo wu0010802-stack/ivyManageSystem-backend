@@ -305,3 +305,75 @@ def test_prefill_salary_no_op_when_no_salary_record(
         .count()
     )
     assert log_count == 0, "SalaryRecord 不存在時不應寫 UnusedLeavePayoutLog"
+
+
+# ── Test 4 (P1-B): 累加而非覆寫，不可抹掉 scheduler 已寫入的補休折現 ──
+
+
+def test_prefill_salary_accumulates_onto_existing_payout(
+    session, employee_factory, user_factory, leave_quota_factory, salary_record_factory
+):
+    """既有 unused_leave_payout（scheduler comp_leave_expiry 已 += 補休折現 4000）
+    不可被 offboarding 的特休折現覆寫，須累加。"""
+    from decimal import Decimal
+    from services.offboarding.steps.snapshot_leave import run, prefill_salary
+
+    emp = employee_factory(daily_wage=1800)
+    user = user_factory()
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=112
+    )
+    record = _make_offboarding_record(session, emp.id, user.id)
+    sr = salary_record_factory(employee_id=emp.id, salary_year=2026, salary_month=6)
+    # 模擬 scheduler 月初已對同月寫入補休折現 4000
+    sr.unused_leave_payout = Decimal("4000")
+    session.flush()
+
+    run(session, record)
+    payout = float(record.leave_balance_snapshot["payout_amount"])
+    assert payout > 0, "前置：特休折現須 > 0"
+
+    result = prefill_salary(session, record)
+    assert result["status"] == "completed"
+
+    session.refresh(sr)
+    assert float(sr.unused_leave_payout) == 4000 + payout, (
+        f"offboarding 覆寫抹掉 scheduler 已寫入的 4000："
+        f"得 {float(sr.unused_leave_payout)}，應為 {4000 + payout}"
+    )
+
+
+def test_prefill_salary_idempotent_no_double_add(
+    session, employee_factory, user_factory, leave_quota_factory, salary_record_factory
+):
+    """prefill_salary 重跑不可雙加 unused_leave_payout、不可寫第二筆 offboarding log。"""
+    from decimal import Decimal
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+    from services.offboarding.steps.snapshot_leave import run, prefill_salary
+
+    emp = employee_factory(daily_wage=1800)
+    user = user_factory()
+    leave_quota_factory(
+        employee_id=emp.id, year=2026, leave_type="annual", total_hours=112
+    )
+    record = _make_offboarding_record(session, emp.id, user.id)
+    sr = salary_record_factory(employee_id=emp.id, salary_year=2026, salary_month=6)
+    sr.unused_leave_payout = Decimal("4000")
+    session.flush()
+
+    run(session, record)
+    payout = float(record.leave_balance_snapshot["payout_amount"])
+
+    prefill_salary(session, record)
+    prefill_salary(session, record)  # 重跑
+
+    session.refresh(sr)
+    assert (
+        float(sr.unused_leave_payout) == 4000 + payout
+    ), f"重跑雙加：得 {float(sr.unused_leave_payout)}，應為 {4000 + payout}"
+    logs = (
+        session.query(UnusedLeavePayoutLog)
+        .filter_by(employee_id=emp.id, source_type="offboarding")
+        .count()
+    )
+    assert logs == 1, "重跑不可寫第二筆 offboarding log"
