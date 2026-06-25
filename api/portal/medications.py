@@ -21,7 +21,7 @@ from models.database import (
 from models.portfolio import StudentMedicationLog, StudentMedicationOrder
 from utils.auth import require_permission
 from utils.permissions import Permission
-from utils.portfolio_access import accessible_classroom_ids, is_unrestricted
+from utils.portfolio_access import accessible_classroom_ids, is_row_unrestricted
 
 from ._shared import _get_employee
 
@@ -56,7 +56,9 @@ def list_today_medications(
         #   unrestricted（admin/wildcard 或自訂角色持 STUDENTS_HEALTH_READ:all）
         #     → classroom_ids=None（不限制），帶 classroom_id 則只看該班
         #   teacher（持 :own_class 或未持 scope）→ 僅看自任導師的班；帶他班 403
-        unrestricted = is_unrestricted(
+        # row-level helper：bare STUDENTS_HEALTH_READ（自訂非管理角色）不得視為全校，
+        # 否則 classroom_ids=None 回全校今日用藥 = 醫療特種個資 IDOR（2026-06-25 補修）。
+        unrestricted = is_row_unrestricted(
             current_user, code=Permission.STUDENTS_HEALTH_READ.value
         )
         my_classrooms = accessible_classroom_ids(

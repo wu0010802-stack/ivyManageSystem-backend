@@ -79,7 +79,9 @@ def test_portal_medications_today_uses_health_read_scope():
     assert (
         "accessible_classroom_ids" in source
     ), "應 import 並使用 accessible_classroom_ids"
-    assert "is_unrestricted" in source, "應 import 並使用 is_unrestricted"
+    assert (
+        "is_row_unrestricted" in source
+    ), "應改用 is_row_unrestricted（逐筆 helper，bare 碼收斂 own_class）取代 is_unrestricted"
     # 確認移除舊邏輯
     assert (
         "_get_teacher_classroom_ids(session, emp.id)" not in source

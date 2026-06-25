@@ -158,20 +158,21 @@ def resolve_student_pii_scope(db_session, current_user: dict):
         - (True, None) ：全園可見（wildcard / bare / `:all`）
         - (True, set)  ：僅管轄班級可見（`:own_class`；set 可為空 = 全遮）
 
-    判斷重用 utils.portfolio_access 既有慣例：is_unrestricted(code=) 走
-    PermissionGrant.scope，accessible_classroom_ids(code=) 以
-    employee_id ↔ Classroom 導師欄位取得管轄班級。
+    判斷重用 utils.portfolio_access 既有慣例：is_row_unrestricted(code=) 走
+    PermissionGrant.scope（逐筆學生資料碼：bare 非管理角色收斂 own_class，避免自訂
+    角色持 bare STUDENTS_READ 經才藝端點看全校 PII），accessible_classroom_ids(code=)
+    以 employee_id ↔ Classroom 導師欄位取得管轄班級。
     """
     from utils.portfolio_access import (
         accessible_classroom_ids,
         can_view_student_pii,
-        is_unrestricted,
+        is_row_unrestricted,
     )
 
     if not can_view_student_pii(current_user):
         return False, None
     code = Permission.STUDENTS_READ.value
-    if is_unrestricted(current_user, code=code):
+    if is_row_unrestricted(current_user, code=code):
         return True, None
     return True, set(accessible_classroom_ids(db_session, current_user, code=code))
 

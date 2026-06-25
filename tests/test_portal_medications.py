@@ -187,3 +187,49 @@ class TestPortalMedicationsToday:
             cookies={"access_token": tk},
         )
         assert rsp.status_code == 403
+
+    def test_bare_code_non_management_role_no_all_school(self, med_client):
+        """#1 IDOR：bare STUDENTS_HEALTH_READ 非管理角色（非導師）→ 不得看全校用藥。
+
+        修前：list_today_medications 以 is_unrestricted(bare=all) → classroom_ids=None
+        → 回全校所有班級今日用藥（醫療特種個資越權）。修後改 is_row_unrestricted：
+        非管理角色 bare 收斂 own_class；該 nurse 不帶任何班級 → 看不到任何學生用藥。
+        """
+        client, sf = med_client
+        _seed_two_classrooms(sf)  # A 班(小明) + B 班(小華)，各一張今日用藥單
+        # nurse：role ∉ {admin,hr,supervisor}，bare STUDENTS_HEALTH_READ，非任何班導師
+        with sf() as session:
+            e3 = Employee(
+                employee_id="E3", name="保健阿姨", is_active=True, base_salary=30000
+            )
+            session.add(e3)
+            session.flush()
+            nurse = User(
+                username="nurse",
+                password_hash="!",
+                role="nurse",
+                employee_id=e3.id,
+                permission_names=[Permission.STUDENTS_HEALTH_READ.value],  # bare
+                is_active=True,
+                token_version=0,
+            )
+            session.add(nurse)
+            session.commit()
+            nurse_id, nurse_emp = nurse.id, e3.id
+        tk = create_access_token(
+            {
+                "user_id": nurse_id,
+                "employee_id": nurse_emp,
+                "role": "nurse",
+                "name": "nurse",
+                "permission_names": [Permission.STUDENTS_HEALTH_READ.value],
+                "token_version": 0,
+            }
+        )
+        rsp = client.get("/api/portal/medications/today", cookies={"access_token": tk})
+        assert rsp.status_code == 200, rsp.text
+        groups = rsp.json()["groups"]
+        all_names = {i["student_name"] for g in groups for i in g["items"]}
+        assert (
+            all_names == set()
+        ), f"bare 碼 nurse 不應看到任何學生用藥，卻看到 {all_names}"
