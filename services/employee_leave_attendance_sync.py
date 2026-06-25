@@ -136,7 +136,17 @@ def apply(session: Session, leave_id: int) -> list[date]:
 
 
 def _apply_full_day(session: Session, leave: LeaveRecord, d: date) -> None:
-    """全天:upsert status=LEAVE,清打卡,leave_record_id 寫入。"""
+    """全天請假寫考勤。
+
+    F-A（業主裁定語意）：全天假當天若有真實打卡 → **視同銷假/正常上班**
+    （員工實際有來上班）：保留打卡、partial_leave_hours=0、status 依打卡重算、
+    leave_record_id 仍連結（供追溯但 0 扣款，薪資 _hours 對 status≠LEAVE 且
+    partial=0 回 0）。**不可清 punch**（清打卡會永久銷毀真實出勤資料）。
+    只有「全天假且當天完全無真實打卡」才 status=LEAVE、扣 8h。
+
+    與 utils/attendance_leave_merge case-2/3 對齊，消除「誰最後寫考勤」決定
+    扣 8h 或 0h 的分叉（先核假後匯打卡會靜默漏扣整日假薪）。
+    """
     row = (
         session.query(Attendance)
         .filter_by(
@@ -153,16 +163,65 @@ def _apply_full_day(session: Session, leave: LeaveRecord, d: date) -> None:
         )
         session.add(row)
 
-    # Idempotent guard:已是本筆 leave 寫的 → no-op
-    if row.leave_record_id == leave.id and row.status == AttendanceStatus.LEAVE.value:
-        return
-
-    # 衝突 guard:row 已被別筆 leave 佔據
+    # 衝突 guard:row 已被別筆 leave 佔據（先於冪等判斷，避免覆寫別筆假）
     if row.leave_record_id is not None and row.leave_record_id != leave.id:
         raise LeaveAttendanceConflict(
             f"{d} employee_id={leave.employee_id} 已有 leave_record_id="
             f"{row.leave_record_id},無法覆蓋為 leave_id={leave.id}"
         )
+
+    has_real_punch = row.punch_in_time is not None or row.punch_out_time is not None
+
+    if has_real_punch:
+        # 視同銷假：保留打卡、partial=0、status 依打卡重算、leave_record_id 連結。
+        # 冪等：第二次跑時 partial 已是 0、status 已依打卡算好 → 重算結果相同。
+        row.leave_record_id = leave.id
+        row.partial_leave_hours = Decimal("0")
+
+        sched_start, sched_end = _get_employee_schedule(session, leave.employee_id)
+
+        if row.punch_in_time is not None:
+            punch_in_time_only = row.punch_in_time.time()
+            row.late_minutes = compute_late_minutes_with_leave(
+                punch_in=punch_in_time_only,
+                scheduled_start=sched_start,
+                leave_start=None,
+                leave_end=None,
+            )
+        else:
+            row.late_minutes = 0
+
+        if row.punch_out_time is not None:
+            # 跨夜班：下班落在隔日，不可用 .time() 截斷後當早退（P1-4）
+            if row.punch_out_time.date() > d:
+                row.early_leave_minutes = 0
+            else:
+                punch_out_time_only = row.punch_out_time.time()
+                row.early_leave_minutes = compute_early_leave_minutes_with_leave(
+                    punch_out=punch_out_time_only,
+                    scheduled_end=sched_end,
+                    leave_start=None,
+                    leave_end=None,
+                )
+        else:
+            row.early_leave_minutes = 0
+
+        late_min = row.late_minutes or 0
+        early_min = row.early_leave_minutes or 0
+        if late_min > 0:
+            row.status = AttendanceStatus.LATE.value
+        elif early_min > 0:
+            row.status = AttendanceStatus.EARLY_LEAVE.value
+        else:
+            row.status = AttendanceStatus.NORMAL.value
+
+        sync_attendance_flags(row)
+        return
+
+    # 無真實打卡 → 原語意：status=LEAVE、扣 8h
+    # Idempotent guard:已是本筆 leave 寫的 → no-op
+    if row.leave_record_id == leave.id and row.status == AttendanceStatus.LEAVE.value:
+        return
 
     row.status = AttendanceStatus.LEAVE.value
     row.punch_in_time = None
