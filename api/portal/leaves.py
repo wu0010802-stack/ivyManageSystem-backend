@@ -64,6 +64,7 @@ from ._shared import (
     SubstituteRespond,
 )
 from api.leaves import (
+    _assert_no_same_day_partial_collision,
     _check_employee_has_conflicting_overtime,
     _check_overlap,
     _check_substitute_leave_conflict,
@@ -283,6 +284,16 @@ def create_my_leave(
 
         # 修補 2026-05-11 P1-5：跨類重疊（同日加班 vs 請假）
         _check_employee_has_conflicting_overtime(
+            session,
+            emp.id,
+            data.start_date,
+            data.end_date,
+            data.start_time,
+            data.end_time,
+        )
+
+        # rank 10：同日多筆部分假無法在 attendance 共存 → 建立時即擋
+        _assert_no_same_day_partial_collision(
             session,
             emp.id,
             data.start_date,

@@ -518,6 +518,49 @@ def _check_employee_has_conflicting_overtime(
             )
 
 
+def _assert_no_same_day_partial_collision(
+    session,
+    employee_id: int,
+    start_date: date,
+    end_date: date,
+    start_time: Optional[str],
+    end_time: Optional[str],
+    exclude_id: Optional[int] = None,
+) -> None:
+    """rank 10：Attendance 一天一列、單一 leave_record_id，無法同時掛兩筆部分請假。
+
+    重疊服務（find_overlapping_leave）對「同日、時段不重疊」的兩筆單日部分假以時段
+    精比放行；但核准第二筆時 sync.apply 偵測 row.leave_record_id 已被佔據 →
+    LeaveAttendanceConflict → 422（業務允許、系統結構做不到）。改在建立時就擋下並給
+    可操作訊息，避免員工送出永遠無法核准、且占配額/重疊計算的假單。
+
+    僅針對「新單日且帶時段的部分假」：該日已有 approved/pending 假即衝突（不論時段，
+    因 attendance 一天僅一列）。全日假同日重疊由既有 _check_overlap 涵蓋。
+    """
+    if start_date != end_date or not start_time or not end_time:
+        return
+    q = session.query(LeaveRecord).filter(
+        LeaveRecord.employee_id == employee_id,
+        LeaveRecord.status.in_(
+            [ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]
+        ),
+        LeaveRecord.start_date <= end_date,
+        LeaveRecord.end_date >= start_date,
+    )
+    if exclude_id is not None:
+        q = q.filter(LeaveRecord.id != exclude_id)
+    existing = q.first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"該員工於 {start_date} 已有請假 #{existing.id}；系統不支援同一天登錄"
+                "多筆部分請假（考勤一天僅能對應一筆假單）。請改為一筆涵蓋整個時段，"
+                "或先撤銷該日既有假單。"
+            ),
+        )
+
+
 def _check_substitute_leave_conflict(
     session,
     substitute_employee_id: Optional[int],
@@ -772,6 +815,16 @@ def create_leave(
 
         # 修補 2026-05-11 P1-5：跨類重疊檢查
         _check_employee_has_conflicting_overtime(
+            session,
+            data.employee_id,
+            data.start_date,
+            data.end_date,
+            data.start_time,
+            data.end_time,
+        )
+
+        # rank 10：同日多筆部分假無法在 attendance 共存 → 建立時即擋
+        _assert_no_same_day_partial_collision(
             session,
             data.employee_id,
             data.start_date,

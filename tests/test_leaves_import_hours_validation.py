@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _build_parse_result(hours):
+def _build_parse_result(hours, start_time=None, end_time=None):
     from api.leaves import LeaveImportRow
     from utils.excel_io import ImportResult
 
@@ -35,6 +35,8 @@ def _build_parse_result(hours):
             "開始日期": "2026-03-15",
             "結束日期": "2026-03-15",
             "時數(可空)": hours,
+            "開始時間(部分假必填HH:MM)": start_time,
+            "結束時間(部分假必填HH:MM)": end_time,
             "原因(可空)": "匯入測試",
         }
     )
@@ -52,12 +54,12 @@ async def _fake_read(_f):
     return b""
 
 
-def _run_import_with(hours):
+def _run_import_with(hours, start_time=None, end_time=None):
     import api.leaves as leaves_module
     from api.leaves import import_leaves
 
     session = MagicMock()
-    parse_result = _build_parse_result(hours)
+    parse_result = _build_parse_result(hours, start_time, end_time)
     patches = [
         patch.object(leaves_module, "get_session", return_value=session),
         patch("api.leaves.read_upload_with_size_check", side_effect=_fake_read),
@@ -99,9 +101,16 @@ class TestImportHoursValidation:
         assert result["failed"] >= 1, f"2.3h 列應計入 failed, result={result}"
 
     def test_valid_hours_row_created(self):
-        result = _run_import_with(4.0)
-        assert result["created"] == 1, f"合法 4h 列應建立, result={result}"
+        # rank 14：部分假（4h）必須帶時段才能匯入（否則核准時 sync 422 成孤兒）。
+        result = _run_import_with(4.0, start_time="08:00", end_time="12:00")
+        assert result["created"] == 1, f"合法 4h 列（帶時段）應建立, result={result}"
         assert result["failed"] == 0, f"合法 4h 列不應 failed, result={result}"
+
+    def test_partial_hours_without_time_fails(self):
+        # rank 14：部分假缺時段 → 匯入失敗，不建孤兒 pending。
+        result = _run_import_with(4.0)
+        assert result["created"] == 0, f"部分假缺時段不應建立, result={result}"
+        assert result["failed"] >= 1, f"部分假缺時段應計入 failed, result={result}"
 
     def test_empty_hours_defaults_to_full_day(self):
         # 時數留空 → 維持既有行為：預設 8h 全日
