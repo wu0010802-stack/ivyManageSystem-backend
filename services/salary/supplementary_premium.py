@@ -179,7 +179,15 @@ def _resolve_health_insured_salary(emp_dict: dict, insurance_service) -> float:
         return 0.0
     bracket_amount = float(insurance_service.get_bracket(raw)["amount"])
     health_ins = emp_dict.get("health_insured_salary")
-    resolved = float(health_ins) if health_ins is not None else bracket_amount
+    # P3-I：HR 自填的 health_insured_salary 也須經健保級距正規化（get_bracket 向上
+    # 取整），與一般健保保費基底（insurance_service.calculate 用 get_bracket(raw)["amount"]）
+    # 對齊。否則 threshold(=4×投保額) 用未正規化原值 → 與一般健保「當月投保金額」
+    # 定義不一致（健保法 §31）→ 補充保費多扣/少扣。
+    resolved = (
+        float(insurance_service.get_bracket(float(health_ins))["amount"])
+        if health_ins is not None
+        else bracket_amount
+    )
     # clamp 至健保最高投保金額（與 InsuranceService.calculate 的 health cap 對齊）；
     # 否則超上限投保額會推高 threshold(=4×投保額)→excess 偏小→少扣補充保費。
     # service 未提供上限時不 clamp（保留原行為、不引入回歸）。
