@@ -24,9 +24,11 @@ from zoneinfo import ZoneInfo
 
 _TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from models.employee import Employee
+from models.leave import LeaveQuota, LeaveRecord
 from models.overtime_comp_leave_grant import OvertimeCompLeaveGrant
 from models.unused_leave_payout_log import UnusedLeavePayoutLog
 from services.leave_quota_expiry.helpers import (
@@ -35,7 +37,46 @@ from services.leave_quota_expiry.helpers import (
     _resolve_hourly_wage,
 )
 from services.salary.unused_leave_pay import calculate_unused_leave_compensation
+from utils.academic import resolve_current_academic_term
 from utils.rounding import round_half_up
+
+
+def _decrement_comp_quota(session, emp_id: int, target_date, hours: float) -> None:
+    """到期折現後同步扣減補休 LeaveQuota.total_hours（rank 11）。
+
+    配額檢查 remaining = total_hours − 已核准/待審補休；到期折現把未消耗時數換成現金
+    後，那些時數已不可再當補休請，total_hours 須同步扣除，否則檢查見幽靈額度（檢查
+    放行、消耗 FIFO 找不到 active grant → 422）。列解析與發放/檢查對齊（學年優先、
+    legacy fallback，rank 15）。
+    """
+    if hours <= 1e-9:
+        return
+    school_year, _ = resolve_current_academic_term(
+        target_date=target_date, session=session
+    )
+    row = (
+        session.query(LeaveQuota)
+        .filter(
+            LeaveQuota.employee_id == emp_id,
+            LeaveQuota.leave_type == "compensatory",
+            LeaveQuota.school_year == school_year,
+        )
+        .first()
+    )
+    if row is None:
+        row = (
+            session.query(LeaveQuota)
+            .filter(
+                LeaveQuota.employee_id == emp_id,
+                LeaveQuota.leave_type == "compensatory",
+                LeaveQuota.school_year.is_(None),
+                LeaveQuota.year == target_date.year,
+            )
+            .first()
+        )
+    if row is not None:
+        row.total_hours = max(0.0, float(row.total_hours or 0) - float(hours))
+
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +122,28 @@ def expire_comp_leave_grants(today: date, session: Session) -> dict:
 
     for emp_id, grants in grants_by_emp.items():
         try:
+            # rank 12：員工有待審補休假時，本輪延後到期結算。pending 假尚未消耗 grant
+            # （consumed 只在核准時 +）；此時若折現未消耗時數，假後續核准會找不到 active
+            # grant（FIFO 只取 active）→ 轉嫁別筆 active grant（雙得）或 422。延後到假單
+            # 核准/駁回後下一輪再處理（grant 維持 active，expires_at 仍 <= today，下輪會再撈）。
+            pending_comp_hours = float(
+                session.query(func.coalesce(func.sum(LeaveRecord.leave_hours), 0))
+                .filter(
+                    LeaveRecord.employee_id == emp_id,
+                    LeaveRecord.leave_type == "compensatory",
+                    LeaveRecord.status == "pending",
+                )
+                .scalar()
+                or 0
+            )
+            if pending_comp_hours > 1e-9:
+                logger.info(
+                    "emp=%d 有待審補休 %.1fh，本輪延後補休到期結算"
+                    "（待假單核准/駁回後下輪處理）",
+                    emp_id,
+                    pending_comp_hours,
+                )
+                continue
             with session.begin_nested():
                 # 計算未消耗時數合計
                 unexpired_hours = sum(
@@ -156,6 +219,14 @@ def expire_comp_leave_grants(today: date, session: Session) -> dict:
                     g.expired_at = datetime.now(_TAIPEI_TZ)
                     g.payout_log_id = log.id
                     g.payout_salary_record_id = payout_sr_id
+                    # rank 11：折現未消耗時數後同步扣減補休 LeaveQuota，避免幽靈額度
+                    # （檢查放行、消耗 FIFO 找不到 active grant → 422）。
+                    _decrement_comp_quota(
+                        session,
+                        emp_id,
+                        g.granted_at,
+                        g.granted_hours - g.consumed_hours,
+                    )
 
                 total_paid += amount
                 paid_emp_count += 1

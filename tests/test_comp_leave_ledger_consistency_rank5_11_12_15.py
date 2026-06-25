@@ -186,3 +186,114 @@ def test_revoke_unconsumed_grant_allowed(session):
 
     _revoke_comp_leave_grant(session, ot)  # 不應 raise
     assert ot.comp_leave_granted is False
+
+
+# ── rank 15 ─────────────────────────────────────────────────────────────
+
+
+def test_grant_writes_row_that_check_reads_after_cutover(session):
+    """學年 cutover 已建 school_year 制補休列後，發放須寫該列（檢查讀的列），
+    不可寫 legacy 西元年列，否則合法補休被誤擋。"""
+    from api.overtimes import _grant_comp_leave_quota
+    from api.leaves_quota import _check_compensatory_quota
+    from utils.academic import resolve_current_academic_term
+    from models.leave import LeaveQuota
+
+    emp = _emp(session)
+    d = date(2026, 9, 15)
+    sy, _ = resolve_current_academic_term(target_date=d, session=session)
+    # 模擬 cutover 已建學年制補休列（凍結快照 total=0）
+    syrow = LeaveQuota(
+        employee_id=emp.id,
+        year=sy,
+        school_year=sy,
+        leave_type="compensatory",
+        total_hours=0.0,
+    )
+    session.add(syrow)
+    session.flush()
+
+    ot = _ot(session, emp.id, hours=8.0, d=d, granted=False)
+    _grant_comp_leave_quota(session, ot, {})
+    session.flush()
+
+    session.refresh(syrow)
+    assert (
+        syrow.total_hours == 8.0
+    ), f"發放應寫入檢查讀取的學年制列；得 {syrow.total_hours}（修前寫 legacy 列→仍 0）"
+    # 檢查讀同列 → 應放行 8h 補休（修前讀學年列=0 → 誤擋）
+    _check_compensatory_quota(session, emp.id, d.year, 8.0, target_date=d)
+
+
+# ── rank 11 ─────────────────────────────────────────────────────────────
+
+
+def test_expiry_decrements_quota_total(session):
+    """grant 到期折現後須同步扣減 LeaveQuota.total_hours，避免幽靈額度。"""
+    from services.leave_quota_expiry.comp_leave_expiry import expire_comp_leave_grants
+
+    emp = _emp(session)
+    ot = _ot(session, emp.id, hours=8.0, d=date(2026, 9, 15))
+    _grant(
+        session,
+        emp.id,
+        ot.id,
+        granted=8.0,
+        consumed=0.0,
+        status="active",
+        granted_at=date(2026, 9, 15),
+        expires_at=date(2027, 9, 15),
+    )
+    _quota(session, emp.id, total=8.0, year=2026)  # legacy 列
+    session.commit()
+
+    expire_comp_leave_grants(date(2027, 9, 16), session)
+
+    from models.leave import LeaveQuota
+
+    q = (
+        session.query(LeaveQuota)
+        .filter_by(employee_id=emp.id, leave_type="compensatory")
+        .first()
+    )
+    assert (
+        float(q.total_hours) == 0.0
+    ), f"到期折現 8h 後配額應扣為 0；得 {q.total_hours}（修前不扣→幽靈 8h）"
+
+
+# ── rank 12 ─────────────────────────────────────────────────────────────
+
+
+def test_expiry_defers_when_pending_comp_leave_exists(session):
+    """員工有待審補休假時，到期 grant 本輪不折現、不 expired（避免折現後假核准無 grant 可消耗）。"""
+    from services.leave_quota_expiry.comp_leave_expiry import expire_comp_leave_grants
+    from models.unused_leave_payout_log import UnusedLeavePayoutLog
+
+    emp = _emp(session)
+    ot = _ot(session, emp.id, hours=8.0, d=date(2026, 9, 15))
+    g = _grant(
+        session,
+        emp.id,
+        ot.id,
+        granted=8.0,
+        consumed=0.0,
+        status="active",
+        granted_at=date(2026, 9, 15),
+        expires_at=date(2027, 9, 15),
+    )
+    _quota(session, emp.id, total=8.0, year=2026)
+    _comp_leave(session, emp.id, hours=8.0, status="pending", start=date(2027, 9, 10))
+    session.commit()
+
+    expire_comp_leave_grants(date(2027, 9, 16), session)
+
+    session.refresh(g)
+    assert (
+        g.status == "active"
+    ), f"有待審補休時不應結算 grant；得 status={g.status}（修前折現付現→假後核准撞 422）"
+    paid = (
+        session.query(UnusedLeavePayoutLog)
+        .filter_by(employee_id=emp.id, source_type="comp_grant_expiry")
+        .count()
+    )
+    assert paid == 0, "延後結算不應寫 payout log"
