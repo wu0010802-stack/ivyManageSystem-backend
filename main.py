@@ -394,6 +394,14 @@ async def app_lifespan(app_instance: FastAPI):
     app_instance.state.main_loop = _main_loop
     set_main_loop(_main_loop)
 
+    # Scale-out 協調 gate（設計審查 2026-06-25 LONG-1）：DEPLOYMENT_MODE=multi 時，任一
+    # 跨 worker backend（cache/broadcast/rate-limit）仍 in-process memory → fail-fast 拒
+    # 啟動（避免多 worker 靜默快取分裂 / WS 廣播失效 / 限流塌單桶）。single（當前 prod）
+    # → 直接 return 零行為改變。盡早於做任何 DB/seed 工作前檢查。
+    from startup.scale_out_gate import check_scale_out_backends
+
+    check_scale_out_backends(settings)
+
     # 通知中央 dispatcher：把 after_commit / after_rollback hook 綁到主庫 session factory
     from services.notification import dispatch as _notification_dispatch
     from models.base import get_session_factory as _get_factory
@@ -423,11 +431,13 @@ async def app_lifespan(app_instance: FastAPI):
         settings.cache.backend == "memory"
         or settings.cache.effective_broadcast_backend == "memory"
     ):
+        # DEPLOYMENT_MODE=single（預設/當前 prod）的資訊性警告；multi+memory 已在上方
+        # check_scale_out_backends fail-fast 拒啟動，不會走到這裡。
         logger.warning(
             "cache backend = in-process memory：本服務假設【單 uvicorn worker】部署。"
             "多 worker 會造成各 worker 快取分裂或 WS 廣播無法跨 worker。"
-            "若要開 --workers N，請設 CACHE_BACKEND=redis 並確認 BROADCAST_BACKEND "
-            "未覆寫為 memory（或顯式設 BROADCAST_BACKEND=redis）。"
+            "若要開多 worker / 多 pod，請設 DEPLOYMENT_MODE=multi（會強制 CACHE_BACKEND/"
+            "BROADCAST_BACKEND=redis 與 RATE_LIMIT_BACKEND=postgres，否則拒啟動）。"
         )
 
     # ── 家長端 RLS 上線自檢（系統設計審查 2026-06-14, top#7）──

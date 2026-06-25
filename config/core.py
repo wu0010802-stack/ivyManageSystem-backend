@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,6 +16,13 @@ class CoreSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
     env: str = "development"
+    # 部署形態（設計審查 2026-06-25 LONG-1 scale-out 協調 gate）：single=單 uvicorn
+    # worker（當前 prod 形態）；multi=多 worker / 多 pod。multi 時 startup gate 會強制
+    # 所有跨 worker 必須共享的 backend（cache/broadcast/rate-limit）非 in-process memory，
+    # 否則拒啟動——把「scale-out 前要翻好幾個 env flag」的隱性合約變成單一 fail-fast 守衛。
+    deployment_mode: Literal["single", "multi"] = Field(
+        default="single", validation_alias="DEPLOYMENT_MODE"
+    )
     database_url: str | None = None
     jwt_secret_key: str | None = Field(default=None, repr=False)
     # JWT rotation 用，accept-only 舊 secrets 的 JSON list 字串
