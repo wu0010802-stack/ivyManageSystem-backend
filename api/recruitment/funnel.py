@@ -208,6 +208,12 @@ def post_transition(
         status = 409 if e.code in ("STAGE_ALREADY", "CONVERT_CONFLICT") else 400
         raise HTTPException(status, detail={"code": e.code, "message": str(e)})
 
+    # transition_visit / convert_recruitment_to_student 內部僅 flush（docstring 明示
+    # 「呼叫端負責 commit」）；get_session_dep 的 finally 只 close、不 commit → 未顯式
+    # commit 的成功轉換會在 close 時被 rollback（P1 資料遺失：端點回 200 但 DB 零持久化）。
+    # 僅在成功路徑 commit；error 路徑已於上方 raise HTTPException（不到這裡，不會 commit）。
+    session.commit()
+
     return TransitionOut(
         visit_id=result.visit_id,
         from_stage=result.from_stage,
