@@ -36,6 +36,9 @@ def _build_parse_result(leave_type="compensatory"):
             "開始日期": "2026-03-15",
             "結束日期": "2026-03-15",
             "時數(可空)": 4.0,
+            # rank 14：部分假（4h）必填時段，否則匯入即擋（測試聚焦配額 dispatch，補時段）
+            "開始時間(部分假必填HH:MM)": "08:00",
+            "結束時間(部分假必填HH:MM)": "12:00",
             "原因(可空)": "匯入測試",
         }
     )
@@ -68,6 +71,8 @@ def _common_patches(emp, parse_result):
         patch("api.leaves.resolve_employee_from_row", return_value=emp),
         patch("api.leaves.validate_leave_hours_against_schedule"),
         patch("api.leaves._check_leave_limits"),
+        # rank 7：import 新增跨模組加班衝突檢查；mock 避免在 MagicMock session 上查詢。
+        patch("api.leaves._check_employee_has_conflicting_overtime"),
         # 2026-05-11 P1-4：import_leaves 新增 _find_overlapping_leave；
         # mock 回 None 避免假衝突中斷 dispatch 測試。
         patch("api.leaves._find_overlapping_leave", return_value=None),
