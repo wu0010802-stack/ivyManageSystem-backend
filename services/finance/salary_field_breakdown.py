@@ -135,28 +135,55 @@ def _calc_attendance_stats(attendances: list) -> dict:
     }
 
 
+def _attendance_leave_hours(att, lv) -> float:
+    """以 Attendance 為 SoT 取該列請假時數（對齊引擎 _sum_leave_deduction._hours）。
+
+    - status == LEAVE（全日假，無打卡）→ 8.0
+    - partial_leave_hours > 0（部分假，或全日假有打卡時為 0 → 走 else）→ partial
+    - 其餘（含「全日假有打卡視同銷假」partial=0）→ 0.0
+    """
+    from models.attendance import AttendanceStatus
+
+    if att.status == AttendanceStatus.LEAVE.value:
+        return 8.0
+    partial = getattr(att, "partial_leave_hours", None)
+    if partial is not None and float(partial) > 0:
+        return float(partial)
+    return 0.0
+
+
 def _calc_leave_deductions(
-    approved_leaves: list,
+    att_leave_pairs: list,
     daily_salary: float,
     ytd_sick_hours_before_month: float = 0.0,
+    *,
+    approved_leaves: list | None = None,
 ) -> dict:
-    """請假扣款計算：逐筆計算扣款金額、統計事病假時數。
+    """請假扣款計算（F-E：以 Attendance 為 SoT，與引擎落地一致）。
+
+    輸入改為 (Attendance, LeaveRecord) tuple 列表（與引擎 _sum_leave_deduction 同源），
+    每列時數取自 Attendance（status==LEAVE→8、partial>0→partial、else→0），
+    使明細 summary 與 rows 同源、且與實付一致（如 F-A「全日假有打卡視同銷假」→ 扣 0）。
 
     病假套用勞基法第 43 條 30 日（240h）年度半薪上限；超過部分顯示為 ratio=1.0。
+
+    `approved_leaves`：僅供 personal_sick_leave_hours / bonus_forfeited_by_leave 統計
+    （與引擎 services/salary/engine 用 approved_leaves 加總一致，不受 attendance 影響）；
+    未傳時退回以 pairs 中的 leaves 估算。
     """
     leave_deduction_total = 0
     leave_breakdown = []
     sick_used = float(ytd_sick_hours_before_month or 0.0)
 
-    sick_leaves = sorted(
-        [lv for lv in approved_leaves if lv.leave_type == "sick"],
-        key=lambda lv: getattr(lv, "start_date", None) or date.min,
+    sick_pairs = sorted(
+        [(att, lv) for att, lv in att_leave_pairs if lv.leave_type == "sick"],
+        key=lambda x: getattr(x[1], "start_date", None) or date.min,
     )
-    other_leaves = [lv for lv in approved_leaves if lv.leave_type != "sick"]
+    other_pairs = [(att, lv) for att, lv in att_leave_pairs if lv.leave_type != "sick"]
     standard_sick_ratio = LEAVE_DEDUCTION_RULES.get("sick", 0.5)
 
-    for lv in sick_leaves:
-        hours = lv.leave_hours or 0
+    for att, lv in sick_pairs:
+        hours = _attendance_leave_hours(att, lv)
         # 僅「明確偏離標準」才視為 HR 覆寫；核准流程會把 ratio 寫成標準值 0.5，
         # 這種情況仍要套用 240h 年度上限。
         is_genuine_override = (
@@ -194,25 +221,34 @@ def _calc_leave_deductions(
             }
         )
 
-    for lv in other_leaves:
+    for att, lv in other_pairs:
+        hours = _attendance_leave_hours(att, lv)
         ratio = (
             lv.deduction_ratio
             if lv.deduction_ratio is not None
             else LEAVE_DEDUCTION_RULES.get(lv.leave_type, 1.0)
         )
         # P2-I：扣款逐筆無條件捨去，對齊引擎 _sum_leave_deduction（floor）。
-        deduction = round_down((lv.leave_hours / 8) * daily_salary * ratio)
+        deduction = round_down((hours / 8) * daily_salary * ratio)
         leave_deduction_total += deduction
         leave_breakdown.append(
             {
                 "type": lv.leave_type,
                 "start": _to_iso(lv.start_date),
                 "end": _to_iso(lv.end_date),
-                "hours": lv.leave_hours or 0,
+                "hours": hours,
                 "ratio": ratio,
                 "deduction": deduction,
             }
         )
+
+    # personal_sick_leave_hours / 40h forfeit 與引擎一致：以 approved_leaves 加總
+    # （不受 attendance SoT 影響；未傳則退回 pairs 中 leaves 去重估算）。
+    if approved_leaves is None:
+        _seen = {}
+        for _att, lv in att_leave_pairs:
+            _seen[getattr(lv, "id", id(lv))] = lv
+        approved_leaves = list(_seen.values())
     personal_sick_leave_hours = sum(
         lv.leave_hours or 0
         for lv in approved_leaves
@@ -712,8 +748,24 @@ def build_salary_debug_snapshot(
             )
             .scalar()
         )
+    # F-E：請假扣款以 Attendance 為 SoT（與引擎 _sum_leave_deduction 同源 JOIN），
+    # 使明細顯示 == 實付。att_leave_pairs = JOIN Attendance.leave_record_id ↔ LeaveRecord。
+    att_leave_pairs = (
+        session.query(Attendance, LeaveRecord)
+        .join(LeaveRecord, Attendance.leave_record_id == LeaveRecord.id)
+        .filter(
+            Attendance.employee_id == emp.id,
+            Attendance.attendance_date >= start_date,
+            Attendance.attendance_date <= end_date,
+            Attendance.leave_record_id.isnot(None),
+        )
+        .all()
+    )
     lv_result = _calc_leave_deductions(
-        approved_leaves, daily_salary, ytd_sick_hours_before_month=prior_sick_hours
+        att_leave_pairs,
+        daily_salary,
+        ytd_sick_hours_before_month=prior_sick_hours,
+        approved_leaves=approved_leaves,
     )
 
     # ── 加班 ──

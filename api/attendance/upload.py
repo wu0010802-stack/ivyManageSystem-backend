@@ -24,7 +24,11 @@ from models.database import (
 from utils.auth import require_staff_permission
 from utils.attendance_guards import assert_no_self_in_batch
 from utils.cache_layer import get_cache
-from utils.attendance_leave_merge import merge_attendance_with_leave
+from utils.attendance_leave_merge import (
+    merge_attendance_with_leave,
+    reset_confirmation_if_changed,
+    snapshot_attendance_confirmation_inputs,
+)
 from utils.attendance_calc import compute_shift_aware_status
 from utils.attendance_shift_window import compute_status_for_employee_date
 from utils.permissions import Permission
@@ -449,6 +453,10 @@ def _process_attendance_upload(
                         existing = attendance_cache.get((employee.id, attendance_date))
 
                         if existing:
+                            # F-D：覆寫前快照，覆寫後若實質變動則清 admin_waive 等確認。
+                            _confirm_before = snapshot_attendance_confirmation_inputs(
+                                existing
+                            )
                             existing.punch_in_time = punch_in_time
                             existing.punch_out_time = punch_out_time
                             existing.status = status
@@ -459,6 +467,7 @@ def _process_attendance_upload(
                             existing.late_minutes = late_minutes
                             existing.early_leave_minutes = early_leave_minutes
                             existing.remark = f"部門: {department}"
+                            reset_confirmation_if_changed(existing, _confirm_before)
                             merge_attendance_with_leave(existing, session)
                         else:
                             attendance = Attendance(
@@ -687,6 +696,10 @@ def _process_attendance_upload(
                         db_p_out = dt_out_full
 
                         if existing:
+                            # F-D：覆寫前快照，覆寫後若實質變動則清 admin_waive 等確認。
+                            _confirm_before = snapshot_attendance_confirmation_inputs(
+                                existing
+                            )
                             existing.punch_in_time = db_p_in
                             existing.punch_out_time = db_p_out
                             existing.status = status
@@ -704,6 +717,7 @@ def _process_attendance_upload(
                                 existing.early_leave_minutes = detail["early_minutes"]
 
                             existing.remark = "Legacy Upload"
+                            reset_confirmation_if_changed(existing, _confirm_before)
                             merge_attendance_with_leave(existing, session)
                         else:
                             att = Attendance(
@@ -943,6 +957,8 @@ def upload_attendance_csv(
                 existing = csv_attendance_cache.get((employee.id, attendance_date))
 
                 if existing:
+                    # F-D：覆寫前快照，覆寫後若實質變動則清 admin_waive 等確認。
+                    _confirm_before = snapshot_attendance_confirmation_inputs(existing)
                     existing.punch_in_time = punch_in_time
                     existing.punch_out_time = punch_out_time
                     existing.status = status
@@ -953,6 +969,7 @@ def upload_attendance_csv(
                     existing.late_minutes = late_minutes
                     existing.early_leave_minutes = early_leave_minutes
                     existing.remark = f"部門: {row.department}"
+                    reset_confirmation_if_changed(existing, _confirm_before)
                     merge_attendance_with_leave(existing, session)
                 else:
                     attendance = Attendance(

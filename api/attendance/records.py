@@ -66,6 +66,31 @@ def _assert_attendance_within_retention(
         )
 
 
+def _assert_not_leave_linked(rows) -> None:
+    """拒絕刪除帶 leave_record_id 的考勤列（F-C）。
+
+    薪資請假扣款走 att_leave_pairs（JOIN Attendance.leave_record_id ↔ LeaveRecord），
+    刪掉該列即無 pair → 扣款歸零；但曠職偵測獨立讀 approved_leaves（LeaveRecord）→
+    假單仍 approved → leave_covered → 不算曠職。於是 deductible 全日/部分假變全薪
+    （單側繞過請假扣款）。刪考勤不可單側撤除請假對考勤的影響：先處理對應假單
+    （駁回/刪除/改期），sync 會一致還原考勤連結後才可刪此列。
+
+    rows：要刪除的 Attendance 列（單筆傳 [row]，整月傳整批）。
+    """
+    linked = [r for r in rows if r is not None and getattr(r, "leave_record_id", None)]
+    if not linked:
+        return
+    sample = linked[0]
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"考勤紀錄與請假單（leave_record_id={sample.leave_record_id}）連結，"
+            "無法直接刪除（直接刪除會造成該日請假扣款歸零卻不算曠職的全薪漏洞）。"
+            "請先至假單管理頁面駁回、刪除或修改對應假單，系統會一致還原考勤後再操作。"
+        ),
+    )
+
+
 def _assert_attendance_not_finalized(
     session, employee_id: int, attendance_date: date
 ) -> None:
@@ -370,7 +395,16 @@ def create_or_update_attendance_record(
             .first()
         )
 
+        from utils.attendance_leave_merge import (
+            merge_attendance_with_leave,
+            reset_confirmation_if_changed,
+            snapshot_attendance_confirmation_inputs,
+        )
+
         if existing:
+            # F-D：覆寫前快照 punch/旗標，覆寫後若實質變動則清 admin_waive 等確認，
+            # 否則先豁免、後改寫成有真實遲到的打卡仍被永久豁免（漏扣）。
+            _confirm_before = snapshot_attendance_confirmation_inputs(existing)
             existing.punch_in_time = punch_in_time
             existing.punch_out_time = punch_out_time
             existing.status = status
@@ -380,6 +414,7 @@ def create_or_update_attendance_record(
             existing.is_missing_punch_out = is_missing_punch_out
             existing.late_minutes = late_minutes
             existing.early_leave_minutes = early_leave_minutes
+            reset_confirmation_if_changed(existing, _confirm_before)
             att_row = existing
             message = "考勤記錄已更新"
         else:
@@ -402,8 +437,6 @@ def create_or_update_attendance_record(
 
         # leave-aware 合併:在 commit 前把當日有效 leave 的 leave_record_id /
         # partial_leave_hours 寫入 att_row,避免 sync 寫入的欄位被 admin 手動編輯蓋掉。
-        from utils.attendance_leave_merge import merge_attendance_with_leave
-
         merge_attendance_with_leave(att_row, session)
 
         # 考勤異動會改變遲到/早退/缺打卡計數,進而影響薪資扣款計算;
@@ -454,14 +487,21 @@ def delete_single_attendance_record(
         _assert_attendance_within_retention(attendance_date)
         _assert_attendance_not_finalized(session, employee_id, attendance_date)
 
-        deleted = (
+        to_delete = (
             session.query(Attendance)
             .filter(
                 Attendance.employee_id == employee_id,
                 Attendance.attendance_date == attendance_date,
             )
-            .delete()
+            .all()
         )
+        # F-C：帶 leave 連結的列不可直接刪（會造成請假扣款歸零卻不算曠職的全薪漏洞）
+        _assert_not_leave_linked(to_delete)
+
+        deleted = 0
+        for row in to_delete:
+            session.delete(row)
+            deleted += 1
 
         if deleted:
 
@@ -518,6 +558,9 @@ def delete_single_attendance(
         if not record:
             raise HTTPException(status_code=404, detail="找不到該筆考勤記錄")
 
+        # F-C：帶 leave 連結的列不可直接刪（會造成請假扣款歸零卻不算曠職的全薪漏洞）
+        _assert_not_leave_linked([record])
+
         session.delete(record)
 
         lock_and_premark_stale(
@@ -527,6 +570,8 @@ def delete_single_attendance(
         session.commit()
         return {"message": "刪除成功"}
 
+    except HTTPException:
+        raise
     except ValueError:
         raise HTTPException(status_code=400, detail="日期格式錯誤")
     except Exception as e:
@@ -556,26 +601,24 @@ def delete_attendance_records(
         _assert_attendance_within_retention(end_date)
         _assert_month_no_finalized_salary(session, year, month)
 
-        # 刪除前先撈出涉及的員工 id,以便整月刪除後標 stale
-        affected_emp_ids = [
-            row[0]
-            for row in session.query(Attendance.employee_id)
-            .filter(
-                Attendance.attendance_date >= start_date,
-                Attendance.attendance_date <= end_date,
-            )
-            .distinct()
-            .all()
-        ]
-
-        deleted = (
+        month_rows = (
             session.query(Attendance)
             .filter(
                 Attendance.attendance_date >= start_date,
                 Attendance.attendance_date <= end_date,
             )
-            .delete()
+            .all()
         )
+        # F-C：整月任一列帶 leave 連結即拒刪（避免請假扣款歸零卻不算曠職的全薪漏洞）
+        _assert_not_leave_linked(month_rows)
+
+        # 刪除前先撈出涉及的員工 id,以便整月刪除後標 stale
+        affected_emp_ids = sorted({r.employee_id for r in month_rows})
+
+        deleted = 0
+        for row in month_rows:
+            session.delete(row)
+            deleted += 1
 
         if affected_emp_ids:
 
@@ -585,6 +628,8 @@ def delete_attendance_records(
         session.commit()
 
         return {"message": f"已刪除 {deleted} 筆考勤記錄"}
+    except HTTPException:
+        raise
     except Exception as e:
         session.rollback()
         raise_safe_500(e)

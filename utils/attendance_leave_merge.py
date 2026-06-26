@@ -27,6 +27,54 @@ DEFAULT_SCHEDULED_START = time(8, 0)
 DEFAULT_SCHEDULED_END = time(17, 0)
 
 
+def snapshot_attendance_confirmation_inputs(att: Attendance) -> dict:
+    """快照「會影響考勤異常確認語意」的欄位，供 reset_confirmation_if_changed 比對（F-D）。
+
+    在覆寫 punch / late / early / missing 旗標「之前」呼叫。回傳 dict 含
+    punch_in_time / punch_out_time / is_late / is_early_leave /
+    is_missing_punch_in / is_missing_punch_out。
+    """
+    return {
+        "punch_in_time": getattr(att, "punch_in_time", None),
+        "punch_out_time": getattr(att, "punch_out_time", None),
+        "is_late": bool(getattr(att, "is_late", False)),
+        "is_early_leave": bool(getattr(att, "is_early_leave", False)),
+        "is_missing_punch_in": bool(getattr(att, "is_missing_punch_in", False)),
+        "is_missing_punch_out": bool(getattr(att, "is_missing_punch_out", False)),
+    }
+
+
+def reset_confirmation_if_changed(att: Attendance, before: dict) -> bool:
+    """考勤異常確認後又實質改寫 punch / 遲到 / 早退 / 缺卡 → 清 confirmed_*（F-D）。
+
+    anomalies.py 以 confirmed_action='admin_waive' 標記豁免後，薪資 is_attendance_waived
+    讀此欄整日跳過遲到/早退/缺卡扣款。但 upload / records / punch_corrections 在 in-place
+    覆寫 punch/旗標時若不重置 confirmed_action，先豁免、後改寫成有真實遲到的打卡仍被
+    永久豁免（漏扣）。本 helper 在「punch 或四旗標相對 before 有實質變動」時，重置
+    confirmed_action / confirmed_by / confirmed_at，讓新異常重新需要確認。
+
+    只在實質變動時重置（冪等重算同值不清），避免無謂抹除既有確認。
+    若該列原本就沒有 confirmed_action（未確認）→ no-op。
+
+    Args:
+        att:    已寫入新 punch/旗標的 Attendance ORM 物件
+        before: snapshot_attendance_confirmation_inputs(att) 在覆寫前的快照
+    Returns:
+        True 表示有重置（confirmed_* 被清空）。
+    """
+    if getattr(att, "confirmed_action", None) is None:
+        return False
+
+    after = snapshot_attendance_confirmation_inputs(att)
+    if after == before:
+        return False
+
+    att.confirmed_action = None
+    att.confirmed_by = None
+    att.confirmed_at = None
+    return True
+
+
 def merge_attendance_with_leave(att: Attendance, session: Session) -> None:
     """In-place 把當日有效 leave 的 leave_record_id / partial_leave_hours /
     late_minutes 等欄合進 att。純函式,只讀 session,不把 att 加入 session。
@@ -73,7 +121,11 @@ def merge_attendance_with_leave(att: Attendance, session: Session) -> None:
             # status / late_minutes 保留 caller 算好的
     else:
         # 部分請假（半天/小時）
-        att.partial_leave_hours = Decimal(str(leave.leave_hours))
+        # F-B：多日部分假 per-day 攤分，避免每天各寫整筆 leave_hours 導致扣薪乘以天數
+        # （對齊 services/employee_leave_attendance_sync._per_day_partial_hours 與曠職側
+        # engine._compute_absence 的 per_day = lv_hours/span_days）。單日 span=1 不變。
+        span_days = max(1, (leave.end_date - leave.start_date).days + 1)
+        att.partial_leave_hours = Decimal(str(leave.leave_hours)) / Decimal(span_days)
         lv_start = _parse_hhmm(leave.start_time)
         lv_end = _parse_hhmm(leave.end_time)
 
