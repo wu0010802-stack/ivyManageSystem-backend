@@ -23,6 +23,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import models.base as base_module
+from utils.taipei_time import now_taipei_naive
 from api.activity import router as activity_router
 from api.auth import _account_failures, _ip_attempts
 from api.auth import router as auth_router
@@ -110,6 +111,10 @@ def client_with_audit_capture(tmp_path):
 
 REFUND_REASON = "家長要求退費，已確認原因符合園所政策。"
 
+# 繳費日期改用「台灣今日」（與 validate_payment_date 同基準），避免硬編碼日期
+# 跨出 30 天回補窗後變成時間炸彈（例 "2026-05-26" 在 2026-06-26 起 >30 天被 422）。
+_PAYMENT_DATE = now_taipei_naive().date().isoformat()
+
 
 def _set_course_sessions(session, course_name: str, sessions: int):
     """把 _setup_reg 預設建出來 sessions=NULL 的 course 補上 sessions。"""
@@ -137,7 +142,7 @@ def _refund_body(reg_id: int, amount: int) -> dict:
     return {
         "items": [{"registration_id": reg_id, "amount": amount}],
         "payment_method": "現金",
-        "payment_date": "2026-05-26",
+        "payment_date": _PAYMENT_DATE,
         "type": "refund",
         "notes": REFUND_REASON,
     }
@@ -295,7 +300,7 @@ def test_refund_multi_reg_diff_accumulates(client):
             {"registration_id": rid2, "amount": 340},
         ],
         "payment_method": "現金",
-        "payment_date": "2026-05-26",
+        "payment_date": _PAYMENT_DATE,
         "type": "refund",
         "notes": REFUND_REASON,
         "idempotency_key": "test-refund-diff",  # R7-3：多筆須帶 key
@@ -324,7 +329,7 @@ def test_single_refund_diff_blocks_staff(client):
     body = {
         "amount": 500,  # suggested=800（全退）；diff=300 > 100；amount=500 < guard1 1000
         "payment_method": "現金",
-        "payment_date": "2026-05-26",
+        "payment_date": _PAYMENT_DATE,
         "type": "refund",
         "notes": REFUND_REASON,
     }
@@ -348,7 +353,7 @@ def test_single_refund_diff_below_threshold_passes(client):
     body = {
         "amount": 750,  # suggested=800（全退）；diff=50 < 100；amount=750 < guard1 1000
         "payment_method": "現金",
-        "payment_date": "2026-05-26",
+        "payment_date": _PAYMENT_DATE,
         "type": "refund",
         "notes": REFUND_REASON,
     }
