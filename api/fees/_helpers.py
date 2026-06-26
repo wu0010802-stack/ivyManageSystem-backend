@@ -256,15 +256,42 @@ def compute_fee_summary(
         .distinct()
         .subquery()
     )
-    total_adjustment = int(
-        session.query(func.coalesce(func.sum(StudentFeeAdjustment.amount), 0))
+    # 折抵逐 (student_id, period) 聚合，scope 至 filtered records 的鍵集合。
+    adj_rows = (
+        session.query(
+            StudentFeeAdjustment.student_id,
+            StudentFeeAdjustment.period,
+            func.coalesce(func.sum(StudentFeeAdjustment.amount), 0),
+        )
         .filter(
             tuple_(StudentFeeAdjustment.student_id, StudentFeeAdjustment.period).in_(
                 select(record_keys.c.student_id, record_keys.c.period)
             )
         )
-        .scalar()
-        or 0
+        .group_by(StudentFeeAdjustment.student_id, StudentFeeAdjustment.period)
+        .all()
+    )
+    adj_by_key: dict[tuple, int] = {
+        (sid, per): int(amt or 0) for sid, per, amt in adj_rows
+    }
+    total_adjustment = sum(adj_by_key.values())
+
+    # total_unpaid 逐 (student_id, period) 群組計算淨欠費並各自 clamp 至 0 再加總：
+    # 全域 max(0, total_due−total_paid−total_adj) 會讓某生溢繳/折抵的負淨額（credit）
+    # 抵銷他生真實欠費、遮蓋欠費（qa-loop P3#7）。單一正值群組仍與線性對帳相同。
+    group_rows = (
+        q.with_entities(
+            StudentFeeRecord.student_id,
+            StudentFeeRecord.period,
+            func.coalesce(func.sum(StudentFeeRecord.amount_due), 0),
+            func.coalesce(func.sum(StudentFeeRecord.amount_paid), 0),
+        )
+        .group_by(StudentFeeRecord.student_id, StudentFeeRecord.period)
+        .all()
+    )
+    total_unpaid = sum(
+        max(0, int(g_due or 0) - int(g_paid or 0) - adj_by_key.get((sid, per), 0))
+        for sid, per, g_due, g_paid in group_rows
     )
 
     return {
@@ -274,6 +301,6 @@ def compute_fee_summary(
         "unpaid_count": total_count - paid_count - partial_count,
         "total_due": total_due,
         "total_paid": total_paid,
-        "total_unpaid": max(0, total_due - total_paid - total_adjustment),
+        "total_unpaid": total_unpaid,
         "total_adjustment": total_adjustment,
     }

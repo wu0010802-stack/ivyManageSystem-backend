@@ -447,6 +447,59 @@ class TestFeeSummaryAdjustmentScope:
         assert result["total_unpaid"] == 7000
 
 
+class TestFeeSummaryPerGroupClamp:
+    """qa-loop P3#7：total_unpaid 須 per-(student_id, period) 群組各自 clamp 至 0 再加總，
+    避免某生溢繳/折抵的負淨額（credit）在全域 max(0, total_due−total_paid−total_adj) 下
+    抵銷他生真實欠費、遮蓋欠費。單一正值群組仍與線性對帳相同（既有測試不破壞）。"""
+
+    def test_one_student_credit_does_not_offset_another_debt(self, session):
+        cls = _add_classroom(session, name="共班")
+        x = _add_student(session, "溢繳生", cls.id)
+        y = _add_student(session, "欠費生", cls.id)
+        session.flush()
+        # X：已繳清 5000，事後補登 3000 折抵 → 該生該期淨 −3000（credit）
+        session.add(
+            StudentFeeRecord(
+                student_id=x.id,
+                student_name=x.name,
+                classroom_name="共班",
+                fee_item_name="學費",
+                amount_due=5000,
+                amount_paid=5000,
+                status="paid",
+                period="114-1",
+            )
+        )
+        session.add(
+            StudentFeeAdjustment(
+                student_id=x.id,
+                period="114-1",
+                adjustment_type="sibling_discount",
+                amount=3000,
+            )
+        )
+        # Y：欠 4000、無折抵
+        session.add(
+            StudentFeeRecord(
+                student_id=y.id,
+                student_name=y.name,
+                classroom_name="共班",
+                fee_item_name="學費",
+                amount_due=4000,
+                amount_paid=0,
+                status="unpaid",
+                period="114-1",
+            )
+        )
+        session.flush()
+
+        result = compute_fee_summary(session, classroom_name="共班")
+        assert result["total_unpaid"] == 4000, (
+            f"per-group clamp：Y 實欠 4000 不可被 X 的 −3000 credit 抵銷，實得 "
+            f"{result['total_unpaid']}（全域 max(0,9000−5000−3000)=1000 為 bug）"
+        )
+
+
 # ---------------------------------------------------------------------------
 # NV8 回歸測試：student_id FK 應為 RESTRICT，刪除學生時不可級聯刪除繳費歷史
 # ---------------------------------------------------------------------------
