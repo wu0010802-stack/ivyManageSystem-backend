@@ -194,10 +194,16 @@ def cleanup_audit_logs(session) -> int:
     return total_deleted
 
 
-def run_audit_log_gc_once(session_factory) -> int:
+def run_audit_log_gc_once(
+    session_factory, expected_interval_seconds: int | None = None
+) -> int:
     """跑一次 audit_log GC。caller 端負責 advisory_lock 與 disabled flag 判斷。
 
     `session_factory`: zero-arg callable 回傳 SQLAlchemy session（contextmanager）。
+    `expected_interval_seconds`: 選填。傳入則 scheduler_iteration 會 UPSERT
+        scheduler_heartbeats row，讓 /health/schedulers 與外部 watchdog 看得到這支
+        法遵 GC 的最近成功時間（未傳則 process restart 後對它全盲）。caller
+        （services/security_gc_scheduler._run_audit_log_gc）傳 _AUDIT_LOG_GC_INTERVAL_SEC。
     """
     from models.base import session_scope
 
@@ -206,7 +212,9 @@ def run_audit_log_gc_once(session_factory) -> int:
     # 區塊內——否則例外被吞後 fall-through 回 None，caller 端 `if deleted > 0`
     # 會炸 TypeError 並用誤導的 ERROR 蓋掉真正原因。預設 0，在區塊外 return。
     deleted = 0
-    with scheduler_iteration("security_audit_log_gc"):
+    with scheduler_iteration(
+        "security_audit_log_gc", expected_interval_seconds=expected_interval_seconds
+    ):
         with session_scope() as lock_session:
             with try_scheduler_lock(
                 lock_session,

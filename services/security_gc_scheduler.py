@@ -156,7 +156,10 @@ def _run_audit_log_gc() -> None:
     from utils.audit_log_gc import run_audit_log_gc_once
 
     try:
-        deleted = run_audit_log_gc_once(session_factory=session_scope)
+        deleted = run_audit_log_gc_once(
+            session_factory=session_scope,
+            expected_interval_seconds=_AUDIT_LOG_GC_INTERVAL_SEC,
+        )
         if deleted > 0:
             logger.info("audit_log GC: 總刪除 %s 列", deleted)
     except Exception as exc:

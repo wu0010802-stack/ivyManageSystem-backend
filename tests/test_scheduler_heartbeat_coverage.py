@@ -165,7 +165,9 @@ def test_medication_reminder_iteration_persists_daily_heartbeat(
     stop_event = asyncio.Event()
     # 讓 now >= target（target 設過去）→ 觸發 iteration
     monkeypatch.setattr(
-        sched, "_today_target_dt", lambda today: sched._now_taipei() - timedelta(hours=1)
+        sched,
+        "_today_target_dt",
+        lambda today: sched._now_taipei() - timedelta(hours=1),
     )
 
     def _fake_run(effective_date=None):
@@ -211,3 +213,32 @@ def test_auto_graduation_persists_heartbeat_even_when_not_due(
     ), "auto_graduation 未到畢業日也應寫 heartbeat（liveness），否則 /health 永久 lagging"
     assert row.last_success_at is not None
     assert row.expected_interval_seconds == sched.CHECK_INTERVAL_SECONDS
+
+
+# ── audit_log GC：法遵（個資法 §11 / 稅捐稽徵法 §30 七年）保留 job ───────────────
+# scheduler_iteration("security_audit_log_gc") 原唯一漏帶 expected_interval_seconds →
+# 不寫 scheduler_heartbeats row → /health/schedulers 與外部 watchdog 對這支法遵 GC 全盲
+# （process restart 後看不到最近成功時間）。修：interval 由 scheduler 端的
+# _AUDIT_LOG_GC_INTERVAL_SEC 往下傳進 run_audit_log_gc_once → scheduler_iteration。
+
+
+def test_audit_log_gc_persists_heartbeat(test_db_session, monkeypatch):
+    import types
+
+    from services import security_gc_scheduler as sched
+
+    # _run_audit_log_gc 在 settings.scheduler.audit_gc_enabled=False 時整段跳過 → 強制啟用
+    monkeypatch.setattr(
+        sched,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            scheduler=types.SimpleNamespace(audit_gc_enabled=True)
+        ),
+    )
+
+    sched._run_audit_log_gc()
+
+    row = _get_heartbeat(test_db_session, "security_audit_log_gc")
+    assert row is not None, "security_audit_log_gc 未寫 heartbeat（/health 全盲）"
+    assert row.last_success_at is not None
+    assert row.expected_interval_seconds == sched._AUDIT_LOG_GC_INTERVAL_SEC
