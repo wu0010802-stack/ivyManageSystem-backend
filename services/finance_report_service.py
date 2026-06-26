@@ -563,7 +563,9 @@ def get_monthly_fixed_cost_by_category(
     )
     out: dict[int, dict[str, int]] = {}
     for m, cat, amt in rows:
-        out.setdefault(int(m), {})[str(cat)] = int(amt or 0)
+        # qa-loop P3#8：金額彙總一律 round_half_up（與 _month_totals_from / api/reports.py 同口徑），
+        # int() 朝零截斷會系統性少計每月每類近 NT$0.99 → /monthly-pnl 支出偏低、淨現金流偏高。
+        out.setdefault(int(m), {})[str(cat)] = round_half_up(amt or 0)
     return out
 
 
