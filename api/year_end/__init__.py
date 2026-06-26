@@ -813,6 +813,10 @@ def _build_summary_rows(session: Session, cycle_id: int) -> list[SummaryExportRo
     並使總表合計與名冊合計差「負值總和」。保留 0 列（資訊性）。
     （2026-06-15 運作探測 P3-2；業主裁示不改 engine、僅修總表呈現。）
     """
+    from services.year_end.settlement_builder import (
+        compute_special_bonus_by_type_by_emp,
+    )
+
     settlements = (
         session.query(YearEndSettlement)
         .filter(
@@ -822,14 +826,9 @@ def _build_summary_rows(session: Session, cycle_id: int) -> list[SummaryExportRo
         .all()
     )
     emp_idx = {e.id: e for e in session.query(Employee).all()}
-    # 整合 special bonuses
-    sb_by_emp: dict[int, dict[SpecialBonusType, Decimal]] = defaultdict(dict)
-    for sb in (
-        session.query(SpecialBonusItem).filter_by(year_end_cycle_id=cycle_id).all()
-    ):
-        # 同 type 多筆（如 FESTIVAL_DIFF 不同月）合併加總
-        current = sb_by_emp[sb.employee_id].get(sb.bonus_type, Decimal("0"))
-        sb_by_emp[sb.employee_id][sb.bonus_type] = current + sb.amount
+    # 整合 special bonuses：套 excel-wins 去重（與轉帳 total_amount 同口徑），
+    # 避免 Excel 匯入後 auto 列+Excel 列並存時 per-type 分項雙計、對不上 total（qa-loop P2#1）
+    sb_by_emp = compute_special_bonus_by_type_by_emp(session, cycle_id)
 
     rows: list[SummaryExportRow] = []
     for s in settlements:
@@ -915,13 +914,13 @@ def export_transfer(
 def _aggregate_bonus_by_type(
     session: Session, cycle_id: int
 ) -> dict[int, dict[SpecialBonusType, Decimal]]:
-    out: dict[int, dict[SpecialBonusType, Decimal]] = defaultdict(dict)
-    for sb in (
-        session.query(SpecialBonusItem).filter_by(year_end_cycle_id=cycle_id).all()
-    ):
-        current = out[sb.employee_id].get(sb.bonus_type, Decimal("0"))
-        out[sb.employee_id][sb.bonus_type] = current + sb.amount
-    return out
+    # 個人獎金條 PDF 分項：套 excel-wins 去重（與轉帳 total_amount 同口徑），
+    # 避免 auto 列+Excel 列並存時分項雙計、獎金條總額 > 實際入帳（qa-loop P2#1）
+    from services.year_end.settlement_builder import (
+        compute_special_bonus_by_type_by_emp,
+    )
+
+    return compute_special_bonus_by_type_by_emp(session, cycle_id)
 
 
 @year_end_router.get(

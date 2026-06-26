@@ -36,10 +36,10 @@ def _q1(x: Any) -> Decimal:
     return Decimal(str(x)).quantize(_Q1, rounding=ROUND_HALF_UP)
 
 
-def compute_special_bonus_total_by_emp(
+def compute_special_bonus_by_type_by_emp(
     db: Session, cycle_id: int
-) -> dict[int, Decimal]:
-    """每員工 special_bonus_total，套用「excel 最終真相」去重（P1#2，2026-06-17）。
+) -> dict[int, dict[Any, Decimal]]:
+    """每員工每 bonus_type 的 special_bonus，套用「excel 最終真相」去重（P1#2，2026-06-17）。
 
     對每個 (employee, bonus_type)：若存在 Excel 匯入來源列（source_ref == '年終獎金總表'），
     則該 bonus_type 只計 Excel 列、排除同型 auto-derive 列（source_ref 以 'auto:' 開頭）。
@@ -50,6 +50,10 @@ def compute_special_bonus_total_by_emp(
     兩列並存；build_settlements(refresh_rates=True) 在 Excel 匯入後重新 derive auto 列，舊版
     SUM(全部) 會把同型 Excel+auto 雙計 → total_amount/轉帳多發。import 前的一般 build 無 Excel
     列、行為不變。
+
+    保留 bonus_type 維度，供 total 加總（compute_special_bonus_total_by_emp）、個人獎金條
+    PDF 分項與年終總表 per-type 欄共用同一去重口徑，確保「Σ 分項 == special_bonus_total ==
+    total_amount − payable」恆成立（qa-loop P2#1，2026-06-26）。
     """
     from collections import defaultdict
 
@@ -62,14 +66,30 @@ def compute_special_bonus_total_by_emp(
     for item in db.scalars(_select(_SBI).where(_SBI.year_end_cycle_id == cycle_id)):
         groups[(int(item.employee_id), item.bonus_type)].append(item)
 
-    totals: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
-    for (emp_id, _bt), group in groups.items():
+    out: dict[int, dict[Any, Decimal]] = defaultdict(dict)
+    for (emp_id, bt), group in groups.items():
         has_excel = any((g.source_ref or "") == _EXCEL_SRC for g in group)
+        subtotal = Decimal("0")
         for g in group:
             if has_excel and (g.source_ref or "").startswith("auto:"):
                 continue  # excel 最終真相：排除同型 auto 列，不雙計
-            totals[emp_id] += Decimal(str(g.amount if g.amount is not None else 0))
-    return dict(totals)
+            subtotal += Decimal(str(g.amount if g.amount is not None else 0))
+        out[emp_id][bt] = subtotal
+    return dict(out)
+
+
+def compute_special_bonus_total_by_emp(
+    db: Session, cycle_id: int
+) -> dict[int, Decimal]:
+    """每員工 special_bonus_total（轉帳/發放口徑），套用「excel 最終真相」去重（P1#2）。
+
+    delegate 至 compute_special_bonus_by_type_by_emp 後 per-emp 加總，保證 total 與個人
+    獎金條／年終總表 per-type 分項出自同一去重口徑、彼此對帳一致（qa-loop P2#1，2026-06-26）。
+    """
+    by_type = compute_special_bonus_by_type_by_emp(db, cycle_id)
+    return {
+        emp_id: sum(types.values(), Decimal("0")) for emp_id, types in by_type.items()
+    }
 
 
 # --------------------------------------------------------------------------- #
