@@ -23,17 +23,22 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y postgresql-client-15
 
-      - name: pg_dump
+      - name: pg_dump（Zeabur PostgreSQL）
         env:
-          PGPASSWORD: ${{ secrets.SUPABASE_BACKUP_DB_PASSWORD }}
+          # 2026-06-23 prod DB 遷至 Zeabur PostgreSQL service：改用單一連線字串 secret
+          # DR_DATABASE_URL（Zeabur PG 對外連線 URI，形如
+          # postgresql://user:pass@host:port/dbname），取代舊 SUPABASE_DB_HOST /
+          # SUPABASE_BACKUP_DB_PASSWORD（指向已遷移的 Supabase DB → 會備份到空/舊資料）。
+          # 未設時 fail-loud（下方 if 守衛），避免靜默備份錯誤資料源。
+          DR_DATABASE_URL: ${{ secrets.DR_DATABASE_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${DR_DATABASE_URL:-}" ]; then
+            echo "::error::DR_DATABASE_URL secret 未設定。prod DB 已遷至 Zeabur PostgreSQL，異地備份必須指向現行 prod DB。請在 repo Secrets 設定 Zeabur PG 對外連線字串（DR_DATABASE_URL）後重跑。"
+            exit 1
+          fi
           DATE=$(date -u +%Y-%m-%d)
-          pg_dump \
-            --host=${{ secrets.SUPABASE_DB_HOST }} \
-            --port=5432 \
-            --username=backup_readonly \
-            --dbname=postgres \
+          pg_dump "$DR_DATABASE_URL" \
             --format=custom \
             --no-owner --no-privileges \
             --file=ivy-${DATE}.dump
