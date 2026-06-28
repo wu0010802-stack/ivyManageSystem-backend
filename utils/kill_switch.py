@@ -67,6 +67,17 @@ class KillSwitchMiddleware(BaseHTTPMiddleware):
         if path in self.BYPASS_PATHS:
             return await call_next(request)
 
+        # cold-start migration 韌性（對標稽核 P1 / boot-loop 止血）：app_lifespan 在
+        # alembic migration 失敗時設 app.state.migration_ok=False 並進維護模式（不 raise，
+        # 避免 boot-loop）。此處自動觸發 503——不在「半套 / 壞 schema」上服務業務流量。
+        # 與 env 開關 maintenance_mode 並存（env 仍可手動觸發）；BYPASS_PATHS 已先放行，
+        # 故 /health/* 探針與 /api/auth/login 自救不受影響。
+        if getattr(request.app.state, "migration_ok", True) is False:
+            return _kill_switch_response(
+                code="MAINTENANCE_MODE",
+                message="系統升級維護中，暫時無法提供服務，請稍後再試。",
+            )
+
         ops = get_settings().ops
 
         if ops.maintenance_mode:

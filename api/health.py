@@ -193,6 +193,22 @@ async def readiness(
     """
     start = time.monotonic()
 
+    # cold-start migration 韌性（對標稽核 P1 / boot-loop 止血）：app_lifespan 在 alembic
+    # migration 失敗時進維護模式（app.state.migration_ok=False）。此閘優先於 DB 連線檢查
+    # （壞 / 半套 schema 下 SELECT 1 仍可能成功，會誤報健康），讓 LB / UptimeRobot 看得到
+    # 不健康並停止導流。shallow 與 deep 路徑一致回 503。state 未設時預設 True（保留既有行為）。
+    if getattr(request.app.state, "migration_ok", True) is False:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unavailable",
+                "reason": "migration_failed",
+                "detail": getattr(
+                    request.app.state, "migration_detail", "啟動 migration 失敗"
+                ),
+            },
+        )
+
     # Shallow path — 既有行為，逐字保留
     if not deep:
         try:

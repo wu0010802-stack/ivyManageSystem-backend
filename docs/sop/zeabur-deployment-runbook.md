@@ -1,8 +1,9 @@
 # Zeabur 部署 Runbook
 
 > 適用於 ivy-backend（FastAPI + PostgreSQL）與 ivy-frontend（Vue 3 + Vite + Nginx）。
-> 部署平台為 Zeabur，DB 採 Supabase Postgres。
-> 文件最後更新：2026-05-11
+> 部署平台為 Zeabur；**DB 自 2026-06-23 起為 Zeabur PostgreSQL service**（早期為 Supabase
+> Postgres，已遷移）；檔案儲存（leave-attachments / growth-reports）仍用 Supabase Storage。
+> 文件最後更新：2026-06-28
 
 ---
 
@@ -18,7 +19,7 @@
         │     └── 反代 /api/* → ivy-backend 內網
         │
         └── ivy-backend   (Python 3.11+, uvicorn, port $PORT)
-              └── PostgreSQL (Supabase / 自建)
+              └── PostgreSQL (Zeabur PostgreSQL service，同專案內網)
 ```
 
 關鍵點：
@@ -35,7 +36,7 @@
 | 變數 | 必設 | 範例 / 說明 |
 |---|---|---|
 | `ENV` | ✅ | `production` |
-| `DATABASE_URL` | ✅ | `postgresql://user:pass@host:5432/dbname`（Supabase 提供） |
+| `DATABASE_URL` | ✅ | `postgresql://user:pass@host:5432/dbname`（Zeabur PostgreSQL service 提供；同專案可用內網 host） |
 | `JWT_SECRET_KEY` | ✅ | 32+ 字元隨機字串；用 `openssl rand -hex 32` 生成 |
 | `CORS_ORIGINS` | ✅ | `https://ivykids.example.com,https://api.ivykids.example.com` |
 | `ALLOWED_HOSTS` | ✅ | `ivykids.example.com,api.ivykids.example.com,*.zeabur.app` |
@@ -74,10 +75,13 @@
 
 ## 2. 首次部署步驟
 
-### 2.1 準備 Supabase Postgres
-1. Supabase 建專案，記下 connection string（pooler 與 direct 各一個）
-2. `DATABASE_URL` 用 **Direct Connection**（給 Alembic + app 用）
-3. 啟用 PITR（Point-in-Time Recovery）— Pro 方案內建，免費方案僅有每日備份
+### 2.1 準備 PostgreSQL（Zeabur PostgreSQL service）
+1. 在同一 Zeabur 專案內建 PostgreSQL service，記下其連線字串（內網 + 對外各一個）
+2. `DATABASE_URL` 用內網連線（給後端 app + Alembic）；異地備份（GH Actions，見 §4.2）需用
+   **對外可達**的連線字串
+3. ⚠ **備份能力需自行確認**：Zeabur PostgreSQL 的內建 snapshot / PITR 能力與保留窗口須查證，
+   **不可假設等同 Supabase Pro PITR**。異地備份以 §4.2 的 `dr-backup.yml`（每日 pg_dump → R2）
+   為主要保障，務必確認該 workflow 已指向此 Zeabur PG（見 §4.2 ⚠）
 
 ### 2.2 後端 Service
 1. 在 Zeabur 建 Service，從 GitHub `ivy-backend` repo
@@ -168,8 +172,14 @@ prod 以 `create_all + stamp head` 建立，**跳過 migration 的 `op.execute` 
   `appraisal_scoring_rules` count(effective_from='2026-02-01')=24，console 不得出現 `WARNING aprreg01`。
 
 ### 4.2 Backup
-- Supabase Pro 內建 PITR（最近 7 天）— 首選恢復路徑（RTO ~1h）
+- ⚠ **首選恢復路徑待確認**：DB 已遷至 Zeabur PostgreSQL，原「Supabase Pro PITR（最近 7 天）」
+  **不再適用**。需查證 Zeabur PG 是否提供 snapshot / PITR 及其保留窗口；在確認前，**唯一可信
+  的恢復來源是下方異地 pg_dump（R2）**。
 - 異地備份：GH Actions `dr-backup.yml` 每日 02:17 +08 推送 pg_dump 至 Cloudflare R2 `ivy-dr/db/daily/`，每月 1 號額外複製至 `db/monthly/`
+- ⚠ **`dr-backup.yml` 的 pg_dump 目標須指向 Zeabur PG**：自 6/23 DB 遷移後，原 workflow 仍
+  打 `SUPABASE_DB_HOST`（舊 Supabase）。已改為單一 `DR_DATABASE_URL` secret（Zeabur PG 對外
+  連線字串），未設時 workflow fail-loud。**部署前必設此 secret 並手動觸發一次驗證**（確認 R2
+  收到的 dump 是 Zeabur PG 真資料、抽查一張表 row count），否則異地備份等同無效。
 - Storage 鏡像：同 workflow 把 leave-attachments + growth-reports 鏡像至 R2 `ivy-dr/storage/`
 - 完整 DR 流程、演練 SOP、retention、回填步驟：見 `ivy-backend/docs/sop/dr-runbook.md`
 - 月度演練：手動觸發 `dr-restore-drill.yml`，report artifact 存 GH Actions 90 天
@@ -229,11 +239,11 @@ DR backup 失敗會 LINE Notify ops 群；DR 細節見 `ivy-backend/docs/sop/dr-
 ### 7.1 啟動立刻爆 RuntimeError
 - 訊息含「CORS_ORIGINS 環境變數未設定」→ 補 `CORS_ORIGINS`
 - 訊息含「ALLOWED_HOSTS 環境變數未設定」→ 補 `ALLOWED_HOSTS`
-- 訊息含 DB 連線失敗 → 檢查 `DATABASE_URL`、Supabase pause 狀態
+- 訊息含 DB 連線失敗 → 檢查 `DATABASE_URL`、Zeabur PostgreSQL service 狀態（是否 RUNNING）
 
 ### 7.2 `/api/*` 502 / 504
 - 前端 nginx 反代不到後端：檢查 `BACKEND_URL` Runtime Variable
-- 後端 healthcheck 過但 API 慢：查 Supabase connection pool 是否耗盡
+- 後端 healthcheck 過但 API 慢：查 Zeabur PostgreSQL connection pool 是否耗盡（單 worker pool 20 / PG max_connections）
 
 ### 7.3 LIFF 開啟後 401 重定向迴圈
 - 前後端 cookie domain 不一致：確認前端反代 `/api/*` 走的是同網域

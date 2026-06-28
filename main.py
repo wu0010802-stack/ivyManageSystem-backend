@@ -196,8 +196,31 @@ line_service = LineService()
 line_login_service = LineLoginService(channel_id=settings.line.login_channel_id or "")
 
 
-def on_startup():
-    run_alembic_upgrade()
+def on_startup() -> bool:
+    """執行啟動序列；回傳 alembic migration 是否成功。
+
+    cold-start migration 韌性（對標稽核 P1 / boot-loop 止血）：``run_alembic_upgrade()``
+    失敗時**不 raise**——否則 lifespan 例外 → uvicorn 退出 → 平台自動重啟 → 同一壞
+    migration 無限 boot-loop 全站 down 且無法自救（push origin/main 即自動部署、單實例）。
+    改為 log CRITICAL + Sentry capture 並回 ``False``，且**跳過**後續 bootstrap/seed（壞
+    schema 上必失敗）。呼叫端（``app_lifespan``）據此進「維護模式」：``/health/ready`` 回
+    503、``KillSwitchMiddleware`` 對業務路由回 503，待修復 migration 後重新部署即恢復。
+    """
+    try:
+        run_alembic_upgrade()
+    except Exception as e:
+        logger.critical(
+            "啟動時 alembic migration 失敗，服務進入維護模式（拒絕業務流量、/health/ready=503）。"
+            "請修復 migration 後重新部署。錯誤：%s",
+            e,
+            exc_info=True,
+        )
+        try:
+            capture_exception(e)
+        except Exception:
+            logger.exception("Sentry capture_exception 失敗（Sentry 可能未設定 DSN）")
+        return False
+
     run_startup_bootstrap(
         salary_engine, line_service, insurance_service=insurance_service
     )
@@ -275,6 +298,7 @@ def on_startup():
     from utils.request_ip import warn_if_trusted_proxies_unset
 
     warn_if_trusted_proxies_unset()
+    return True
 
 
 async def _activity_waitlist_sweeper():
@@ -409,7 +433,27 @@ async def app_lifespan(app_instance: FastAPI):
     _notification_dispatch.install_session_hooks(_get_factory())
     logger.info("notification dispatch hooks installed")
 
-    on_startup()
+    # cold-start migration 韌性（對標稽核 P1 / boot-loop 止血）：on_startup() 內已把
+    # run_alembic_upgrade 包進 try/except，失敗回 False 而非 raise。據此進「維護模式」——
+    # app 照常起來（不 boot-loop），但略過排程 / 家長 RLS 自檢 / 併發配置等啟動工作，
+    # yield 後直接 return：/health/ready 回 503、KillSwitch 對業務路由回 503，待修復
+    # migration 後重新部署即恢復。刻意**不**進「半套 schema 唯讀續服務」（同樣危險）。
+    # 只有明確回 False 才算失敗（測試常 stub on_startup 回 None 以跳過 alembic 副作用，
+    # 視為正常；prod 路徑一律回 True/False）。
+    migration_failed = on_startup() is False
+    app_instance.state.migration_ok = not migration_failed
+    app_instance.state.migration_detail = (
+        "啟動 alembic migration 失敗，服務維護模式（待修復後重新部署）"
+        if migration_failed
+        else "ok"
+    )
+    if migration_failed:
+        logger.critical(
+            "進入維護模式：略過排程 / 家長 RLS 自檢 / 併發配置等啟動工作，"
+            "僅 /health/* 與 503 維護回應可用。修復 migration 後重新部署即恢復。"
+        )
+        yield
+        return
 
     # ── 併發配置自檢 + AnyIO threadpool 對齊（系統設計審查 2026-06-14, top#2）──
     # 同步 def 路由跑在 AnyIO threadpool，每個多半需一條 DB 連線。把 token 上限對齊
