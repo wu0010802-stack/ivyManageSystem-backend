@@ -127,7 +127,7 @@ jobs:
           echo "::error::後端 45×2s 內未就緒"; tail -50 backend.log; exit 1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: npm
