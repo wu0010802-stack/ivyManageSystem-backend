@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -72,7 +72,7 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -127,7 +127,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -197,7 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -239,12 +239,12 @@ jobs:
 
     steps:
       - name: Checkout ivy-backend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: ivy-backend
 
       - name: Checkout ivy-frontend (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
           path: ivy-frontend
@@ -302,12 +302,12 @@ jobs:
 
     steps:
       - name: Checkout ivy-backend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: ivy-backend
 
       - name: Checkout ivy-frontend (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
           path: ivy-frontend
@@ -346,12 +346,12 @@ jobs:
 
     steps:
       - name: Checkout ivy-backend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: ivy-backend
 
       - name: Checkout ivy-frontend (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
           path: ivy-frontend
@@ -383,7 +383,7 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Block os.getenv / os.environ outside config/
         # Phase 1 (2026-05-21) 完成所有 env 集中到 config/ 後啟用。
@@ -431,7 +431,7 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Block builtin round() in money paths
         # 2026-05-25 rollout：金額計算統一用 utils.rounding.round_half_up，
@@ -475,7 +475,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -522,7 +522,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -560,7 +560,7 @@ jobs:
     timeout-minutes: 3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -576,7 +576,7 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Block direct line_service.notify_* in api/ services/
         # 2026-05-26 Phase 2 PR-D 落地：所有通知 caller 必須走
@@ -624,7 +624,7 @@ jobs:
     timeout-minutes: 3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -645,7 +645,7 @@ jobs:
     timeout-minutes: 3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -667,7 +667,7 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Grep naked SlidingWindowLimiter() usage
         # 2026-05-28 Task 3（Spec A PR-A3）：所有 rate limiter 建立必走
