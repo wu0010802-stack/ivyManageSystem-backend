@@ -250,6 +250,109 @@ def test_pdf_not_included_in_photos(app_client):
         assert item["mime_type"].startswith("image/")
 
 
+def test_photos_pagination_uses_sql_limit_not_full_history(app_client):
+    """B1（2026-06-29 效能健檢）：照片牆分頁須走 SQL LIMIT/OFFSET。
+
+    舊版對 4 個 owner type 各無界 .all() 載入該童整段歷史相片（attachments 是每日
+    成長最快的表）再 Python 切片，每次翻頁載完整段歷史。本測試固化「資料查詢帶 SQL
+    LIMIT」+ 分頁/total 正確性。
+    """
+    import models.base as base_module
+    from sqlalchemy import event as sa_event
+
+    client, session_factory, ids, make_token = app_client
+    token = make_token(ids["parent_id"], "parent_a")
+    client.headers.update({"Authorization": f"Bearer {token}"})
+
+    # baseline fixture 已有 1 張 observation 圖（+1 PDF）；補到 5 張圖
+    with session_factory() as s:
+        obs = (
+            s.query(StudentObservation).filter_by(student_id=ids["student_id"]).first()
+        )
+        for i in range(4):
+            s.add(
+                Attachment(
+                    owner_type="observation",
+                    owner_id=obs.id,
+                    storage_key=f"obs/p{i}.jpg",
+                    original_filename=f"p{i}.jpg",
+                    mime_type="image/jpeg",
+                    size_bytes=100 + i,
+                )
+            )
+        s.commit()
+
+    engine = base_module._engine
+    selects: list[str] = []
+
+    def _cap(conn, cursor, statement, parameters, context, executemany):
+        st = statement.lstrip().lower()
+        if st.startswith("select") and "attachments" in st:
+            selects.append(st)
+
+    sa_event.listen(engine, "after_cursor_execute", _cap)
+    try:
+        resp = client.get(
+            f"/api/parent/photos?student_id={ids['student_id']}&skip=0&limit=2"
+        )
+    finally:
+        sa_event.remove(engine, "after_cursor_execute", _cap)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] == 5, f"total 應為全部 5 張圖，實際 {body['total']}"
+    assert len(body["items"]) == 2, "limit=2 應只回 2 筆"
+
+    # 取資料的 SELECT（非 COUNT）必須帶 SQL LIMIT；舊版各 owner type .all() 無 LIMIT。
+    data_selects = [s for s in selects if "from attachments" in s and "count(" not in s]
+    assert data_selects, "應有對 attachments 的資料查詢"
+    assert all("limit" in s for s in data_selects), (
+        "attachments 資料查詢必須帶 SQL LIMIT；舊版 4 個 owner type 各無界 .all() "
+        f"載完整段歷史 → 無 LIMIT。實際：{data_selects}"
+    )
+
+
+def test_photos_pagination_second_page_correct(app_client):
+    """分頁第二頁回正確 slice（skip/limit 在 SQL 層生效，非 Python 切片巧合）。"""
+    client, session_factory, ids, make_token = app_client
+    token = make_token(ids["parent_id"], "parent_a")
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    with session_factory() as s:
+        obs = (
+            s.query(StudentObservation).filter_by(student_id=ids["student_id"]).first()
+        )
+        for i in range(4):
+            s.add(
+                Attachment(
+                    owner_type="observation",
+                    owner_id=obs.id,
+                    storage_key=f"obs/q{i}.jpg",
+                    original_filename=f"q{i}.jpg",
+                    mime_type="image/jpeg",
+                    size_bytes=200 + i,
+                )
+            )
+        s.commit()
+
+    page1 = client.get(
+        f"/api/parent/photos?student_id={ids['student_id']}&skip=0&limit=2"
+    ).json()
+    page2 = client.get(
+        f"/api/parent/photos?student_id={ids['student_id']}&skip=2&limit=2"
+    ).json()
+    page3 = client.get(
+        f"/api/parent/photos?student_id={ids['student_id']}&skip=4&limit=2"
+    ).json()
+
+    assert page1["total"] == page2["total"] == page3["total"] == 5
+    ids_p1 = {i["id"] for i in page1["items"]}
+    ids_p2 = {i["id"] for i in page2["items"]}
+    ids_p3 = {i["id"] for i in page3["items"]}
+    assert len(ids_p1) == 2 and len(ids_p2) == 2 and len(ids_p3) == 1
+    assert ids_p1.isdisjoint(ids_p2), "頁面間不可重複"
+    assert ids_p1.isdisjoint(ids_p3) and ids_p2.isdisjoint(ids_p3)
+
+
 def _add_contact_book_image(session, student_id, classroom_id, *, published, deleted):
     entry = StudentContactBookEntry(
         student_id=student_id,

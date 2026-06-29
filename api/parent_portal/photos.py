@@ -18,9 +18,10 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from api.portfolio.student_attachments import SUPPORTED_OWNER_TYPES, _is_image
+from api.portfolio.student_attachments import SUPPORTED_OWNER_TYPES
 from models.contact_book import StudentContactBookEntry
 from models.database import (
     Attachment,
@@ -136,30 +137,39 @@ def parent_list_photos(
         user_id = current_user["user_id"]
         _assert_student_owned(session, user_id, student_id)
 
-        all_items: list[dict] = []
+        # B1（2026-06-29 效能健檢）：各 owner type 算可見 owner_id 後，組成
+        # OR(owner_type==ot AND owner_id IN ids)，單一查詢 + SQL 圖片過濾
+        # （_is_image == mime LIKE 'image/%'）+ ORDER BY created_at DESC +
+        # SQL LIMIT/OFFSET，取代 4 個 owner type 各無界 .all() 載整段歷史相片
+        # 再 Python 切片（attachments 是每日成長最快的表）。
+        owner_conds = []
         for ot in SUPPORTED_OWNER_TYPES:
             owner_ids = _parent_owner_ids(session, ot, student_id)
-            if not owner_ids:
-                continue
-            rows = (
-                session.query(Attachment)
-                .filter(
-                    Attachment.owner_type == ot,
-                    Attachment.owner_id.in_(owner_ids),
-                    Attachment.deleted_at.is_(None),
+            if owner_ids:
+                owner_conds.append(
+                    and_(
+                        Attachment.owner_type == ot,
+                        Attachment.owner_id.in_(owner_ids),
+                    )
                 )
-                .order_by(Attachment.created_at.desc())
-                .all()
-            )
-            for a in rows:
-                if not _is_image(a.mime_type):
-                    continue
-                all_items.append(_parent_attachment_to_dict(a))
+        if not owner_conds:
+            return {"total": 0, "items": []}
 
-        all_items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        base = session.query(Attachment).filter(
+            or_(*owner_conds),
+            Attachment.deleted_at.is_(None),
+            Attachment.mime_type.like("image/%"),
+        )
+        total = base.count()
+        rows = (
+            base.order_by(Attachment.created_at.desc(), Attachment.id.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
         return {
-            "total": len(all_items),
-            "items": all_items[skip : skip + limit],
+            "total": total,
+            "items": [_parent_attachment_to_dict(a) for a in rows],
         }
     except (HTTPException, BusinessError):
         raise
