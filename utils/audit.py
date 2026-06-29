@@ -530,15 +530,21 @@ def _extract_impersonation_from_header(request: Request):
 
 
 def _extract_session_id_from_request(request: Request) -> str | None:
-    """從 Authorization Bearer JWT 取 jti claim（forensic session 識別）。
+    """從 JWT 取 jti claim（forensic session 識別）。
 
-    失敗（無 header、bad token、無 jti）一律回 None — audit 寫入應該繼續，
-    session_id 為 NULL 是預期過渡狀態（既有 token 過期後自然填補）。
+    先讀 httpOnly cookie access_token（前端主路徑：withCredentials + cookie，不再帶
+    Authorization header），再 fallback Authorization Bearer（Swagger / 舊 client）。
+    qa-loop round2（2026-06-29）：原本只讀 header，導致 prod 主流量 session_id 恆 NULL、
+    forensic「同一 session 所有操作」查詢失效。與 siblings _extract_user_from_header /
+    _extract_impersonation_from_header 的 cookie-first 取值順序對齊。
+
+    失敗（無 token、bad token、無 jti）一律回 None — audit 寫入應該繼續。
     """
-    header = request.headers.get("authorization", "")
-    if not header.lower().startswith("bearer "):
-        return None
-    token = header[7:].strip()
+    token = request.cookies.get("access_token")
+    if not token:
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("bearer "):
+            token = header[7:].strip()
     if not token:
         return None
     from utils.auth import decode_token_for_audit

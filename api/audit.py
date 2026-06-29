@@ -315,7 +315,9 @@ def ack_all_audits(
     current_user: dict = Depends(require_staff_permission(Permission.AUDIT_LOGS)),
 ):
     """批次將時間窗內所有未 ack 高風險事件標為已讀。"""
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    # naive 台北，與 audit created_at（now_taipei_naive）及 sibling get_audit_logs 對齊；
+    # 原用 aware UTC 會與 naive 欄位比較 + ~8h 偏移（qa-loop round2 2026-06-29）。
+    since = now_taipei_naive() - timedelta(days=days)
     user_id = current_user.get("user_id")
 
     session = get_session()
@@ -385,7 +387,8 @@ def get_high_risk_audits(
     current_user: dict = Depends(require_staff_permission(Permission.AUDIT_LOGS)),
 ):
     """列出時間窗內高風險 audit 事件，含 unack_count 供前端紅點顯示。"""
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    # naive 台北，與 audit created_at 及 sibling get_audit_logs 對齊（qa-loop round2 2026-06-29）。
+    since = now_taipei_naive() - timedelta(days=days)
 
     session = get_session()
     try:

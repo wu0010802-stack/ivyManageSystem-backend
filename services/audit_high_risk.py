@@ -27,6 +27,10 @@ HIGH_RISK_ACTIONS = {
 # 權限變更偵測關鍵字（filter_high_risk 的 SQL LIKE 與 is_high_risk_event 的 Python
 # 比對共用同一份，避免 read-time 與 write-time 偵測漂移）。
 _PERMISSION_KEYWORDS = ("role", "permission", "角色", "權限")
+# 權限變更可掛在 user（改單一帳號角色）或 role（改整個角色的權限集，bump 該 role 所有成員
+# token_version——最高槓桿提權）兩種 entity。qa-loop round2（2026-06-29）：原本只認 'user'，
+# 漏掉 PUT /api/roles/{code} 寫的 entity_type='role'，使改 role 提權不進紅點/不發 LINE 告警。
+_PERMISSION_ENTITY_TYPES = ("user", "role")
 _HARD_DELETE_MARKER = "(不可復原)"
 
 
@@ -43,7 +47,7 @@ def is_high_risk_event(
     if summary and _HARD_DELETE_MARKER in summary:
         return True
     if (
-        entity_type == "user"
+        entity_type in _PERMISSION_ENTITY_TYPES
         and action == "UPDATE"
         and summary
         and any(kw in summary for kw in _PERMISSION_KEYWORDS)
@@ -67,7 +71,7 @@ def filter_high_risk(query, *, since: datetime, only_unack: bool = True):
         AuditLog.action.in_(HIGH_RISK_ACTIONS),
         AuditLog.summary.like(f"%{_HARD_DELETE_MARKER}%"),
         sa.and_(
-            AuditLog.entity_type == "user",
+            AuditLog.entity_type.in_(_PERMISSION_ENTITY_TYPES),
             AuditLog.action == "UPDATE",
             sa.or_(*[AuditLog.summary.like(f"%{kw}%") for kw in _PERMISSION_KEYWORDS]),
         ),
