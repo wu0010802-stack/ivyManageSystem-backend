@@ -397,6 +397,8 @@ jobs:
         #   scripts/encrypt_student_allergies.py — 同上（過敏欄位加密 backfill CLI，獨立讀 encryption key env）
         #   tests/test_bonus_config_year_end_rules.py — 測試前置 setdefault config env（import 前注入）
         #   tests/test_pg_dialect_regressions.py — 讀 CI-only PG_TEST_URL（PG 專屬方言回歸），非 app runtime config
+        #   tests/_migration_engine.py         — migration roundtrip 測試 helper，讀 CI-set DATABASE_URL
+        #                                       決定走真 PG 或 sqlite fallback（test 基建，非 app runtime config）
         #   alembic/env.py                     — Alembic CLI，早於 Settings init
         #   alembic/versions/                  — migration 一次性 runtime config（如 backfill 寬限期），
         #                                       migration 本身不可 import settings（runtime ordering）。
@@ -417,6 +419,7 @@ jobs:
                ':!scripts/encrypt_student_allergies.py' \
                ':!tests/test_bonus_config_year_end_rules.py' \
                ':!tests/test_pg_dialect_regressions.py' \
+               ':!tests/_migration_engine.py' \
                ':!alembic/env.py' \
                ':!alembic/versions/'; then
             echo "::error::os.getenv / os.environ.get 只能在 config/ 與明確 allow-list 內使用"
