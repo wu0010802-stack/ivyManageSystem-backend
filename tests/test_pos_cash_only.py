@@ -86,6 +86,7 @@ def test_pos_checkout_rejects_transfer(pos_cash_client):
             "payment_method": "轉帳",
             "payment_date": date.today().isoformat(),
             "type": "payment",
+            "idempotency_key": "CASHONLY-CHK-TRANSFER-0001",
         },
     )
     assert res.status_code == 422, res.text
@@ -108,6 +109,7 @@ def test_pos_checkout_rejects_other(pos_cash_client):
             "payment_method": "其他",
             "payment_date": date.today().isoformat(),
             "type": "payment",
+            "idempotency_key": "CASHONLY-CHK-OTHER-0001",
         },
     )
     assert res.status_code == 422, res.text
@@ -129,6 +131,7 @@ def test_pos_checkout_default_cash_succeeds(pos_cash_client):
             "items": [{"registration_id": reg_id, "amount": 2000}],
             "payment_date": date.today().isoformat(),
             "type": "payment",
+            "idempotency_key": "CASHONLY-DEFAULT-0001",
         },
     )
     assert res.status_code == 201, res.text
@@ -152,6 +155,7 @@ def test_pos_checkout_explicit_cash_succeeds(pos_cash_client):
             "payment_method": "現金",
             "payment_date": date.today().isoformat(),
             "type": "payment",
+            "idempotency_key": "CASHONLY-EXPLICIT-0001",
         },
     )
     assert res.status_code == 201, res.text
@@ -178,6 +182,7 @@ def test_add_registration_payment_rejects_transfer(pos_cash_client):
             "payment_date": date.today().isoformat(),
             "payment_method": "轉帳",
             "notes": "test",
+            "idempotency_key": "CASHONLY-REGPAY-TRANSFER-0001",
         },
     )
     assert res.status_code == 422, res.text
@@ -200,6 +205,7 @@ def test_add_registration_payment_default_cash(pos_cash_client):
             "amount": 500,
             "payment_date": date.today().isoformat(),
             "notes": "test",
+            "idempotency_key": "CASHONLY-REGPAY-DEFAULT-0001",
         },
     )
     assert res.status_code in (200, 201), res.text
@@ -247,6 +253,7 @@ def test_pos_refund_rejects_14_char_reason(pos_cash_client):
             "payment_date": date.today().isoformat(),
             "type": "refund",
             "notes": "x" * 14,
+            "idempotency_key": "CASHONLY-REFUND-14CHAR-0001",
         },
     )
     assert res.status_code == 400, res.text
@@ -279,6 +286,7 @@ def test_pos_refund_accepts_15_char_reason(pos_cash_client):
             "payment_date": date.today().isoformat(),
             "type": "refund",
             "notes": "家長要求退費學費調整事由說明清楚",  # 15 字
+            "idempotency_key": "CASHONLY-REFUND-15CHAR-0001",
         },
     )
     assert res.status_code == 201, res.text
@@ -316,6 +324,7 @@ def test_daily_close_below_threshold_skips_cash_count(pos_cash_client):
         json={
             "items": [{"registration_id": reg_id, "amount": 2000}],
             "payment_date": target,
+            "idempotency_key": "CASHONLY-DAILYCLOSE-2000-0001",
         },
     )
     assert res.status_code == 201, res.text
@@ -346,6 +355,7 @@ def test_daily_close_at_threshold_requires_cash_count(pos_cash_client):
         json={
             "items": [{"registration_id": reg_id, "amount": 3000}],
             "payment_date": target,
+            "idempotency_key": "CASHONLY-DAILYCLOSE-3000-0001",
         },
     )
     assert res.status_code == 201, res.text
@@ -376,6 +386,7 @@ def test_daily_close_at_threshold_with_cash_count_succeeds(pos_cash_client):
         json={
             "items": [{"registration_id": reg_id, "amount": 3500}],
             "payment_date": target,
+            "idempotency_key": "CASHONLY-DAILYCLOSE-3500-0001",
         },
     )
     assert res.status_code == 201, res.text

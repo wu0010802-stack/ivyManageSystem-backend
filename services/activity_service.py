@@ -106,6 +106,25 @@ def _resolve_parent_user_ids_for_registration(
     return [r[0] for r in rows]
 
 
+def _has_line_reachable_parent(session, parent_uids) -> bool:
+    """parent_uids 中是否有任一 User 真正 LINE 可達（active + 綁定 line_user_id +
+    已加好友 line_follow_confirmed_at）。
+
+    Finding #2（2026-06-29 audit）：候補升位的「是否提醒 staff 電話外撥」旗標
+    （no_parent_channel）原以「Guardian.user_id 是否存在」判斷，但有 user_id 不代表
+    可達——帳號可能停用、未綁 LINE、未加好友。真正發送時 dispatch._resolve_line_user_id
+    才拒絕不可達帳號，於是 staff 不被提醒、家長也收不到通知，48h 後靜默失位。
+    本函式沿用 dispatch._resolve_line_user_id 的同一份可達性判斷，使旗標與實際
+    發送一致。in_app 雖恆送（durable inbox），但家長須主動登入入口才看得到，對 48h
+    確認時鐘不可靠；故以 LINE 推播可達性作為「需不需要 staff 電話兜底」的依據。
+    """
+    if not parent_uids:
+        return False
+    from services.notification.dispatch import _resolve_line_user_id
+
+    return any(_resolve_line_user_id(session, uid) for uid in parent_uids)
+
+
 def _resolve_parent_user_ids_batch(session, reg_ids) -> dict[int, list[int]]:
     """批次版 _resolve_parent_user_ids_for_registration：reg→student 一次 in_() +
     Guardian 一次 in_()，回 {reg_id: [user_id]}。供 sweep 三迴圈取代逐筆解析的 N+1
@@ -1656,7 +1675,11 @@ class ActivityService:
         parent_uids = _resolve_parent_user_ids_for_registration(
             session, rc.registration_id
         )
-        no_parent_channel = not parent_uids
+        # Finding #2（2026-06-29 audit）：不可只看 parent_uids 是否為空——有 user_id
+        # 不代表可達（停用 / 未綁 LINE / 未加好友）。以真實 LINE 可達性判斷，與實際
+        # 發送（dispatch._resolve_line_user_id）一致，避免「漏提醒 staff + 家長收不到
+        # → 48h 靜默失位」。
+        no_parent_channel = not _has_line_reachable_parent(session, parent_uids)
 
         # 通知 ACTIVITY_WRITE staff：候補自動升正式（待家長確認）。
         # admin-side awareness 用，per-staff in_app + LINE（對齊 C6 manual promote）。

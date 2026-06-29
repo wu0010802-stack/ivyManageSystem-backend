@@ -338,6 +338,7 @@ class TestRefundRequirements:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "短",
+                "idempotency_key": "STRICT-REFUND-NOTES-001",
             },
         )
         assert res.status_code == 422
@@ -364,6 +365,7 @@ class TestRefundRequirements:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "大額退費需簽核（家長申請退費）",
+                "idempotency_key": "STRICT-REFUND-LARGE-001",
             },
         )
         assert res.status_code == 403
@@ -394,6 +396,7 @@ class TestRefundRequirements:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "小額退費不需簽核（家長申請退費）",
+                "idempotency_key": "STRICT-REFUND-SMALL-001",
             },
         )
         assert res.status_code == 201, res.text
@@ -420,6 +423,7 @@ class TestRefundRequirements:
                 "payment_date": date.today().isoformat(),
                 "type": "refund",
                 "notes": "POS 大額退費需簽核（家長申請）",
+                "idempotency_key": "STRICT-POS-REFUND-001",
             },
         )
         assert res.status_code == 403

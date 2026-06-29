@@ -126,6 +126,7 @@ def test_pos_checkout_allows_overpay(pos_client):
             "items": [{"registration_id": reg_id, "amount": 2500}],
             "payment_method": "現金",
             "payment_date": date.today().isoformat(),
+            "idempotency_key": "OVERPAY-CHECKOUT-001",
         },
     )
     assert res.status_code == 201, res.text
@@ -163,6 +164,7 @@ def test_pos_checkout_still_blocks_empty_registration(pos_client):
             "items": [{"registration_id": empty_id, "amount": 500}],
             "payment_method": "現金",
             "payment_date": date.today().isoformat(),
+            "idempotency_key": "OVERPAY-EMPTY-001",
         },
     )
     assert res.status_code == 400, res.text

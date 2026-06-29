@@ -138,13 +138,15 @@ def _mark_attendance(session, reg_id: int, course_id: int, n: int):
     session.flush()
 
 
-def _refund_body(reg_id: int, amount: int) -> dict:
+def _refund_body(reg_id: int, amount: int, key: str = "REFUNDDIFF-0001") -> dict:
     return {
         "items": [{"registration_id": reg_id, "amount": amount}],
         "payment_method": "現金",
         "payment_date": _PAYMENT_DATE,
         "type": "refund",
         "notes": REFUND_REASON,
+        # idempotency_key 自 2026-06-29 契約變更起必填（^[A-Za-z0-9_-]{8,64}$）。
+        "idempotency_key": key,
     }
 
 
@@ -165,7 +167,10 @@ def test_refund_diff_zero_passes_staff(client):
 
     _login(c)
     # 0 attendance → suggested=800（not_started 特例全退）；diff=0 → 通過
-    resp = c.post("/api/activity/pos/checkout", json=_refund_body(reg_id, 800))
+    resp = c.post(
+        "/api/activity/pos/checkout",
+        json=_refund_body(reg_id, 800, "REFUNDDIFF-ZERO-01"),
+    )
     assert resp.status_code in (200, 201), resp.json()
 
 
@@ -182,7 +187,10 @@ def test_refund_diff_below_threshold_passes_staff(client):
 
     _login(c)
     # 0 attendance → suggested=800；員工送 750 → diff=50
-    resp = c.post("/api/activity/pos/checkout", json=_refund_body(reg_id, 750))
+    resp = c.post(
+        "/api/activity/pos/checkout",
+        json=_refund_body(reg_id, 750, "REFUNDDIFF-BELOW-01"),
+    )
     assert resp.status_code in (200, 201), resp.json()
 
 
@@ -199,7 +207,10 @@ def test_refund_diff_over_threshold_blocks_staff(client):
 
     _login(c)
     # suggested=800（全退）；員工送 500 → diff=300 > 100 → 守衛三觸發
-    resp = c.post("/api/activity/pos/checkout", json=_refund_body(reg_id, 500))
+    resp = c.post(
+        "/api/activity/pos/checkout",
+        json=_refund_body(reg_id, 500, "REFUNDDIFF-OVER-01"),
+    )
     assert resp.status_code == 403
     assert "偏離" in resp.json()["detail"] or "差" in resp.json()["detail"]
 
@@ -224,7 +235,10 @@ def test_refund_diff_over_threshold_passes_approver(client):
 
     _login(c)
     # suggested=800（全退）；員工送 500 → diff=300 > 100，但 approver 略過
-    resp = c.post("/api/activity/pos/checkout", json=_refund_body(reg_id, 500))
+    resp = c.post(
+        "/api/activity/pos/checkout",
+        json=_refund_body(reg_id, 500, "REFUNDDIFF-APPROVER-01"),
+    )
     assert resp.status_code in (200, 201), resp.json()
 
 
@@ -240,7 +254,10 @@ def test_refund_supply_triggers_diff(client):
         reg_id = reg.id
 
     _login(c)
-    resp = c.post("/api/activity/pos/checkout", json=_refund_body(reg_id, 300))
+    resp = c.post(
+        "/api/activity/pos/checkout",
+        json=_refund_body(reg_id, 300, "REFUNDDIFF-SUPPLY-01"),
+    )
     assert resp.status_code == 403
 
 
@@ -257,7 +274,10 @@ def test_refund_null_sessions_uses_amount_due_fallback(client):
 
     _login(c)
     # NULL fallback: suggested=1500；員工送 1000 → diff=500 → 簽核
-    resp = c.post("/api/activity/pos/checkout", json=_refund_body(reg_id, 1000))
+    resp = c.post(
+        "/api/activity/pos/checkout",
+        json=_refund_body(reg_id, 1000, "REFUNDDIFF-NULLSESS-01"),
+    )
     assert resp.status_code == 403
 
 
@@ -332,6 +352,7 @@ def test_single_refund_diff_blocks_staff(client):
         "payment_date": _PAYMENT_DATE,
         "type": "refund",
         "notes": REFUND_REASON,
+        "idempotency_key": "REFUNDDIFF-SINGLE-BLOCK-01",
     }
     resp = c.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
     assert resp.status_code == 403
@@ -356,6 +377,7 @@ def test_single_refund_diff_below_threshold_passes(client):
         "payment_date": _PAYMENT_DATE,
         "type": "refund",
         "notes": REFUND_REASON,
+        "idempotency_key": "REFUNDDIFF-SINGLE-PASS-01",
     }
     resp = c.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
     assert resp.status_code in (200, 201), resp.json()
@@ -383,7 +405,10 @@ def test_pos_refund_audit_changes_contains_suggestion(client_with_audit_capture)
         reg_id = reg.id
 
     _login(c)
-    resp = c.post("/api/activity/pos/checkout", json=_refund_body(reg_id, 1450))
+    resp = c.post(
+        "/api/activity/pos/checkout",
+        json=_refund_body(reg_id, 1450, "REFUNDDIFF-AUDIT-01"),
+    )
     assert resp.status_code in (200, 201), resp.json()
 
     ac = captured["audit_changes"]

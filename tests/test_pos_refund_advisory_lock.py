@@ -98,6 +98,7 @@ def test_refund_acquires_advisory_lock_per_registration(lock_client, monkeypatch
             "payment_date": date.today().isoformat(),
             "type": "refund",
             "notes": "退費測試確認 advisory lock 被呼叫",
+            "idempotency_key": "ADVLOCK-0001",
         },
     )
     assert res.status_code == 201, res.text
@@ -132,6 +133,7 @@ def test_payment_does_not_acquire_refund_lock(lock_client, monkeypatch):
             "payment_date": date.today().isoformat(),
             "type": "payment",
             "notes": "繳費不應取退費鎖",
+            "idempotency_key": "ADVLOCK-0002",
         },
     )
     assert res.status_code == 201, res.text

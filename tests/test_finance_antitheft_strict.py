@@ -470,6 +470,7 @@ class TestActivityRefundCumulative:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "第三筆讓累積過 1000 應被擋下",
+                "idempotency_key": "ANTITHEFT-CUM-OVER-01",
             },
         )
         assert res.status_code == 403, res.text
@@ -537,6 +538,7 @@ class TestActivityRefundCumulative:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "累積 900 未過閾值之單筆退費",
+                "idempotency_key": "ANTITHEFT-VOIDED-EXCL-01",
             },
         )
         assert res.status_code in (200, 201), res.text

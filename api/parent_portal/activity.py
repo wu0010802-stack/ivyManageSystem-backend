@@ -9,6 +9,7 @@ Batch 7 範圍（plan 確認）：
 - 報名繳費歷史（read-only；MVP 不含線上金流，員工 operator 欄位不揭露）
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -52,6 +53,8 @@ from api.activity._shared import (
 )
 
 router = APIRouter(prefix="/activity", tags=["parent-activity"])
+
+logger = logging.getLogger(__name__)
 
 # capacity=NULL 視為 30（0 與 None 語意不同：明確 0 表示不開放名額須保留）。
 # 收斂到 utils.activity_constants.effective_capacity 單一來源（取代原家長端
@@ -657,12 +660,38 @@ def confirm_promotion(
         if code == "NOT_PENDING":
             raise HTTPException(status_code=400, detail="此課程非待確認狀態，無法確認")
         if code == "EXPIRED":
-            # F3（2026-06-29 audit）：此 endpoint 走 RLS 家長 session（get_parent_db），
-            # 無權跨家庭刪除/遞補他人 registration，故**不**在此同步釋出（與公開端
-            # api/activity/public.py 的特權主庫 session 不同）。訊息改為據實陳述「已逾期
-            # 失效」，不謊稱「已釋出給下一位候補」；實際釋出/遞補由 sweeper 或 admin 處理。
+            # Finding #3（2026-06-29 audit）：家長端確認撞到逾期時，須同步釋出名額 +
+            # 遞補下一位，否則名額被逾期 promoted_pending 永久卡住（兩個 waitlist sweeper
+            # 預設停用，config/scheduler.SchedulerSettings）。
+            #
+            # 家長 RLS session（get_parent_db）無權跨家庭刪除/遞補他人 registration，
+            # 且 confirm_waitlist_promotion 在 raise EXPIRED 前已對 course/rc 取 FOR
+            # UPDATE 鎖（未 mutation）。故：① 先 session.rollback() 釋放家長 session 的
+            # 鎖（confirm 無寫入，rollback 不丟資料；with session.begin() / sqlite
+            # override 兩種生命週期下，rollback 後再 raise 皆安全）② 另開主庫特權
+            # session（get_session()，與公開端 release_expired_pending_promotion 同層）
+            # 同步釋出 + 遞補。釋出 best-effort：失敗仍回 410，待 sweeper/admin 兜底。
+            session.rollback()
+            priv = get_session()
+            try:
+                activity_service.release_expired_pending_promotion(
+                    priv, registration_id, payload.course_id
+                )
+                priv.commit()
+                activity_service.invalidate_dashboard_caches(None)
+            except Exception:  # noqa: BLE001 — 釋出 best-effort，失敗仍回 410
+                priv.rollback()
+                logger.warning(
+                    "家長端逾期同步釋出失敗 reg=%s course=%s（仍回 410，"
+                    "待 sweeper/admin 處理）",
+                    registration_id,
+                    payload.course_id,
+                    exc_info=True,
+                )
+            finally:
+                priv.close()
             raise HTTPException(
-                status_code=410, detail="確認期限已過，此名額已逾期失效"
+                status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
             )
         if code == "STUDENT_TERMINAL":
             raise HTTPException(

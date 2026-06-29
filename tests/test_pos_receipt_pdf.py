@@ -54,7 +54,7 @@ def pos_pdf_client(tmp_path):
     engine.dispose()
 
 
-def _checkout_and_get_receipt_no(client, reg_id, amount=500):
+def _checkout_and_get_receipt_no(client, reg_id, amount=500, *, idempotency_key):
     """走真實 POS checkout，回傳 receipt_no。"""
     res = client.post(
         "/api/activity/pos/checkout",
@@ -63,6 +63,7 @@ def _checkout_and_get_receipt_no(client, reg_id, amount=500):
             "payment_method": "現金",
             "payment_date": date.today().isoformat(),
             "type": "payment",
+            "idempotency_key": idempotency_key,
         },
     )
     assert res.status_code == 201, res.text
@@ -79,7 +80,9 @@ class TestPosReceiptPdfEndpoint:
             reg_id = reg.id
 
         assert _login(client).status_code == 200
-        receipt_no = _checkout_and_get_receipt_no(client, reg_id)
+        receipt_no = _checkout_and_get_receipt_no(
+            client, reg_id, idempotency_key="RECEIPTPDF-0001"
+        )
 
         res = client.get(f"/api/activity/pos/receipts/{receipt_no}/print.pdf")
         assert res.status_code == 200, res.text
@@ -111,7 +114,9 @@ class TestPosReceiptPdfEndpoint:
             reg_id = reg.id
 
         assert _login(client).status_code == 200
-        receipt_no = _checkout_and_get_receipt_no(client, reg_id)
+        receipt_no = _checkout_and_get_receipt_no(
+            client, reg_id, idempotency_key="RECEIPTPDF-0002"
+        )
 
         # 重新登入無權限帳號
         with sf() as s:
@@ -143,7 +148,9 @@ class TestPosReceiptPdfEndpoint:
             reg_id = reg.id
 
         assert _login(client).status_code == 200
-        receipt_no = _checkout_and_get_receipt_no(client, reg_id)
+        receipt_no = _checkout_and_get_receipt_no(
+            client, reg_id, idempotency_key="RECEIPTPDF-0003"
+        )
         # reprint 成功（基準）
         assert (
             client.get(f"/api/activity/pos/receipts/{receipt_no}/print.pdf").status_code

@@ -943,6 +943,102 @@ class TestConfirmPromotion:
             rc = session.query(RegistrationCourse).first()
             assert rc.status == "enrolled"
 
+    def test_confirm_promotion_expired_releases_and_promotes_next(
+        self, activity_client
+    ):
+        """Finding #3（2026-06-29 audit）：家長端確認撞到逾期時，須以獨立主庫特權
+        session 同步釋出名額 + 遞補下一位候補（家長 RLS session 無權跨家庭寫入），
+        回 410。完成 F3 留的缺口——不再依賴預設停用的 sweeper，避免名額被逾期
+        pending 永久卡住。"""
+        client, session_factory = activity_client
+        with session_factory() as session:
+            user, _, student, _ = _setup_family(
+                session,
+                line_user_id="UEXP",
+                student_name="逾期娃",
+                classroom_name="逾期班",
+            )
+            _, _, student_w, _ = _setup_family(
+                session,
+                line_user_id="UWAIT",
+                student_name="候補娃",
+                classroom_name="候補班",
+            )
+            course = _create_course(session, name="陶土", capacity=1)
+            # 家長自己的逾期 promoted_pending
+            reg = ActivityRegistration(
+                student_name=student.name,
+                is_active=True,
+                school_year=115,
+                semester=1,
+                student_id=student.id,
+                parent_phone="0911",
+                pending_review=False,
+                match_status="manual",
+            )
+            session.add(reg)
+            session.flush()
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg.id,
+                    course_id=course.id,
+                    status="promoted_pending",
+                    price_snapshot=course.price,
+                    promoted_at=datetime.now() - timedelta(hours=50),
+                    confirm_deadline=datetime.now() - timedelta(hours=1),  # 已逾期
+                )
+            )
+            # 下一位候補（不同家庭）
+            reg_w = ActivityRegistration(
+                student_name=student_w.name,
+                is_active=True,
+                school_year=115,
+                semester=1,
+                student_id=student_w.id,
+                parent_phone="0922",
+                pending_review=False,
+                match_status="manual",
+            )
+            session.add(reg_w)
+            session.flush()
+            session.add(
+                RegistrationCourse(
+                    registration_id=reg_w.id,
+                    course_id=course.id,
+                    status="waitlist",
+                    price_snapshot=course.price,
+                )
+            )
+            session.commit()
+            token = _parent_token(user)
+            reg_id = reg.id
+            course_id = course.id
+            reg_w_id = reg_w.id
+
+        resp = client.post(
+            f"/api/parent/activity/registrations/{reg_id}/confirm-promotion",
+            json={"course_id": course_id},
+            cookies={"access_token": token},
+        )
+        assert resp.status_code == 410, resp.text
+        with session_factory() as session:
+            # 逾期者已被釋出（刪除）
+            rc_expired = (
+                session.query(RegistrationCourse)
+                .filter_by(registration_id=reg_id, course_id=course_id)
+                .first()
+            )
+            assert rc_expired is None, "逾期 promoted_pending 應被同步釋出（刪除）"
+            # 下一位遞補為 promoted_pending
+            rc_next = (
+                session.query(RegistrationCourse)
+                .filter_by(registration_id=reg_w_id, course_id=course_id)
+                .first()
+            )
+            assert (
+                rc_next is not None and rc_next.status == "promoted_pending"
+            ), "下一位候補應遞補為 promoted_pending"
+
     def test_confirm_promotion_other_child_returns_403(self, activity_client):
         client, session_factory = activity_client
         with session_factory() as session:

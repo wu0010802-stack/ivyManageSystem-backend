@@ -268,7 +268,8 @@ class TestPOSRefundCumulative:
         assert _login(client, "boss").status_code == 200
         today = date.today().isoformat()
 
-        for _ in range(3):
+        for i in range(3):
+            # 三筆各為不同紀錄，須帶不同 idempotency_key，否則第二/三筆被當 replay
             res = client.post(
                 "/api/activity/pos/checkout",
                 json={
@@ -277,6 +278,7 @@ class TestPOSRefundCumulative:
                     "payment_method": "現金",
                     "payment_date": today,
                     "notes": "簽核權限者連續退費（測試案例）",
+                    "idempotency_key": f"ANTITHEFT-APPROVE-{i:04d}",
                 },
             )
             assert res.status_code == 201
@@ -327,6 +329,7 @@ class TestPOSRefundCumulative:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "notes": "voided 已排除測試（測試案例）",
+                "idempotency_key": "ANTITHEFT-VOIDED-EXCL-01",
             },
         )
         assert res.status_code == 201, res.text
@@ -373,6 +376,7 @@ class TestRefundCheckOrderAfterLock:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "在門檻內單筆退費（家長申請辦理）",
+                "idempotency_key": "ANTITHEFT-LOCKORDER-01",
             },
         )
         assert res.status_code == 201, res.text

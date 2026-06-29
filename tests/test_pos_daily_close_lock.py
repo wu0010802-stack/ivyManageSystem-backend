@@ -211,6 +211,7 @@ def test_checkout_guard_acquires_lock_for_payment_date(lock_client, monkeypatch)
             "items": [{"registration_id": reg_id, "amount": 500}],
             "payment_date": target.isoformat(),
             "type": "payment",
+            "idempotency_key": "DAILYCLOSE-CHECKOUT-0001",
         },
     )
     assert res.status_code == 201, res.text
@@ -279,6 +280,7 @@ def test_checkout_rejected_after_daily_close(lock_client):
             "items": [{"registration_id": reg_id, "amount": 500}],
             "payment_date": target.isoformat(),
             "type": "payment",
+            "idempotency_key": "DAILYCLOSE-REJECT-0001",
         },
     )
     assert res.status_code == 400, res.text

@@ -263,6 +263,7 @@ class TestPOSCheckoutAtomicity:
                 ],
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
+                "idempotency_key": "POS-ROLLBACK-INVALID-0001",
             },
         )
         assert res.status_code == 400
@@ -289,6 +290,7 @@ class TestPOSCheckoutAtomicity:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "type": "refund",
+                "idempotency_key": "POS-REFUND-EXCEED-0001",
             },
         )
         assert res.status_code == 400
@@ -332,6 +334,7 @@ class TestPOSCheckoutAtomicity:
                 "payment_date": date.today().isoformat(),
                 "type": "refund",
                 "notes": "客戶退課抵減（家長要求調整退款）",
+                "idempotency_key": "POS-REFUND-REDUCE-0001",
             },
         )
         assert res.status_code == 201
@@ -364,6 +367,7 @@ class TestPOSCheckoutAtomicity:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "tendered": 1500,
+                "idempotency_key": "POS-TENDERED-SHORT-0001",
             },
         )
         assert res.status_code == 400
@@ -384,6 +388,7 @@ class TestPOSCheckoutAtomicity:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "notes": "測試備註",
+                "idempotency_key": "POS-RECEIPT-NOTES-0001",
             },
         )
         assert res.status_code == 201
@@ -413,6 +418,7 @@ class TestPOSCheckoutAtomicity:
                 ],
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
+                "idempotency_key": "POS-DUP-REGIDS-0001",
             },
         )
         assert res.status_code == 400
@@ -681,6 +687,7 @@ class TestPOSPermissions:
                 "items": [{"registration_id": reg_id, "amount": 1000}],
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
+                "idempotency_key": "POS-READONLY-FORBID-0001",
             },
         )
         assert res.status_code == 403
@@ -714,6 +721,7 @@ class TestPOSInputValidation:
                 "items": [{"registration_id": reg_id, "amount": 1_000_000}],
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
+                "idempotency_key": "POS-AMOUNT-OVERLIMIT-0001",
             },
         )
         assert res.status_code == 422
@@ -734,6 +742,7 @@ class TestPOSInputValidation:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "tendered": 100_000_000,
+                "idempotency_key": "POS-TENDERED-OVERLIMIT-0001",
             },
         )
         assert res.status_code == 422
@@ -754,6 +763,7 @@ class TestPOSInputValidation:
                 "items": [{"registration_id": reg_id, "amount": 500}],
                 "payment_method": "現金",
                 "payment_date": future,
+                "idempotency_key": "POS-DATE-FUTURE-0001",
             },
         )
         assert res.status_code == 422
@@ -774,6 +784,7 @@ class TestPOSInputValidation:
                 "items": [{"registration_id": reg_id, "amount": 500}],
                 "payment_method": "現金",
                 "payment_date": far,
+                "idempotency_key": "POS-DATE-TOOFARPAST-0001",
             },
         )
         assert res.status_code == 422
@@ -794,6 +805,7 @@ class TestPOSInputValidation:
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
                 "notes": "x" * 300,
+                "idempotency_key": "POS-NOTES-OVERLEN-0001",
             },
         )
         assert res.status_code == 422
@@ -834,6 +846,7 @@ class TestPOSInputValidation:
                 "items": [{"registration_id": reg_id, "amount": 500}],
                 "payment_method": "現金",
                 "payment_date": past,
+                "idempotency_key": "POS-DATE-30DAYS-0001",
             },
         )
         assert res.status_code == 201
@@ -1039,6 +1052,7 @@ class TestPOSIdempotency:
         single = POSCheckoutRequest(
             items=[{"registration_id": 1, "amount": 500}],
             payment_date=date.today(),
+            idempotency_key="POS-SIG-MULTIPLICITY-01",
         )
         double = POSCheckoutRequest(
             items=[
@@ -1046,6 +1060,7 @@ class TestPOSIdempotency:
                 {"registration_id": 1, "amount": 500},
             ],
             payment_date=date.today(),
+            idempotency_key="POS-SIG-MULTIPLICITY-01",
         )
         assert _request_content_signature(single) != _request_content_signature(double)
 
@@ -1070,6 +1085,7 @@ class TestReceiptNumber:
                 "items": [{"registration_id": reg_id, "amount": 500}],
                 "payment_method": "現金",
                 "payment_date": date.today().isoformat(),
+                "idempotency_key": "POS-RECEIPT-HEX-0001",
             },
         )
         assert res.status_code == 201
@@ -1857,8 +1873,8 @@ class TestPosDailyClose:
 
 
 def test_pos_checkout_multi_item_without_key_rejected(pos_client):
-    """R7-3：多筆收費無 idempotency_key → 400（防非官方 caller 重送全車重複出帳；
-    官方 UI 一律帶穩定 key 不受影響）。"""
+    """契約變更後：idempotency_key 為 schema 層必填欄位，缺欄位 → 422
+    （防非官方 caller 重送全車重複出帳；官方 UI 一律帶穩定 key 不受影響）。"""
     client, sf = pos_client
     with sf() as s:
         _create_admin(s)
@@ -1886,5 +1902,6 @@ def test_pos_checkout_multi_item_without_key_rejected(pos_client):
             "tendered": 1000,
         },
     )
-    assert res.status_code == 400, res.text
-    assert "idempotency_key" in res.json()["detail"]
+    assert res.status_code == 422, res.text
+    # 422 的 detail 為驗證錯誤清單，欄位名出現在 loc 中
+    assert "idempotency_key" in res.text

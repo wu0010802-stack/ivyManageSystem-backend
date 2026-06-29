@@ -139,6 +139,7 @@ class TestPosRefundUnknownSessions:
                 "payment_date": TODAY,
                 "type": "refund",
                 "notes": REFUND_REASON,
+                "idempotency_key": "REFUNDSIGNOFF-0001",
             },
         )
         assert (
@@ -176,6 +177,7 @@ class TestPosRefundUnknownSessions:
                 "payment_date": TODAY,
                 "type": "refund",
                 "notes": REFUND_REASON,
+                "idempotency_key": "REFUNDSIGNOFF-0002",
             },
         )
         assert (
@@ -350,6 +352,7 @@ class TestRegressionSessionsKnown:
                 "payment_date": TODAY,
                 "type": "refund",
                 "notes": REFUND_REASON,
+                "idempotency_key": "REFUNDSIGNOFF-0003",
             },
         )
         assert resp.status_code in (

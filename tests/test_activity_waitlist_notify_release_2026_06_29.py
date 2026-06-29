@@ -30,7 +30,23 @@ from models.activity import (  # noqa: E402
     ActivityRegistration,
     RegistrationCourse,
 )
+from models.auth import User  # noqa: E402
 from services.activity_service import ActivityService  # noqa: E402
+
+
+def _add_user(session, *, active=True, line=True) -> User:
+    """建立一個家長 User；line=True 代表 LINE 真正可達（active + 綁定 + 已加好友）。"""
+    u = User(
+        username=f"parent_{ActivityRegistration.__name__}_{id(object())}",
+        password_hash="x",
+        role="parent",
+        is_active=active,
+        line_user_id=("U" + str(id(object()))) if line else None,
+        line_follow_confirmed_at=_now() if line else None,
+    )
+    session.add(u)
+    session.flush()
+    return u
 
 
 @pytest.fixture
@@ -267,13 +283,17 @@ class TestAutoPromoteFlagsNoParentChannel:
         assert ctx.get("parent_phone") == "0912345678"
 
     def test_channel_candidate_does_not_flag_staff(self, session, svc, monkeypatch):
+        """有 Guardian.user_id 且該 User 真正 LINE 可達 → 不 flag。"""
         course = _add_course(session, capacity=1)
         reg_w = _add_reg(session, "有管道候補")
         _enroll(session, reg_w.id, course.id, status="waitlist")
+        parent = _add_user(session, active=True, line=True)
         session.flush()
 
         monkeypatch.setattr(
-            svc_mod, "_resolve_parent_user_ids_for_registration", lambda s, rid: [999]
+            svc_mod,
+            "_resolve_parent_user_ids_for_registration",
+            lambda s, rid: [parent.id],
         )
         monkeypatch.setattr(
             svc_mod, "_list_active_users_with_permission", lambda s, p: [42]
@@ -292,6 +312,73 @@ class TestAutoPromoteFlagsNoParentChannel:
         assert len(staff_calls) == 1
         ctx = staff_calls[0].kwargs["context"]
         assert not ctx.get("no_parent_channel")
+
+    def test_user_without_line_binding_flags_no_parent_channel(
+        self, session, svc, monkeypatch
+    ):
+        """Finding #2（2026-06-29 audit）：有 Guardian.user_id 但該 User 未綁定 LINE
+        （或未加好友/已停用）→ 實際不可達。舊版只看 parent_uids 是否為空 → 誤判為
+        有管道、不提醒 staff；真正發送時 dispatch 才拒絕，家長收不到、48h 靜默失位。
+        修後：no_parent_channel 須反映真實 LINE 可達性 → 此情境應 flag staff 電話外撥。"""
+        course = _add_course(session, capacity=1)
+        reg_w = _add_reg(session, "帳號未綁LINE")
+        _enroll(session, reg_w.id, course.id, status="waitlist")
+        parent = _add_user(session, active=True, line=False)  # 有帳號但無 LINE 綁定
+        session.flush()
+
+        monkeypatch.setattr(
+            svc_mod,
+            "_resolve_parent_user_ids_for_registration",
+            lambda s, rid: [parent.id],
+        )
+        monkeypatch.setattr(
+            svc_mod, "_list_active_users_with_permission", lambda s, p: [42]
+        )
+        spy = self._spy_dispatch(monkeypatch)
+
+        svc._auto_promote_first_waitlist(session, course.id)
+        session.flush()
+
+        staff_calls = [
+            c
+            for c in spy.call_args_list
+            if c.kwargs.get("event_type") == "activity.waitlist_promoted"
+            and c.kwargs.get("recipient_user_id") == 42
+        ]
+        assert len(staff_calls) == 1
+        ctx = staff_calls[0].kwargs["context"]
+        assert ctx.get("no_parent_channel") is True
+        assert ctx.get("parent_phone") == "0912345678"
+
+    def test_inactive_user_flags_no_parent_channel(self, session, svc, monkeypatch):
+        """有綁定 LINE 但帳號已停用 → dispatch 不會送（is_active 守衛）→ 應 flag。"""
+        course = _add_course(session, capacity=1)
+        reg_w = _add_reg(session, "停用帳號")
+        _enroll(session, reg_w.id, course.id, status="waitlist")
+        parent = _add_user(session, active=False, line=True)  # 綁了 LINE 但停用
+        session.flush()
+
+        monkeypatch.setattr(
+            svc_mod,
+            "_resolve_parent_user_ids_for_registration",
+            lambda s, rid: [parent.id],
+        )
+        monkeypatch.setattr(
+            svc_mod, "_list_active_users_with_permission", lambda s, p: [42]
+        )
+        spy = self._spy_dispatch(monkeypatch)
+
+        svc._auto_promote_first_waitlist(session, course.id)
+        session.flush()
+
+        staff_calls = [
+            c
+            for c in spy.call_args_list
+            if c.kwargs.get("event_type") == "activity.waitlist_promoted"
+            and c.kwargs.get("recipient_user_id") == 42
+        ]
+        ctx = staff_calls[0].kwargs["context"]
+        assert ctx.get("no_parent_channel") is True
 
     def test_staff_renderer_surfaces_no_channel_warning(self):
         """in_app renderer 對 no_parent_channel context 應在 body 附上電話外撥提示。"""

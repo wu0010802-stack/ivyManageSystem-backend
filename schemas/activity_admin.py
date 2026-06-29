@@ -311,9 +311,12 @@ class AddPaymentRequest(BaseModel):
                 )
         return self
 
-    idempotency_key: Optional[str] = Field(
-        None,
-        description="冪等 key（8-64 英數/底線/連字號）；同 key 在 10 分鐘內視為重試並回傳先前結果",
+    idempotency_key: str = Field(
+        ...,
+        description=(
+            "冪等 key（8-64 英數/底線/連字號，必填）；同 key 在 10 分鐘內視為重試"
+            "並回傳先前結果。Finding #1：所有金流寫入強制帶 key，移除模糊的內容式去重。"
+        ),
     )
 
     @field_validator("payment_date")
@@ -323,11 +326,9 @@ class AddPaymentRequest(BaseModel):
 
     @field_validator("idempotency_key")
     @classmethod
-    def _validate_idk(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v == "":
-            return None
-        if not re.match(r"^[A-Za-z0-9_-]{8,64}$", v):
-            raise ValueError("idempotency_key 格式不合（需 8-64 英數/底線/連字號）")
+    def _validate_idk(cls, v: str) -> str:
+        if not v or not re.match(r"^[A-Za-z0-9_-]{8,64}$", v):
+            raise ValueError("idempotency_key 必填且格式須為 8-64 英數/底線/連字號")
         return v
 
 
@@ -1853,9 +1854,12 @@ class POSCheckoutRequest(BaseModel):
     )
     notes: str = Field("", max_length=200)
     type: Literal["payment", "refund"] = "payment"
-    idempotency_key: Optional[str] = Field(
-        None,
-        description="冪等 key，同 key 在 10 分鐘內重送視為重試，回傳先前結果",
+    idempotency_key: str = Field(
+        ...,
+        description=(
+            "冪等 key（必填），同 key 在 10 分鐘內重送視為重試，回傳先前結果。"
+            "Finding #1：POS 結帳強制帶 key，移除無-key 內容式去重。"
+        ),
     )
 
     @field_validator("payment_date")
@@ -1865,11 +1869,9 @@ class POSCheckoutRequest(BaseModel):
 
     @field_validator("idempotency_key")
     @classmethod
-    def _validate_idempotency_key(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v == "":
-            return None
-        if not _IDK_PATTERN.match(v):
-            raise ValueError("idempotency_key 格式不合（需 8-64 英數/底線/連字號）")
+    def _validate_idempotency_key(cls, v: str) -> str:
+        if not v or not _IDK_PATTERN.match(v):
+            raise ValueError("idempotency_key 必填且格式須為 8-64 英數/底線/連字號")
         return v
 
     def refund_notes_cleaned(self) -> str:

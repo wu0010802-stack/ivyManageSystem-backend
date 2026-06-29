@@ -445,6 +445,7 @@ class TestAddPaymentIdempotency:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "超退測試用原因（家長申請退費）",
+                "idempotency_key": "FEEFIX-REFUND-OVERPAY-001",
             },
         )
         assert res.status_code == 400
@@ -687,6 +688,7 @@ class TestDailyCloseGuard:
                 "payment_date": date.today().isoformat(),
                 "notes": "",
                 "type": "payment",
+                "idempotency_key": "FEEFIX-POS-CLOSEDDAY-001",
             },
         )
         assert res.status_code == 400
@@ -712,6 +714,7 @@ class TestDailyCloseGuard:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "",
+                "idempotency_key": "FEEFIX-PAY-CLOSEDDAY-001",
             },
         )
         assert res.status_code == 400

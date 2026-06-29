@@ -382,52 +382,10 @@ def _request_content_signature(body: "POSCheckoutRequest") -> tuple:
     return (items, body.type, body.payment_date)
 
 
-# 無 idempotency_key 時的短窗去重視窗（秒）。官方 UI 一律帶 key，靠 DB 全域
-# UNIQUE 擋重送；但外部呼叫端（curl / 腳本 / 前端 bug）若漏帶 key，advisory
-# lock 只「序列化」兩筆相同退費/繳費，兩筆仍會各自 INSERT → 重複出帳。
-# 此 fallback 在無 key 時於 lock 保護區內查最近 window 內同
-# (reg, type, amount, operator) 的有效紀錄，命中即回放不再 INSERT。
-_NO_KEY_DEDUP_WINDOW_SECONDS = 60
-
-
-def _recent_duplicate_payment(
-    session,
-    registration_id,
-    type_,
-    amount,
-    operator,
-    payment_date,
-    window_seconds=_NO_KEY_DEDUP_WINDOW_SECONDS,
-):
-    """無 idempotency_key 時的短窗去重：回最近 window 內同
-    (reg, type, amount, operator, payment_date) 的有效紀錄（排除 voided），
-    代表疑似重送。None 表示可建立。
-
-    Why 用 (reg, type, amount, operator, payment_date) 五元組 + 60s 窗：官方 UI
-    帶 key 不走此路；無 key 的「同 reg、同 type、同額、同操作者、同帳務日、60
-    秒內」幾乎必然是重送（網路重試 / 連點兩下）。網路重試重送的是同一份 payload，
-    payment_date 必然相同 → 納入比對不削弱重送防護；但同操作員短時間內補登「不同
-    帳務日」的同額付款是合法的兩筆（例如一次補昨天、一次補今天），不可被誤判為
-    replay 吞掉（Finding 5）。寧可保守去重杜絕金流重複出帳，但去重鍵須含帳務日。
-
-    必須在 _lock_registration / _lock_regs 取鎖之後呼叫：鎖把同 reg 的並發請求
-    序列化，第二筆進來時第一筆已 commit/flush 可見，查詢才能命中 → 序列化轉去重。
-    """
-    cutoff = now_taipei_naive() - timedelta(seconds=window_seconds)
-    return (
-        session.query(ActivityPaymentRecord)
-        .filter(
-            ActivityPaymentRecord.registration_id == registration_id,
-            ActivityPaymentRecord.type == type_,
-            ActivityPaymentRecord.amount == amount,
-            ActivityPaymentRecord.operator == operator,
-            ActivityPaymentRecord.payment_date == payment_date,
-            ActivityPaymentRecord.voided_at.is_(None),
-            ActivityPaymentRecord.created_at >= cutoff,
-        )
-        .order_by(ActivityPaymentRecord.id.asc())
-        .first()
-    )
+# Finding #1（2026-06-29 audit）：無-key 短窗內容式去重（_recent_duplicate_payment）
+# 已移除。idempotency_key 改為金流寫入必填（schema 層強制），重送防護統一走帶-key
+# 的 DB 全域 UNIQUE。移除原因：內容式去重會把合法的同額分次收款（同 reg/type/amount/
+# operator/payment_date）誤判為重送靜默吞掉，帳本與實收不符。
 
 
 # ── 端點 1：依學生聚合未結清報名 ─────────────────────────────────────────
@@ -860,14 +818,9 @@ def pos_checkout(
         # 依賴層原本就該保證有 username；到這裡代表權限設定異常，拒絕寫入避免匿名交易
         raise HTTPException(status_code=401, detail="無法識別操作人員")
 
-    # R7-3：多筆收費且無 idempotency_key → 400 強制帶 key。多 item 無法以 items[0]
-    # 安全去重（見下方 fallback 註解），無 key 重送會為每筆 reg 各建第二組付款記錄 →
-    # 全車重複出帳（UniqueConstraint 允許 NULL key 重複）。官方 UI 一律帶穩定 key。
-    if not body.idempotency_key and len(body.items) > 1:
-        raise HTTPException(
-            status_code=400,
-            detail="多筆收費請帶 idempotency_key（避免重複出帳）",
-        )
+    # Finding #1（2026-06-29 audit）：idempotency_key 已於 schema 層強制必填
+    # （單/多 item 一致），R7-3 的「多 item 無 key → 400」router 守衛與下方「單 item
+    # 無 key 短窗去重」fallback 均已移除。所有重送防護統一走帶-key 的 DB 全域 UNIQUE。
 
     # 重複 registration_id 守衛：必須在冪等 replay 之前。否則「重用 key + 帶重複項」
     # 的請求會在 replay 階段先被回放舊收據（內容簽章雖已保留重數，但守衛是更早、
@@ -939,35 +892,8 @@ def pos_checkout(
                 detail=f"找不到或已停用的報名 ID：{missing}",
             )
 
-        # ── 無 idempotency_key 時的短窗去重 fallback（鎖之後、守衛之前）──
-        # 帶 key 的請求在函式開頭已由 DB 全域 UNIQUE 機制處理；此處只接「無 key」。
-        # 一張收據可能含多 item 但共用一個 receipt_no，idempotency_key 只落在第一
-        # 筆。去重以「第一個 item 的 (reg, type, amount, operator)」為錨：命中代表
-        # 整張收據疑似重送，透過命中紀錄的 receipt_no 回放整張原始收據
-        # （_parse_receipt_response_from_record），不再 INSERT 任何一筆。
-        # 鎖已序列化同 reg 的並發；放在累積/diff 守衛之前讓合法重送 replay 為成功。
-        # 僅單一 item 才做無 key 去重：多 item 無 key 無法以 items[0] 安全錨定
-        # （否則 items[0] 撞舊收據會 replay 整張、靜默吞掉其餘 item → 漏帳）。
-        # 多 item 無 key 退回正常處理（不去重）；官方 UI 一律帶 key 不受影響。
-        if not body.idempotency_key and len(body.items) == 1:
-            first_item = body.items[0]
-            dup = _recent_duplicate_payment(
-                session,
-                first_item.registration_id,
-                body.type,
-                first_item.amount,
-                operator,
-                body.payment_date,
-            )
-            if dup is not None:
-                replay = _parse_receipt_response_from_record(session, dup)
-                if replay is not None:
-                    logger.info(
-                        "POS checkout no-key dedup replay: receipt=%s operator=%s",
-                        dup.receipt_no,
-                        operator,
-                    )
-                    return replay
+        # Finding #1（2026-06-29 audit）：無-key 短窗內容式去重 fallback 已移除。
+        # idempotency_key schema 必填，重送防護統一走帶-key 的 DB 全域 UNIQUE。
 
         # ── 退費鎖後兩道簽核閘（第二道累積 + 第三道實退偏離）；非退費回 {} ──
         # 第一道（收據合計）與退費 advisory lock 已在上方鎖前處理。

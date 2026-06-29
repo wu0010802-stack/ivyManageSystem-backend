@@ -182,6 +182,7 @@ class TestPaymentAmountUpperBound:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "",
+                "idempotency_key": "SECFIX-AMT-OVER-001",
             },
         )
         assert res.status_code == 422
@@ -202,6 +203,7 @@ class TestPaymentAmountUpperBound:
                 "amount": 999_999,
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
+                "idempotency_key": "SECFIX-AMT-LIMIT-001",
             },
         )
         assert res.status_code in (200, 201), res.text
@@ -228,6 +230,7 @@ class TestRefundExceedsPaid:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "退費原因：超額測試需家長同意辦理",
+                "idempotency_key": "SECFIX-REFUND-OVER-001",
             },
         )
         assert res.status_code == 400
@@ -256,6 +259,7 @@ class TestRefundExceedsPaid:
                 "payment_date": date.today().isoformat(),
                 "payment_method": "現金",
                 "notes": "客戶取消報名退回（家長申請辦理）",
+                "idempotency_key": "SECFIX-REFUND-EXACT-001",
             },
         )
         assert res.status_code in (200, 201), res.text

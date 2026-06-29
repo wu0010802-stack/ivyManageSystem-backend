@@ -218,6 +218,7 @@ def test_checkout_snapshot_then_course_rename_reprint_stable(pos_client, monkeyp
             "payment_method": "現金",
             "payment_date": date.today().isoformat(),
             "type": "payment",
+            "idempotency_key": "RECEIPTSNAP-0001",
         },
     )
     assert res.status_code == 201, res.text

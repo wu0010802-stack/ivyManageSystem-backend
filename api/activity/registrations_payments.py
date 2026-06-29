@@ -404,37 +404,9 @@ def add_registration_payment(
         if not reg:
             raise _not_found("報名資料")
 
-        # ── 無 idempotency_key 時的短窗去重 fallback（鎖之後、守衛之前）──
-        # 帶 key 的請求在函式開頭已由 DB 全域 UNIQUE 機制處理；此處只接「無 key」
-        # 的情境。鎖把同 reg 的並發請求序列化，第二筆進來時第一筆已可見 →
-        # _recent_duplicate_payment 命中即回放（不再 INSERT），避免重複出帳。
-        # 放在累積/diff/超退守衛之前：讓合法重送被 replay 為成功，而非被守衛 400。
-        if not body.idempotency_key:
-            from .pos import _recent_duplicate_payment
-
-            dup = _recent_duplicate_payment(
-                session,
-                registration_id,
-                body.type,
-                body.amount,
-                current_user.get("username", ""),
-                body.payment_date,
-            )
-            if dup is not None:
-                total_amount = _calc_total_amount(session, registration_id)
-                paid = reg.paid_amount or 0
-                type_label = "繳費" if dup.type == "payment" else "退費"
-                logger.info(
-                    "add_registration_payment no-key dedup replay: reg=%s type=%s amount=%s",
-                    registration_id,
-                    body.type,
-                    body.amount,
-                )
-                return {
-                    "message": f"{type_label}記錄新增成功",
-                    "paid_amount": paid,
-                    "payment_status": _derive_payment_status(paid, total_amount),
-                }
+        # Finding #1（2026-06-29 audit）：idempotency_key 已於 schema 層強制必填，
+        # 無-key 的「短窗內容式去重」fallback 已移除（會把合法同額分次收款誤吞）。
+        # 所有重送防護統一走帶-key 的 DB 全域 UNIQUE 機制（函式開頭已處理）。
 
         # ── 累積退費簽核（必須在 _lock_registration 之後）─────────────
         # 鎖之後才查 prior_refunded，確保兩個併發小額退費不會各自看到相同舊累積值
