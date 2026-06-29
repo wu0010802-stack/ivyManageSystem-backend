@@ -77,6 +77,7 @@ from ._shared import (
     _attach_courses,
     _attach_supplies,
     _match_student_id,
+    find_active_dup_for_student,
     resolve_student_pii_scope,
     student_pii_row_visible,
     terminal_student_ids_in,
@@ -258,6 +259,20 @@ def admin_create_registration(
         )
 
         matched_student_id = _match_student_id(session, body.name, body.birthday)
+        # 2026-06-29 稽核：解析到在籍學生後守「同 student_id 同學期至多一筆 active」不變量
+        # （與 rematch / 家長 register / 公開 update 對齊）。上方 name+birthday 去重抓不到
+        # 「已綁定該生但 student_name 是錯字」的既有報名 → 以正確姓名新增會躲過去重、卻
+        # _match 到同學生長出第二筆。advisory lock 已於上方取得（idempotent）。
+        if find_active_dup_for_student(
+            session,
+            student_id=matched_student_id,
+            school_year=sy,
+            semester=sem,
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="該學生本學期已有一筆有效報名，請改用編輯功能",
+            )
         # review #3：比對到在校生時，班級以該生 Student.classroom_id 為準（與 student_id
         # 同源）；校外生（未匹配/無班級）才沿用表單班級。classroom 已先驗證為啟用中班級。
         reg_classroom = (
@@ -728,6 +743,21 @@ def update_registration_basic(
             if name_or_bday_changed
             else reg.student_id
         )
+        # 2026-06-29 稽核：改身分解析到在籍學生後守同學生同學期唯一性（exclude 自身）。
+        # 上方 name+birthday 去重抓不到「已綁定同學生但 student_name 是錯字」的他筆報名 →
+        # 改成正確姓名會躲過去重卻 _match 到同學生長出第二筆。僅改身分時檢查（advisory
+        # lock 已於上方取得）；未改身分時 student_id 不變、無新增重複風險。
+        if name_or_bday_changed and find_active_dup_for_student(
+            session,
+            student_id=effective_student_id,
+            school_year=reg.school_year,
+            semester=reg.semester,
+            exclude_reg_id=registration_id,
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="該學生本學期已有另一筆有效報名，無法重複綁定",
+            )
         reg_classroom = (
             _active_classroom_for_student(session, effective_student_id) or classroom
         )
