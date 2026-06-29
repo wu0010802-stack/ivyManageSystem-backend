@@ -1,7 +1,7 @@
 """audit_writer: GRANT SELECT (id) on audit_logs（補 INSERT ... RETURNING id）
 
 Revision ID: audwrt02
-Revises: enrdwt01
+Revises: permbf01
 Create Date: 2026-06-15
 
 Why:

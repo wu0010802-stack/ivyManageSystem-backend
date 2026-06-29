@@ -13,7 +13,7 @@ DSR_MANAGE）未回填 → 非 wildcard admin 對這些功能 403、admin UI 無
   principal+=DATA_QUALITY_*/PORTAL_PREVIEW、teacher+=STUDENTS_READ/WRITE:own_class）。
 
 Revision ID: permbf01
-Revises: enrdwt01
+Revises: attstatlen01
 Create Date: 2026-06-15
 """
 

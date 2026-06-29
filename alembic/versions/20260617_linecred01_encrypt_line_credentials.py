@@ -1,7 +1,7 @@
 """[C41] LineConfig 憑證欄位放寬為 Text + backfill 加密
 
 Revision ID: linecred01
-Revises: audwrt02
+Revises: medacctype01
 Create Date: 2026-06-17
 
 channel_access_token / channel_secret 改用 EncryptedText（ORM 透明 Fernet 加密）。

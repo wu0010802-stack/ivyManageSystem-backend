@@ -1,7 +1,7 @@
 """bh-attendance #2 放寬 attendances.status 為 String(40)
 
 Revision ID: attstatlen01
-Revises: enrdwt01
+Revises: vpamt01
 Create Date: 2026-06-16
 
 考勤 status 為「開放複合值域」：utils/attendance_calc.py、services/attendance_parser.py、
