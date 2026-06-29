@@ -136,7 +136,9 @@ class MyRegistrationsOut(BaseModel):
 class RegisterOut(RegistrationSummaryOut):
     # #2：明文 query token 僅報名 response 回傳一次（DB 只存 hash），供前端組
     # 「管理我的報名」公開連結。
-    query_token: str
+    # F3：Guardian 無可用電話（<8 碼）時不發 token → None（公開連結對該報名無用，
+    # 不顯示死連結）。前端 `token ? buildPublicEditUrl(...) : ''` 自然隱藏。
+    query_token: Optional[str] = None
 
 
 class ParentUpcomingSessionOut(BaseModel):
@@ -173,8 +175,12 @@ class RegisterPayload(BaseModel):
     student_id: int = Field(..., gt=0)
     school_year: int = Field(..., ge=100, le=200)  # 民國
     semester: int = Field(..., ge=1, le=2)
-    course_ids: list[int] = Field(default_factory=list)
-    supply_ids: list[int] = Field(default_factory=list)
+    # max_length=20：對齊 admin（AdminRegistrationPayload）與 public
+    # （PublicRegistrationPayload/PublicUpdatePayload）的 courses/supplies 上限，
+    # 防直打 API 的 caller 傳入數萬筆 id → 大型 IN 查詢 + 逐筆迴圈 DoS。上限對
+    # 原始 list 長度檢查（在 _dedupe_ids 之前），與 admin/public 同語意。
+    course_ids: list[int] = Field(default_factory=list, max_length=20)
+    supply_ids: list[int] = Field(default_factory=list, max_length=20)
 
     @field_validator("course_ids", "supply_ids")
     @classmethod
@@ -483,7 +489,15 @@ def register_courses(
     # （_parent_mutation_identity_ok）退回姓名+生日+電話三欄，知道這三項 PII 的
     # 陌生人即可未登入改課程/放棄候補。寫入 hash 後公開 mutation 強制有效 token；
     # 明文 token 只在本次 response 回給家長一次（供「管理我的報名」連結，留存自助修改能力）。
-    plaintext_token = _generate_query_token()
+    #
+    # F3（第三輪 review）：Guardian 無可用電話（strip 後 <8 碼）時不發 token。
+    # 公開查詢/mutation 兩條路徑（/public/query、/public/query-by-token）的
+    # parent_phone 皆強制 min_length=8，故電話 <8 的報名其管理連結永久無法通過
+    # 驗證（死連結）。不發 token → query_token 回 None，前端 `token ? ... : ''`
+    # 自然隱藏連結；且該報名公開 mutation 本就因 phone<8 無法通過（與舊無 token
+    # 報名同態），不削弱安全。登入家長仍可於 portal「我的報名」直接管理。
+    phone_supports_public_query = bool(parent_phone) and len(parent_phone.strip()) >= 8
+    plaintext_token = _generate_query_token() if phone_supports_public_query else None
 
     reg = ActivityRegistration(
         student_name=student.name,
@@ -500,8 +514,10 @@ def register_courses(
         classroom_id=student.classroom_id,
         pending_review=False,  # 登入版視為已驗證
         match_status="manual",
-        query_token_hash=_hash_query_token(plaintext_token),
-        query_token_issued_at=now_taipei_naive(),
+        query_token_hash=(
+            _hash_query_token(plaintext_token) if plaintext_token else None
+        ),
+        query_token_issued_at=(now_taipei_naive() if plaintext_token else None),
     )
     session.add(reg)
     session.flush()

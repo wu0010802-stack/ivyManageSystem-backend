@@ -209,12 +209,17 @@ def delete_supply(
     """停用用品"""
     session = get_session()
     try:
+        # with_for_update：對用品列取行鎖再 count，序列化「停用」與並發「報名」
+        # （報名端取用品/課程亦行鎖）。否則 check（in_use_count==0）與 disable
+        # 之間，並發報名可插入 RegistrationSupply，繞過 409 留下「有效報名引用已
+        # 停用用品」（TOCTOU）。SQLite 下為 no-op，真正序列化由 PostgreSQL 行鎖提供。
         supply = (
             session.query(ActivitySupply)
             .filter(
                 ActivitySupply.id == supply_id,
                 ActivitySupply.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not supply:

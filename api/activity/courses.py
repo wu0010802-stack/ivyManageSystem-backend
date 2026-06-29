@@ -597,12 +597,18 @@ def delete_course(
     """停用課程（有報名者回傳 409）"""
     session = get_session()
     try:
+        # with_for_update：對課程列取行鎖再 count，序列化「停用」與並發「報名」
+        # （register_courses / public_register 取課程亦為 with_for_update）。否則
+        # check（count==0）與 disable 之間，並發報名可插入 RegistrationCourse，
+        # 繞過 409 留下「有效報名引用已停用課程」（TOCTOU）。SQLite 下為 no-op，
+        # 真正序列化由 PostgreSQL 行鎖提供。
         course = (
             session.query(ActivityCourse)
             .filter(
                 ActivityCourse.id == course_id,
                 ActivityCourse.is_active.is_(True),
             )
+            .with_for_update()
             .first()
         )
         if not course:
