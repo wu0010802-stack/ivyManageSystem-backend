@@ -260,7 +260,10 @@ def _frozen_settlement_employee_ids(db: Session, year_end_cycle_id: int) -> set[
 
 
 def _recompute_draft_settlement_total(
-    db: Session, year_end_cycle_id: int, employee_id: int
+    db: Session,
+    year_end_cycle_id: int,
+    employee_id: int,
+    total_by_emp: dict[int, Decimal] | None = None,
 ) -> None:
     """generate/void 改動 SpecialBonusItem 後，同步重算對應 DRAFT settlement 的
     special_bonus_total / total_amount（#1，2026-06-16）。
@@ -288,13 +291,43 @@ def _recompute_draft_settlement_total(
         return
     # qa-loop #1（2026-06-23）：與 canonical build_settlements 同口徑套 excel-wins 去重，
     # 避免 Excel 列 + 同型 auto 列雙計 → settlement.total_amount 灌大 → 轉帳名冊多發。
-    from services.year_end.settlement_builder import compute_special_bonus_total_by_emp
+    # A2（2026-06-29 效能健檢）：批次 caller 預先算好整 cycle 的 emp→total dict 傳入，
+    # 避免每位員工各掃一次全 cycle SpecialBonusItem（O(員工×全表)）。未傳則自掃一次
+    # （單筆 caller，如 api/year_end 與既有測試，維持原行為）。
+    if total_by_emp is None:
+        from services.year_end.settlement_builder import (
+            compute_special_bonus_total_by_emp,
+        )
 
-    total_sum = compute_special_bonus_total_by_emp(db, year_end_cycle_id).get(
-        int(employee_id), Decimal("0")
-    )
+        total_by_emp = compute_special_bonus_total_by_emp(db, year_end_cycle_id)
+
+    total_sum = total_by_emp.get(int(employee_id), Decimal("0"))
     settlement.special_bonus_total = total_sum
     settlement.total_amount = settlement.payable_amount + total_sum
+
+
+def _recompute_draft_settlement_totals_bulk(
+    db: Session, year_end_cycle_id: int, employee_ids
+) -> None:
+    """對多名員工一次重算 DRAFT settlement total（A2，2026-06-29 效能健檢）。
+
+    `compute_special_bonus_total_by_emp` 對整個 cycle 全員只掃**一次**，取代
+    per-employee 各掃一次的 O(受影響員工 × 全 SpecialBonusItem 全表)。口徑與單筆
+    `_recompute_draft_settlement_total` 一致（excel-wins 去重，由 test_year_end_recompute_excel_wins
+    固化）。空名單即 no-op，不發無謂的全表掃描。
+    """
+    employee_ids = list(employee_ids)
+    if not employee_ids:
+        return
+    from services.year_end.settlement_builder import (
+        compute_special_bonus_total_by_emp,
+    )
+
+    total_by_emp = compute_special_bonus_total_by_emp(db, year_end_cycle_id)
+    for emp_id in employee_ids:
+        _recompute_draft_settlement_total(
+            db, year_end_cycle_id, emp_id, total_by_emp=total_by_emp
+        )
 
 
 @dataclass
@@ -519,8 +552,7 @@ def generate_payouts(
     # special_bonus_total / total_amount，避免轉帳名冊（讀 settlement.total_amount）
     # 與明細條（即時 aggregate SpecialBonusItem）漂移。凍結員工已被跳過、不在
     # affected_emp_ids，且 _recompute_draft_settlement_total 對非 DRAFT no-op。
-    for emp_id in affected_emp_ids:
-        _recompute_draft_settlement_total(db, cycle.id, emp_id)
+    _recompute_draft_settlement_totals_bulk(db, cycle.id, affected_emp_ids)
 
     db.flush()
     return GenerateResult(
@@ -569,8 +601,7 @@ def void_payouts(db: Session, payout_year: int, voided_by: int) -> int:
     db.flush()
     # #1（2026-06-16）：刪除後同步重算受影響（非凍結）員工的 DRAFT settlement total，
     # 讓 settlement.total_amount 回到不含已刪 APPRAISAL_HALF 的金額（避免名冊殘留舊值）。
-    for emp_id in affected_emp_ids:
-        _recompute_draft_settlement_total(db, cycle.id, emp_id)
+    _recompute_draft_settlement_totals_bulk(db, cycle.id, affected_emp_ids)
     db.flush()
     logger.info(
         "void_payouts: deleted %d APPRAISAL_HALF_BONUS items for academic_year=%s "
