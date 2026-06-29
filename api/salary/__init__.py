@@ -443,10 +443,13 @@ def finalize_salary_month(
 
         # 對每位員工取鎖，與 bulk/manual 重算路徑互斥。
         # 必須在 missing/stale 檢查之前完成,否則檢查與封存之間可能有並發 mark_salary_stale。
-        for r in records:
+        # 依 employee_id 排序取鎖，與 bulk 重算 `for emp_id in sorted(employee_ids)`
+        # （engine.py）的取鎖順序一致，消除 finalize 與並發重算的 ABBA 死鎖——records 查詢
+        # 無 ORDER BY，原本逐筆順序為 DB 不確定順序（qa-loop round2 2026-06-29）。
+        for emp_id in sorted({r.employee_id for r in records}):
             acquire_salary_lock(
                 session,
-                employee_id=r.employee_id,
+                employee_id=emp_id,
                 year=data.year,
                 month=data.month,
             )

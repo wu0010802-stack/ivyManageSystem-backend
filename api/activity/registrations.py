@@ -920,6 +920,22 @@ def delete_registration(
         # daily_close(force_refund 時) → reg row，避免與 POS/checkout ABBA。
         if force_refund:
             acquire_activity_daily_close_lock(session, datetime.now(TAIPEI_TZ).date())
+            # canonical 鎖序：先鎖佔位課程（ActivityCourse，依 id 排序）再鎖 reg row，與
+            # service.delete_registration / withdraw_course / 家長 confirm/decline 一致
+            # （advisory → ActivityCourse → ActivityRegistration）。本端點原本只鎖 reg、由
+            # service 之後才鎖 course，形成 reg→course 反序 → 與 course-first 群 ABBA 死鎖。
+            # 此處先鎖（與 service 同一交易、同序），service 內再鎖即為 no-op（qa-loop round2）。
+            _prelock_course_ids = sorted(
+                cid
+                for (cid,) in session.query(RegistrationCourse.course_id).filter(
+                    RegistrationCourse.registration_id == registration_id,
+                    RegistrationCourse.status.in_(list(OCCUPYING_STATUSES)),
+                )
+            )
+            if _prelock_course_ids:
+                session.query(ActivityCourse).filter(
+                    ActivityCourse.id.in_(_prelock_course_ids)
+                ).order_by(ActivityCourse.id).with_for_update().all()
         _reg_q = session.query(ActivityRegistration).filter(
             ActivityRegistration.id == registration_id,
             ActivityRegistration.is_active.is_(True),
