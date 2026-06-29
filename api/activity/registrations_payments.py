@@ -690,6 +690,36 @@ def delete_registration_payment(
 
         operator = current_user.get("username", "")
         now = now_taipei_naive()
+
+        # 重算 paid_amount：以 voided_at IS NULL 為前提，排除軟刪紀錄。先模擬「作廢本筆
+        # 後」的淨額——以 id != payment_id 排除本筆（尚未標記 voided）+ 既有軟刪紀錄。
+        totals = (
+            session.query(
+                ActivityPaymentRecord.type, func.sum(ActivityPaymentRecord.amount)
+            )
+            .filter(
+                ActivityPaymentRecord.registration_id == registration_id,
+                ActivityPaymentRecord.voided_at.is_(None),
+                ActivityPaymentRecord.id != payment_id,
+            )
+            .group_by(ActivityPaymentRecord.type)
+            .all()
+        )
+        amount_map = {t: s for t, s in totals}
+        new_paid = (amount_map.get("payment") or 0) - (amount_map.get("refund") or 0)
+        if new_paid < 0:
+            # 2026-06-29 稽核（業主裁示：採納提案，取代舊 R7-5 warn+夾0）：作廢本筆會使
+            # 金流淨額為負（有效退費 > 有效付款 → 孤兒退費），ledger（財報分別加總
+            # 付款/退費）與 cached paid_amount 將對不上。拒絕作廢，要求先作廢相關退費
+            # 再作廢付款。於標記 voided 前檢查，故無需 rollback。
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "作廢此筆付款會使金流淨額為負（有效退費大於有效付款）；"
+                    "請先作廢相關退費紀錄，再作廢付款"
+                ),
+            )
+
         payment.voided_at = now
         payment.voided_by = operator
         payment.void_reason = body.reason
@@ -704,30 +734,8 @@ def delete_registration_payment(
 
         session.flush()
 
-        # 重算 paid_amount：以 voided_at IS NULL 為前提，排除軟刪紀錄
-        totals = (
-            session.query(
-                ActivityPaymentRecord.type, func.sum(ActivityPaymentRecord.amount)
-            )
-            .filter(
-                ActivityPaymentRecord.registration_id == registration_id,
-                ActivityPaymentRecord.voided_at.is_(None),
-            )
-            .group_by(ActivityPaymentRecord.type)
-            .all()
-        )
-        amount_map = {t: s for t, s in totals}
-        new_paid = (amount_map.get("payment") or 0) - (amount_map.get("refund") or 0)
-        if new_paid < 0:
-            # R7-5：void 後退費淨額 > 付款淨額 → 孤兒 refund（記錄淨額負，cached
-            # paid_amount 夾到 0）。無現金漏洞（over-refund 硬閘以 cached 為準），但屬
-            # 對帳不一致；記 warning 讓財務能撈出此 reg 處理。
-            logger.warning(
-                "[activity-void] orphan refund：registration_id=%s 記錄淨額=%s 夾到 0",
-                registration_id,
-                new_paid,
-            )
-        reg.paid_amount = max(0, new_paid)
+        # new_paid 已於上方守衛保證 ≥ 0
+        reg.paid_amount = new_paid
 
         total_amount = _calc_total_amount(session, registration_id)
         reg.is_paid = _compute_is_paid(reg.paid_amount or 0, total_amount)
