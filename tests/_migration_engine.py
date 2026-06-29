@@ -76,3 +76,30 @@ def make_migration_engine(tmp_path, schema: str) -> tuple[Engine, Callable[[], N
         connect_args={"check_same_thread": False},
     )
     return engine, engine.dispose
+
+
+def run_migration(engine, migration, direction: str) -> None:
+    """以**真 alembic ``Operations``/``MigrationContext``** 跑 migration 的 upgrade/downgrade，
+    近似 alembic 實際 runner——支援 ``op.get_context().dialect.name`` 回報真實 dialect
+    （讓 dialect-aware migration 走對分支）、``autocommit_block()`` 與 ``CREATE INDEX
+    CONCURRENTLY``。比 per-test 手寫 ``op`` stub 更貼近 prod 行為。
+
+    用法：``run_migration(engine, _load_migration(), "upgrade")``。每次呼叫開新 connection +
+    ``ctx.begin_transaction()``，commit 後下一次（如 downgrade）以新 connection 見已 commit 狀態。
+    """
+    from alembic.operations import Operations
+    from alembic.runtime.migration import MigrationContext
+
+    conn = engine.connect()
+    try:
+        ctx = MigrationContext.configure(conn)
+        op_obj = Operations(ctx)
+        old_op = getattr(migration, "op", None)
+        migration.op = op_obj
+        try:
+            with ctx.begin_transaction():
+                getattr(migration, direction)()
+        finally:
+            migration.op = old_op
+    finally:
+        conn.close()

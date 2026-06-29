@@ -28,7 +28,7 @@ from sqlalchemy import (
     text,
 )
 
-from tests._migration_engine import is_postgres, make_migration_engine
+from tests._migration_engine import is_postgres, make_migration_engine, run_migration
 
 pytestmark = pytest.mark.skipif(
     not is_postgres(),
@@ -76,27 +76,6 @@ def _create_pre_migration_schema(engine) -> None:
     md.create_all(engine)
 
 
-def _drive(engine, migration, direction: str) -> None:
-    """以真 alembic Operations/MigrationContext 跑 migration（支援 autocommit_block +
-    CREATE INDEX CONCURRENTLY），近似 alembic 實際 runner。"""
-    from alembic.operations import Operations
-    from alembic.runtime.migration import MigrationContext
-
-    conn = engine.connect()
-    try:
-        ctx = MigrationContext.configure(conn)
-        op_obj = Operations(ctx)
-        old_op = getattr(migration, "op", None)
-        migration.op = op_obj
-        try:
-            with ctx.begin_transaction():
-                getattr(migration, direction)()
-        finally:
-            migration.op = old_op
-    finally:
-        conn.close()
-
-
 def _attendance_state(engine) -> tuple[set, set, set, set]:
     with engine.connect() as conn:
         insp = inspect(conn)
@@ -113,7 +92,7 @@ def test_m1_upgrade_clean_db(tmp_path, monkeypatch):
     engine, cleanup = make_migration_engine(tmp_path, schema="mig_empleavesync_m1")
     try:
         _create_pre_migration_schema(engine)
-        _drive(engine, _load_migration(), "upgrade")
+        run_migration(engine, _load_migration(), "upgrade")
 
         cols, uniques, indexes, fks = _attendance_state(engine)
         assert "leave_record_id" in cols
@@ -139,7 +118,7 @@ def test_m2_upgrade_with_dups_fails_loud(tmp_path, monkeypatch):
                 )
             )
         with pytest.raises(RuntimeError, match="重複"):
-            _drive(engine, _load_migration(), "upgrade")
+            run_migration(engine, _load_migration(), "upgrade")
     finally:
         cleanup()
 
@@ -152,7 +131,7 @@ def test_m3_backfill_runs_on_pg_with_no_approved_leaves(tmp_path, monkeypatch):
     engine, cleanup = make_migration_engine(tmp_path, schema="mig_empleavesync_m3")
     try:
         _create_pre_migration_schema(engine)
-        _drive(engine, _load_migration(), "upgrade")
+        run_migration(engine, _load_migration(), "upgrade")
         cols, _, _, _ = _attendance_state(engine)
         assert "leave_record_id" in cols
     finally:
@@ -175,8 +154,8 @@ def test_m5_downgrade_restores_schema(tmp_path, monkeypatch):
     try:
         _create_pre_migration_schema(engine)
         migration = _load_migration()
-        _drive(engine, migration, "upgrade")
-        _drive(engine, migration, "downgrade")
+        run_migration(engine, migration, "upgrade")
+        run_migration(engine, migration, "downgrade")
 
         cols, uniques, _, fks = _attendance_state(engine)
         assert "leave_record_id" not in cols
