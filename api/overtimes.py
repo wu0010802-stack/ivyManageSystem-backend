@@ -386,16 +386,33 @@ def _grant_comp_leave_quota(session, ot: OvertimeRecord, result: dict) -> None:
             note="由加班補休累積",
         )
         session.add(quota)
-    # ── 新增 grant ledger row（per-OT 帳本，T9 scheduler 將從此撈到期 grant 結算）──
-    grant = OvertimeCompLeaveGrant(
-        overtime_record_id=ot.id,
-        employee_id=ot.employee_id,
-        granted_hours=ot.hours,
-        granted_at=ot.overtime_date,
-        expires_at=ot.overtime_date + timedelta(days=365),
-        status="active",
+    # ── grant ledger row（per-OT 帳本，T9 scheduler 將從此撈到期 grant 結算）──
+    # overtime_record_id 為 unique，一張 OT 一生一列。先前 grant→revoke 只把列標 revoked
+    # （不刪），故重新核准時不可再 add 新列，否則撞 UNIQUE→IntegrityError→500、該 OT 永遠
+    # 無法再核准（qa-loop round2 2026-06-29：改判 / 退審再核准 / 批次三條合法路徑都會中）。
+    # 改為重用既有列：存在則重置為本次發放狀態（revoke 已保證 consumed≈0，歸零安全）。
+    grant = (
+        session.query(OvertimeCompLeaveGrant)
+        .filter(OvertimeCompLeaveGrant.overtime_record_id == ot.id)
+        .first()
     )
-    session.add(grant)
+    if grant is not None:
+        grant.employee_id = ot.employee_id
+        grant.granted_hours = ot.hours
+        grant.granted_at = ot.overtime_date
+        grant.expires_at = ot.overtime_date + timedelta(days=365)
+        grant.consumed_hours = 0
+        grant.status = "active"
+    else:
+        grant = OvertimeCompLeaveGrant(
+            overtime_record_id=ot.id,
+            employee_id=ot.employee_id,
+            granted_hours=ot.hours,
+            granted_at=ot.overtime_date,
+            expires_at=ot.overtime_date + timedelta(days=365),
+            status="active",
+        )
+        session.add(grant)
     ot.comp_leave_granted = True
     result["comp_leave_hours_granted"] = ot.hours
     logger.info(

@@ -1009,6 +1009,20 @@ def update_leave(
                 detail=f"修改後的日期與已核准的請假記錄重疊（{overlap.start_date} ~ {overlap.end_date}，ID: {overlap.id}）",
             )
 
+        # 同日部分假衝突守衛——與 create_leave 對齊（qa-loop round2 2026-06-29）。原本只有
+        # create 有此檢查；update 漏掉可把假單改成壓在同日（時段不重疊）另一筆假上的單日部分假，
+        # 通過 update→退回 pending→核准時 sync.apply 撞 422 永遠無法核准。帶 exclude_id=leave_id
+        # 排除自身。
+        _assert_no_same_day_partial_collision(
+            session,
+            leave.employee_id,
+            new_start,
+            new_end,
+            new_start_time,
+            new_end_time,
+            exclude_id=leave_id,
+        )
+
         # P1-2：跨類重疊檢查——與 create_leave 對齊。update 原本只查 leave↔leave
         # overlap，可把假單移到已有 approved/pending 加班的日子，繞過 2026-05-11
         # P1-5 跨類守衛 → 同日扣請假薪 + 付加班費雙重給付。helper 查的是
