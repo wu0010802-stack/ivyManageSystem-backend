@@ -152,7 +152,11 @@ async def run_ws_connection(
         while True:
             await asyncio.sleep(verify_interval)
             try:
-                ok = verify()
+                # A1（2026-06-29 效能健檢）：verify 內含同步 DB 查詢（query User +
+                # impersonator），offload 到 worker thread，避免在 event loop 上同步
+                # 阻塞——每 verify_interval/每連線觸發，單 worker 下會序列化卡住所有
+                # 請求/WS/心跳（HTTP 認證路徑 utils/auth.py 已 offload，此處對齊）。
+                ok = await asyncio.to_thread(verify)
             except Exception:
                 ok = False
             if not ok:

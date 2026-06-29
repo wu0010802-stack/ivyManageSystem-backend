@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -79,6 +80,40 @@ def test_reverify_success_then_revoked_closes():
     ws = asyncio.run(_run())
     assert ws.closed
     assert not results, "verify 應被持續呼叫直到撤銷"
+
+
+def test_reverify_runs_off_event_loop_thread():
+    """A1（2026-06-29 效能健檢）：同步 verify（內含 sync DB 查詢）須 offload 到 worker
+    thread，不可在 event loop thread 上同步阻塞。
+
+    每 verify_interval（prod 60s）/ 每條 WS 連線觸發一次；HTTP 認證路徑已用 threadpool
+    offload（utils/auth.py），WS 路徑漏了 → 單 worker + pool 下序列化阻塞所有請求/心跳。
+    """
+    captured: dict[str, int] = {}
+
+    async def _run():
+        captured["loop"] = threading.get_ident()
+        ws = _MockWS()
+
+        def verify():
+            captured["verify"] = threading.get_ident()
+            return False  # 立即收斂，結束連線
+
+        await run_ws_connection(
+            ws,
+            verify=verify,
+            verify_interval=0.01,
+            ping_interval=3600,
+            pong_timeout=3600,
+        )
+        return ws
+
+    asyncio.run(_run())
+    assert "verify" in captured, "verify 應被呼叫"
+    assert captured["verify"] != captured["loop"], (
+        "同步 verify 跑在 event loop thread 上 → 阻塞事件迴圈；"
+        "應以 asyncio.to_thread offload 到 worker thread"
+    )
 
 
 def test_no_verify_backward_compat():
