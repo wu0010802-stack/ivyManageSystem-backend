@@ -15,11 +15,12 @@ from sqlalchemy import (
     String,
     Table,
     Text,
-    create_engine,
+    false,
     inspect,
     text,
 )
 
+from tests._migration_engine import make_migration_engine
 
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
@@ -44,7 +45,9 @@ class _AlembicOpStub:
     def create_index(self, index_name, table_name, columns, unique=False):
         metadata = MetaData()
         table = Table(table_name, metadata, autoload_with=self.bind)
-        Index(index_name, *(table.c[column] for column in columns), unique=unique).create(self.bind)
+        Index(
+            index_name, *(table.c[column] for column in columns), unique=unique
+        ).create(self.bind)
 
     def drop_index(self, index_name, table_name=None):
         self.bind.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
@@ -54,7 +57,9 @@ class _AlembicOpStub:
 
 
 def _load_migration_module():
-    spec = importlib.util.spec_from_file_location("split_ivykids_recruitment", MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "split_ivykids_recruitment", MIGRATION_PATH
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -78,13 +83,13 @@ def _create_legacy_tables(bind):
         Column("source", String(50), nullable=True),
         Column("referrer", String(50), nullable=True),
         Column("deposit_collector", String(50), nullable=True),
-        Column("has_deposit", Boolean, nullable=False, server_default=text("0")),
+        Column("has_deposit", Boolean, nullable=False, server_default=false()),
         Column("notes", Text, nullable=True),
         Column("parent_response", Text, nullable=True),
         Column("no_deposit_reason", String(100), nullable=True),
         Column("no_deposit_reason_detail", Text, nullable=True),
-        Column("enrolled", Boolean, nullable=False, server_default=text("0")),
-        Column("transfer_term", Boolean, nullable=False, server_default=text("0")),
+        Column("enrolled", Boolean, nullable=False, server_default=false()),
+        Column("transfer_term", Boolean, nullable=False, server_default=false()),
         Column("expected_start_label", String(50), nullable=True),
         Column("created_at", DateTime, nullable=True),
         Column("updated_at", DateTime, nullable=True),
@@ -102,7 +107,9 @@ def _create_legacy_tables(bind):
     )
     metadata.create_all(bind)
 
-    Index("ix_recruitment_visits_external_source", visits.c.external_source).create(bind)
+    Index("ix_recruitment_visits_external_source", visits.c.external_source).create(
+        bind
+    )
     Index("ix_recruitment_visits_external_id", visits.c.external_id).create(bind)
     Index(
         "ux_rv_external_source_id",
@@ -162,8 +169,9 @@ def _create_legacy_tables(bind):
 
 
 def test_upgrade_moves_legacy_ivykids_rows_to_dedicated_table(tmp_path):
-    db_path = tmp_path / "recruitment-ivykids-migration.sqlite"
-    engine = create_engine(f"sqlite:///{db_path}")
+    # DATABASE_URL 指向 PG（CI test / alembic-roundtrip）時於隔離 schema 跑真 PG，
+    # 讓拆表 migration 的 create_table / drop_column / 搬列 SQL 在真 PG 驗過；否則 sqlite。
+    engine, cleanup = make_migration_engine(tmp_path, schema="mig_recruitment_ivykids")
     module = _load_migration_module()
 
     with engine.begin() as connection:
@@ -177,15 +185,23 @@ def test_upgrade_moves_legacy_ivykids_rows_to_dedicated_table(tmp_path):
         assert "recruitment_sync_states" in inspector.get_table_names()
         assert "recruitment_ivykids_records" in inspector.get_table_names()
 
-        visit_columns = {column["name"] for column in inspector.get_columns("recruitment_visits")}
+        visit_columns = {
+            column["name"] for column in inspector.get_columns("recruitment_visits")
+        }
         assert "external_source" not in visit_columns
         assert "external_id" not in visit_columns
         assert "external_status" not in visit_columns
         assert "external_created_at" not in visit_columns
 
-        manual_rows = connection.execute(
-            text("SELECT month, child_name, source FROM recruitment_visits ORDER BY id")
-        ).mappings().all()
+        manual_rows = (
+            connection.execute(
+                text(
+                    "SELECT month, child_name, source FROM recruitment_visits ORDER BY id"
+                )
+            )
+            .mappings()
+            .all()
+        )
         assert manual_rows == [
             {
                 "month": "115.04",
@@ -194,15 +210,17 @@ def test_upgrade_moves_legacy_ivykids_rows_to_dedicated_table(tmp_path):
             }
         ]
 
-        ivykids_rows = connection.execute(
-            text(
-                """
+        ivykids_rows = (
+            connection.execute(
+                text("""
                 SELECT external_id, external_status, external_created_at, month, child_name, source, phone
                 FROM recruitment_ivykids_records
                 ORDER BY id
-                """
+                """)
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         assert ivykids_rows == [
             {
                 "external_id": "1001",
@@ -215,4 +233,4 @@ def test_upgrade_moves_legacy_ivykids_rows_to_dedicated_table(tmp_path):
             }
         ]
 
-    engine.dispose()
+    cleanup()
