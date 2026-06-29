@@ -11,13 +11,15 @@
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from utils.taipei_time import today_taipei
 
 from models.database import (
     ActivityAttendance,
@@ -293,3 +295,115 @@ def test_mixed_courses(db_session):
     # B: served=0 → 全退 2400
     assert items[course_b.id]["suggested_amount"] == 2400
     assert result["total_suggested_amount"] == 1000 + 2400
+
+
+def test_future_session_attendance_not_counted_as_served(db_session):
+    """未來場次的 is_present=True 不應計入 T_served（否則少退、虧到家長）。
+
+    回歸：未來場次（今日 +7 天）若被預先點名 is_present，原本會讓 T_served=1，
+    使退款由全退 1500 降為 round_half_up(1500×2/3)=1000。
+    語意上 T_served 為「已出席堂數」，尚未上課的未來場次本不該計入。
+    """
+    course = _create_course(db_session, sessions=10, price=1500)
+    reg = _create_reg(db_session)
+    db_session.add(
+        RegistrationCourse(
+            registration_id=reg.id,
+            course_id=course.id,
+            status="enrolled",
+            price_snapshot=1500,
+        )
+    )
+    db_session.flush()
+    future_sess = ActivitySession(
+        course_id=course.id,
+        session_date=today_taipei() + timedelta(days=7),
+    )
+    db_session.add(future_sess)
+    db_session.flush()
+    db_session.add(
+        ActivityAttendance(
+            session_id=future_sess.id,
+            registration_id=reg.id,
+            is_present=True,
+        )
+    )
+    db_session.flush()
+
+    result = build_refund_suggestion(db_session, reg.id)
+    course_item = result["items"][0]
+    assert course_item["calc_payload"]["T_served"] == 0
+    assert course_item["suggested_amount"] == 1500  # not_started 全退
+
+
+def test_past_session_counts_future_excluded(db_session):
+    """過去場次照算、未來場次排除：1 過去 + 1 未來 → T_served=1（非 2）。
+
+    確保修法只縮小到「未來」而非過度排除當日/過去場次。
+    """
+    course = _create_course(db_session, sessions=10, price=1500)
+    reg = _create_reg(db_session)
+    db_session.add(
+        RegistrationCourse(
+            registration_id=reg.id,
+            course_id=course.id,
+            status="enrolled",
+            price_snapshot=1500,
+        )
+    )
+    db_session.flush()
+    past_sess = ActivitySession(
+        course_id=course.id,
+        session_date=today_taipei() - timedelta(days=7),
+    )
+    future_sess = ActivitySession(
+        course_id=course.id,
+        session_date=today_taipei() + timedelta(days=7),
+    )
+    db_session.add_all([past_sess, future_sess])
+    db_session.flush()
+    db_session.add_all(
+        [
+            ActivityAttendance(
+                session_id=past_sess.id, registration_id=reg.id, is_present=True
+            ),
+            ActivityAttendance(
+                session_id=future_sess.id, registration_id=reg.id, is_present=True
+            ),
+        ]
+    )
+    db_session.flush()
+
+    result = build_refund_suggestion(db_session, reg.id)
+    course_item = result["items"][0]
+    assert course_item["calc_payload"]["T_served"] == 1  # 只算過去場次
+    # served=1/10=0.1 < 1/3 → 退 2/3 of 1500 = 1000
+    assert course_item["suggested_amount"] == 1000
+
+
+def test_today_session_still_counts(db_session):
+    """當日場次（session_date == today）仍應計入 T_served（含當日，非嚴格 <）。"""
+    course = _create_course(db_session, sessions=10, price=1500)
+    reg = _create_reg(db_session)
+    db_session.add(
+        RegistrationCourse(
+            registration_id=reg.id,
+            course_id=course.id,
+            status="enrolled",
+            price_snapshot=1500,
+        )
+    )
+    db_session.flush()
+    today_sess = ActivitySession(course_id=course.id, session_date=today_taipei())
+    db_session.add(today_sess)
+    db_session.flush()
+    db_session.add(
+        ActivityAttendance(
+            session_id=today_sess.id, registration_id=reg.id, is_present=True
+        )
+    )
+    db_session.flush()
+
+    result = build_refund_suggestion(db_session, reg.id)
+    course_item = result["items"][0]
+    assert course_item["calc_payload"]["T_served"] == 1

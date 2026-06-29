@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from typing import Any
 
 from sqlalchemy import func
@@ -80,6 +80,11 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
             .filter(
                 ActivityAttendance.registration_id == reg_id,
                 ActivityAttendance.is_present.is_(True),
+                # 只計「已上課」場次：未來場次即使被預先點名 is_present 也不算
+                # 已出席堂數，否則 T_served 膨脹會讓退款建議被低估（少退、虧家長），
+                # 並使「實退 vs 建議偏離簽核閘」以被膨脹值為基準而失效。
+                # 用台北今日 date 比對（含當日），避免 naive UTC 偏移。
+                ActivitySession.session_date <= today_taipei(),
             )
             .group_by(ActivitySession.course_id)
             .all()
