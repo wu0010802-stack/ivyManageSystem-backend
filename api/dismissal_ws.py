@@ -88,6 +88,20 @@ dismissal_manager = manager
 _get_token_from_ws = get_token_from_ws
 
 
+def _token_still_valid(ws: WebSocket) -> bool:
+    """P2-8 週期重驗回調：重新 verify 當前 cookie token（含 is_active / token_version /
+    impersonator / jti blocklist 檢查）。token 缺失或撤銷即回 False → 關閉連線。
+    對齊 sibling contact_book_ws._token_still_valid。"""
+    token = _get_token_from_ws(ws)
+    if not token:
+        return False
+    try:
+        verify_ws_token(token)
+        return True
+    except Exception:
+        return False
+
+
 def _get_teacher_classroom_ids(employee_id: int) -> list[int]:
     """查詢教師目前所屬的班級 ID 列表（含 art_teacher_id）。"""
     session = get_session()
@@ -189,7 +203,7 @@ async def portal_dismissal_ws(ws: WebSocket):
         backend.unsubscribe(ws)
         unregister(ws)
 
-    await _run_connection(ws, cleanup=_cleanup)
+    await _run_connection(ws, cleanup=_cleanup, verify=lambda: _token_still_valid(ws))
 
 
 @ws_router.websocket("/api/ws/admin/dismissal-calls")
@@ -254,4 +268,4 @@ async def admin_dismissal_ws(ws: WebSocket):
         backend.unsubscribe(ws)
         unregister(ws)
 
-    await _run_connection(ws, cleanup=_cleanup)
+    await _run_connection(ws, cleanup=_cleanup, verify=lambda: _token_still_valid(ws))
