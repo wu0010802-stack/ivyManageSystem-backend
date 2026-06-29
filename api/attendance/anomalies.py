@@ -307,6 +307,9 @@ def batch_confirm_anomalies(
             att = att_map.get(att_id)
             if not att:
                 continue
+            prev_action = (
+                att.confirmed_action
+            )  # 覆寫前捕捉舊值（判 waive 狀態是否變動）
             att.confirmed_action = data.action
             att.confirmed_by = operator
             att.confirmed_at = now
@@ -315,7 +318,13 @@ def batch_confirm_anomalies(
                     att.remark or ""
                 ) + f" [批次{ACTION_LABELS[data.action]}: {data.remark}]"
             processed += 1
-            if data.action == "admin_waive" and att.attendance_date:
+            # waive 狀態「雙向」變動都影響扣款（admin_waive=不扣；admin_accept/None=扣）。
+            # 原本只在 action==admin_waive 標 stale，漏了 waive→accept 應「恢復扣款」的反向，
+            # 致已豁免改回照扣的扣款被 finalize 以非 stale 數字封存、永久漏算（qa-loop round2）。
+            waive_changed = (data.action == "admin_waive") or (
+                prev_action == "admin_waive"
+            )
+            if waive_changed and att.attendance_date:
                 salary_recalc_keys.add(
                     (
                         att.employee_id,

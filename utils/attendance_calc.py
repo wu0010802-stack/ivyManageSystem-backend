@@ -265,7 +265,15 @@ def compute_shift_aware_status(
         if is_late
         else 0
     )
-    is_early_leave = bool(punch_out_dt is not None and punch_out_dt < shift_end_dt)
+    # 早退需 punch_out 落在班別窗內（shift_start ≤ punch_out < shift_end）。
+    # qa-loop round2（2026-06-29）：跨夜班 shift_end 正規化到隔日 06:00，但只補下班卡時
+    # punch_out 留在「當日」06:00（+1 日修正要求兩卡齊全），該時間戳早於 shift_start（當日
+    # 22:00）→ 是未正規化的壞時間戳，舊式僅 `punch_out < shift_end` 會算成早退 1440 分 →
+    # 扣整日薪。加 `punch_out >= shift_start` 下界即排除此壞值；同日漏上班卡的合法 lone
+    # punch_out（如晚班 13:00-22:00、21:00 走）punch_out 仍 ≥ shift_start，早退 60 分照常偵測。
+    is_early_leave = bool(
+        punch_out_dt is not None and shift_start_dt <= punch_out_dt < shift_end_dt
+    )
     early_leave_minutes = (
         max(0, int((shift_end_dt - punch_out_dt).total_seconds() / 60))
         if is_early_leave

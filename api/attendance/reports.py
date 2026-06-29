@@ -50,18 +50,20 @@ def get_today_attendance_summary(
         # SQL aggregate 取代 Python 逐行計算
         today_counts = (
             session.query(
-                # R4-8：出勤 = 至少有一個真實打卡的列；雙缺卡（無任何打卡）不算出勤，
-                # 否則只有缺卡列的員工會虛增 present、虛減 absent。
+                # 出勤 = 至少有一個「真實打卡 timestamp」的列。原以 is_missing 旗標判定，
+                # 但全日請假列經 sync_attendance_flags 把 missing 旗標全設 False（無真實打卡卻
+                # missing=False）→ 被誤計為 present（qa-loop round2 2026-06-29）。改直接看
+                # punch_in_time/punch_out_time 是否存在，與「至少一個真實打卡」語意一致。
                 func.sum(
                     case(
                         (
-                            and_(
-                                Attendance.is_missing_punch_in == True,
-                                Attendance.is_missing_punch_out == True,
+                            or_(
+                                Attendance.punch_in_time.isnot(None),
+                                Attendance.punch_out_time.isnot(None),
                             ),
-                            0,
+                            1,
                         ),
-                        else_=1,
+                        else_=0,
                     )
                 ).label("present"),
                 func.sum(case((Attendance.is_late == True, 1), else_=0)).label("late"),

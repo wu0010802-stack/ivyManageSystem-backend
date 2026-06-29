@@ -23,7 +23,10 @@ from models.database import (
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.approval_helpers import _get_finalized_salary_record
-from utils.attendance_guards import require_not_self_attendance
+from utils.attendance_guards import (
+    require_not_self_attendance,
+    assert_no_self_in_batch,
+)
 from services.salary.utils import lock_and_premark_stale
 from ._shared import AttendanceRecordUpdate
 from schemas._common import DeleteResultOut
@@ -483,7 +486,13 @@ def delete_single_attendance_record(
 
     session = get_session()
     try:
-        attendance_date = datetime.strptime(date, "%Y-%m-%d").date()
+        # 日期格式錯誤回 400（非 500），對齊孿生端點 delete_single_attendance。
+        try:
+            attendance_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="日期格式錯誤，請使用 YYYY-MM-DD"
+            )
         _assert_attendance_within_retention(attendance_date)
         _assert_attendance_not_finalized(session, employee_id, attendance_date)
 
@@ -614,6 +623,9 @@ def delete_attendance_records(
 
         # 刪除前先撈出涉及的員工 id,以便整月刪除後標 stale
         affected_emp_ids = sorted({r.employee_id for r in month_rows})
+        # 自我守衛（F-041）：整月刪除若含 caller 自己的列即整批拒，對齊單筆/批次端點，
+        # 防止持 ATTENDANCE_WRITE 的非管理帳號藉整月刪除清掉自己的遲到/早退（qa-loop round2）。
+        assert_no_self_in_batch(current_user, affected_emp_ids)
 
         deleted = 0
         for row in month_rows:
