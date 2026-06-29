@@ -415,6 +415,26 @@ def verify_ws_token(token: str) -> dict:
             raise HTTPException(
                 status_code=401, detail="Token 已失效，請重新登入（帳號狀態已變更）"
             )
+        # 模擬 token：比照 HTTP 路徑 _resolve_user_auth_fields，於同一 session 驗
+        # impersonator(admin) 現行 is_active + token_version。否則 admin 被停用 /
+        # reset_password / 改角色 / logout-all 後，先前簽發的模擬 WS token 仍能連線
+        # 並持續接收學生 PII（HTTP 端已 401、WS 端看不出來）。fail-closed：舊 token
+        # 無 impersonator_token_version claim → 視為 0，admin 已 bump 者直接拒絕。
+        impersonated_by = payload.get("impersonated_by")
+        if impersonated_by is not None:
+            impersonator = (
+                session.query(User).filter(User.id == impersonated_by).first()
+            )
+            if impersonator is None or not impersonator.is_active:
+                raise HTTPException(
+                    status_code=401, detail="模擬來源帳號已停用，模擬已終止"
+                )
+            if (payload.get("impersonator_token_version") or 0) != (
+                impersonator.token_version or 0
+            ):
+                raise HTTPException(
+                    status_code=401, detail="模擬來源帳號憑證已失效，模擬已終止"
+                )
         if user.must_change_password:
             raise HTTPException(status_code=403, detail="需先修改密碼後才能使用系統")
     finally:
