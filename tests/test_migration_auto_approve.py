@@ -14,10 +14,11 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from tests._migration_engine import make_migration_engine
 
 import models.base as base_module
 from models.database import (
@@ -59,11 +60,9 @@ class _AlembicOpStub:
 
 @pytest.fixture
 def db(tmp_path):
-    db_path = tmp_path / "mig.sqlite"
-    engine = create_engine(
-        f"sqlite:///{db_path}",
-        connect_args={"check_same_thread": False},
-    )
+    # DATABASE_URL 指向 PG（CI test / alembic-roundtrip job）時於隔離 schema 跑真 PG，
+    # 讓 migration 的 backfill SQL / dialect 行為在真 PG 驗過；否則 fallback tmp sqlite。
+    engine, cleanup = make_migration_engine(tmp_path, schema="mig_auto_approve")
     Session = sessionmaker(bind=engine)
     old_engine, old_factory = base_module._engine, base_module._SessionFactory
     base_module._engine = engine
@@ -74,7 +73,7 @@ def db(tmp_path):
     yield engine, s, migration
     s.close()
     base_module._engine, base_module._SessionFactory = old_engine, old_factory
-    engine.dispose()
+    cleanup()
 
 
 def _run_upgrade(engine, migration, monkeypatch):
@@ -96,7 +95,11 @@ def _setup_family(s):
     )
     s.add(student)
     user = User(
-        username="p", password_hash="!", role="parent", permission_names=[], is_active=True
+        username="p",
+        password_hash="!",
+        role="parent",
+        permission_names=[],
+        is_active=True,
     )
     s.add(user)
     s.flush()
