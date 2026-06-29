@@ -18,6 +18,39 @@ from services.offboarding.orchestrator import StepResult
 logger = logging.getLogger(__name__)
 
 
+def revoke_active_user_account(
+    session: Session, employee_id: int, now: datetime
+) -> User | None:
+    """撤銷某員工連動的 active User 帳號：is_active=False + token_version++ + 撤所有
+    staff_refresh family。回傳被撤的 User（無 active user 則 None）。
+
+    delete_employee 與 offboarding revoke_user step 共用此單一口徑，避免兩條離職路徑的
+    撤權行為再次漂移（qa-loop round2 2026-06-29 P1：DELETE 路徑曾漏撤 User 致離職員工仍可登入）。
+    """
+    user = (
+        session.query(User)
+        .filter(
+            User.employee_id == employee_id,
+            User.is_active.is_(True),
+        )
+        .first()
+    )
+    if user is None:
+        return None
+
+    user.is_active = False
+    user.token_version = (user.token_version or 0) + 1
+    # R6-4：同 transaction 撤銷該 user 所有 staff_refresh family（比照 change_password /
+    # update_user）。is_active=False 雖已讓 /refresh 401（即時失效），但未撤的 family 是
+    # 死資料；若日後「重新啟用員工」未 bump token_version 會復活舊 cookie。inline 撤避免
+    # revoke_all_for_user 另開 session 脫離本離職 transaction。
+    session.query(StaffRefreshToken).filter(
+        StaffRefreshToken.user_id == user.id,
+        StaffRefreshToken.revoked_at.is_(None),
+    ).update({"revoked_at": now}, synchronize_session=False)
+    return user
+
+
 def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
     today = today_taipei()
     now = now_taipei_naive()
@@ -30,14 +63,7 @@ def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
             "error": None,
         }
 
-    user = (
-        session.query(User)
-        .filter(
-            User.employee_id == record.employee_id,
-            User.is_active.is_(True),
-        )
-        .first()
-    )
+    user = revoke_active_user_account(session, record.employee_id, now)
 
     if user is None:
         record.user_revoked_at = now
@@ -49,16 +75,6 @@ def run(session: Session, record: EmployeeOffboardingRecord) -> StepResult:
             "error": None,
         }
 
-    user.is_active = False
-    user.token_version = (user.token_version or 0) + 1
-    # R6-4：同 transaction 撤銷該 user 所有 staff_refresh family（比照 change_password /
-    # update_user）。is_active=False 雖已讓 /refresh 401（即時失效），但未撤的 family 是
-    # 死資料；若日後「重新啟用員工」未 bump token_version 會復活舊 cookie。inline 撤避免
-    # revoke_all_for_user 另開 session 脫離本離職 transaction。
-    session.query(StaffRefreshToken).filter(
-        StaffRefreshToken.user_id == user.id,
-        StaffRefreshToken.revoked_at.is_(None),
-    ).update({"revoked_at": now}, synchronize_session=False)
     record.user_revoked_at = now
 
     logger.warning(

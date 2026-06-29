@@ -4,7 +4,7 @@ Employee management router
 
 import logging
 from datetime import date, datetime, timedelta
-from utils.taipei_time import today_taipei
+from utils.taipei_time import today_taipei, now_taipei_naive
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -813,6 +813,25 @@ def delete_employee(
                     len(dangling),
                     dangling,
                 )
+            # P1（qa-loop round2 2026-06-29）：軟刪除（設為離職）須撤連動 User 帳號，否則
+            # 離職員工 User 仍 active，可繼續登入並以原角色全權存取管理端 API（auth 全程只檢
+            # User.is_active）。與 offboarding revoke_user step 共用同一口徑；僅 resign_date
+            # <= today（非通知期）才撤，對齊 canonical revoke_user 的 notice_period 行為。
+            if employee.resign_date and employee.resign_date <= today_taipei():
+                from services.offboarding.steps.revoke_user import (
+                    revoke_active_user_account,
+                )
+
+                revoked_user = revoke_active_user_account(
+                    session, employee_id, now_taipei_naive()
+                )
+                if revoked_user is not None:
+                    logger.warning(
+                        "員工 %s 軟刪除（離職）撤 User 帳號 username=%s token_version 升至 %d",
+                        employee_id,
+                        revoked_user.username,
+                        revoked_user.token_version,
+                    )
         session.commit()
         return {"message": "員工已設為離職", "id": employee.id}
     except HTTPException:
