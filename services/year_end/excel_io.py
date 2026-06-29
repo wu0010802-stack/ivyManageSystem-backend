@@ -219,7 +219,11 @@ def _parse_year_end_main_sheet(rows: list[list]) -> list[ParsedSettlementRow]:
         gross = _to_decimal(row[5]) if len(row) > 5 else Decimal("0")
         org_rate = _to_decimal(row[6]) if len(row) > 6 else Decimal("0")
         subtotal = _to_decimal(row[7]) if len(row) > 7 else Decimal("0")
-        leave_late = _to_decimal(row[8]) if len(row) > 8 else Decimal("0")
+        # col 8（114.02-114.12 請假遲到）與 col 9（115.01 請假遲到）皆為請假遲到扣款，
+        # 須相加；只讀 col 8 會少扣 → rebuild 後 payable 變大、年終轉帳多發。
+        leave_late = (_to_decimal(row[8]) if len(row) > 8 else Decimal("0")) + (
+            _to_decimal(row[9]) if len(row) > 9 else Decimal("0")
+        )
         disciplinary = _to_decimal(row[10]) if len(row) > 10 else Decimal("0")
         meeting = _to_decimal(row[11]) if len(row) > 11 else Decimal("0")
         personal_leave = _to_decimal(row[12]) if len(row) > 12 else Decimal("0")
