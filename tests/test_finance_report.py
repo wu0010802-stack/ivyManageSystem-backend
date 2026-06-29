@@ -442,7 +442,11 @@ class TestAggregator:
             data = svc.build_finance_summary(s, 2026)
         rev_cats = {c["category"] for c in data["revenue_by_category"]}
         exp_cats = {c["category"] for c in data["expense_by_category"]}
-        assert rev_cats == {"tuition", "activity"}
+        assert rev_cats == {
+            "tuition",
+            "activity",
+            "misc_receipt",
+        }  # Task 7：雜項收款納入
         assert exp_cats == {"salary_gross", "employer_benefit", "vendor_payment"}
 
     def test_cross_year_isolation(self, fin_client):
