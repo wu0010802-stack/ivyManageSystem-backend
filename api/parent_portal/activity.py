@@ -657,8 +657,12 @@ def confirm_promotion(
         if code == "NOT_PENDING":
             raise HTTPException(status_code=400, detail="此課程非待確認狀態，無法確認")
         if code == "EXPIRED":
+            # F3（2026-06-29 audit）：此 endpoint 走 RLS 家長 session（get_parent_db），
+            # 無權跨家庭刪除/遞補他人 registration，故**不**在此同步釋出（與公開端
+            # api/activity/public.py 的特權主庫 session 不同）。訊息改為據實陳述「已逾期
+            # 失效」，不謊稱「已釋出給下一位候補」；實際釋出/遞補由 sweeper 或 admin 處理。
             raise HTTPException(
-                status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
+                status_code=410, detail="確認期限已過，此名額已逾期失效"
             )
         if code == "STUDENT_TERMINAL":
             raise HTTPException(

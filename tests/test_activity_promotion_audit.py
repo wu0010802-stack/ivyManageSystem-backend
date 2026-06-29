@@ -103,6 +103,79 @@ def test_confirm_promotion_writes_audit(client_sf):
     assert any(a.action == "UPDATE" for a in audits), [a.action for a in audits]
 
 
+def test_confirm_expired_releases_slot_and_promotes_next(client_sf):
+    """F3（2026-06-29 audit）：家長 confirm 撞到逾期 → 410，且**同步**釋出名額
+    （刪除逾期 promoted_pending）並遞補下一位候補，使「名額已釋出給下一位候補」
+    名實相符（不依賴預設停用的 sweeper）。
+
+    本 test 同時涵蓋端點層風險點：confirm_waitlist_promotion 在 raise EXPIRED 後，
+    endpoint 仍以同一 session 續做釋出 + commit（驗證 session 在例外後可用、不爆 500）。
+    """
+    from datetime import timedelta
+
+    from models.database import ActivityRegistration
+    from utils.taipei_time import now_taipei_naive
+
+    client, sf = client_sf
+    with sf() as s:
+        _seed(s)
+        rid = _insert_reg(s)  # 王小明（與 _LEGACY_IDENTITY 相符）
+        cid = s.query(ActivityCourse).filter_by(name="圍棋").first().id
+        # 第一位：逾期 promoted_pending
+        s.add(
+            RegistrationCourse(
+                registration_id=rid,
+                course_id=cid,
+                price_snapshot=1000,
+                status="promoted_pending",
+                confirm_deadline=now_taipei_naive() - timedelta(hours=1),
+            )
+        )
+        # 第二位：候補在後（待遞補）
+        reg2 = ActivityRegistration(
+            student_name="李小華",
+            birthday="2020-06-06",
+            class_name="海豚班",
+            parent_phone="0922333444",
+            is_active=True,
+            paid_amount=0,
+        )
+        s.add(reg2)
+        s.flush()
+        rid2 = reg2.id
+        s.add(
+            RegistrationCourse(
+                registration_id=rid2,
+                course_id=cid,
+                price_snapshot=1000,
+                status="waitlist",
+            )
+        )
+        s.commit()
+
+    resp = client.post(
+        f"/api/activity/public/registrations/{rid}/courses/{cid}/confirm-promotion",
+        json=_LEGACY_IDENTITY,
+    )
+    assert resp.status_code == 410, resp.json()
+
+    with sf() as s:
+        rc1 = (
+            s.query(RegistrationCourse)
+            .filter_by(registration_id=rid, course_id=cid)
+            .first()
+        )
+        assert rc1 is None, "逾期 pending 應被同步釋出（刪除）"
+        rc2 = (
+            s.query(RegistrationCourse)
+            .filter_by(registration_id=rid2, course_id=cid)
+            .first()
+        )
+        assert (
+            rc2 is not None and rc2.status == "promoted_pending"
+        ), "下一位應遞補為待確認"
+
+
 def test_decline_promotion_writes_audit(client_sf):
     client, sf = client_sf
     rid, cid = _setup_promoted_pending(sf)

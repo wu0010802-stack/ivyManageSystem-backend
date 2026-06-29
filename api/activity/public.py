@@ -1610,6 +1610,25 @@ def public_confirm_promotion(
                     status_code=409, detail="此課程非待確認狀態，無法確認"
                 )
             if code == "EXPIRED":
+                # F3（2026-06-29 audit）：偵測逾期當下同步釋出名額 + 遞補下一位，使
+                # 「名額已釋出給下一位候補」名實相符（不依賴預設停用的 sweeper）。
+                # confirm_waitlist_promotion 在 raise EXPIRED 前未做任何 mutation（僅持
+                # FOR UPDATE 鎖），session 可續用；公開端走主庫 get_session()，具完整
+                # 權限可安全跨家庭釋出/遞補（家長 RLS 端不走此路徑，見 service docstring）。
+                try:
+                    activity_service.release_expired_pending_promotion(
+                        session, registration_id, course_id
+                    )
+                    session.commit()
+                    _invalidate_after_registration_mutation(session)
+                except Exception:  # noqa: BLE001 — 釋出 best-effort，失敗仍回 410
+                    session.rollback()
+                    logger.warning(
+                        "逾期同步釋出失敗 reg=%s course=%s（仍回 410，待 sweeper/admin 處理）",
+                        registration_id,
+                        course_id,
+                        exc_info=True,
+                    )
                 raise HTTPException(
                     status_code=410, detail="確認期限已過，名額已釋出給下一位候補"
                 )

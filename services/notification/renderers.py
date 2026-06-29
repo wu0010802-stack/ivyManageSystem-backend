@@ -148,9 +148,15 @@ def _r_salary_batch(ctx: dict) -> Rendered:
 
 @renderer("activity.waitlist_promoted")
 def _r_activity_waitlist(ctx: dict) -> Rendered:
+    body = f"學生：{ctx.get('student_name', '')}"
+    # F1（2026-06-29 audit）：被升候補無家長 App/LINE 通知管道時，提醒承辦 staff
+    # 改以電話主動外撥通知確認（否則 48h 確認時鐘到期家長毫無所悉 → 靜默失位）。
+    if ctx.get("no_parent_channel"):
+        phone = ctx.get("parent_phone") or ""
+        body += f"\n⚠ 此候補無家長 App/LINE 通知管道，請以電話 {phone} 主動通知確認"
     return Rendered(
         title=f"候補轉正：{ctx['course_name']}",
-        body=f"學生：{ctx.get('student_name', '')}",
+        body=body,
         deep_link=f"/activity/courses/{ctx['course_id']}",
     )
 

@@ -990,6 +990,21 @@ class ActivityService:
         rc.final_reminder_sent_at = None
         # 轉正讓 total 增加，重算 is_paid 避免付款狀態停在舊值
         self._recompute_is_paid(session, registration_id)
+
+        # F2（2026-06-29 audit）：手動升位除通知 staff（在 endpoint 層）外，亦通知家長。
+        # 直升 enrolled 無 confirm 窗 → context 不帶 deadline，渲染「已升為正式報名」。
+        # 原本只推 ACTIVITY_WRITE staff，家長對「已產生新費用」毫無所悉直到自行查詢。
+        # _notify_parents 內部 fail-soft（無 guardian/無管道時靜默跳過），不影響升位成敗。
+        _notify_parents(
+            session,
+            registration_id,
+            "activity.waitlist_promoted",
+            {
+                "student_name": student_name or str(registration_id),
+                "course_name": course.name,
+                "course_id": course_id,
+            },
+        )
         return (student_name or str(registration_id), course.name)
 
     # ------------------------------------------------------------------ #
@@ -1118,6 +1133,87 @@ class ActivityService:
         # 釋出名額，自動遞補下一位候補
         self._auto_promote_first_waitlist(session, course_id)
         return (student_name or str(registration_id), course_name)
+
+    def release_expired_pending_promotion(
+        self, session, registration_id: int, course_id: int
+    ) -> tuple[str, str]:
+        """同步釋出一筆「逾期未確認」的 promoted_pending：刪除該列 → 記錄 →
+        通知逾期家長 → 遞補下一位候補。回 (student_name, course_name)。
+
+        F3（2026-06-29 audit）：家長 confirm 撞到逾期時，confirm_waitlist_promotion
+        只 raise EXPIRED，名額並未真正釋出、下一位也沒遞補；真正釋出只靠 sweeper，
+        而 sweeper 預設停用（config/scheduler.SchedulerSettings）。於是兩個家長端
+        confirm endpoint 回覆「名額已釋出給下一位候補」名實不符、容量被逾期 pending
+        永久卡住。本方法讓**具完整權限的 session**（公開端 confirm 走 get_session()）
+        在偵測逾期當下同步釋出，使該訊息名實相符、不依賴 sweeper。
+
+        ⚠ 僅供主庫（admin/sweeper 同層）session 呼叫：會刪除/遞補他人 registration，
+        家長 RLS session（parent_portal）無此權限亦不應由家長觸發跨家庭寫入，勿從該路徑呼叫。
+
+        守衛：rc 不存在→NOT_FOUND；非 promoted_pending→NOT_PENDING；未逾期→NOT_EXPIRED
+        （避免誤呼叫把有效名額當逾期釋出）。鎖序 course → registration_course，與
+        confirm/decline/_auto_promote/sweep 一致，消除 ABBA。
+        """
+        now = _now_taipei_naive()
+        course = (
+            session.query(ActivityCourse)
+            .filter(ActivityCourse.id == course_id)
+            .with_for_update()
+            .first()
+        )
+        if not course:
+            raise ValueError("NOT_FOUND")
+
+        row = (
+            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            .join(
+                ActivityRegistration,
+                RegistrationCourse.registration_id == ActivityRegistration.id,
+            )
+            .filter(
+                RegistrationCourse.registration_id == registration_id,
+                RegistrationCourse.course_id == course_id,
+                ActivityRegistration.is_active.is_(True),
+            )
+            .with_for_update()
+            .first()
+        )
+        if not row:
+            raise ValueError("NOT_FOUND")
+        rc, student_name = row
+
+        if rc.status != "promoted_pending":
+            raise ValueError("NOT_PENDING")
+        if not (rc.confirm_deadline and rc.confirm_deadline < now):
+            raise ValueError("NOT_EXPIRED")
+
+        # 釋出：刪除逾期列 + 記錄（對齊 sweep 的單列逾期處理）
+        session.delete(rc)
+        self.log_change(
+            session,
+            registration_id,
+            student_name or str(registration_id),
+            "候補轉正逾期放棄",
+            f"課程「{course.name}」逾期未確認，系統自動放棄",
+            "system",
+        )
+        session.flush()
+
+        # 通知逾期家長（fail-soft；無 guardian/管道時靜默跳過）
+        _notify_parents(
+            session,
+            registration_id,
+            "activity.waitlist_expired",
+            {
+                "student_name": student_name or str(registration_id),
+                "course_name": course.name,
+                "course_id": course_id,
+            },
+        )
+
+        # 遞補下一位候補
+        self._auto_promote_first_waitlist(session, course_id)
+        return (student_name or str(registration_id), course.name)
 
     def sweep_expired_pending_promotions(self, session) -> dict:
         """掃描過期未確認的 promoted_pending，逾期者刪除並遞補下一位；
@@ -1503,7 +1599,11 @@ class ActivityService:
 
         inactive_student_ids = select(Student.id).where(Student.is_active.is_(False))
         row = (
-            session.query(RegistrationCourse, ActivityRegistration.student_name)
+            session.query(
+                RegistrationCourse,
+                ActivityRegistration.student_name,
+                ActivityRegistration.parent_phone,
+            )
             .join(
                 ActivityRegistration,
                 RegistrationCourse.registration_id == ActivityRegistration.id,
@@ -1523,7 +1623,7 @@ class ActivityService:
         )
         if not row:
             return
-        rc, student_name = row
+        rc, student_name, parent_phone = row
         now = _now_taipei_naive()
         deadline = now + timedelta(hours=_get_confirm_window_hours())
         rc.status = "promoted_pending"
@@ -1547,6 +1647,17 @@ class ActivityService:
             course.name,
             deadline.isoformat(),
         )
+        # F1（2026-06-29 audit）：偵測被升候補有無家長 App/LINE 通知管道。
+        # student_id=None（公開/校外報名）或未綁定 active Guardian → 無管道：此候補
+        # **仍照常升位**（公開報名是一級支援型態，跳過會讓其永不自動升位、且破壞遞補
+        # 邏輯），但啟動的 48h 確認時鐘家長收不到任何通知 → 靜默失位。故於 staff 通知
+        # 標註 no_parent_channel + parent_phone，由 staff 主動電話通知確認，閉合此缺口。
+        # 預先解析 parent_uids，下方家長通知複用（省一次重複 Guardian 查詢）。
+        parent_uids = _resolve_parent_user_ids_for_registration(
+            session, rc.registration_id
+        )
+        no_parent_channel = not parent_uids
+
         # 通知 ACTIVITY_WRITE staff：候補自動升正式（待家長確認）。
         # admin-side awareness 用，per-staff in_app + LINE（對齊 C6 manual promote）。
         try:
@@ -1556,17 +1667,22 @@ class ActivityService:
             staff_user_ids = _list_active_users_with_permission(
                 session, Permission.ACTIVITY_WRITE.value
             )
+            staff_context = {
+                "student_name": student_name or str(rc.registration_id),
+                "course_name": course.name,
+                "course_id": course_id,
+                "deadline": deadline.isoformat() if deadline else None,
+            }
+            if no_parent_channel:
+                # in_app renderer 會把此提示附在 body，提醒 staff 改以電話外撥
+                staff_context["no_parent_channel"] = True
+                staff_context["parent_phone"] = parent_phone or ""
             for sid in staff_user_ids:
                 dispatch.enqueue(
                     session=session,
                     event_type="activity.waitlist_promoted",
                     recipient_user_id=sid,
-                    context={
-                        "student_name": student_name or str(rc.registration_id),
-                        "course_name": course.name,
-                        "course_id": course_id,
-                        "deadline": deadline.isoformat() if deadline else None,
-                    },
+                    context=staff_context,
                     source_entity_type="registration_course",
                     source_entity_id=rc.registration_id,
                 )
@@ -1581,6 +1697,7 @@ class ActivityService:
         # 都推家長（_resolve_parent_user_ids_for_registration）；修補原本只推 staff、
         # 啟動 48h 確認時鐘那則通知漏發家長的缺口。複用 waitlist_reminder event
         # （升位即第一次「請確認」提醒；T-24h/T-6h 仍會臨期再提醒，家長端 deep_link）。
+        # 無管道時 parent_uids 為空 → _notify_parents 內 for 迴圈 no-op（fail-soft）。
         _notify_parents(
             session,
             rc.registration_id,
@@ -1591,6 +1708,7 @@ class ActivityService:
                 "course_id": course_id,
                 "deadline": deadline.isoformat() if deadline else None,
             },
+            parent_uids=parent_uids,
         )
 
     # ------------------------------------------------------------------ #
