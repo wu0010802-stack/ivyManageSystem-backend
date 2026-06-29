@@ -194,7 +194,10 @@ def admin_create_registration(
                 status_code=400, detail="此學生本學期已有有效報名，請改用編輯功能"
             )
 
-        classroom = _require_active_classroom(session, body.class_)
+        # F3：班級反查依本筆報名學期收斂，避免同名跨學期班級綁到舊學期 FK
+        classroom = _require_active_classroom(
+            session, body.class_, school_year=sy, semester=sem
+        )
 
         course_names = [item.name for item in body.courses]
         if len(course_names) != len(set(course_names)):
@@ -696,7 +699,10 @@ def update_registration_basic(
         if not reg:
             raise _not_found("報名資料")
 
-        classroom = _require_active_classroom(session, body.class_)
+        # F3：班級反查依本筆報名既有學期收斂，避免同名跨學期班級綁到錯學期 FK
+        classroom = _require_active_classroom(
+            session, body.class_, school_year=reg.school_year, semester=reg.semester
+        )
 
         name_or_bday_changed = (reg.student_name != body.name) or (
             (reg.birthday or "") != body.birthday

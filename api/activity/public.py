@@ -1239,32 +1239,14 @@ def public_update_registration(
         # body.new_parent_phone 若填且不同於舊號，表示家長要求變更聯絡電話。
         effective_phone = body.parent_phone
         if body.new_parent_phone and body.new_parent_phone != body.parent_phone:
-            # 擋住改成「其他家長」正在使用的手機號：否則會讓三欄查詢 /public/query 候選
-            # 變多，甚至讓不同家長的報名互相可見（name 同姓時）。
-            # 擴大為全域 is_active（不限同學期）——否則跨學期共用同支電話會讓對帳
-            # 混亂，無法還原哪支手機真正對應哪位家長。
-            conflict = (
-                session.query(ActivityRegistration.id)
-                .filter(
-                    ActivityRegistration.id != reg.id,
-                    ActivityRegistration.parent_phone == body.new_parent_phone,
-                    ActivityRegistration.is_active.is_(True),
-                )
-                .first()
-            )
-            if conflict is not None:
-                # F-029：原訊息「此手機號碼已被其他報名使用」會形成 phone enumeration
-                # oracle，攻擊者可枚舉任意 09 開頭手機是否在系統內出現過。
-                # 資安 P1 (2026-05-07)：再進一步收緊
-                # - 409 → 400（與 Pydantic 驗證失敗同 status code，攻擊者無法用
-                #   status code 區分「手機已存在」與「其他驗證錯誤」）
-                # - 加入 200-500ms 隨機延遲（同 /public/query LOW-3 模式）壓低 timing oracle
-                # rate limit 仍由 _public_register_limiter 控制 5/min/IP。
-                time.sleep(random.uniform(0.2, 0.5))
-                raise HTTPException(
-                    status_code=400,
-                    detail="此手機號碼無法使用，請聯繫校方協助處理",
-                )
+            # F5（2026-06-29 業主裁示）：放寬手足共用家長電話。報名端
+            # （/public/register）自 2026-06-22 已允許不同 name/birthday 共用同支家長
+            # 電話，改號端原本擋「任何他筆 active 報名在用此號」與之矛盾，致手足無法把
+            # 既有報名改成家庭共用號。
+            # 安全性不退：/public/query 需 name+birthday+phone「三欄精確全符」方可查得
+            # （exact 姓名，非「同姓即可見」），共用電話不造成跨家長外洩；且移除此阻擋
+            # 同時關閉原「200/400」pass-fail 枚舉 oracle（改號一律 200，攻擊者無法以
+            # 結果區分號碼是否已在系統內）。氾濫送件仍由 _public_register_limiter 控管。
             reg.parent_phone = body.new_parent_phone
             effective_phone = body.new_parent_phone
 

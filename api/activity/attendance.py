@@ -70,13 +70,18 @@ def list_sessions(
     course_id: Optional[int] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
+    # 場次本身無學期欄位，學期繼承自課程；以下兩參數經 ActivityCourse join 過濾，
+    # 讓前端切學期時場次列表同步收斂（否則切到 114-1 仍會列 113-2 場次、
+    # 可能誤編輯/刪除舊學期場次）。未帶則列全部，向後相容。
+    school_year: Optional[int] = None,
+    semester: Optional[int] = None,
     # 裸 int 時 skip=-1 在 PG OFFSET 直接 500、limit 無上限可全表 dump；
     # 對齊同 package 其他列表端點（courses/supplies）的 Query 驗證慣例
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     current_user: dict = Depends(get_current_user),
 ):
-    """場次列表（可依課程、日期範圍篩選，支援分頁）"""
+    """場次列表（可依課程、學期、日期範圍篩選，支援分頁）"""
     session = get_session()
     try:
         query = session.query(
@@ -90,6 +95,10 @@ def list_sessions(
         ).join(ActivityCourse, ActivitySession.course_id == ActivityCourse.id)
         if course_id:
             query = query.filter(ActivitySession.course_id == course_id)
+        if school_year is not None:
+            query = query.filter(ActivityCourse.school_year == school_year)
+        if semester is not None:
+            query = query.filter(ActivityCourse.semester == semester)
         if start_date:
             query = query.filter(ActivitySession.session_date >= start_date)
         if end_date:

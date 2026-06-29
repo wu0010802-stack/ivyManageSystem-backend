@@ -350,49 +350,51 @@ class TestBirthdayRangeValidation:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# L4: /public/update 換手機號衝突檢查
+# L4: /public/update 換手機號 —— 手足共用電話（F5，2026-06-29 業主裁示放寬）
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestPublicUpdatePhoneConflict:
-    def test_cannot_change_to_phone_used_by_another_active_registration(self, client):
-        """若 new_parent_phone 已被同學期另一筆 active 報名使用 → 400（資安 P1 2026-05-07 後）。"""
-        c, sf = client
+class TestPublicUpdatePhoneSiblingSharing:
+    """2026-06-29 才藝點名稽核 F5：手足共用家長電話在「修改報名電話」時亦應成立。
+
+    報名端（/public/register）自 2026-06-22 已移除 phone-only soft-dedup，手足
+    （不同 name/birthday）可各自用同一支家長電話報名。但改號端（/public/update）
+    原本擋「任何他筆 active 報名在用此號」→ 手足無法把既有報名改成家庭共用號。
+
+    業主裁示（2026-06-29）：放寬，允許改成已存在號碼，與報名端一致。
+    安全性不退：/public/query 需 name+birthday+phone「三欄精確全符」方可查得
+    （見 test_query_still_requires_all_three_fields_after_phone_share），共用電話
+    不造成跨家長外洩；移除此阻擋同時關閉原「200/400」pass-fail 枚舉 oracle。
+    （取代原 TestPublicUpdatePhoneConflict——該守衛已隨業主裁示退場。）
+    """
+
+    def _seed_two_sharing_regs(self, c, sf):
+        """A 先以自有電話報名；B（手足，不同 name+birthday）以家庭共用號報名。"""
         sy, sem = _seed_term()
         with sf() as s:
             _seed_basic(s, sy, sem)
-            s.add(
-                ActivityCourse(
-                    name="繪畫",
-                    price=1500,
-                    school_year=sy,
-                    semester=sem,
-                    is_active=True,
-                )
-            )
             s.commit()
-
-        # 家長 A 先報名
         r_a = c.post(
             "/api/activity/public/register",
-            json=_public_register_payload(phone="0911111111"),
+            json=_public_register_payload(
+                name="王小明", birthday="2020-05-10", phone="0911111111"
+            ),
         )
         assert r_a.status_code == 201, r_a.text
-        reg_a_id = r_a.json()["id"]
-        token_a = r_a.json()["query_token"]  # 資安 #5：token-bearing 報名修改需帶 token
-
-        # 家長 B（不同姓名）報名
         r_b = c.post(
             "/api/activity/public/register",
-            json=_public_register_payload(name="林小美", phone="0922222222"),
+            json=_public_register_payload(
+                name="王小華", birthday="2018-03-02", phone="0922222222"
+            ),
         )
         assert r_b.status_code == 201, r_b.text
+        return r_a, r_b
 
-        # 家長 A 試圖把手機改成家長 B 的號碼
-        r_upd = c.post(
+    def _change_a_to_shared(self, c, r_a):
+        return c.post(
             "/api/activity/public/update",
             json={
-                "id": reg_a_id,
+                "id": r_a.json()["id"],
                 "name": "王小明",
                 "birthday": "2020-05-10",
                 "parent_phone": "0911111111",
@@ -400,10 +402,54 @@ class TestPublicUpdatePhoneConflict:
                 "class": "大象班",
                 "courses": [{"name": "圍棋", "price": "1"}],
                 "supplies": [],
-                "query_token": token_a,
+                "query_token": r_a.json()["query_token"],
             },
         )
-        # 資安 P1 (2026-05-07)：409 → 400 與其他驗證錯誤同 status code。
-        assert r_upd.status_code == 400
-        # F-029：detail 已改為 generic 不洩漏存在性，僅檢查 status 與通用字眼。
-        assert "無法使用" in r_upd.json()["detail"]
+
+    def test_can_change_to_phone_used_by_sibling_registration(self, client):
+        """A 把電話改成手足 B 正在用的家庭共用號 → 放寬後成功（原本 400）。"""
+        c, sf = client
+        r_a, _r_b = self._seed_two_sharing_regs(c, sf)
+        r_upd = self._change_a_to_shared(c, r_a)
+        assert r_upd.status_code == 200, r_upd.text
+
+    def test_query_still_requires_all_three_fields_after_phone_share(self, client):
+        """共用電話後，/public/query 仍需三欄精確全符，不跨家長外洩（安全邊界）。"""
+        c, sf = client
+        r_a, r_b = self._seed_two_sharing_regs(c, sf)
+        assert self._change_a_to_shared(c, r_a).status_code == 200
+
+        # 共用號 + A 正確姓名生日 → 只查到 A
+        q_a = c.post(
+            "/api/activity/public/query",
+            json={
+                "name": "王小明",
+                "birthday": "2020-05-10",
+                "parent_phone": "0922222222",
+            },
+        )
+        assert q_a.status_code == 200, q_a.text
+        assert q_a.json()["id"] == r_a.json()["id"]
+
+        # 共用號 + B 正確姓名生日 → 只查到 B（非 A）
+        q_b = c.post(
+            "/api/activity/public/query",
+            json={
+                "name": "王小華",
+                "birthday": "2018-03-02",
+                "parent_phone": "0922222222",
+            },
+        )
+        assert q_b.status_code == 200, q_b.text
+        assert q_b.json()["id"] == r_b.json()["id"]
+
+        # 共用號 + 錯誤的姓名/生日組合 → 404（三欄缺一即查無，無跨家長外洩）
+        q_wrong = c.post(
+            "/api/activity/public/query",
+            json={
+                "name": "王小明",
+                "birthday": "2018-03-02",
+                "parent_phone": "0922222222",
+            },
+        )
+        assert q_wrong.status_code == 404

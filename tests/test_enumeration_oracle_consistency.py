@@ -1266,9 +1266,15 @@ class TestF029_PublicUpdatePhone:
         session.commit()
         return sy, sem
 
-    def test_change_to_already_used_phone_returns_400_generic_no_oracle(
+    def test_change_to_already_used_phone_now_allowed_no_oracle(
         self, activity_public_client
     ):
+        """F5（2026-06-29 業主裁示）：改成已被他筆報名使用的號碼 → 200（放寬手足共用）。
+
+        原本回 400 generic 是為了不洩漏「號碼是否已存在」。但移除阻擋後改號一律 200，
+        反而徹底消滅原「200/400」pass-fail 枚舉 oracle（攻擊者無法用結果區分號碼是否
+        已在系統內）。跨家長資料不外洩仍由 /public/query 三欄精確全符把關。
+        """
         client, sf = activity_public_client
         with sf() as s:
             sy, sem = self._seed_two_regs(s)
@@ -1318,14 +1324,8 @@ class TestF029_PublicUpdatePhone:
                 "query_token": token_a,
             },
         )
-        # 資安掃描 2026-05-07 P1：原本回 409，但 status code 仍能讓攻擊者區分
-        # 「手機已存在」(409) 與「其他驗證錯誤」(400)。改回 400 與其他 validation
-        # 錯誤同 status code，並加 200-500ms jitter 壓低 timing oracle。
-        assert r_upd.status_code == 400
-        # 必須是 generic message（不洩漏是否「已被其他報名使用」）
-        detail = r_upd.json()["detail"]
-        assert "已被其他報名使用" not in detail
-        assert "無法使用" in detail
+        # F5 放寬：改成已被使用的號碼一律成功，不再以 400/200 形成枚舉 oracle。
+        assert r_upd.status_code == 200, r_upd.text
 
     def test_change_to_unused_phone_returns_200(self, activity_public_client):
         client, sf = activity_public_client

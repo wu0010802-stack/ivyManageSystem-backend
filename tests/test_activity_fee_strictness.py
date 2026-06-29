@@ -483,15 +483,20 @@ class TestUpdatePaymentConfirmAmount:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# #4 手機衝突擴大至全域
+# #4 改號電話衝突 —— F5（2026-06-29 業主裁示放寬，原全域阻擋退場）
 # ═══════════════════════════════════════════════════════════════════════
 
 
 class TestPhoneConflictCrossTerm:
-    def test_cannot_change_to_phone_used_by_different_term_registration(
+    def test_can_change_to_phone_used_by_different_term_registration(
         self, strict_client
     ):
-        """甲生（2026春）想把手機改成乙生（2026秋）正在用的號碼 → 409。"""
+        """F5 放寬：甲生（2026春）把手機改成另一報名（2026秋）在用的號碼 → 200。
+
+        報名端早已允許共用電話；改號端原本擋全域在用號碼與之矛盾。業主裁示放寬。
+        安全性由 /public/query 三欄精確全符把關（見 test_activity_logic_holes
+        ::TestPublicUpdatePhoneSiblingSharing）。
+        """
         client, sf = strict_client
         with sf() as s:
             _create_user(
@@ -522,7 +527,7 @@ class TestPhoneConflictCrossTerm:
             s.commit()
             reg_a_id = reg_a.id
 
-        # 甲家長嘗試把 09xx1 改成 09xx2（乙家長學期）
+        # 甲家長把 09xx1 改成 09xx2（另一報名在用的號碼）
         res = client.post(
             "/api/activity/public/update",
             json={
@@ -536,8 +541,8 @@ class TestPhoneConflictCrossTerm:
                 "supplies": [],
             },
         )
-        # 資安 P1 (2026-05-07)：409 → 400 與其他驗證錯誤同 status code。
-        assert res.status_code == 400
+        # F5（2026-06-29 業主裁示）：放寬共用電話 → 改號成功（原全域阻擋已退場）。
+        assert res.status_code == 200, res.text
 
 
 # ═══════════════════════════════════════════════════════════════════════
