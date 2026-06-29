@@ -132,9 +132,14 @@ def _reply_to_dict(reply: StudentContactBookReply) -> dict:
 
 
 def _get_entry_for_parent(
-    session, *, user_id: int, entry_id: int
+    session, *, user_id: int, entry_id: int, for_write: bool = False
 ) -> StudentContactBookEntry:
-    """取出 entry 並驗證 student 屬此家長 + entry 已發布。"""
+    """取出 entry 並驗證 student 屬此家長 + entry 已發布。
+
+    for_write=True 時 _assert_student_owned 額外擋終態子女（畢業/轉出/退學），用於
+    reply/ack/delete_reply 等寫入端點，避免家長對已離校子女佔用系統資源（老師待辦/未讀）。
+    讀路徑（get_detail）保留 for_write=False，仍可查歷史聯絡簿。
+    """
     entry = (
         session.query(StudentContactBookEntry)
         .filter(
@@ -148,7 +153,7 @@ def _get_entry_for_parent(
     if entry.published_at is None:
         # 草稿對家長一律 404，避免 enumeration
         raise ContactBookNotPublished("聯絡簿不存在")
-    _assert_student_owned(session, user_id, entry.student_id)
+    _assert_student_owned(session, user_id, entry.student_id, for_write=for_write)
     return entry
 
 
@@ -353,7 +358,9 @@ def mark_read(
 ):
     """家長已讀；idempotent（已存在的 ack row 直接回 200）。"""
     user_id = current_user["user_id"]
-    entry = _get_entry_for_parent(session, user_id=user_id, entry_id=entry_id)
+    entry = _get_entry_for_parent(
+        session, user_id=user_id, entry_id=entry_id, for_write=True
+    )
 
     existing = (
         session.query(StudentContactBookAck)
@@ -421,7 +428,9 @@ def mark_read(
     }
 
 
-@router.post("/{entry_id}/reply", status_code=201, response_model=ParentContactBookReplyOut)
+@router.post(
+    "/{entry_id}/reply", status_code=201, response_model=ParentContactBookReplyOut
+)
 def reply(
     entry_id: int,
     payload: ReplyCreate,
@@ -432,7 +441,9 @@ def reply(
     """家長簡短回覆。"""
     user_id = current_user["user_id"]
     # IDOR 守衛必須在冪等 pre-check 之前執行，避免跨家庭洩漏 UUID 存在性
-    entry = _get_entry_for_parent(session, user_id=user_id, entry_id=entry_id)
+    entry = _get_entry_for_parent(
+        session, user_id=user_id, entry_id=entry_id, for_write=True
+    )
 
     # 冪等 pre-check：同 client_request_id 已存在則回原 reply
     if payload.client_request_id:
@@ -493,7 +504,9 @@ def delete_reply(
 ):
     """家長軟刪自己的回覆。"""
     user_id = current_user["user_id"]
-    entry = _get_entry_for_parent(session, user_id=user_id, entry_id=entry_id)
+    entry = _get_entry_for_parent(
+        session, user_id=user_id, entry_id=entry_id, for_write=True
+    )
     row = (
         session.query(StudentContactBookReply)
         .filter(

@@ -189,6 +189,21 @@ def _run_pii_retention_gc(session=None) -> None:
                 session.rollback()
             return
 
+        # 在 guardians.user_id 被 NULL 前，先捕捉受影響的家長 User id。抹完 guardian 後若
+        # 某 User 已無任何 guardian 指向（孤兒），其 LINE 身分 PII（display_name 常為家長真名、
+        # line_user_id 為 LINE 全球唯一識別碼）仍永久殘留 users 表，等同 GC 對該家長部分被繞過
+        # （個資法 §11，qa-loop round2 2026-06-29）。
+        affected_user_ids = [
+            row[0]
+            for row in session.execute(
+                text(
+                    "SELECT DISTINCT user_id FROM guardians "
+                    "WHERE id IN :ids AND user_id IS NOT NULL"
+                ).bindparams(bindparam("ids", expanding=True)),
+                {"ids": tuple(guardian_ids)},
+            ).fetchall()
+        ]
+
         # 抹 PII（單一 UPDATE atomic）
         now = datetime.now(timezone.utc)
         stmt = text("""
@@ -217,6 +232,32 @@ def _run_pii_retention_gc(session=None) -> None:
                     session, loc, student_ids
                 )
         areg_redacted = denorm_redacted.get("activity_registrations", 0)
+
+        # 抹孤兒家長 User 的 LINE 身分 PII。NOT EXISTS 守衛確保只抹「已無任何 guardian 指向」
+        # 的 User——仍有在籍/未抹子女的家長不受影響；line_user_id IS NOT NULL 限定只動 LINE
+        # 家長帳號（員工帳號無此欄），不誤傷後台 staff。username 改不可回溯值維持 unique 約束。
+        orphan_users_redacted = 0
+        if affected_user_ids:
+            orphan_res = session.execute(
+                text("""
+                    UPDATE users
+                    SET display_name = NULL,
+                        line_user_id = NULL,
+                        username = 'redacted_parent_' || id
+                    WHERE id IN :uids
+                      AND line_user_id IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM guardians g WHERE g.user_id = users.id
+                      )
+                    """).bindparams(bindparam("uids", expanding=True)),
+                {"uids": tuple(affected_user_ids)},
+            )
+            orphan_users_redacted = orphan_res.rowcount or 0
+            if orphan_users_redacted:
+                logger.info(
+                    "pii_retention GC: 抹除 %d 個孤兒家長 User 的 LINE 身分 PII",
+                    orphan_users_redacted,
+                )
 
         # 寫 audit_log（每筆一條，changes 不含 PII）
         days = retention_days()

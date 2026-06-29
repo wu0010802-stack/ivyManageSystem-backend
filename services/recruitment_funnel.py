@@ -257,9 +257,22 @@ def _do_convert(session, visit, *, classroom_id, actor_user_id):
 def _do_activate(session, visit, student, *, actor_user_id):
     """enrolled → active: lifecycle 升級。"""
     from utils.student_lifecycle import set_lifecycle_status
+    from services.student_lifecycle import is_transition_allowed
 
+    # 終態守衛（qa-loop round2 2026-06-29）：derive_stage 對任何「非 active」student 一律回
+    # 'enrolled'，含終態 graduated/transferred（不可復活）與 withdrawn（可復學）。若不檢查，
+    # POST to_stage='active' 會直接 set_lifecycle_status('active') 繞過 transition() 的
+    # ALLOWED_TRANSITIONS 終態守衛，復活已畢業/轉出學生並產生 lifecycle/is_active 不一致 +
+    # 取消 PII retention。以 is_transition_allowed 對齊：withdrawn→active（復學）放行、
+    # graduated/transferred→active 拒（拋 RecruitmentFunnelError 經 API 映射為 400）。
+    current = student.lifecycle_status or "active"
+    if not is_transition_allowed(current, "active"):
+        raise RecruitmentFunnelError(
+            f"學生目前為終態（{current}），不可由招生漏斗復活為在籍",
+            code="TERMINAL_STUDENT",
+        )
     # 走統一入口寫 lifecycle，補上全站 AuditLog（RecruitmentEventLog 僅漏斗自身軌跡，
-    # 不進統一稽核）。enrolled↔active 皆非終態，terminal_entered_at / PII GC 不受影響。
+    # 不進統一稽核）。
     set_lifecycle_status(session, student, "active", actor_user_id=actor_user_id)
     log_id = _write_event_log(
         session,
