@@ -242,10 +242,16 @@ def list_medication_orders(
         query = query.filter(StudentMedicationOrder.order_date >= date_from)
     if date_to:
         query = query.filter(StudentMedicationOrder.order_date <= date_to)
-    orders = query.order_by(
-        StudentMedicationOrder.order_date.desc(),
-        StudentMedicationOrder.id.desc(),
-    ).all()
+    # T6（2026-06-29 效能健檢）：from/to 皆 optional 時無時間窗，補 5000 列安全上限
+    # （與 leaves/overtimes 列表同款防護網），連帶界限 per-order N+1 載入。
+    orders = (
+        query.order_by(
+            StudentMedicationOrder.order_date.desc(),
+            StudentMedicationOrder.id.desc(),
+        )
+        .limit(5000)
+        .all()
+    )
     items = [
         _order_to_dict(o, _load_logs(session, o.id), _load_photos(session, o.id))
         for o in orders

@@ -265,3 +265,50 @@ def test_drag_patch_recurring_with_explicit_rule_change_passes(events_client):
     )
     assert r.status_code == 200, r.text
     assert r.json()["event_date"] == "2026-05-12"
+
+
+def test_get_events_query_is_bounded(events_client):
+    """T6（2026-06-29 效能健檢）：GET /api/events 省略 year 時須帶 SQL LIMIT 安全上限。
+
+    省略 year 時原本只 filter is_active==True 後無界 .all()，跨多年累積的 school_events
+    會整表回傳。本測試固化「查詢帶 SQL LIMIT」。
+    """
+    import models.base as base_module
+    from datetime import date as _d
+
+    from sqlalchemy import event as sa_event
+
+    from models.event import SchoolEvent
+
+    client, session_factory = events_client
+    tok = _login_admin(client, session_factory)
+    with session_factory() as s:
+        s.add(
+            SchoolEvent(
+                title="x", event_date=_d(2026, 3, 1), event_type="general", is_active=True
+            )
+        )
+        s.commit()
+
+    engine = base_module._engine
+    selects: list[str] = []
+
+    def _cap(conn, cursor, statement, parameters, context, executemany):
+        st = statement.lstrip().lower()
+        if st.startswith("select") and "school_events" in st:
+            selects.append(st)
+
+    sa_event.listen(engine, "after_cursor_execute", _cap)
+    try:
+        resp = client.get("/api/events", headers={"Authorization": f"Bearer {tok}"})
+    finally:
+        sa_event.remove(engine, "after_cursor_execute", _cap)
+
+    assert resp.status_code == 200, resp.text
+    data_selects = [
+        s for s in selects if "from school_events" in s and "count(" not in s
+    ]
+    assert data_selects, "應有對 school_events 的查詢"
+    assert all("limit" in s for s in data_selects), (
+        f"GET /api/events 須帶 SQL LIMIT 安全上限（防永久成長），實際：{data_selects}"
+    )

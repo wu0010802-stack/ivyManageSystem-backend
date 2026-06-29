@@ -126,7 +126,9 @@ def get_events(
         if event_type:
             q = q.filter(SchoolEvent.event_type == event_type)
 
-        events = q.order_by(SchoolEvent.event_date).all()
+        # T6（2026-06-29 效能健檢）：省略 year 時無日期窗，補 5000 列安全上限
+        # （與 leaves/overtimes 列表同款防護網），避免跨多年累積的事件整表回傳。
+        events = q.order_by(SchoolEvent.event_date).limit(5000).all()
         return [_event_to_dict(ev) for ev in events]
     finally:
         session.close()

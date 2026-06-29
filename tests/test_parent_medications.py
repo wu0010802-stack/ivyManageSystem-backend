@@ -539,3 +539,62 @@ class TestPhotoUpload:
         with sf() as session:
             att = session.query(Attachment).filter(Attachment.id == att_id).first()
             assert att.deleted_at is not None
+
+
+def test_list_medication_orders_query_is_bounded(med_client):
+    """T6（2026-06-29 效能健檢）：家長用藥單列表查詢須帶 SQL LIMIT 安全上限。
+
+    list_medication_orders 原本 from/to 皆 optional → 無預設全時段、無 limit
+    的 .all()（並疊加每筆 order 再 _load_logs/_load_photos 的 N+1）。本測試固化
+    「查詢帶 SQL LIMIT」（cap 連帶界限 per-order N+1）。
+    """
+    import models.base as base_module
+
+    from sqlalchemy import event as sa_event
+
+    client, sf = med_client
+    with sf() as session:
+        user, student = _seed(session)
+        session.commit()
+        token = _token(user)
+        sid = student.id
+
+    client.post(
+        "/api/parent/medication-orders",
+        json={
+            "student_id": sid,
+            "order_date": date.today().isoformat(),
+            "medication_name": "退燒藥",
+            "dose": "5ml",
+            "time_slots": ["08:00"],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    engine = base_module._engine
+    selects: list[str] = []
+
+    def _cap(conn, cursor, statement, parameters, context, executemany):
+        st = statement.lstrip().lower()
+        if st.startswith("select") and "student_medication_orders" in st:
+            selects.append(st)
+
+    sa_event.listen(engine, "after_cursor_execute", _cap)
+    try:
+        resp = client.get(
+            f"/api/parent/medication-orders?student_id={sid}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        sa_event.remove(engine, "after_cursor_execute", _cap)
+
+    assert resp.status_code == 200, resp.text
+    data_selects = [
+        s
+        for s in selects
+        if "from student_medication_orders" in s and "count(" not in s
+    ]
+    assert data_selects, "應有對 student_medication_orders 的查詢"
+    assert all("limit" in s for s in data_selects), (
+        f"用藥單列表查詢須帶 SQL LIMIT 安全上限，實際：{data_selects}"
+    )

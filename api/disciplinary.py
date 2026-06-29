@@ -111,9 +111,15 @@ def list_actions(
         if pending_only:
             q = q.filter(DisciplinaryAction.applied_to_salary_id.is_(None))
 
-        rows = q.order_by(
-            DisciplinaryAction.action_date.desc(), DisciplinaryAction.id.desc()
-        ).all()
+        # T6（2026-06-29 效能健檢）：append-only 跨全員永久成長，補 5000 列安全上限
+        # （與 leaves/overtimes 列表同款防護網），避免無界 .all()。
+        rows = (
+            q.order_by(
+                DisciplinaryAction.action_date.desc(), DisciplinaryAction.id.desc()
+            )
+            .limit(5000)
+            .all()
+        )
         return {"items": [_to_out(a).model_dump() for a in rows]}
 
 

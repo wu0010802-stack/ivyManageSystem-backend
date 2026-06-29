@@ -628,3 +628,50 @@ class TestApi:
         with session_factory() as session:
             row = session.get(DisciplinaryAction, aid)
             assert float(row.deduction_amount or 0) == 0
+
+
+def test_list_actions_query_is_bounded(disc_client):
+    """T6（2026-06-29 效能健檢）：懲處列表查詢須有 SQL LIMIT 安全上限。
+
+    disciplinary_actions 為 append-only、跨全員永久成長；list_actions 原本
+    完全無界 .all()（無分頁參數、無 cap）。本測試固化「查詢帶 SQL LIMIT」。
+    """
+    import models.base as base_module
+    from sqlalchemy import event as sa_event
+
+    client, session_factory = disc_client
+    _login(client, session_factory)
+    with session_factory() as session:
+        emp = _add_emp(session)
+        session.add(
+            DisciplinaryAction(
+                employee_id=emp.id,
+                action_date=date(2026, 4, 10),
+                action_type="warning",
+                deduction_amount=1000,
+            )
+        )
+        session.commit()
+
+    engine = base_module._engine
+    selects: list[str] = []
+
+    def _cap(conn, cursor, statement, parameters, context, executemany):
+        st = statement.lstrip().lower()
+        if st.startswith("select") and "disciplinary_actions" in st:
+            selects.append(st)
+
+    sa_event.listen(engine, "after_cursor_execute", _cap)
+    try:
+        resp = client.get("/api/disciplinary-actions")
+    finally:
+        sa_event.remove(engine, "after_cursor_execute", _cap)
+
+    assert resp.status_code == 200, resp.text
+    data_selects = [
+        s for s in selects if "from disciplinary_actions" in s and "count(" not in s
+    ]
+    assert data_selects, "應有對 disciplinary_actions 的查詢"
+    assert all("limit" in s for s in data_selects), (
+        f"懲處列表查詢須帶 SQL LIMIT 安全上限（防永久成長），實際：{data_selects}"
+    )
