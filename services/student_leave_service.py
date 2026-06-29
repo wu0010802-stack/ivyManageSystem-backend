@@ -86,16 +86,21 @@ def apply_attendance_for_leave(
         leave.start_date, leave.end_date, holiday_map, makeup_map
     )
     new_remark = make_remark(leave.id)
+    # A3（2026-06-29 效能健檢）：一次範圍查詢撈回該生區間既有考勤（同 revert 範式），
+    # 建 date→row dict，避免對最大表 student_attendances 逐日 N+1 SELECT。
+    existing_by_date = {
+        r.date: r
+        for r in session.query(StudentAttendance)
+        .filter(
+            StudentAttendance.student_id == leave.student_id,
+            StudentAttendance.date >= leave.start_date,
+            StudentAttendance.date <= leave.end_date,
+        )
+        .all()
+    }
     affected = 0
     for d in dates:
-        existing = (
-            session.query(StudentAttendance)
-            .filter(
-                StudentAttendance.student_id == leave.student_id,
-                StudentAttendance.date == d,
-            )
-            .first()
-        )
+        existing = existing_by_date.get(d)
         if existing is None:
             session.add(
                 StudentAttendance(

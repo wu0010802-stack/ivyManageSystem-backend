@@ -5,7 +5,7 @@ import sys
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -46,7 +46,11 @@ def session(tmp_path):
 
 def _make_family(s):
     user = User(
-        username="p", password_hash="!", role="parent", permission_names=[], is_active=True
+        username="p",
+        password_hash="!",
+        role="parent",
+        permission_names=[],
+        is_active=True,
     )
     s.add(user)
     s.flush()
@@ -89,7 +93,11 @@ def test_apply_writes_attendance_with_null_recorded_by(session):
 def test_apply_preserves_existing_recorded_by_on_conflict(session):
     user, student = _make_family(session)
     teacher = User(
-        username="t", password_hash="!", role="teacher", permission_names=[], is_active=True
+        username="t",
+        password_hash="!",
+        role="teacher",
+        permission_names=[],
+        is_active=True,
     )
     session.add(teacher)
     session.flush()
@@ -121,6 +129,53 @@ def test_apply_preserves_existing_recorded_by_on_conflict(session):
     assert rec.status == "事假"
     assert rec.remark == f"家長申請#{leave.id}"
     assert rec.recorded_by == teacher.id  # 保留
+
+
+def test_apply_uses_single_range_query_not_per_day(session):
+    """A3（2026-06-29 效能健檢）：套用考勤應一次範圍查詢，非逐日 N+1。
+
+    apply_attendance_for_leave 原本對區間內每個應到日各發一次
+    SELECT ... WHERE student_id AND date == d（最大表 student_attendances 31k）。
+    改為一次 date BETWEEN 範圍查詢（同檔 revert 既有範式），本測試固化「只發一次 SELECT」。
+    """
+    user, student = _make_family(session)
+    leave = StudentLeaveRequest(
+        student_id=student.id,
+        applicant_user_id=user.id,
+        leave_type="病假",
+        start_date=date(2026, 5, 4),  # 週一
+        end_date=date(2026, 5, 8),  # 週五 → 5 個工作日
+        status="approved",
+    )
+    session.add(leave)
+    session.flush()
+
+    selects: list[str] = []
+    engine = session.get_bind()
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        s = statement.lstrip().lower()
+        if s.startswith("select") and "student_attendances" in s:
+            selects.append(statement)
+
+    event.listen(engine, "after_cursor_execute", _count)
+    try:
+        affected = apply_attendance_for_leave(session, leave)
+        session.flush()
+    finally:
+        event.remove(engine, "after_cursor_execute", _count)
+
+    assert affected == 5
+    assert len(selects) == 1, (
+        "套用考勤應一次範圍查詢撈回該生區間考勤，實際對 student_attendances 發了 "
+        f"{len(selects)} 次 SELECT（= 逐日 N+1）"
+    )
+    # 行為保持：5 個工作日都寫入正確 status/remark
+    rows = session.query(StudentAttendance).filter_by(student_id=student.id).all()
+    assert len(rows) == 5
+    for r in rows:
+        assert r.status == "病假"
+        assert r.remark == f"家長申請#{leave.id}"
 
 
 def test_revert_only_removes_own_remark(session):
