@@ -1129,6 +1129,21 @@ def logout(request: Request):
 # ============ Sessions Management (Spec F) ============
 
 
+def _reject_if_impersonating(current_user: dict) -> None:
+    """模擬（impersonation）期間禁止操作「自己的」session 管理端點。
+
+    qa-loop round2（2026-06-29）：模擬中 access_token 的 user_id = 被模擬 target，
+    current_user['user_id'] 解析為 target → list/revoke/logout-all 會誤作用到無辜 target
+    （洩漏其裝置 IP/UA，或強制登出其所有裝置 + bump 其 token_version）。唯讀 PORTAL_PREVIEW
+    預覽更不應觸發任何寫入。操作者要管理自己的 session 應先結束模擬。
+    """
+    if current_user.get("impersonated_by") is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="模擬（impersonation）期間不可管理 session，請先結束模擬",
+        )
+
+
 @router.get("/sessions", response_model=list[SessionItemOut])
 def list_my_sessions(
     request: Request,
@@ -1138,6 +1153,7 @@ def list_my_sessions(
 
     Spec F §3.4 (audit P1 #11)
     """
+    _reject_if_impersonating(current_user)
     raw = request.cookies.get("staff_refresh_token")
     current_family = None
     if raw:
@@ -1189,6 +1205,7 @@ def revoke_session(
 
     Spec F §3.4 (audit P1 #11)
     """
+    _reject_if_impersonating(current_user)
     from services.staff_refresh import revoke_family
 
     n = revoke_family(current_user["user_id"], family_id)
@@ -1206,6 +1223,7 @@ def logout_all_sessions(
 
     Spec F §3.4 (audit P1 #11)
     """
+    _reject_if_impersonating(current_user)
     from services.staff_refresh import revoke_all_for_user
 
     revoke_all_for_user(current_user["user_id"])
@@ -1466,6 +1484,18 @@ def change_password(
 
         response = JSONResponse(content={"message": "密碼修改成功"})
         set_access_token_cookie(response, new_token)
+        # P3（qa-loop round2 2026-06-29）：上面已撤「當前裝置」的 staff_refresh family 卻只重發
+        # access token，未重發 refresh → 當前裝置在 access token（15min）到期後 /refresh 撞已撤
+        # family 被踢，與「避免改完密碼立刻被踢」的意圖矛盾。比照 login 為當前裝置重新簽發 refresh
+        # family（新 family 於撤銷後建立、未被 revoke，故有效）。
+        from services.staff_refresh import issue_refresh_token as _issue_staff_refresh
+
+        _refresh_raw, _ = _issue_staff_refresh(
+            user_id=user.id,
+            user_agent=request.headers.get("user-agent") or "",
+            ip=client_ip,
+        )
+        set_staff_refresh_cookie(response, _refresh_raw)
         return response
     except HTTPException:
         raise

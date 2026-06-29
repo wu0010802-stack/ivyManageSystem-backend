@@ -301,9 +301,27 @@ def test_change_password_bumps_token_version(db):
         after = s.query(User).filter(User.id == user_id).first().token_version or 0
     assert after == before + 1, f"token_version 應遞增；before={before} after={after}"
 
-    # 舊 token 應該無法再 refresh（token_version mismatch）
-    refresh_resp = client.post("/api/auth/refresh", cookies={"access_token": token})
-    assert refresh_resp.status_code == 401
+    # 安全性質 1（staff rotation 路徑）：登入當下的「舊」staff_refresh family 在改密後必須
+    # 已撤銷 → 用它 rotation refresh 必 401。qa-loop round2（2026-06-29）：原斷言用共享
+    # cookie jar 帶舊 access_token，但 jar 仍有 staff_refresh，實際走 rotation 路徑；改密後
+    # change_password 為當前裝置「重發」一個新 staff_refresh cookie（修正「改密 ~15min 後被踢」
+    # 的 P3），污染了 jar，使共享 client 取到新 family → 200。改為以乾淨 client 明帶「舊」
+    # refresh token 精準驗「舊 family 已死」（撤舊 family 的安全性質不變）。
+    old_refresh = login_resp.cookies.get("staff_refresh_token")
+    assert old_refresh, "login 應設定 staff_refresh_token cookie"
+    stale_resp = TestClient(app).post(
+        "/api/auth/refresh", cookies={"staff_refresh_token": old_refresh}
+    )
+    assert (
+        stale_resp.status_code == 401
+    ), "改密前的舊 refresh family 應已撤銷，不可再 rotation"
+
+    # 安全性質 2（legacy access-token 路徑）：token_version 已 bump → 僅帶舊 access token
+    # （無 staff_refresh）換發必 401。這是本測試原始 P1-2 守衛的核心，仍須成立。
+    legacy_resp = TestClient(app).post(
+        "/api/auth/refresh", cookies={"access_token": token}
+    )
+    assert legacy_resp.status_code == 401
 
 
 def test_old_token_without_jti_still_works_for_blocklist_check(db):
