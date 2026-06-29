@@ -28,3 +28,20 @@ def test_misc_receipt_categories_constant():
         "refund_recovery",
         "other",
     }
+
+
+def test_misc_receipt_permissions_exist():
+    from utils.permissions import Permission, PERMISSION_LABELS
+
+    assert Permission.MISC_RECEIPT_READ.value == "MISC_RECEIPT_READ"
+    assert Permission.MISC_RECEIPT_WRITE.value == "MISC_RECEIPT_WRITE"
+    assert PERMISSION_LABELS["MISC_RECEIPT_READ"] == "雜項收款 (檢視)"
+    assert PERMISSION_LABELS["MISC_RECEIPT_WRITE"] == "雜項收款 (編輯/簽收)"
+
+
+def test_misc_receipt_in_finance_roles():
+    from utils.permissions import ROLE_TEMPLATES
+
+    for role in ("hr", "supervisor", "accountant"):
+        assert "MISC_RECEIPT_READ" in ROLE_TEMPLATES[role]
+        assert "MISC_RECEIPT_WRITE" in ROLE_TEMPLATES[role]
