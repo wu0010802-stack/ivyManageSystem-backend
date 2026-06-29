@@ -12,7 +12,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 from models.database import get_session, Student, Classroom
 from models.student_log import StudentChangeLog, CHANGE_LOG_REASON_OPTIONS, EVENT_TYPES
@@ -209,18 +209,27 @@ def get_change_logs_summary(
                 }
             query = query.filter(StudentChangeLog.student_id.in_(scope))
 
-        logs = query.all()
+        # T7（2026-06-29 效能健檢）：以 SQL GROUP BY event_type 聚合計數，取代整學期
+        # StudentChangeLog 全 hydrate 成 ORM 再 Python 迴圈計數。total 仍含未知型別
+        # （與舊 len(logs) 同口徑），summary 僅計已知 EVENT_TYPES。
+        rows = (
+            query.with_entities(StudentChangeLog.event_type, func.count().label("cnt"))
+            .group_by(StudentChangeLog.event_type)
+            .all()
+        )
         summary = {et: 0 for et in EVENT_TYPES}
-        for log in logs:
-            if log.event_type in summary:
-                summary[log.event_type] += 1
+        total = 0
+        for event_type, cnt in rows:
+            total += cnt
+            if event_type in summary:
+                summary[event_type] += cnt
 
         return {
             "school_year": resolved_year,
             "semester": resolved_semester,
             "classroom_id": classroom_id,
             "summary": summary,
-            "total": len(logs),
+            "total": total,
         }
     finally:
         session.close()

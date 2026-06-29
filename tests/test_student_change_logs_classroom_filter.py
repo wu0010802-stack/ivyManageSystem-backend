@@ -300,3 +300,48 @@ class TestPermission:
 
         res = client.get("/api/students/change-logs", params=_params())
         assert res.status_code == 403
+
+
+def test_summary_uses_sql_group_by_not_hydration(client_with_db):
+    """T7（2026-06-29 效能健檢）：summary 須以 SQL GROUP BY 聚合計數。
+
+    get_change_logs_summary 原本 query.all() 把整學期 StudentChangeLog 全 hydrate
+    成 ORM 再 Python 迴圈計數。改為 SQL GROUP BY event_type + count()，本測試固化
+    「查詢含 GROUP BY」+ 計數正確性。
+    """
+    import models.base as base_module
+
+    from sqlalchemy import event as sa_event
+
+    client, factory = client_with_db
+    with factory() as s:
+        _seed(s)
+    _login(client)
+
+    engine = base_module._engine
+    selects: list[str] = []
+
+    def _cap(conn, cursor, statement, parameters, context, executemany):
+        st = statement.lstrip().lower()
+        if st.startswith("select") and "student_change_logs" in st:
+            selects.append(st)
+
+    sa_event.listen(engine, "after_cursor_execute", _cap)
+    try:
+        res = client.get("/api/students/change-logs/summary", params=_params())
+    finally:
+        sa_event.remove(engine, "after_cursor_execute", _cap)
+
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 行為保持：4 筆 log（3 入學 + 1 轉出）
+    assert body["total"] == 4
+    assert body["summary"]["入學"] == 3
+    assert body["summary"]["轉出"] == 1
+
+    data_selects = [s for s in selects if "from student_change_logs" in s]
+    assert data_selects, "應有對 student_change_logs 的查詢"
+    assert all("group by" in s for s in data_selects), (
+        "summary 須以 SQL GROUP BY 聚合計數，不可整表 hydrate ORM 再 Python 數；"
+        f"實際：{data_selects}"
+    )
