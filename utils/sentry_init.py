@@ -179,6 +179,35 @@ def _key_is_pii(key: Any) -> bool:
     return False
 
 
+# `key: value` / `key=value` 形式（DB 例外 [parameters: {...}] / repr）的 key-value 比對。
+# q 容許 key 帶或不帶引號；val 容許單/雙引號字串或無引號 token。
+_KV_PII_RE = re.compile(
+    r"(?P<q>['\"]?)(?P<key>[A-Za-z_][A-Za-z0-9_]*)(?P=q)(?P<sep>\s*[:=]\s*)"
+    # 無引號 val 須排除 {}[]()、引號與冒號，避免 `parameters: {'email':...` 把整個 dict
+    # 當成 parameters 的 value 吞掉、使內層 email key 永遠不被獨立比對。
+    r"(?P<val>'[^']*'|\"[^\"]*\"|[^\s,;:{}()\[\]'\"]+)"
+)
+
+
+def _redact_pii_kv_in_text(text: Any) -> Any:
+    """遮自由文字（尤其 SQLAlchemy 例外的 `[parameters: {...}]`）內 `key: value` /
+    `key=value` 形式中、key 命中 denylist 的 value。
+
+    value-level 正則（_redact_pii_value）只攔身分證/手機/市話/LINE id，攔不到 email /
+    姓名 / 銀行帳號 等須靠 key 才能判定的 PII —— DB 唯一鍵衝突的例外訊息會把這些參數原文
+    帶進 Sentry（qa-loop round2 2026-06-29）。用與 dict scrub 相同的 _key_is_pii denylist。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    def _sub(m: "re.Match[str]") -> str:
+        if _key_is_pii(m.group("key")):
+            return f"{m.group('q')}{m.group('key')}{m.group('q')}{m.group('sep')}{_FILTERED}"
+        return m.group(0)
+
+    return _KV_PII_RE.sub(_sub, text)
+
+
 def _scrub_mapping(obj: Any) -> Any:
     """遞迴遮 dict / list 內命中 denylist 的 key；string/number 不動。"""
     if isinstance(obj, dict):
@@ -260,7 +289,9 @@ def _scrub_event(event: dict, _hint: dict | None = None) -> dict | None:
     if isinstance(exc, dict) and isinstance(exc.get("values"), list):
         for ev in exc["values"]:
             if isinstance(ev, dict) and isinstance(ev.get("value"), str):
-                ev["value"] = _redact_pii_value(ev["value"])
+                # 先 value-level（身分證/手機/LINE id），再 key-value denylist（email/姓名/
+                # 銀行帳號等須靠 key 判定者，如 DB 例外的 [parameters: {...}]）。
+                ev["value"] = _redact_pii_kv_in_text(_redact_pii_value(ev["value"]))
     return event
 
 
