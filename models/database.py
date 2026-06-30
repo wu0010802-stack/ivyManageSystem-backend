@@ -136,6 +136,7 @@ from models.contact_book import (
     StudentContactBookReply,
 )
 from models.vendor_payment import VendorPayment  # noqa: F401
+from models.misc_receipt import MiscReceipt  # noqa: F401
 from models.monthly_fixed_cost import MonthlyFixedCost  # noqa: F401
 from models.academic_term import AcademicTerm  # noqa: F401
 from models.offboarding import EmployeeOffboardingRecord  # noqa: F401

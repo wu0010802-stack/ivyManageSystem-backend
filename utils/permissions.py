@@ -92,6 +92,9 @@ class Permission(str, Enum):
     VENDOR_PAYMENT_READ = "VENDOR_PAYMENT_READ"
     VENDOR_PAYMENT_WRITE = "VENDOR_PAYMENT_WRITE"
 
+    MISC_RECEIPT_READ = "MISC_RECEIPT_READ"
+    MISC_RECEIPT_WRITE = "MISC_RECEIPT_WRITE"
+
     # DB-driven 自訂權限/角色 CRUD 守衛（(b) 子專案）
     ROLES_MANAGE = "ROLES_MANAGE"
 
@@ -208,6 +211,10 @@ SPLIT_MODULES: Dict[str, Dict[str, str]] = {
         "read": "VENDOR_PAYMENT_READ",
         "write": "VENDOR_PAYMENT_WRITE",
     },
+    "MISC_RECEIPT": {
+        "read": "MISC_RECEIPT_READ",
+        "write": "MISC_RECEIPT_WRITE",
+    },
 }
 
 
@@ -242,6 +249,9 @@ ROLE_TEMPLATES: Dict[str, List[str]] = {
         # 廠商付款：HR 兼採購行政
         Permission.VENDOR_PAYMENT_READ.value,
         Permission.VENDOR_PAYMENT_WRITE.value,
+        # 雜項收款：比照廠商付款權限
+        Permission.MISC_RECEIPT_READ.value,
+        Permission.MISC_RECEIPT_WRITE.value,
     ],
     "supervisor": [
         Permission.DASHBOARD.value,
@@ -296,6 +306,9 @@ ROLE_TEMPLATES: Dict[str, List[str]] = {
         # 廠商付款：主管全程權限
         Permission.VENDOR_PAYMENT_READ.value,
         Permission.VENDOR_PAYMENT_WRITE.value,
+        # 雜項收款：比照廠商付款權限
+        Permission.MISC_RECEIPT_READ.value,
+        Permission.MISC_RECEIPT_WRITE.value,
     ],
     "teacher": [
         Permission.DASHBOARD.value,
@@ -363,6 +376,8 @@ ROLE_TEMPLATES["accountant"] = [
     Permission.FEES_WRITE.value,
     Permission.VENDOR_PAYMENT_READ.value,
     Permission.VENDOR_PAYMENT_WRITE.value,
+    Permission.MISC_RECEIPT_READ.value,
+    Permission.MISC_RECEIPT_WRITE.value,
     Permission.YEAR_END_READ.value,
     Permission.YEAR_END_WRITE.value,  # 不含 FINALIZE（簽核屬 supervisor/principal）
     Permission.APPRAISAL_ACCOUNTING.value,  # 核考核獎金數字
@@ -455,6 +470,9 @@ PERMISSION_LABELS: Dict[str, str] = {
     # 廠商付款簽收
     "VENDOR_PAYMENT_READ": "廠商付款簽收 (檢視)",
     "VENDOR_PAYMENT_WRITE": "廠商付款簽收 (編輯/簽收)",
+    # 雜項收款
+    "MISC_RECEIPT_READ": "雜項收款 (檢視)",
+    "MISC_RECEIPT_WRITE": "雜項收款 (編輯/簽收)",
     # DB-driven 自訂權限/角色 CRUD 守衛 ((b) 子專案)
     "ROLES_MANAGE": "角色與權限管理",
     "PORTAL_PREVIEW": "預覽教師端",
@@ -567,6 +585,11 @@ PERMISSION_GROUPS: List[Dict] = [
                 "module": "廠商付款簽收",
                 "read": "VENDOR_PAYMENT_READ",
                 "write": "VENDOR_PAYMENT_WRITE",
+            },
+            {
+                "module": "雜項收款簽收",
+                "read": "MISC_RECEIPT_READ",
+                "write": "MISC_RECEIPT_WRITE",
             },
         ],
     },

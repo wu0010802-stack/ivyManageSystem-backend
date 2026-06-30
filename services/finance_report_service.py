@@ -31,6 +31,7 @@ from models.monthly_fixed_cost import (
     MonthlyFixedCost,
 )
 from models.salary import SalaryRecord
+from models.misc_receipt import MiscReceipt
 from models.vendor_payment import VendorPayment
 from utils.rounding import round_half_up
 
@@ -218,6 +219,25 @@ def get_vendor_payment_expense_by_month(session: Session, year: int) -> dict[int
         .filter(
             VendorPayment.payment_date >= start,
             VendorPayment.payment_date < end,
+        )
+        .group_by("m")
+        .all()
+    )
+    return _month_totals_from(rows)
+
+
+def get_misc_receipt_revenue_by_month(session: Session, year: int) -> dict[int, int]:
+    """雜項收款收入，按 receipt_date 月份聚合。
+    無論 status 為 pending 或 signed 都計入（與廠商付款支出口徑對齊）。"""
+    start, end = _year_range(year)
+    rows = (
+        session.query(
+            extract("month", MiscReceipt.receipt_date).label("m"),
+            func.sum(MiscReceipt.amount),
+        )
+        .filter(
+            MiscReceipt.receipt_date >= start,
+            MiscReceipt.receipt_date < end,
         )
         .group_by("m")
         .all()
@@ -582,6 +602,7 @@ def build_finance_summary(
     tuition_ref = get_tuition_refund_by_month(session, year)
     activity_rev = get_activity_revenue_by_month(session, year)
     activity_ref = get_activity_refund_by_month(session, year)
+    misc_rev = get_misc_receipt_revenue_by_month(session, year)
     salary_exp = get_salary_expense_by_month(session, year)
     vendor_exp = get_vendor_payment_expense_by_month(session, year)
 
@@ -589,7 +610,7 @@ def build_finance_summary(
 
     trend = []
     for m in months:
-        revenue = tuition_rev.get(m, 0) + activity_rev.get(m, 0)
+        revenue = tuition_rev.get(m, 0) + activity_rev.get(m, 0) + misc_rev.get(m, 0)
         refund = tuition_ref.get(m, 0) + activity_ref.get(m, 0)
         sal = salary_exp.get(m, {"employee_gross": 0, "employer_benefit": 0})
         vendor_m = vendor_exp.get(m, 0)
@@ -612,6 +633,7 @@ def build_finance_summary(
     tuition_ref_total = sum(tuition_ref.get(m, 0) for m in months)
     activity_rev_total = sum(activity_rev.get(m, 0) for m in months)
     activity_ref_total = sum(activity_ref.get(m, 0) for m in months)
+    misc_rev_total = sum(misc_rev.get(m, 0) for m in months)
     gross_total = sum(salary_exp.get(m, {}).get("employee_gross", 0) for m in months)
     employer_total = sum(
         salary_exp.get(m, {}).get("employer_benefit", 0) for m in months
@@ -639,6 +661,12 @@ def build_finance_summary(
                 "label": "才藝",
                 "amount": activity_rev_total,
                 "refund": activity_ref_total,
+            },
+            {
+                "category": "misc_receipt",
+                "label": "雜項收款",
+                "amount": misc_rev_total,
+                "refund": 0,
             },
         ],
         "expense_by_category": [
@@ -831,12 +859,41 @@ def get_vendor_payment_detail(session: Session, year: int, month: int) -> list[d
     ]
 
 
+def get_misc_receipt_detail(session: Session, year: int, month: int) -> list[dict]:
+    """該月雜項收款明細，按收款日期排序。"""
+    start, end = _month_range(year, month)
+    rows = (
+        session.query(MiscReceipt)
+        .filter(
+            MiscReceipt.receipt_date >= start,
+            MiscReceipt.receipt_date < end,
+        )
+        .order_by(MiscReceipt.receipt_date)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "date": _iso(r.receipt_date),
+            "payer_name": r.payer_name,
+            "category": r.category,
+            "amount": round_half_up(r.amount or 0),
+            "payment_method": r.payment_method,
+            "description": r.description,
+            "receipt_number": r.receipt_number,
+            "status": r.status,
+        }
+        for r in rows
+    ]
+
+
 def build_finance_detail(session: Session, year: int, month: int) -> dict:
-    """下鑽明細彙總：回傳四來源的明細陣列。"""
+    """下鑽明細彙總：回傳五來源的明細陣列。"""
     return {
         "period": {"year": year, "month": month},
         "tuition": get_tuition_detail(session, year, month),
         "activity": get_activity_detail(session, year, month),
+        "misc_receipt": get_misc_receipt_detail(session, year, month),
         "salary": get_salary_detail(session, year, month),
         "vendor_payment": get_vendor_payment_detail(session, year, month),
     }
