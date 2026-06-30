@@ -183,7 +183,7 @@ jobs:
       - name: Upload partial coverage (分片 ${{ matrix.group }})
         # coverage 與 TZ 無關，只取 Asia/Taipei leg 的 4 片上傳即足；UTC leg 跑 test 但不上傳。
         if: matrix.container_tz == 'Asia/Taipei'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-partial-${{ matrix.group }}
           path: ${{ env.COVERAGE_FILE }}
@@ -226,7 +226,7 @@ jobs:
 
       - name: Upload combined coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml
           path: coverage.xml

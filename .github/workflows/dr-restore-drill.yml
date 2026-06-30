@@ -84,7 +84,7 @@ jobs:
             > drill-report.md
           cat drill-report.md
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: drill-report-${{ env.DRILL_DATE }}
           path: drill-report.md
