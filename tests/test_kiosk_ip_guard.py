@@ -40,3 +40,29 @@ def test_ip_not_in_whitelist_403(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         assert_kiosk_ip_allowed(_Req("198.51.100.7"))
     assert ei.value.status_code == 403
+
+
+def test_none_client_ip_is_fail_closed(monkeypatch):
+    """get_client_ip 回 None → fail-closed 403"""
+    monkeypatch.setattr("utils.kiosk_guard.get_client_ip", lambda r: None)
+    monkeypatch.setattr(
+        "config.settings.network.attendance_kiosk_allowed_ips",
+        ["203.0.113.0/24"],
+        raising=False,
+    )
+    with pytest.raises(HTTPException) as ei:
+        assert_kiosk_ip_allowed(_Req("203.0.113.10"))
+    assert ei.value.status_code == 403
+
+
+def test_all_invalid_cidrs_deny(monkeypatch):
+    """白名單全為無效 CIDR → deny 403"""
+    monkeypatch.setattr("utils.kiosk_guard.get_client_ip", lambda r: "203.0.113.10")
+    monkeypatch.setattr(
+        "config.settings.network.attendance_kiosk_allowed_ips",
+        ["not-a-cidr"],
+        raising=False,
+    )
+    with pytest.raises(HTTPException) as ei:
+        assert_kiosk_ip_allowed(_Req("203.0.113.10"))
+    assert ei.value.status_code == 403
