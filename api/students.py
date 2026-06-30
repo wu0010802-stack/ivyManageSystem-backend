@@ -775,6 +775,8 @@ def get_student(
             "enrollment_date": (
                 student.enrollment_date.isoformat() if student.enrollment_date else None
             ),
+            "enrollment_school_year": student.enrollment_school_year,
+            "enrollment_semester": student.enrollment_semester,
             "parent_name": student.parent_name,
             "parent_phone": student.parent_phone,
             "address": student.address,

@@ -118,6 +118,8 @@ class StudentDetailOut(IvyBaseModel):
     birthday: Optional[str] = None  # pii-allow: 生日 ISO 字串
     classroom_id: Optional[int] = None
     enrollment_date: Optional[str] = None
+    enrollment_school_year: Optional[int] = None
+    enrollment_semester: Optional[int] = None
     parent_name: Optional[str] = None  # pii-allow: 監護人姓名
     parent_phone: Optional[str] = None  # pii-allow: 監護人電話
     address: Optional[str] = None  # pii-allow: 家庭住址

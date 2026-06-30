@@ -301,6 +301,8 @@ def _serialize_lifecycle(student: Student) -> dict[str, Any]:
         "withdrawal_date": (
             student.withdrawal_date.isoformat() if student.withdrawal_date else None
         ),
+        "enrollment_school_year": student.enrollment_school_year,
+        "enrollment_semester": student.enrollment_semester,
         "recruitment_visit_id": student.recruitment_visit_id,
     }
 
