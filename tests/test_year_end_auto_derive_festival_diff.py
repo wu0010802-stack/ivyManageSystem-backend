@@ -16,17 +16,17 @@ SUPERVISOR_FESTIVAL_BONUS / _school_wide_target=160，seed 未覆寫故全用預
 
   - 蔡（班導 head_teacher grade A，festival_base=2000）帶「大班」**雙師班**
     （阿芬為 assistant_teacher → has_assistant=True）→ payroll 目標 =
-    TARGET_ENROLLMENT[大班][2_teachers]=24。
-      已發/月 = round_half_up(2000 × 20/24) = 1667
-    年終目標 head_count_target=10（**故意 ≠ payroll 24**，模擬 Excel 目標差 → true-up）
+    TARGET_ENROLLMENT[大班][2_teachers]=27。
+      已發/月 = round_half_up(2000 × 20/27) = 1481
+    年終目標 head_count_target=10（**故意 ≠ payroll 27**，模擬 Excel 目標差 → true-up）
       應領/月 = 2000 × 20/10 = 4000（未封頂，比例 2.0）
-    差額/月 = 4000 − 1667 = 2333 → 6 月總 = 13998（全正 true-up）。
+    差額/月 = 4000 − 1481 = 2519 → 6 月總 = 15114（全正 true-up）。
   - 副班導阿芬（assistant_teacher grade A，festival_base=1200）副帶同班
-      已發/月 = round_half_up(1200 × 20/24) = 1000   ← payroll **當班** 比例（target 24）
+      已發/月 = round_half_up(1200 × 20/27) = 889   ← payroll **當班** 比例（target 27）
     年終目標（同班 ClassEnrollmentTarget）=10 → 應領/月 = 1200 × 20/10 = 2400
-    差額/月 = 2400 − 1000 = 1400 → 6 月總 = 8400。
+    差額/月 = 2400 − 889 = 1511 → 6 月總 = 9066。
     **per-class 驗證（舊版 P0）**：若誤走全校（目標 40），應領=600 且 paid 也會走全校
-    → 8400 ≠ 全校金額，本斷言鎖死 per-class。
+    → 9066 ≠ 全校金額，本斷言鎖死 per-class。
   - 行政小美（admin，festival_base=2000，非帶班）→ 應領走全校（目標 40）。
     payroll：「行政」屬辦公室 → OFFICE_FESTIVAL_BONUS_BASE[行政]=2000，全校比例
     20/_school_wide_target(160) → 已發/月 = round_half_up(2000 × 20/160) = 250。
@@ -218,29 +218,29 @@ def seed(test_db_session):
 # tests                                                                        #
 # --------------------------------------------------------------------------- #
 def test_head_teacher_true_up_exact_total(seed):
-    """班導蔡（雙師班，payroll target 24）：已發=round(2000×20/24)=1667/月，
-    應領=2000×20/10=4000/月，差額 2333/月 × 6 = 13998。"""
+    """班導蔡（雙師班，payroll target 27）：已發=round(2000×20/27)=1481/月，
+    應領=2000×20/10=4000/月，差額 2519/月 × 6 = 15114。"""
     db, cycle = seed["db"], seed["cycle"]
     fd.derive_festival_diff(db, cycle)
     db.flush()
 
     items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
     item = _item_for(items, seed["emp_tsai"].id)
-    assert item.amount == Decimal("13998.00")
+    assert item.amount == Decimal("15114.00")
     assert item.classroom_id == seed["cls"].id  # 帶班 → 班級歸屬
 
     months = item.calc_meta["months"]
     assert len(months) == 6
     for mrow in months:
         assert Decimal(mrow["due"]) == Decimal("4000.00")
-        assert Decimal(mrow["paid"]) == Decimal("1667.00")
+        assert Decimal(mrow["paid"]) == Decimal("1481.00")
         assert mrow["enrolled"] == 20
         assert mrow["target"] == 10
 
 
 def test_assistant_teacher_per_class_not_schoolwide(seed):
-    """副班導阿芬：已發=round(1200×20/24)=1000/月（payroll 用『當班』比例，非全校），
-    應領=1200×20/10=2400/月，差額 1400/月 × 6 = 8400。
+    """副班導阿芬：已發=round(1200×20/27)=889/月（payroll 用『當班』比例，非全校），
+    應領=1200×20/10=2400/月，差額 1511/月 × 6 = 9066。
 
     這是舊版 P0：舊版讓副班導落入全校 else → 系統性錯。本斷言驗證 per-class。
     """
@@ -250,13 +250,13 @@ def test_assistant_teacher_per_class_not_schoolwide(seed):
 
     items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
     item = _item_for(items, seed["emp_fen"].id)
-    assert item.amount == Decimal("8400.00")
+    assert item.amount == Decimal("9066.00")
     assert item.classroom_id == seed["cls"].id  # per-class，非全校 None
 
     months = item.calc_meta["months"]
     for mrow in months:
         assert Decimal(mrow["due"]) == Decimal("2400.00")
-        assert Decimal(mrow["paid"]) == Decimal("1000.00")
+        assert Decimal(mrow["paid"]) == Decimal("889.00")
         # 若副班導誤用全校（target 40）：應領=1200×20/40=600，paid 也會走全校→錯。
         assert (
             mrow["enrolled"] == 20
@@ -306,14 +306,14 @@ def test_paid_mirrors_payroll_count_semantics(seed):
     （兩 filter 收斂），退學學生同時從「應領」與「已發」消失；true-up 剩餘成分
     為分母差（應領用編制 head_count_target=10，已發用 payroll 目標 24）。
 
-    同時兼作回歸守衛（非循環）：翻轉人數使總額確實改變（13998 → 7002）。
+    同時兼作回歸守衛（非循環）：翻轉人數使總額確實改變（15114 → 7554）。
 
     seed 後讓 10 位學生在 8/1 前退學（withdrawal_date）：
       - 應領：count_enrolled_on=10 → 2000 × 10/10 = 2000/月
       - 已發：count_students_active_on=10（L1a 後同樣排除退學生）→
-              round(2000 × 10/24)=833/月
-      - 差額/月 = 2000 − 833 = 1167 → 6 月總 = 7002。
-      （L1a 前已發人數仍是 20 → 1667/月、總額 1998；該行為已隨 payroll 修正走入歷史）
+              round(2000 × 10/27)=741/月
+      - 差額/月 = 2000 − 741 = 1259 → 6 月總 = 7554。
+      （L1a 前已發人數仍是 20 → 1481/月、總額 3114；該行為已隨 payroll 修正走入歷史）
     """
     db, cycle = seed["db"], seed["cycle"]
 
@@ -321,7 +321,7 @@ def test_paid_mirrors_payroll_count_semantics(seed):
     db.flush()
     items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
     before = _amount_for(items, seed["emp_tsai"].id)
-    assert before == Decimal("13998.00")
+    assert before == Decimal("15114.00")
 
     # 10 位學生在 8/1 之前退學 → 應領與已發（L1a 後）全期都見 10。
     students = list(
@@ -336,14 +336,14 @@ def test_paid_mirrors_payroll_count_semantics(seed):
     items2 = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
     item = _item_for(items2, seed["emp_tsai"].id)
     after = item.amount
-    assert after == Decimal("7002.00")
+    assert after == Decimal("7554.00")
     assert after != before  # 翻轉人數確實改變總額（非循環）
 
-    # per-month 鐵證：兩側人數收斂為 10，差額純粹來自分母（10 編制 vs 24 目標）。
+    # per-month 鐵證：兩側人數收斂為 10，差額純粹來自分母（10 編制 vs 27 目標）。
     for mrow in item.calc_meta["months"]:
         assert mrow["enrolled"] == 10  # count_enrolled_on（應領）
         assert Decimal(mrow["due"]) == Decimal("2000.00")
-        assert Decimal(mrow["paid"]) == Decimal("833.00")  # round(2000×10/24)
+        assert Decimal(mrow["paid"]) == Decimal("741.00")  # round(2000×10/27)
 
 
 def test_skips_manual_item(seed):
@@ -386,7 +386,7 @@ def test_reupsert_is_idempotent(seed):
     items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
     tsai_items = [it for it in items if it.employee_id == seed["emp_tsai"].id]
     assert len(tsai_items) == 1
-    assert tsai_items[0].amount == Decimal("13998.00")
+    assert tsai_items[0].amount == Decimal("15114.00")
     assert tsai_items[0].source_ref == "auto:festival_diff"
 
 
@@ -400,9 +400,9 @@ def test_cross_term_classroom_fallback_stays_per_class(seed):
 
     seed：新班導小薇，帶「中班」單師班但標記 school_year=113（**非** 114）；
     年終 ClassEnrollmentTarget(該班)=10；班上 18 生。
-      已發/月 = round(2000×18/12)=3000（中班 1_teacher payroll 目標 12，無副班導）
+      已發/月 = round(2000×18/13)=2769（中班 1_teacher payroll 目標 13，無副班導）
       應領/月 = 2000×18/10 = 3600（per-class，target 10）
-      差額/月 = 600 → 6 月總 = 3600（per-class，非全校 target 40 的 600）。
+      差額/月 = 831 → 6 月總 = 4986（per-class，非全校 target 40 的 831）。
     """
     db, cycle = seed["db"], seed["cycle"]
 
@@ -444,11 +444,11 @@ def test_cross_term_classroom_fallback_stays_per_class(seed):
     items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
     item = _item_for(items, emp_wei.id)
     assert item.classroom_id == cls_old.id  # fallback 仍解析到班 → per-class
-    assert item.amount == Decimal("3600.00")
+    assert item.amount == Decimal("4986.00")
     for mrow in item.calc_meta["months"]:
         assert mrow["category"] == "帶班老師"
         assert Decimal(mrow["due"]) == Decimal("3600.00")
-        assert Decimal(mrow["paid"]) == Decimal("3000.00")
+        assert Decimal(mrow["paid"]) == Decimal("2769.00")
         assert mrow["target"] == 10  # per-class target，非全校 40
 
 
@@ -567,14 +567,14 @@ def test_new_hire_early_months_gated_no_windfall(seed):
     seed 新人小新 hire_date=2025-08-15 → +3 個月 = 2025-11-15：
       - 8/9/10 月底（08-31 / 09-30 / 10-31）< 11-15 → **未滿資格**：應領=0、已發=0、diff=0。
       - 11/12/1 月底（11-30 / 12-31 / 01-31）≥ 11-15 → 已滿：正常 true-up。
-    小新帶單師「中班」class（payroll 1_teacher target 12），18 生（全期入學無退學，
+    小新帶單師「中班」class（payroll 1_teacher target 13），18 生（全期入學無退學，
     count_enrolled_on 各月恆 18，**早月在園 > 0** → sabotage 非空轉）；年終目標 head=9。
-      已滿月 已發 = round(2000×18/12) = 3000；應領 = 2000×18/9 = 4000；diff = 1000/月。
-      總額 = 0×3（早月 gated）+ 1000×3（後段）= 3000。
+      已滿月 已發 = round(2000×18/13) = 2769；應領 = 2000×18/9 = 4000；diff = 1231/月。
+      總額 = 0×3（早月 gated）+ 1231×3（後段）= 3693。
 
     **sabotage（移掉 gate → 早月 windfall 使本斷言 FAIL）**：若應領未套 eligibility，
     早月 應領 = 2000×18/9 = 4000（已發仍 0，payroll 有 gate）→ diff 4000/月 × 3 = 12000
-    額外 windfall → 總額會變 15000 ≠ 3000。本斷言（== 3000 + 早月 diff==0）鎖死 gate。
+    額外 windfall → 總額會變 15693 ≠ 3693。本斷言（== 3693 + 早月 diff==0）鎖死 gate。
     """
     db, cycle = seed["db"], seed["cycle"]
 
@@ -620,8 +620,8 @@ def test_new_hire_early_months_gated_no_windfall(seed):
     items = _special_items(db, cycle, SpecialBonusType.FESTIVAL_DIFF)
     item = _item_for(items, emp_new.id)
 
-    # 總額：早月 3 個 gated（diff 0）+ 後段 3 個 true-up（1000/月）= 3000（非 15000）。
-    assert item.amount == Decimal("3000.00")
+    # 總額：早月 3 個 gated（diff 0）+ 後段 3 個 true-up（1231/月）= 3693（非 15693）。
+    assert item.amount == Decimal("3693.00")
 
     # 年中入職的班導仍正確歸屬其班級：item_classroom_id 只看 eligible 月份，
     # 不被早月 gated（classroom_id=None placeholder）稀釋 → 仍是 cls_new.id。
@@ -641,8 +641,8 @@ def test_new_hire_early_months_gated_no_windfall(seed):
     for mrow in months[3:]:
         assert mrow["eligible"] is True
         assert Decimal(mrow["due"]) == Decimal("4000.00")  # 2000×18/9
-        assert Decimal(mrow["paid"]) == Decimal("3000.00")  # round(2000×18/12)
-        assert Decimal(mrow["diff"]) == Decimal("1000.00")
+        assert Decimal(mrow["paid"]) == Decimal("2769.00")  # round(2000×18/13)
+        assert Decimal(mrow["diff"]) == Decimal("1231.00")
         assert mrow["enrolled"] == 18
         assert mrow["target"] == 9
 
@@ -663,7 +663,9 @@ def test_paid_uses_resolve_bonus_counts_snapshot(seed):
 
     # 對整個學年（2025-08 ~ 2026-07）加全校快照 school=30 + 班級快照 20（班級維持不變，
     # 隔離出「全校人數」單一變因 → 只動主管/辦公室的已發）。
-    for y, m in [(2025, mm) for mm in range(8, 13)] + [(2026, mm) for mm in range(1, 8)]:
+    for y, m in [(2025, mm) for mm in range(8, 13)] + [
+        (2026, mm) for mm in range(1, 8)
+    ]:
         db.add(
             ClassEnrollmentSnapshot(
                 snapshot_year=y,

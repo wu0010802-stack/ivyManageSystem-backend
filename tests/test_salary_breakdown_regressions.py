@@ -125,7 +125,8 @@ class TestFestivalEligibilityReferenceDate:
             classroom_context=classroom_context,
         )
 
-        assert breakdown.festival_bonus == 2000
+        # 大班雙師目標 27（config single-source 對齊 DB）：2000 × 24/27 = 1778
+        assert breakdown.festival_bonus == 1778
 
     def test_reference_date_is_month_end_not_month_start(self, engine):
         """2025-11-15 到職的員工，2026-02 月薪結算時年資：
@@ -221,14 +222,14 @@ class TestFestivalBonusBreakdownRegressions:
         result = engine.calculate_festival_bonus_breakdown(teacher_id, 2026, 6)
         salary = engine.process_salary_calculation(teacher_id, 2026, 6)
 
-        # 單月明細：6 月底為 26（1 名於 6/15 畢業），festival = 2000 × (26/24) ≈ 2167
+        # 單月明細：6 月底為 26（1 名於 6/15 畢業），festival = 2000 × (26/27) ≈ 1926
         assert result["currentEnrollment"] == 26
-        assert result["festivalBonus"] == 2167
+        assert result["festivalBonus"] == 1926
         # 6 月發放實發 = 2-5 月每月各自比例的合計（業主 2026-04-25 確認）。
         # 2-5 月每月底人數均為 27（畢業日為 6/15，5 月底前仍在籍），
-        # 故每月 festival = 2000 × (27/24) = 2250；4 個月合計 9000。
+        # 故每月 festival = 2000 × (27/27) = 2000；4 個月合計 8000。
         # 超額：每月 max(0, 27-25) × 400 = 800（OVERTIME_TARGET 大班=25）；合計 3200。
-        assert salary.festival_bonus == 2250 * 4
+        assert salary.festival_bonus == 2000 * 4
         assert salary.overtime_bonus == 800 * 4
 
     def test_breakdown_uses_salary_month_reference_date(self, salary_engine_db):
@@ -271,7 +272,8 @@ class TestFestivalBonusBreakdownRegressions:
 
         result = engine.calculate_festival_bonus_breakdown(teacher_id, 2026, 6)
 
-        assert result["festivalBonus"] == 2000
+        # 大班雙師目標 27：2000 × 24/27 = 1778
+        assert result["festivalBonus"] == 1778
         assert result["remark"] != "未滿3個月"
 
     def test_breakdown_art_teacher_matches_salary_engine(self, salary_engine_db):
@@ -994,14 +996,14 @@ class TestDistributionPeriodAccrual:
         """6 月發放 = 2/3/4/5 月每月各自比例的合計（不含 6 月本身）。"""
         engine, session_factory = salary_engine_db
 
-        # 25 位學生：festival_bonus 每月 = 2000 × (25/24) = 2083 (round)
+        # 25 位學生：festival_bonus 每月 = 2000 × (25/27) = 1852 (round)
         teacher_id = self._setup_classroom_with_constant_enrollment(
             session_factory, students=25
         )
 
         salary = engine.process_salary_calculation(teacher_id, 2026, 6)
-        # 4 個月 × 2083 = 8332，按 round(2000 × 25/24) per month 累積
-        per_month = round(2000 * 25 / 24)
+        # 4 個月 × 1852 = 7408，按 round(2000 × 25/27) per month 累積
+        per_month = round(2000 * 25 / 27)
         assert salary.festival_bonus == per_month * 4
         # 超額 = max(0, 25-25) × 400 = 0/month → 合計 0
         assert salary.overtime_bonus == 0
@@ -1014,8 +1016,8 @@ class TestDistributionPeriodAccrual:
             session_factory, students=24
         )
         salary = engine.process_salary_calculation(teacher_id, 2026, 9)
-        # 24 學生 / 24 target → ratio=1.0 → 2000/month；3 個月合計 6000
-        assert salary.festival_bonus == 2000 * 3
+        # 24 學生 / 27 target → round(2000 × 24/27)=1778/month；3 個月合計 5334
+        assert salary.festival_bonus == 1778 * 3
 
     def test_february_festival_bonus_crosses_year_boundary(self, salary_engine_db):
         """2 月發放 = 前年 12 月 + 當年 1 月（共 2 個月）。"""
@@ -1025,8 +1027,8 @@ class TestDistributionPeriodAccrual:
             session_factory, students=24
         )
         salary = engine.process_salary_calculation(teacher_id, 2026, 2)
-        # 2 個月 × 2000 = 4000
-        assert salary.festival_bonus == 2000 * 2
+        # 2 個月 × round(2000 × 24/27)=1778 = 3556
+        assert salary.festival_bonus == 1778 * 2
 
     def test_non_distribution_month_festival_remains_zero(self, salary_engine_db):
         """非發放月份節慶獎金仍為 0（不應被 period accrual 改寫）。"""
@@ -1091,8 +1093,8 @@ class TestDistributionPeriodAccrual:
             teacher_id = teacher.id
 
         salary = engine.process_salary_calculation(teacher_id, 2026, 6)
-        # 2-4 月各自為 0/24 = 0；5 月為 24/24 = 2000；合計 = 2000
-        assert salary.festival_bonus == 2000
+        # 2-4 月各自為 0/27 = 0；5 月為 round(2000 × 24/27) = 1778；合計 = 1778
+        assert salary.festival_bonus == 1778
 
 
 def test_leave_deduction_rows_floor_matches_engine():

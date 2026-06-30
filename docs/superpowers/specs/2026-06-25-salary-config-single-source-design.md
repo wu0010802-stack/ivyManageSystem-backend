@@ -48,7 +48,32 @@
 
 ---
 
-## 2. 階段一：單一事實來源（主菜，純內部、零行為變更）
+## 2. 階段一：單一事實來源（主菜，純內部，僅一處 fallback 值修正）
+
+### 2.0 已知漂移與業主裁定（2026-06-25 寫計畫時查出）
+
+「三處手抄」已實際漂移：節慶獎金「目標人數」的 `constants.TARGET_ENROLLMENT`（fallback）
+與 DB `GradeTarget.festival_*`（prod seed）不一致。兩者是同一數值的 fallback/DB 兩存
+（`engine.py:382` 用 constants 初始化 `_target_enrollment`；`engine.py:655-657`/`828-830`
+DB 有 GradeTarget 時覆蓋）。
+
+| 年級 | 項目 | `constants` fallback（舊） | DB seed（prod 在用，**正確**） |
+|---|---|---|---|
+| 大班 | 2 教師 | 24 | **27** |
+| 大班 | 1 教師 | 12 | **14** |
+| 中班 | 2 教師 | 24 | **25** |
+| 中班 | 1 教師 | 12 | **13** |
+| 小班 | 2 教師 | 24 | **23** |
+
+（小班 1 教師、所有 `shared_assistant`、幼幼班、以及全部 `OVERTIME_TARGET` 兩邊皆一致。）
+
+**業主裁定（2026-06-25）**：DB 當前值（27/25/23/14/13）為正確值。`constants.TARGET_ENROLLMENT`
+的節慶目標係過時 fallback，須更新對齊 DB。**prod 資料不動**（已正確）；本次只改原始碼 fallback。
+
+**對「零行為變更」的影響**：此修正**只影響 fallback 路徑**（dev/test/fresh，無 DB GradeTarget 時）。
+prod 走 DB，數字不變。但若有任何薪資 gold 測試係在「無 GradeTarget seed」下跑（靠 fallback），
+其節慶獎金期望值會從舊目標(24…)位移到新目標(27…)，需重鎖 gold——實作時須先判定各 gold
+測試是否 seed GradeTarget，再決定是否重鎖（見 §7）。
 
 ### 2.1 抽共用 defaults 模組（消除可物理合併的三處重複）
 
@@ -139,7 +164,9 @@
 ## 6. 上線與部署安全
 
 - **零 schema 變更**：本設計不新增 migration（階段三是查詢 + 啟動檢查；階段一是 code 重構）。`PositionSalaryConfig.config_year` 已存在。
-- **零行為變更（階段一）**：去重以「值完全不變」為準，薪資 gold 測試零位移為驗收門檻。
+- **階段一近乎零行為變更**：去重以「值完全不變」為準；**唯一例外**是 §2.0 的節慶目標人數 fallback
+  修正（24→27 等），僅影響無 DB GradeTarget 的 fallback 路徑（dev/test/fresh），**prod 走 DB 數字不變**。
+  驗收門檻：有 seed GradeTarget 的薪資 gold 測試零位移；靠 fallback 的 gold 依 §2.0 重鎖。
 - **啟動檢查不擋 boot**：階段三 loud 但不 raise，prod cold-start 安全。
 - **prod 現況**：後端服務已 RUNNING（2026-06-23 上線），push 即觸發 Zeabur 部署 + cold-start 跑 migration。本設計無 migration，部署風險限於 code 變更本身。
 - 合併前 `gen:api` 不需要（無 response schema 變動；階段三若 `/health` 回傳結構新增欄位則確認前端容忍）。
@@ -148,7 +175,8 @@
 
 ## 7. 測試計畫總覽（TDD：先紅後綠 / 重構安全網）
 
-- **階段一**：`test_config_single_source.py`（級距逐筆一致、三處 defaults 一致、單一來源生效證明）；既有薪資 gold 測試零位移。
+- **階段一**：`test_config_single_source.py`（級距逐筆一致、三處 defaults 一致、單一來源生效證明）；
+  節慶目標人數 fallback 修正後（§2.0），有 seed GradeTarget 的薪資 gold 零位移、靠 fallback 的 gold 重鎖。
 - **階段二**：依查證結果——若收斂，加「baseline 缺當年度 fail-loud」測試；若證明安全，加註解，無新測試。
 - **階段三**：`test_salary_config_startup_check.py`（齊全→空清單 / 表空不報 / 缺年度入清單 / 非 PG 安全回空）。
 - **時區 matrix**：沿用 CI 既有 Asia/Taipei × UTC matrix（年度邊界相關）。

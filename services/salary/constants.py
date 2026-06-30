@@ -1,6 +1,24 @@
 """
 薪資計算常數 - 模組級與類別級常數統一定義
+
+「設定預設數值」（獎金基數、主管紅利、節慶/超額目標人數與每人金額、職位等級對應）
+自 2026-06-25 起改由 `config_defaults.py` 單一定義，本檔 re-export 之以保持
+`from services.salary.constants import X` 既有呼叫端不破壞（物件同一性）。
+本檔僅自有定義純法規常數（工時/加班倍率/請假扣薪規則等，無 DB 對應、無 fallback 問題）。
+設計：`docs/superpowers/specs/2026-06-25-salary-config-single-source-design.md` §2.1。
 """
+
+# 單一事實來源 re-export（保持 `constants.X is config_defaults.X` 物件同一性）
+from .config_defaults import (  # noqa: F401
+    POSITION_GRADE_MAP,
+    FESTIVAL_BONUS_BASE,
+    TARGET_ENROLLMENT,
+    OVERTIME_TARGET,
+    OVERTIME_BONUS_PER_PERSON,
+    SUPERVISOR_DIVIDEND,
+    SUPERVISOR_FESTIVAL_BONUS,
+    OFFICE_FESTIVAL_BONUS_BASE,
+)
 
 MONTHLY_BASE_DAYS = 30  # 勞基法時薪計算基準日數（月薪 ÷ 30 ÷ 8）
 MAX_DAILY_WORK_HOURS = (
@@ -43,65 +61,6 @@ DEFAULT_MISSING_PUNCH = 0  # 未打卡不扣款（僅記錄）
 DEFAULT_MEETING_ABSENCE_PENALTY = 100  # 園務會議缺席扣節慶獎金（fallback；實際由 BonusConfig.meeting_absence_penalty 覆寫）
 DEFAULT_MEETING_HOURS = 2  # 園務會議每次時數（fallback；實際由 BonusConfig.meeting_default_hours 覆寫；業主實務 2 hr）
 
-# 節慶獎金職位等級對應
-# A級 = 幼兒園教師, B級 = 教保員, C級 = 助理教保員
-POSITION_GRADE_MAP = {
-    "幼兒園教師": "A",
-    "教保員": "B",
-    "助理教保員": "C",
-}
-
-# 節慶獎金基數 (依職位等級和角色)
-# 角色: head_teacher=班導, assistant_teacher=副班導
-FESTIVAL_BONUS_BASE = {
-    "head_teacher": {
-        "A": 2000,
-        "B": 2000,
-        "C": 1500,
-    },
-    "assistant_teacher": {
-        "A": 1200,
-        "B": 1200,
-        "C": 1200,
-    },
-    "art_teacher": {  # 美語教師（classroom.art_teacher_id），依第十二條一律 2000
-        "A": 2000,
-        "B": 2000,
-        "C": 2000,
-    },
-}
-
-# 節慶獎金目標人數 (依年級和教師配置)
-# 格式: grade_name -> { teacher_count -> target }
-# 2_teachers = 班導+副班導 (1班1副班導)
-# 1_teacher = 只有班導 (無副班導)
-# shared_assistant = 2班共用同一個副班導
-TARGET_ENROLLMENT = {
-    "大班": {"2_teachers": 24, "1_teacher": 12, "shared_assistant": 20},
-    "中班": {"2_teachers": 24, "1_teacher": 12, "shared_assistant": 18},
-    "小班": {"2_teachers": 24, "1_teacher": 12, "shared_assistant": 16},
-    "幼幼班": {"2_teachers": 15, "1_teacher": 7, "shared_assistant": 12},
-}
-
-# 超額獎金目標人數（與節慶獎金不同）
-OVERTIME_TARGET = {
-    "大班": {"2_teachers": 25, "1_teacher": 13, "shared_assistant": 20},
-    "中班": {"2_teachers": 23, "1_teacher": 12, "shared_assistant": 18},
-    "小班": {"2_teachers": 21, "1_teacher": 11, "shared_assistant": 16},
-    "幼幼班": {"2_teachers": 14, "1_teacher": 7, "shared_assistant": 12},
-}
-
-# 超額獎金每人金額（依角色和年級）
-OVERTIME_BONUS_PER_PERSON = {
-    "head_teacher": {"大班": 400, "中班": 400, "小班": 400, "幼幼班": 450},
-    "assistant_teacher": {"大班": 100, "中班": 100, "小班": 100, "幼幼班": 150},
-}
-
-# 主管紅利（依主管職）
-SUPERVISOR_DIVIDEND = {"園長": 5000, "主任": 4000, "組長": 3000, "副組長": 1500}
-
-# 主管節慶獎金基數（依主管職）
-SUPERVISOR_FESTIVAL_BONUS = {"園長": 6500, "主任": 3500, "組長": 2000}
-
-# 司機/美編/行政節慶獎金基數（全校比例計算，無超額獎金）
-OFFICE_FESTIVAL_BONUS_BASE = {"司機": 1000, "美編": 1000, "行政": 2000}
+# 注意：POSITION_GRADE_MAP / FESTIVAL_BONUS_BASE / TARGET_ENROLLMENT / OVERTIME_TARGET /
+# OVERTIME_BONUS_PER_PERSON / SUPERVISOR_DIVIDEND / SUPERVISOR_FESTIVAL_BONUS /
+# OFFICE_FESTIVAL_BONUS_BASE 已移至 config_defaults.py（單一事實來源），於檔首 re-export。
