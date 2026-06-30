@@ -469,3 +469,78 @@ def test_wildcard_q_is_escaped_not_match_all(client_and_session):
     )
     assert resp.status_code == 200
     assert resp.json()["students"] == [], "`%%` 被當 LIKE 萬用字元 match-all"
+
+
+def test_portal_search_students_multi_token(client_and_session):
+    """『林 美』只命中 name 同時含兩 token 的學生。"""
+    client, sess = client_and_session
+    cr = Classroom(name="MT班", is_active=True)
+    sess.add(cr)
+    sess.flush()
+    sess.add_all(
+        [
+            Student(
+                student_id="MT1",
+                name="林美麗",
+                classroom_id=cr.id,
+                is_active=True,
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            ),
+            Student(
+                student_id="MT2",
+                name="林大同",
+                classroom_id=cr.id,
+                is_active=True,
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            ),
+        ]
+    )
+    sess.flush()
+    _, _, token = _seed_teacher(sess, cr)
+    sess.commit()
+
+    resp = client.get(
+        "/api/portal/search",
+        params={"q": "林 美"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    names = [s["name"] for s in resp.json()["students"]]
+    assert "林美麗" in names and "林大同" not in names
+
+
+def test_portal_search_students_relevance_order(client_and_session):
+    """相關性排序：完全符合 < 前綴符合 < 包含；字母序相反時仍正確。
+
+    q='美麗'：
+      '大美麗'（含字串，key=2）字母序 < '美麗'（完全符合，key=0）→
+      修前按字母序 '大美麗' 先出，修後相關性排序 '美麗' 先出。
+    """
+    client, sess = client_and_session
+    cr = Classroom(name="RO班", is_active=True)
+    sess.add(cr)
+    sess.flush()
+    # 字母序: 大美麗 < 美麗 < 美麗人生（'大' < '美' in Unicode）
+    # 相關性: 美麗(0) < 美麗人生(1) < 大美麗(2)
+    for sid, name in [("RO1", "美麗"), ("RO2", "美麗人生"), ("RO3", "大美麗")]:
+        sess.add(
+            Student(
+                student_id=sid,
+                name=name,
+                classroom_id=cr.id,
+                is_active=True,
+                lifecycle_status=LIFECYCLE_ACTIVE,
+            )
+        )
+    sess.flush()
+    _, _, token = _seed_teacher(sess, cr)
+    sess.commit()
+
+    resp = client.get(
+        "/api/portal/search",
+        params={"q": "美麗"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    names = [s["name"] for s in resp.json()["students"]]
+    assert names.index("美麗") < names.index("美麗人生") < names.index("大美麗")

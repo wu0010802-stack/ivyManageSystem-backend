@@ -35,7 +35,14 @@ from utils.audit import write_explicit_audit
 from utils.auth import get_current_user
 from utils.masking import mask_phone
 from utils.portfolio_access import is_unrestricted
-from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
+from utils.search import (
+    LIKE_ESCAPE_CHAR,
+    build_search_filter,
+    escape_like_pattern,
+    normalize_query,
+    relevance_key,
+    tokenize_query,
+)
 
 from ._shared import _get_employee, _get_teacher_classroom_ids
 
@@ -88,10 +95,13 @@ def portal_search(
     }
 
     q_stripped = (q or "").strip()
-    if len(q_stripped) < 2:
+    nq = normalize_query(q)
+    tokens = tokenize_query(q)
+    if len(nq) < 2:
         return empty_result
 
-    pattern = f"%{escape_like_pattern(q_stripped)}%"
+    # messages section 仍用單一 pattern（不拆 token），至少做到正規化。
+    pattern = f"%{escape_like_pattern(nq)}%"
     user_id = current_user.get("user_id")
 
     session = get_session()
@@ -109,13 +119,16 @@ def portal_search(
             Student.lifecycle_status.notin_(
                 [LIFECYCLE_GRADUATED, LIFECYCLE_WITHDRAWN, LIFECYCLE_TRANSFERRED]
             ),
-            Student.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+            build_search_filter(tokens, [Student.name]),
         )
         if classroom_ids is not None:
             student_query = student_query.filter(
                 Student.classroom_id.in_(classroom_ids)
             )
-        students = student_query.order_by(Student.name.asc()).limit(SECTION_LIMIT).all()
+        # 多撈 3 倍候選以便相關性排序後再截取 SECTION_LIMIT
+        students = (
+            student_query.order_by(Student.name.asc()).limit(SECTION_LIMIT * 3).all()
+        )
 
         student_classroom_map: dict[int, str] = {}
         if students:
@@ -153,6 +166,10 @@ def portal_search(
             for r, s in zip(student_results, students):
                 r["parent_name"] = primary_by_student.get(s.id)
 
+        # 相關性排序後截回 SECTION_LIMIT（補值完畢後才排序，保證 dict 完整）
+        student_results.sort(key=lambda d: relevance_key(d["name"], nq))
+        student_results = student_results[:SECTION_LIMIT]
+
         # ── guardians ──────────────────────────────────────────────
         guardian_results: list[dict] = []
         if classroom_ids is None or classroom_ids:
@@ -168,18 +185,18 @@ def portal_search(
                             LIFECYCLE_TRANSFERRED,
                         ]
                     ),
-                    or_(
-                        Guardian.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                        Guardian.phone.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                    ),
+                    build_search_filter(tokens, [Guardian.name, Guardian.phone]),
                 )
             )
             if classroom_ids is not None:
                 guardian_query = guardian_query.filter(
                     Student.classroom_id.in_(classroom_ids)
                 )
+            # 多撈 3 倍候選以便相關性排序後再截取 SECTION_LIMIT
             guardian_rows = (
-                guardian_query.order_by(Guardian.name.asc()).limit(SECTION_LIMIT).all()
+                guardian_query.order_by(Guardian.name.asc())
+                .limit(SECTION_LIMIT * 3)
+                .all()
             )
             guardian_results = [
                 {
@@ -191,6 +208,9 @@ def portal_search(
                 }
                 for g, s in guardian_rows
             ]
+            # 依監護人姓名相關性排序後截回 SECTION_LIMIT
+            guardian_results.sort(key=lambda d: relevance_key(d["name"], nq))
+            guardian_results = guardian_results[:SECTION_LIMIT]
 
         # ── messages ───────────────────────────────────────────────
         # 第一階段：在 DB 直接 OR 兩個條件（student name 或 thread 內任一 body 含 q）
@@ -260,13 +280,12 @@ def portal_search(
                 .join(Classroom, StudentContactBookEntry.classroom_id == Classroom.id)
                 .filter(
                     StudentContactBookEntry.deleted_at.is_(None),
-                    or_(
-                        StudentContactBookEntry.teacher_note.ilike(
-                            pattern, escape=LIKE_ESCAPE_CHAR
-                        ),
-                        StudentContactBookEntry.learning_highlight.ilike(
-                            pattern, escape=LIKE_ESCAPE_CHAR
-                        ),
+                    build_search_filter(
+                        tokens,
+                        [
+                            StudentContactBookEntry.teacher_note,
+                            StudentContactBookEntry.learning_highlight,
+                        ],
                     ),
                 )
             )
@@ -313,10 +332,7 @@ def portal_search(
             session.query(Announcement)
             .filter(
                 no_recipients_subq | targeted_to_me_subq,
-                or_(
-                    Announcement.title.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                    Announcement.content.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                ),
+                build_search_filter(tokens, [Announcement.title, Announcement.content]),
             )
             .order_by(Announcement.created_at.desc())
             .limit(SECTION_LIMIT)
