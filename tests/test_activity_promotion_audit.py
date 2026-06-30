@@ -176,6 +176,68 @@ def test_confirm_expired_releases_slot_and_promotes_next(client_sf):
         ), "下一位應遞補為待確認"
 
 
+def _setup_expired_with_next(sf):
+    """逾期 promoted_pending（王小明）+ 候補在後（李小華）。回 (rid, rid2, cid)。"""
+    from datetime import timedelta
+
+    from models.database import ActivityRegistration
+    from utils.taipei_time import now_taipei_naive
+
+    with sf() as s:
+        _seed(s)
+        rid = _insert_reg(s)  # 王小明（與 _LEGACY_IDENTITY 相符）
+        cid = s.query(ActivityCourse).filter_by(name="圍棋").first().id
+        s.add(
+            RegistrationCourse(
+                registration_id=rid,
+                course_id=cid,
+                price_snapshot=1000,
+                status="promoted_pending",
+                confirm_deadline=now_taipei_naive() - timedelta(hours=1),
+            )
+        )
+        reg2 = ActivityRegistration(
+            student_name="李小華",
+            birthday="2020-06-06",
+            class_name="海豚班",
+            parent_phone="0922333444",
+            is_active=True,
+            paid_amount=0,
+        )
+        s.add(reg2)
+        s.flush()
+        rid2 = reg2.id
+        s.add(
+            RegistrationCourse(
+                registration_id=rid2,
+                course_id=cid,
+                price_snapshot=1000,
+                status="waitlist",
+            )
+        )
+        s.commit()
+    return rid, rid2, cid
+
+
+def test_confirm_expired_writes_audit(client_sf):
+    """EXPIRED 同步釋出是會 commit 的破壞性跨家庭 mutation（刪逾期 pending + 遞補
+    下一位），須與 confirm 成功 / decline 兩姊妹分支一致留 IP 級稽核
+    （2026-06-29 audit P3-E）。AuditMiddleware 未涵蓋此 public 子路由，須端點顯式寫。
+    """
+    client, sf = client_sf
+    rid, rid2, cid = _setup_expired_with_next(sf)
+
+    resp = client.post(
+        f"/api/activity/public/registrations/{rid}/courses/{cid}/confirm-promotion",
+        json=_LEGACY_IDENTITY,
+    )
+    assert resp.status_code == 410, resp.json()
+
+    audits = _audits_for_reg(sf, rid)
+    assert audits, "逾期同步釋出未留稽核"
+    assert any(a.action == "DELETE" for a in audits), [a.action for a in audits]
+
+
 def test_decline_promotion_writes_audit(client_sf):
     client, sf = client_sf
     rid, cid = _setup_promoted_pending(sf)

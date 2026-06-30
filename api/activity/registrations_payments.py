@@ -181,18 +181,32 @@ def update_payment(
                 label="標記未繳費自動沖帳累積退費總額",
             )
             # ── 退費 diff 簽核閘（與 POST /payments 退費路徑對齊）───────────
-            # 全額沖帳的實退額 = current_paid；與 calculator 建議值比較，
-            # 偏離 > 門檻且無 ACTIVITY_PAYMENT_APPROVE 即 403（堵旁路）。
+            # 沖帳後累積實退 = 既退（prior_refunded）+ 本次 current_paid；與 calculator
+            # 建議值比較，偏離 > 門檻且無 ACTIVITY_PAYMENT_APPROVE 即 403（堵旁路）。
+            # 用累積口徑（非僅 current_paid）使既退已逼近/超過建議時沖帳剩額仍被攔，
+            # 與 POST /payments、POS 退費閘一致（2026-06-29 audit P2-A）。
             # current_paid=0 時跳過（無實際退費金流，diff 閘不適用）。
             if current_paid > 0:
+                _prior_refunded = (
+                    session.query(
+                        func.coalesce(func.sum(ActivityPaymentRecord.amount), 0)
+                    )
+                    .filter(
+                        ActivityPaymentRecord.registration_id == registration_id,
+                        ActivityPaymentRecord.type == "refund",
+                        ActivityPaymentRecord.voided_at.is_(None),
+                    )
+                    .scalar()
+                ) or 0
+                _cumulative_refund = int(_prior_refunded) + int(current_paid)
                 _suggestion = build_refund_suggestion(session, registration_id)
                 _suggested_total = _suggestion["total_suggested_amount"]
-                _diff = abs(current_paid - _suggested_total)
+                _diff = abs(_cumulative_refund - _suggested_total)
                 require_approve_for_refund_diff(
                     diff=_diff,
                     current_user=current_user,
                     suggested_total=_suggested_total,
-                    actual_total=current_paid,
+                    actual_total=_cumulative_refund,
                     suggestion=_suggestion,
                 )
             if current_paid > 0:
@@ -430,20 +444,24 @@ def add_registration_payment(
             )
 
         # ── 第三道：實退 vs 建議值偏離簽核 (spec §8.2) ───────────────
+        # diff 以「累積實退（含本次，= cumulative_refund，上方已算）」vs 建議總額比較，
+        # 而非單筆 body.amount。建議值無狀態（build_refund_suggestion 不扣既退），若只比
+        # 單筆，員工可拆成多筆、每筆=建議值使 diff 恆為 0 繞過本閘累積超退（2026-06-29
+        # audit P2-A）。與上方累積大額閘同採累積口徑，兩閘一致。
         if body.type == "refund":
             suggestion = build_refund_suggestion(session, registration_id)
             suggested_total = suggestion["total_suggested_amount"]
-            diff = abs(int(body.amount) - suggested_total)
+            diff = abs(cumulative_refund - suggested_total)
             require_approve_for_refund_diff(
                 diff=diff,
                 current_user=current_user,
                 suggested_total=suggested_total,
-                actual_total=int(body.amount),
+                actual_total=cumulative_refund,
                 suggestion=suggestion,
             )
             _refund_audit_context = {
                 "suggested_total": suggested_total,
-                "actual_total": int(body.amount),
+                "actual_total": cumulative_refund,
                 "diff": diff,
                 "suggestion_details": [suggestion],
             }

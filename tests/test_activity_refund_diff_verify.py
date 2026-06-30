@@ -30,6 +30,7 @@ from api.auth import router as auth_router
 from models.database import (
     ActivityAttendance,
     ActivityCourse,
+    ActivityPaymentRecord,
     ActivitySession,
     Base,
 )
@@ -381,6 +382,116 @@ def test_single_refund_diff_below_threshold_passes(client):
     }
     resp = c.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
     assert resp.status_code in (200, 201), resp.json()
+
+
+def test_single_refund_split_cannot_bypass_diff_gate(client):
+    """拆單繞過防護（2026-06-29 audit P2-A）。
+
+    退費建議值無狀態（build_refund_suggestion 不扣既退），故 diff 閘若只比『單筆
+    body.amount』vs 建議總額，員工可把退費拆成多筆、每筆都=建議值使 diff=0 恆放行，
+    累積超退而無 ACTIVITY_PAYMENT_APPROVE 簽核。
+
+    修正：diff 改以『累積實退（含本次）』vs 建議總額。
+    - 首筆 300 = 建議值 → 累積 300，diff=0 → 一線放行（合法全額建議退費）。
+    - 次筆 300 → 累積實退 600 > 建議 300 → diff=300 > 100 → 一線須簽核 → 403。
+    """
+    c, sf = client
+    with sf() as s:
+        _create_admin(s, permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"])
+        # course_price=900、T_served=5/10（ratio 0.5 ∈ [1/3,2/3)）→ suggested=round(900×1/3)=300
+        reg = _setup_reg(s, course_price=900, supply_price=0, paid_amount=900)
+        _set_course_sessions(s, "美術", 10)
+        course = s.query(ActivityCourse).filter(ActivityCourse.name == "美術").first()
+        _mark_attendance(s, reg.id, course.id, 5)
+        s.commit()
+        reg_id = reg.id
+
+    _login(c)
+    body1 = {
+        "amount": 300,  # = suggested → diff=0
+        "payment_method": "現金",
+        "payment_date": _PAYMENT_DATE,
+        "type": "refund",
+        "notes": REFUND_REASON,
+        "idempotency_key": "REFUNDSPLIT-A1",
+    }
+    r1 = c.post(f"/api/activity/registrations/{reg_id}/payments", json=body1)
+    assert r1.status_code in (200, 201), r1.json()  # 首筆合法（diff=0）
+
+    body2 = dict(body1, idempotency_key="REFUNDSPLIT-A2")
+    r2 = c.post(f"/api/activity/registrations/{reg_id}/payments", json=body2)
+    # 累積實退 600 > 建議 300 → diff=300 > 100 → 一線員工須簽核
+    assert r2.status_code == 403, r2.json()
+    assert "偏離" in r2.json()["detail"] or "差" in r2.json()["detail"]
+
+
+def test_pos_refund_split_cannot_bypass_diff_gate(client):
+    """POS 拆單繞過防護（2026-06-29 audit P2-A）。
+
+    與單筆 payments 路徑同根因：POS diff 閘若只比『本次 checkout 實退』vs 無狀態建議，
+    員工可多次 checkout、每次都=建議值使 diff=0，累積超退。修正後第二次 checkout 因
+    『累積實退（含 prior）> 建議』而觸發 diff 閘。
+    """
+    c, sf = client
+    with sf() as s:
+        _create_admin(s, permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"])
+        reg = _setup_reg(s, course_price=900, supply_price=0, paid_amount=900)
+        _set_course_sessions(s, "美術", 10)
+        course = s.query(ActivityCourse).filter(ActivityCourse.name == "美術").first()
+        _mark_attendance(s, reg.id, course.id, 5)  # T_served=5/10 → suggested=300
+        s.commit()
+        reg_id = reg.id
+
+    _login(c)
+    r1 = c.post(
+        "/api/activity/pos/checkout", json=_refund_body(reg_id, 300, "POSSPLIT-A1")
+    )
+    assert r1.status_code in (200, 201), r1.json()  # 首次=建議值 diff=0
+    r2 = c.post(
+        "/api/activity/pos/checkout", json=_refund_body(reg_id, 300, "POSSPLIT-A2")
+    )
+    # 累積實退 600 > 建議 300 → diff=300 > 100 → 一線員工須簽核
+    assert r2.status_code == 403, r2.json()
+
+
+def test_writeoff_diff_gate_is_cumulative_aware(client):
+    """標記未繳沖帳的 diff 閘須含既退累積（2026-06-29 audit P2-A）。
+
+    suggested=300、已有 prior 退費 600（paid 已從 900 退到 300）。標記未繳沖帳剩餘
+    current_paid=300。舊碼 diff=abs(300-300)=0 漏放行，但累積實退=600+300=900 >> 建議
+    300（超退 600）。修正後 diff=abs((600+300)-300)=600 > 100 → 一線員工須簽核 → 403。
+    （prior 退費直接寫 DB 以隔離 writeoff 閘：不論既退從哪條路徑產生，此閘都須累積感知。）
+    """
+    c, sf = client
+    with sf() as s:
+        _create_admin(s, permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"])
+        reg = _setup_reg(s, course_price=900, supply_price=0, paid_amount=300)
+        _set_course_sessions(s, "美術", 10)
+        course = s.query(ActivityCourse).filter(ActivityCourse.name == "美術").first()
+        _mark_attendance(s, reg.id, course.id, 5)  # T_served=5/10 → suggested=300
+        s.add(
+            ActivityPaymentRecord(
+                registration_id=reg.id,
+                type="refund",
+                amount=600,
+                payment_date=date(2026, 5, 1),
+                payment_method="現金",
+                notes="prior refund injected",
+                operator="x",
+            )
+        )
+        s.commit()
+        reg_id = reg.id
+
+    _login(c)
+    body = {
+        "is_paid": False,
+        "confirm_refund_amount": 300,  # = current_paid（reg.paid_amount）
+        "refund_reason": REFUND_REASON,
+    }
+    resp = c.put(f"/api/activity/registrations/{reg_id}/payment", json=body)
+    # 累積實退 600+300=900 > 建議 300 → diff=600 > 100 → 須簽核
+    assert resp.status_code == 403, resp.json()
 
 
 def test_pos_refund_audit_changes_contains_suggestion(client_with_audit_capture):

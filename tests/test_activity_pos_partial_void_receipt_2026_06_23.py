@@ -47,7 +47,7 @@ def _reg(session, name="王小明"):
     return r
 
 
-def _rec(session, reg_id, receipt_no, amount, *, voided=False):
+def _rec(session, reg_id, receipt_no, amount, *, voided=False, snapshot=None):
     rec = ActivityPaymentRecord(
         registration_id=reg_id,
         type="payment",
@@ -55,6 +55,7 @@ def _rec(session, reg_id, receipt_no, amount, *, voided=False):
         payment_date=date(2026, 3, 1),
         payment_method="現金",
         receipt_no=receipt_no,
+        receipt_items_snapshot=snapshot,
         voided_at=date(2026, 3, 2) if voided else None,
         voided_by="admin" if voided else None,
         void_reason="客戶取消其中一項" if voided else None,
@@ -92,3 +93,52 @@ def test_no_void_receipt_not_flagged(session):
     assert out["total"] == 1000
     assert out["has_voided_items"] is False
     assert out["original_total"] == 1000
+
+
+def test_voided_anchor_still_reads_frozen_snapshot(session):
+    """anchor（持有 snapshot 的第一筆）被個別作廢後補印，仍須回放凍結 snapshot，
+    而非退回即時重建（2026-06-29 audit P3-C）。
+
+    snapshot 只寫在收據第一筆 anchor；若 anchor 被個別作廢，補印查詢排除 voided 後
+    same_recs[0] 變成 snapshot=NULL 的次筆，舊碼誤判「無 snapshot」退回即時重建，
+    打破凍結明細不漂移保證（凍結資料其實仍在被作廢的 anchor 上）。
+    """
+    reg_a = _reg(session, "王小明")
+    reg_b = _reg(session, "陳小美")
+    receipt_no = "POS-20260301-AABBCCDDEEFF"
+    snapshot = [
+        {
+            "registration_id": reg_a.id,
+            "student_name": "王小明",
+            "class_name": "大班",
+            "amount_applied": 1000,
+            "new_paid_amount": 1000,
+            "total_amount": 1000,
+            "new_payment_status": "paid",
+            "courses": [{"name": "凍結課A"}],
+            "supplies": [],
+        },
+        {
+            "registration_id": reg_b.id,
+            "student_name": "陳小美",
+            "class_name": "大班",
+            "amount_applied": 500,
+            "new_paid_amount": 500,
+            "total_amount": 500,
+            "new_payment_status": "paid",
+            "courses": [{"name": "凍結課B"}],
+            "supplies": [],
+        },
+    ]
+    # anchor（reg_a，最小 id）持有 snapshot，且被個別作廢
+    _rec(session, reg_a.id, receipt_no, 1000, voided=True, snapshot=snapshot)
+    rec_b = _rec(session, reg_b.id, receipt_no, 500)  # 次筆，非作廢，snapshot=None
+    session.flush()
+
+    out = _parse_receipt_response_from_record(session, rec_b)
+    assert out is not None
+    # 仍讀凍結 snapshot（非即時重建）
+    assert out["items_rebuilt_live"] is False
+    # 被作廢的 anchor（reg_a）明細列濾除（P2-6 契約），只留 reg_b 凍結明細
+    assert [it["registration_id"] for it in out["items"]] == [reg_b.id]
+    assert out["items"][0]["courses"] == [{"name": "凍結課B"}]

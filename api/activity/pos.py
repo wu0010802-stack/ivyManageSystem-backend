@@ -235,7 +235,19 @@ def _parse_receipt_response_from_record(
     # 確保補印的課程/用品/班級/學生與收據開立時一致，不隨付款後的增退課漂移；
     # 同時省去即時 N+1 查詢。舊收據（snapshot 為 NULL）退回即時重建，並標
     # items_rebuilt_live=True 讓 PDF 註明「明細依目前報名狀態重建」。
-    snapshot = first.receipt_items_snapshot
+    # snapshot 只寫在 anchor（整張收據第一筆，最小 id）；anchor 可能被個別作廢而被
+    # same_recs 排除（multi-student 收據沖銷其中一位）。從 all_recs（含 voided）依 id
+    # 找出持有 snapshot 的 anchor，避免「anchor 被作廢 → same_recs[0] 變次筆 →
+    # snapshot=NULL → 誤退即時重建」破壞凍結明細不漂移保證（2026-06-29 audit P3-C）。
+    # 被作廢項目的明細列仍由下方 valid_reg_ids 過濾排除（維持 P2-6 契約）。
+    snapshot = next(
+        (
+            r.receipt_items_snapshot
+            for r in sorted(all_recs, key=lambda x: x.id)
+            if isinstance(r.receipt_items_snapshot, list) and r.receipt_items_snapshot
+        ),
+        None,
+    )
     if isinstance(snapshot, list) and snapshot:
         # 用 same_recs（已濾 voided）的 registration_id 過濾 snapshot：保留 P2-6
         # 「補印不含已作廢項目」契約——日後整張收據被部分作廢時，被作廢那筆的明細列
@@ -762,7 +774,15 @@ def _run_post_lock_refund_guards(session, body, reg_ids, current_user) -> dict:
         )
 
     # 第三道：實退 vs 建議值偏離簽核
+    # diff 以「每 reg 累積實退（prior_refund + 本次，prior_refund_map 上方已查）」vs
+    # 該 reg 建議值比較，而非單次 checkout 實退。建議值無狀態（不扣既退），若只比本次，
+    # 員工可多次 checkout、每次都=建議值使 diff=0 累積超退（2026-06-29 audit P2-A）；
+    # 與上方第二道累積大額閘同採累積口徑。
     actual_by_reg = {it.registration_id: it.amount for it in body.items}
+    cumulative_by_reg = {
+        rid: prior_refund_map.get(rid, 0) + int(amt)
+        for rid, amt in actual_by_reg.items()
+    }
     suggested_by_reg: dict[int, int] = {}
     suggestion_details: list[dict] = []
     for rid in actual_by_reg:
@@ -770,9 +790,11 @@ def _run_post_lock_refund_guards(session, body, reg_ids, current_user) -> dict:
         suggested_by_reg[rid] = suggestion["total_suggested_amount"]
         suggestion_details.append(suggestion)
 
-    total_actual = sum(actual_by_reg.values())
+    total_actual = sum(cumulative_by_reg.values())
     total_suggested = sum(suggested_by_reg.values())
-    diff = sum(abs(actual_by_reg[rid] - suggested_by_reg[rid]) for rid in actual_by_reg)
+    diff = sum(
+        abs(cumulative_by_reg[rid] - suggested_by_reg[rid]) for rid in actual_by_reg
+    )
     # 若任一 reg 課程 sessions IS NULL → merged suggestion 標 needs_manual_review
     _merged_suggestion = {
         "needs_manual_review": any(

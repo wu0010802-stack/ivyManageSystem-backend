@@ -618,6 +618,55 @@ class TestStudentInactiveExcluded:
         assert row["recorded_count"] == 1
 
 
+# ── (2026-06-29 audit P3-F) 未來場次預先點名不計入儀表板聚合出席率 ──────────
+
+
+class TestFutureSessionExcludedFromDashboard:
+    """get_attendance_stats 聚合出席率須排除「未來場次預先點名」，與退費 money-path
+    （services/activity_refund_query.py:87 session_date <= today_taipei()）口徑一致。
+
+    教師若把未來場次預先勾出席，舊碼會把未發生場次灌進 avg_rate；修後只計
+    session_date <= 台北今日 的場次。
+    """
+
+    def test_future_prefilled_attendance_excluded_from_avg_rate(self, session, svc):
+        """過去場次缺席 + 未來場次預先點名出席：
+        修前 present=1/total=2 → avg=0.5（含未來）；
+        修後 只計過去場次 present=0/total=1 → avg=0.0、sessions=1。
+        """
+        from datetime import date as _date
+
+        course = _make_course(session, name="未來場次測試")
+        reg = _make_reg(session, name="預點生")
+        _enroll(session, reg.id, course.id)
+
+        past = ActivitySession(
+            course_id=course.id, session_date=_date(2020, 1, 1), created_by="test"
+        )
+        future = ActivitySession(
+            course_id=course.id, session_date=_date(2099, 1, 1), created_by="test"
+        )
+        session.add_all([past, future])
+        session.flush()
+        _attend(session, past.id, reg.id, is_present=False)  # 過去：缺席
+        _attend(session, future.id, reg.id, is_present=True)  # 未來：預先點出席
+        session.commit()
+
+        result = svc.get_attendance_stats(session, **TERM)
+        entry = next(
+            (e for e in result["by_course"] if e["course_name"] == "未來場次測試"),
+            None,
+        )
+        assert entry is not None
+        # 只計已上課（過去）場次：1 場、缺席 → avg=0.0
+        assert (
+            entry["sessions"] == 1
+        ), f"sessions={entry['sessions']}，應為 1；未來場次被計入聚合"
+        assert (
+            entry["avg_rate"] == 0.0
+        ), f"avg_rate={entry['avg_rate']}，應為 0.0；未來場次預先點名膨脹出席率"
+
+
 # ── (P1) 寫入路徑 query_valid_session_registrations 排除離校生 ─────────────────
 
 

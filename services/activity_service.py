@@ -15,7 +15,7 @@ from utils.advisory_lock import acquire_activity_daily_close_lock
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
-from utils.taipei_time import now_taipei_naive
+from utils.taipei_time import now_taipei_naive, today_taipei
 from utils.activity_constants import (
     OCCUPYING_STATUSES,
     DEFAULT_COURSE_CAPACITY,
@@ -617,6 +617,10 @@ class ActivityService:
                 ActivityCourse.is_active.is_(True),
                 ActivityCourse.school_year == school_year,
                 ActivityCourse.semester == semester,
+                # 只計「已上課」場次：未來場次即使被預先點名 is_present 也不灌進儀表板
+                # 聚合出席率，與退費 money-path（activity_refund_query.py:87 的
+                # session_date <= today_taipei()）口徑一致（2026-06-29 audit P3-F）。
+                ActivitySession.session_date <= today_taipei(),
             )
             .join(ActivitySession, ActivityCourse.id == ActivitySession.course_id)
             .join(

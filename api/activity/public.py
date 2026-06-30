@@ -1616,11 +1616,33 @@ def public_confirm_promotion(
                 # FOR UPDATE 鎖），session 可續用；公開端走主庫 get_session()，具完整
                 # 權限可安全跨家庭釋出/遞補（家長 RLS 端不走此路徑，見 service docstring）。
                 try:
-                    activity_service.release_expired_pending_promotion(
-                        session, registration_id, course_id
+                    released_student, released_course = (
+                        activity_service.release_expired_pending_promotion(
+                            session, registration_id, course_id
+                        )
                     )
                     session.commit()
                     _invalidate_after_registration_mutation(session)
+                    # 逾期同步釋出是會 commit 的破壞性跨家庭 mutation（刪逾期 pending +
+                    # 遞補下一位）；AuditMiddleware 未涵蓋此 public 子路由，須與 confirm
+                    # 成功 / decline 兩姊妹分支一致顯式留 IP 級稽核（2026-06-29 audit P3-E）。
+                    write_explicit_audit(
+                        request,
+                        action="DELETE",
+                        entity_type="activity_registration",
+                        entity_id=str(registration_id),
+                        summary=(
+                            f"逾期候補轉正自動釋出名額：「{released_course}」"
+                            f"（{released_student}）"
+                        ),
+                        changes={
+                            "course_id": course_id,
+                            "course_name": released_course,
+                            "student_name": released_student,
+                            "actor": "parent",
+                            "event": "expired_release",
+                        },
+                    )
                 except Exception:  # noqa: BLE001 — 釋出 best-effort，失敗仍回 410
                     session.rollback()
                     logger.warning(

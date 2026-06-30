@@ -31,12 +31,15 @@ class PublicCourseItem(BaseModel):
     # 前端若仍送 price 欄位，Pydantic 預設 extra='ignore' 會自動丟棄，
     # 避免維護者誤把 client 傳入金額當作實價使用（過去此處曾保留 price
     # 欄位，後端忽略它，但留下 code smell）。
-    name: str
+    # max_length=100 對齊 ActivityCourse.name VARCHAR(100)；min_length=1 防空字串。
+    # 公開端字串欄一律設上限防 DoS 級超長 payload（2026-06-29 audit P3-D）。
+    name: str = Field(..., min_length=1, max_length=100)
 
 
 class PublicSupplyItem(BaseModel):
     # 同 PublicCourseItem：只收 name，價格一律以 DB 為準
-    name: str
+    # max_length=100 對齊 ActivitySupply.name VARCHAR(100)；min_length=1 防空字串。
+    name: str = Field(..., min_length=1, max_length=100)
 
 
 # ─── 共用驗證 helper（公開頁三 payload 都用）────────────────────────────

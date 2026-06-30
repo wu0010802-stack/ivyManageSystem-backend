@@ -228,3 +228,41 @@ class TestClassNameLength:
             _valid_payload_dict(**{"class": "班" * 50})
         )
         assert len(obj.class_) == 50
+
+
+# ── 2026-06-29 audit P3-D：清單內 item name 長度上限 ────────────────────────
+# courses/supplies 每項 name 為公開端唯二未受限的字串欄；對齊 ActivityCourse.name /
+# ActivitySupply.name 的 VARCHAR(100)，補 1..100 防 DoS 級超長 payload（與本模組
+# parent_phone/remark/class 等既有上限政策一致）。
+
+
+class TestItemNameLength:
+    def test_register_payload_rejects_overlong_course_name(self):
+        with pytest.raises(ValidationError):
+            PublicRegistrationPayload.model_validate(
+                _valid_payload_dict(courses=[{"name": "課" * 101}])
+            )
+
+    def test_register_payload_rejects_overlong_supply_name(self):
+        with pytest.raises(ValidationError):
+            PublicRegistrationPayload.model_validate(
+                _valid_payload_dict(courses=[], supplies=[{"name": "品" * 101}])
+            )
+
+    def test_register_payload_rejects_empty_course_name(self):
+        with pytest.raises(ValidationError):
+            PublicRegistrationPayload.model_validate(
+                _valid_payload_dict(courses=[{"name": ""}])
+            )
+
+    def test_update_payload_rejects_overlong_course_name(self):
+        with pytest.raises(ValidationError):
+            PublicUpdatePayload.model_validate(
+                _valid_payload_dict(id=1, courses=[{"name": "課" * 101}])
+            )
+
+    def test_register_payload_accepts_max_length_course_name(self):
+        obj = PublicRegistrationPayload.model_validate(
+            _valid_payload_dict(courses=[{"name": "課" * 100}])
+        )
+        assert len(obj.courses[0].name) == 100

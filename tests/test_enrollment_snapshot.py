@@ -181,21 +181,21 @@ class TestGenerateAndResolve:
 
 class TestEngineUsesSnapshot:
     def test_festival_breakdown_uses_snapshot_count(self, db):
-        """快照手調 12→10 後，節慶獎金按 10 人計（基數 2000、目標 12 → 1667）。"""
+        """快照手調 12→10 後，節慶獎金按 10 人計（基數 2000、目標 14 → 1429）。"""
         from services.salary.enrollment_snapshot import generate_snapshot
 
         engine = SalaryEngine(load_from_db=False)
         with db() as session:
             room, teacher = _seed_class(session, enrollment=12, with_teacher=True)
 
-            # 無快照：即時 12 人 → 2000 × 12/12 = 2000
+            # 無快照：即時 12 人 → 2000 × 12/14 = 1714
             bd = engine.calculate_festival_bonus_breakdown(
                 teacher.id, 2026, 3, _ctx={"session": session, "employee": teacher}
             )
-            assert bd["festivalBonus"] == 2000
+            assert bd["festivalBonus"] == 1714
             assert bd["currentEnrollment"] == 12
 
-            # 產快照並手調為 10 → 2000 × 10/12 = 1667
+            # 產快照並手調為 10 → 2000 × 10/14 = 1429
             generate_snapshot(session, 2026, 3, updated_by="tester")
             session.flush()
             from models.enrollment_snapshot import ClassEnrollmentSnapshot
@@ -212,4 +212,4 @@ class TestEngineUsesSnapshot:
                 teacher.id, 2026, 3, _ctx={"session": session, "employee": teacher}
             )
             assert bd2["currentEnrollment"] == 10
-            assert bd2["festivalBonus"] == 1667
+            assert bd2["festivalBonus"] == 1429
