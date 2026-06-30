@@ -104,6 +104,7 @@ def convert_recruitment_to_student(
         birthday=visit.birthday,
         classroom_id=classroom_id,
         enrollment_school_year=enroll_year,
+        enrollment_semester=enroll_sem,
         enrollment_seq=seq,
         enrollment_date=enroll_date,
         lifecycle_status=initial_lifecycle_status,
