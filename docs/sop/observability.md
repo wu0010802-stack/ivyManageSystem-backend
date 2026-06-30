@@ -10,12 +10,14 @@
 
 | 層級 | 工具 | 用途 | 設定者 |
 |------|------|------|--------|
-| L1 服務存活 | UptimeRobot → `/api/health/ready` | 5 min ping 確認 HTTP 200 + DB 連線 | user 帳號操作 |
-| L1b 排程存活 | UptimeRobot → `/api/health/schedulers` | 5 min ping 確認 scheduler heartbeat 沒有 lag | user 帳號操作 |
+| L1 服務存活 | UptimeRobot → `/health/ready` | 5 min ping 確認 HTTP 200 + DB 連線 | user 帳號操作 |
+| L1b 排程存活 | UptimeRobot → `/health/schedulers` | 5 min ping 確認 scheduler heartbeat 沒有 lag | user 帳號操作 |
 | L2 慢請求即時告警 | RequestLoggingMiddleware → in-memory counter → LINE | 慢請求達 10 次/分鐘 → LINE ops 群組推播；per-path 5 分鐘 cooldown 防 spam | code 自動 |
 | L3 效能 dashboard | Sentry Performance | p50/p75/p95/p99 / endpoint breakdown / span waterfall；事後查詢與趨勢分析 | env 設好即啟用 |
 
 L1 是「服務有沒有活」；L1b 是「背景排程有沒有持續跑」；L2 是「服務活但慢爆了」即時感知；L3 是「平日基線追蹤 + 事後 root cause」。三層互補。
+
+> **路徑前綴（重要，避免 404 誤報）**：health router 在後端掛於 `/health/*`（直連後端服務即此路徑，例如 `http://localhost:8088/health/ready`）。`/api/` 前綴只在「對外經反向代理 / 前端 axios baseURL 慣例」時才出現；直打後端的 `/api/health/ready` 會 404。UptimeRobot 若指向**後端服務 URL** 用 `/health/...`；若指向**公開/反代域名**才可能是 `/api/health/...`。設定 monitor 前先用 workspace 的 `scripts/health-smoke.sh <url>`（會自動偵測前綴）確認你 prod 實際路徑，避免把 404 當成服務死亡。
 
 ---
 
@@ -23,14 +25,14 @@ L1 是「服務有沒有活」；L1b 是「背景排程有沒有持續跑」；L
 
 ### 為什麼
 
-`/api/health/ready` 已 implemented（連 DB 跑 `SELECT 1` 失敗回 503），但 SaaS 部署沒人在外面 ping → 服務當機要等使用者反映才發現。
+`/health/ready` 已 implemented（連 DB 跑 `SELECT 1` 失敗回 503），但 SaaS 部署沒人在外面 ping → 服務當機要等使用者反映才發現。
 
 ### 設定步驟（user 操作）
 
 1. 註冊 [UptimeRobot](https://uptimerobot.com/) 免費帳號（50 monitor / 5 min interval）
 2. 加 monitor：**Monitor Type**: HTTP(S)
 3. **Friendly Name**: `ivy-backend prod readiness`
-4. **URL**: `https://<prod-domain>/api/health/ready`
+4. **URL**: `https://<prod-backend-host>/health/ready`（直連後端服務；若改指公開/反代域名才用 `/api/health/ready`，設定前用 `scripts/health-smoke.sh` 確認）
 5. **Monitoring Interval**: 5 minutes
 6. **Alert Contacts**:
    - 加 email contact（必填）
@@ -94,7 +96,7 @@ export OPS_ALERT_LINE_GROUP_ID=C<test_group>
 
 # 3. 對某個 endpoint 連續打（或用 ab/wrk）
 for i in 1 2 3 4 5; do
-  curl -s -o /dev/null http://localhost:8088/api/health/ready
+  curl -s -o /dev/null http://localhost:8088/health/ready
 done
 # 注意：/health/ready 通常很快，要打慢端點才會觸發。可暫時 monkeypatch SLOW_REQUEST_THRESHOLD_MS=0
 # 或對真實慢端點（如薪資批次預覽）打 N 次。
