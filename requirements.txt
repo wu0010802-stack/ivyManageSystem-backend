@@ -23,8 +23,8 @@ alembic>=1.13.0
 requests>=2.33.0  # CVE-2026-25645（修補版 2.33.0；專案 requires-python>=3.10）
 supabase>=2.0.0  # 物件儲存（activity_posters / leave_attachments）
 python-json-logger>=2.0.7
-pytest>=9.0.3  # CVE-2025-71176（9.1.1 已驗證相容，StopIteration 實為 fastapi _IncludedRouter 而非 pytest）
-pytest-cov>=4.1.0
+pytest>=9.1.1  # CVE-2025-71176（9.1.1 已驗證相容，StopIteration 實為 fastapi _IncludedRouter 而非 pytest）
+pytest-cov>=7.1.0
 pytest-split>=0.11.0  # CI 分片：matrix 多 job 各跑 1/N 子集（單進程序列，避 xdist 並發 flaky）
 httpx>=0.24.0
 responses>=0.26.1
