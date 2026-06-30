@@ -25,7 +25,6 @@ from schemas.recruitment_funnel import (
 from services.recruitment_funnel import (
     transition_visit,
     derive_stage,
-    school_term_to_roc_months,
     RecruitmentFunnelError,
 )
 from utils.academic import resolve_current_academic_term
@@ -63,25 +62,25 @@ def get_board(
     session: Session = Depends(get_session_dep),
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
-    """4 階段看板資料，依「訪視月份所屬學年（/學期）」圈定範圍。
+    """4 階段看板資料，依「入學學期（target_school_year/target_semester）」圈定範圍。
 
-    visit 依 month（民國月份）所屬學年過濾（學年 N = 8 月~隔年 7 月）：school_year 未帶
-    時預設當前學年，semester 未帶時涵蓋整學年（上+下）。
+    所有寫入路徑皆保證 target 有值：create 預設當前學期、Excel import 由月份推導、
+    enrterm01 migration backfill 補齊既有資料（含 dev DB null_tsy=0 記錄）。
+    因此 board 可直接以 target 過濾，無需 month fallback。
 
-    原實作抓全表（query(RecruitmentVisit).all()）→ 切學年看板不變、隨年度無上限累積、
-    summary 是全歷史人數而非當期（2026-06 探測）。target_school_year 多為 NULL（僅保留
-    座位時才填）不能當過濾依據，故改由 month 推導所屬學年（與招生模組 month/period 慣例一致）。
+    school_year 未帶時預設當前學年，semester 未帶時涵蓋整學年（上+下，即不加
+    target_semester 條件）。
     """
     if school_year is None:
         sy, _ = resolve_current_academic_term()
         school_year = sy
 
-    month_labels = school_term_to_roc_months(school_year, semester)
-    visits = (
-        session.query(RecruitmentVisit)
-        .filter(RecruitmentVisit.month.in_(month_labels))
-        .all()
+    visit_q = session.query(RecruitmentVisit).filter(
+        RecruitmentVisit.target_school_year == school_year
     )
+    if semester is not None:
+        visit_q = visit_q.filter(RecruitmentVisit.target_semester == semester)
+    visits = visit_q.all()
     student_map: dict[int, Student] = {
         s.recruitment_visit_id: s
         for s in (

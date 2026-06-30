@@ -1,13 +1,15 @@
-"""招生 funnel /board 依「訪視月份所屬學年」圈定範圍。
+"""招生 funnel /board 依「入學學期（target_school_year/target_semester）」圈定範圍。
 
-原本 get_board 抓全表 → 切學年看板不變、隨年度無上限累積、summary 全歷史。
-target_school_year 多為 NULL 不能當過濾依據，改由 RecruitmentVisit.month（民國月份）
-推導所屬學年（學年 N = 8 月~隔年 7 月，對齊 utils.academic.term_bounds）。
+Task 5 後：get_board 改以 target_school_year/target_semester 過濾（取代 month.in_）。
+所有寫入路徑保證 target 有值；測試 fixture 須明確設 target_* 欄位。
 """
 
 from api.recruitment.funnel import get_board
 from models.recruitment import RecruitmentVisit
-from services.recruitment_funnel import school_term_to_roc_months
+from services.recruitment_funnel import (
+    school_term_to_roc_months,
+    roc_month_to_school_term,
+)
 
 
 class TestSchoolTermToRocMonths:
@@ -46,12 +48,22 @@ def _names(out):
 
 class TestGetBoardScopesToSchoolYear:
     def _seed(self, s):
+        def _visit(month, name):
+            """建立訪視並依 month 推導入學學期（Task 5：board 依 target 過濾）。"""
+            sy, sem = roc_month_to_school_term(month)
+            return RecruitmentVisit(
+                month=month,
+                child_name=name,
+                target_school_year=sy,
+                target_semester=sem,
+            )
+
         s.add_all(
             [
-                RecruitmentVisit(month="114.09", child_name="甲"),  # 學年114 上學期
-                RecruitmentVisit(month="115.05", child_name="乙"),  # 學年114 下學期
-                RecruitmentVisit(month="114.03", child_name="丙"),  # 學年113 下學期
-                RecruitmentVisit(month="115.10", child_name="丁"),  # 學年115 上學期
+                _visit("114.09", "甲"),  # → target 114/1 上學期
+                _visit("115.05", "乙"),  # → target 114/2 下學期
+                _visit("114.03", "丙"),  # → target 113/2 下學期
+                _visit("115.10", "丁"),  # → target 115/1 上學期
             ]
         )
         s.commit()
