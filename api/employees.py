@@ -45,6 +45,7 @@ from schemas.employees import (
 from services.employee_class_history import build_class_history
 from utils.masking import mask_bank_account, mask_id_number
 from utils.permissions import Permission, has_permission
+from utils.search import build_search_filter, tokenize_query
 from utils.audit import write_explicit_audit, mark_soft_delete
 from utils.salary_access import can_view_salary_of
 from utils.validators import parse_optional_date
@@ -283,9 +284,10 @@ def get_employees(
     session = get_session()
     try:
         q = session.query(Employee).options(joinedload(Employee.job_title_rel))
-        if search:
-            like = f"%{search}%"
-            q = q.filter(Employee.name.ilike(like) | Employee.employee_id.ilike(like))
+        tokens = tokenize_query(search)
+        clause = build_search_filter(tokens, [Employee.name, Employee.employee_id])
+        if clause is not None:
+            q = q.filter(clause)
         employees = q.offset(skip).limit(limit).all()
         can_view_full_account = has_permission(
             current_user.get("permission_names"), Permission.SALARY_WRITE

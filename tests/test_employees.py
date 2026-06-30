@@ -206,3 +206,31 @@ def test_update_employee_can_clear_new_fields(employees_client):
     assert body["gender"] is None
     assert body["email"] is None
     assert body["insurance_effective_date"] is None
+
+
+def test_employees_search_multi_token(employees_client):
+    """多關鍵字搜尋：空格分隔多 token，AND 語義，只回符合全部 token 的員工。"""
+    client, sf = employees_client
+    _login_admin(client, sf)
+
+    client.post("/api/employees", json={"name": "林美麗", "employee_type": "regular"})
+    client.post("/api/employees", json={"name": "林大同", "employee_type": "regular"})
+
+    resp = client.get("/api/employees", params={"search": "林 美"})
+    assert resp.status_code == 200, resp.json()
+    names = [e["name"] for e in resp.json()]
+    assert "林美麗" in names, f"期待 '林美麗' 出現於結果，實得 {names}"
+    assert "林大同" not in names, f"期待 '林大同' 不出現於結果，實得 {names}"
+
+
+def test_employees_search_wildcard_escaped(employees_client):
+    """搜尋含 '%' 時應被跳脫，不能當萬用字元拉全表。"""
+    client, sf = employees_client
+    _login_admin(client, sf)
+
+    client.post("/api/employees", json={"name": "林美麗", "employee_type": "regular"})
+
+    resp = client.get("/api/employees", params={"search": "%"})
+    assert resp.status_code == 200, resp.json()
+    # 修前：'%' 當萬用字元 → 拉全部；修後：跳脫後 0 命中
+    assert resp.json() == [], f"搜尋 '%' 應回空列表，實得 {resp.json()}"
