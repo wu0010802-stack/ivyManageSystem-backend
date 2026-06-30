@@ -14,7 +14,6 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import or_
 
 from models.activity import ActivityRegistration
 from models.classroom import (
@@ -35,7 +34,12 @@ from utils.portfolio_access import (
     can_view_guardian_pii,
     is_row_unrestricted,
 )
-from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
+from utils.search import (
+    build_search_filter,
+    normalize_query,
+    relevance_key,
+    tokenize_query,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,26 +120,32 @@ class GlobalSearchResult(BaseModel):
     announcements: List[SearchAnnouncementItem] = []
 
 
+# ── module helper ─────────────────────────────────────────────────────────────
+
+
+def _finalize(items: list[dict], nq: str, key: str) -> list[dict]:
+    """相關性排序（穩定排序保留 DB order_by 作 tie-break）後截斷。"""
+    items.sort(key=lambda d: relevance_key(d.get(key), nq))
+    return items[:SECTION_LIMIT]
+
+
 # ── section helpers ────────────────────────────────────────────────────────────
 
 
-def _search_students(session, pattern: str, current_user: dict) -> list[dict]:
+def _search_students(session, tokens, nq, current_user: dict) -> list[dict]:
     code = Permission.STUDENTS_READ.value
     unrestricted = is_row_unrestricted(current_user, code=code)
     qy = session.query(Student).filter(
         Student.is_active.is_(True),
         Student.lifecycle_status.notin_(_TERMINAL),
-        or_(
-            Student.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-            Student.student_id.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-        ),
+        build_search_filter(tokens, [Student.name, Student.student_id]),
     )
     if not unrestricted:
         scope = accessible_classroom_ids(session, current_user, code=code)
         if not scope:
             return []
         qy = qy.filter(Student.classroom_id.in_(scope))
-    rows = qy.order_by(Student.name.asc()).limit(SECTION_LIMIT).all()
+    rows = qy.order_by(Student.name.asc()).limit(SECTION_LIMIT * 3).all()
     cr_map: dict[int, str] = {}
     cids = {r.classroom_id for r in rows if r.classroom_id}
     if cids:
@@ -145,7 +155,7 @@ def _search_students(session, pattern: str, current_user: dict) -> list[dict]:
             .filter(Classroom.id.in_(cids))
             .all()
         }
-    return [
+    items = [
         {
             "id": r.id,
             "name": r.name,
@@ -154,25 +164,23 @@ def _search_students(session, pattern: str, current_user: dict) -> list[dict]:
         }
         for r in rows
     ]
+    return _finalize(items, nq, "name")
 
 
-def _search_employees(session, pattern: str) -> list[dict]:
+def _search_employees(session, tokens, nq) -> list[dict]:
     from models.database import Employee
 
     rows = (
         session.query(Employee)
         .filter(
             Employee.is_active.is_(True),
-            or_(
-                Employee.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                Employee.employee_id.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-            ),
+            build_search_filter(tokens, [Employee.name, Employee.employee_id]),
         )
         .order_by(Employee.name.asc())
-        .limit(SECTION_LIMIT)
+        .limit(SECTION_LIMIT * 3)
         .all()
     )
-    return [
+    items = [
         {
             "id": e.id,
             "name": e.name,
@@ -181,9 +189,10 @@ def _search_employees(session, pattern: str) -> list[dict]:
         }
         for e in rows
     ]
+    return _finalize(items, nq, "name")
 
 
-def _search_guardians(session, pattern: str, current_user: dict) -> list[dict]:
+def _search_guardians(session, tokens, nq, current_user: dict) -> list[dict]:
     code = Permission.GUARDIANS_READ.value
     unrestricted = is_row_unrestricted(current_user, code=code)
     qy = (
@@ -192,10 +201,7 @@ def _search_guardians(session, pattern: str, current_user: dict) -> list[dict]:
         .filter(
             Student.is_active.is_(True),
             Student.lifecycle_status.notin_(_TERMINAL),
-            or_(
-                Guardian.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                Guardian.phone.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-            ),
+            build_search_filter(tokens, [Guardian.name, Guardian.phone]),
         )
     )
     if not unrestricted:
@@ -203,8 +209,8 @@ def _search_guardians(session, pattern: str, current_user: dict) -> list[dict]:
         if not scope:
             return []
         qy = qy.filter(Student.classroom_id.in_(scope))
-    rows = qy.order_by(Guardian.name.asc()).limit(SECTION_LIMIT).all()
-    return [
+    rows = qy.order_by(Guardian.name.asc()).limit(SECTION_LIMIT * 3).all()
+    items = [
         {
             "id": g.id,
             "name": g.name,
@@ -214,20 +220,21 @@ def _search_guardians(session, pattern: str, current_user: dict) -> list[dict]:
         }
         for g, stu in rows
     ]
+    return _finalize(items, nq, "name")
 
 
-def _search_classrooms(session, pattern: str) -> list[dict]:
+def _search_classrooms(session, tokens, nq) -> list[dict]:
     rows = (
         session.query(Classroom)
         .filter(
             Classroom.is_active.is_(True),
-            Classroom.name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+            build_search_filter(tokens, [Classroom.name]),
         )
         .order_by(Classroom.school_year.desc(), Classroom.name.asc())
-        .limit(SECTION_LIMIT)
+        .limit(SECTION_LIMIT * 3)
         .all()
     )
-    return [
+    items = [
         {
             "id": c.id,
             "name": c.name,
@@ -236,22 +243,23 @@ def _search_classrooms(session, pattern: str) -> list[dict]:
         }
         for c in rows
     ]
+    return _finalize(items, nq, "name")
 
 
-def _search_fees(session, pattern: str) -> list[dict]:
+def _search_fees(session, tokens, nq) -> list[dict]:
     rows = (
         session.query(StudentFeeRecord)
         .filter(
-            or_(
-                StudentFeeRecord.student_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                StudentFeeRecord.fee_item_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
+            build_search_filter(
+                tokens,
+                [StudentFeeRecord.student_name, StudentFeeRecord.fee_item_name],
             )
         )
         .order_by(StudentFeeRecord.id.desc())
-        .limit(SECTION_LIMIT)
+        .limit(SECTION_LIMIT * 3)
         .all()
     )
-    return [
+    items = [
         {
             "record_id": r.id,
             "student_name": r.student_name,
@@ -261,32 +269,28 @@ def _search_fees(session, pattern: str) -> list[dict]:
         }
         for r in rows
     ]
+    return _finalize(items, nq, "student_name")
 
 
-def _search_activity(session, pattern: str, current_user: dict) -> list[dict]:
+def _search_activity(session, tokens, nq, current_user: dict) -> list[dict]:
     # parent_phone 屬家長 PII：比照才藝列表 PII policy（_build_registration_filter_query
     # 依 GUARDIANS_READ 收斂手機 clause），缺 GUARDIANS_READ 者不得以部分手機號反查報名
     # 是否命中（側信道反查 student_name / class_name / match_status）。姓名/班級搜尋不受
     # 影響——僅移除手機 clause，非關閉整個才藝搜尋。
-    search_cols = [
-        ActivityRegistration.student_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-        ActivityRegistration.class_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-    ]
+    cols = [ActivityRegistration.student_name, ActivityRegistration.class_name]
     if can_view_guardian_pii(current_user):
-        search_cols.append(
-            ActivityRegistration.parent_phone.ilike(pattern, escape=LIKE_ESCAPE_CHAR)
-        )
+        cols.append(ActivityRegistration.parent_phone)
     rows = (
         session.query(ActivityRegistration)
         .filter(
             ActivityRegistration.is_active.is_(True),
-            or_(*search_cols),
+            build_search_filter(tokens, cols),
         )
         .order_by(ActivityRegistration.id.desc())
-        .limit(SECTION_LIMIT)
+        .limit(SECTION_LIMIT * 3)
         .all()
     )
-    return [
+    items = [
         {
             "id": r.id,
             "student_name": r.student_name,
@@ -295,26 +299,28 @@ def _search_activity(session, pattern: str, current_user: dict) -> list[dict]:
         }
         for r in rows
     ]
+    return _finalize(items, nq, "student_name")
 
 
-def _search_recruitment(session, pattern: str) -> list[dict]:
+def _search_recruitment(session, tokens, nq) -> list[dict]:
     rows = (
         session.query(RecruitmentVisit)
         .filter(
-            or_(
-                RecruitmentVisit.child_name.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                RecruitmentVisit.address.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                RecruitmentVisit.notes.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                RecruitmentVisit.parent_response.ilike(
-                    pattern, escape=LIKE_ESCAPE_CHAR
-                ),
+            build_search_filter(
+                tokens,
+                [
+                    RecruitmentVisit.child_name,
+                    RecruitmentVisit.address,
+                    RecruitmentVisit.notes,
+                    RecruitmentVisit.parent_response,
+                ],
             )
         )
         .order_by(RecruitmentVisit.id.desc())
-        .limit(SECTION_LIMIT)
+        .limit(SECTION_LIMIT * 3)
         .all()
     )
-    return [
+    items = [
         {
             "id": r.id,
             "child_name": r.child_name,
@@ -323,22 +329,18 @@ def _search_recruitment(session, pattern: str) -> list[dict]:
         }
         for r in rows
     ]
+    return _finalize(items, nq, "child_name")
 
 
-def _search_announcements(session, pattern: str) -> list[dict]:
+def _search_announcements(session, tokens, nq) -> list[dict]:
     rows = (
         session.query(Announcement)
-        .filter(
-            or_(
-                Announcement.title.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-                Announcement.content.ilike(pattern, escape=LIKE_ESCAPE_CHAR),
-            )
-        )
+        .filter(build_search_filter(tokens, [Announcement.title, Announcement.content]))
         .order_by(Announcement.created_at.desc())
-        .limit(SECTION_LIMIT)
+        .limit(SECTION_LIMIT * 3)
         .all()
     )
-    return [
+    items = [
         {
             "id": a.id,
             "title": a.title,
@@ -346,6 +348,7 @@ def _search_announcements(session, pattern: str) -> list[dict]:
         }
         for a in rows
     ]
+    return _finalize(items, nq, "title")
 
 
 # ── endpoint ───────────────────────────────────────────────────────────────────
@@ -367,11 +370,12 @@ def global_search(
     if role in ("parent", "teacher"):
         raise HTTPException(status_code=403, detail="此搜尋僅供後台管理端使用")
 
-    q_stripped = (q or "").strip()
-    if len(q_stripped) < MIN_QUERY_LEN:
+    q_stripped = (q or "").strip()  # 保留供 audit summary
+    nq = normalize_query(q)
+    tokens = tokenize_query(q)
+    if len(nq) < MIN_QUERY_LEN:
         return GlobalSearchResult(q=q)
 
-    pattern = f"%{escape_like_pattern(q_stripped)}%"
     perms = current_user.get("permission_names")
 
     session = get_session()
@@ -386,42 +390,42 @@ def global_search(
         # _search_guardians 內的 scope 分支對現行權限名單為防禦性死碼（GUARDIANS_READ
         # 日後若改成 scope-aware 即生效）。
         students = (
-            _search_students(session, pattern, current_user)
+            _search_students(session, tokens, nq, current_user)
             if has_permission(perms, Permission.STUDENTS_READ)
             else []
         )
         employees = (
-            _search_employees(session, pattern)
+            _search_employees(session, tokens, nq)
             if has_permission(perms, Permission.EMPLOYEES_READ)
             else []
         )
         guardians = (
-            _search_guardians(session, pattern, current_user)
+            _search_guardians(session, tokens, nq, current_user)
             if has_permission(perms, Permission.GUARDIANS_READ)
             else []
         )
         classrooms = (
-            _search_classrooms(session, pattern)
+            _search_classrooms(session, tokens, nq)
             if has_permission(perms, Permission.CLASSROOMS_READ)
             else []
         )
         fees = (
-            _search_fees(session, pattern)
+            _search_fees(session, tokens, nq)
             if has_permission(perms, Permission.FEES_READ)
             else []
         )
         activity_registrations = (
-            _search_activity(session, pattern, current_user)
+            _search_activity(session, tokens, nq, current_user)
             if has_permission(perms, Permission.ACTIVITY_READ)
             else []
         )
         recruitment = (
-            _search_recruitment(session, pattern)
+            _search_recruitment(session, tokens, nq)
             if has_permission(perms, Permission.RECRUITMENT_READ)
             else []
         )
         announcements = (
-            _search_announcements(session, pattern)
+            _search_announcements(session, tokens, nq)
             if has_permission(perms, Permission.ANNOUNCEMENTS_READ)
             else []
         )

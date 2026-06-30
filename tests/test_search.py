@@ -507,6 +507,73 @@ def test_activity_name_search_unaffected_by_guardian_perm(client_with_db):
     ), "姓名搜尋不受 GUARDIANS_READ 影響"
 
 
+# ── Task 2 新增：多關鍵字 AND + 相關性排序 ─────────────────────────────────────
+
+
+def test_global_search_multi_token_and(client_with_db):
+    """多關鍵字：『林 美』需 name 同時含『林』與『美』才命中。"""
+    client, sf = client_with_db
+    uid, eid = _make_user(sf, username="adm_mt", role="admin", permission_names=["*"])
+    from models.database import Employee
+
+    s = sf()
+    s.add(Employee(employee_id="T001", name="林美麗", is_active=True))
+    s.add(Employee(employee_id="T002", name="林大同", is_active=True))
+    s.commit()
+    s.close()
+    h = _login(uid, eid, role="admin", permission_names=["*"])
+    resp = client.get("/api/search", params={"q": "林 美"}, headers=h)
+    assert resp.status_code == 200
+    names = [e["name"] for e in resp.json()["employees"]]
+    assert "林美麗" in names
+    assert "林大同" not in names
+
+
+def test_global_search_relevance_order(client_with_db):
+    """相關性：完全符合 < 前綴 < 包含。
+
+    查 '王小'（2字元，≥ MIN_QUERY_LEN）：
+      '王小'   → exact match  → relevance_key=0
+      '王小明'  → prefix match → relevance_key=1
+      '大王小'  → contains    → relevance_key=2
+    DB order_by name.asc() 原本依 code point 排 ['大王小', '王小', '王小明']，
+    _finalize 應覆蓋成相關性排序。
+    """
+    client, sf = client_with_db
+    uid, eid = _make_user(sf, username="adm_rv", role="admin", permission_names=["*"])
+    from models.database import Employee
+
+    s = sf()
+    s.add(Employee(employee_id="T101", name="王小", is_active=True))
+    s.add(Employee(employee_id="T102", name="王小明", is_active=True))
+    s.add(Employee(employee_id="T103", name="大王小", is_active=True))
+    s.commit()
+    s.close()
+    h = _login(uid, eid, role="admin", permission_names=["*"])
+    resp = client.get("/api/search", params={"q": "王小"}, headers=h)
+    assert resp.status_code == 200
+    names = [e["name"] for e in resp.json()["employees"]]
+    assert "王小" in names and "王小明" in names and "大王小" in names
+    assert names.index("王小") < names.index("王小明") < names.index("大王小")
+
+
+def test_global_search_wildcard_escaped(client_with_db):
+    """escape 回歸：搜 '%%' 不應命中全部（% 被跳脫為字面字元）。"""
+    client, sf = client_with_db
+    uid, eid = _make_user(sf, username="adm_wc", role="admin", permission_names=["*"])
+    from models.database import Employee
+
+    s = sf()
+    s.add(Employee(employee_id="T201", name="王小明", is_active=True))
+    s.commit()
+    s.close()
+    h = _login(uid, eid, role="admin", permission_names=["*"])
+    resp = client.get("/api/search", params={"q": "%%"}, headers=h)
+    assert resp.status_code == 200
+    # '%%' 兩字元 ≥ MIN_QUERY_LEN，但跳脫後不 match 不含字面 '%' 的姓名
+    assert resp.json()["employees"] == []
+
+
 def test_wildcard_query_is_escaped_not_match_all(client_with_db):
     """搜 `%%` / `__` 不得 match-all；萬用字元應視為字面字元（LIKE escape）。"""
     client, sf = client_with_db
