@@ -464,6 +464,8 @@ class TestRecruitmentStats:
             keyword=None,
             page=1,
             page_size=50,
+            school_year=None,
+            semester=None,
             _=None,
         )
         assert branch_result["total"] == 3
@@ -483,6 +485,8 @@ class TestRecruitmentStats:
             keyword=None,
             page=1,
             page_size=50,
+            school_year=None,
+            semester=None,
             _=None,
         )
         assert grouped_result["total"] == 1
@@ -498,6 +502,8 @@ class TestRecruitmentStats:
             keyword=None,
             page=1,
             page_size=50,
+            school_year=None,
+            semester=None,
             _=None,
         )
         assert exact_result["total"] == 1
@@ -556,6 +562,8 @@ class TestRecruitmentStats:
             keyword=None,
             page=1,
             page_size=50,
+            school_year=None,
+            semester=None,
             _=None,
         )
         assert grouped_result["total"] == 2

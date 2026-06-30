@@ -54,7 +54,9 @@ def recruitment_session_factory(tmp_path):
 
 
 class TestRecruitmentIvykidsApi:
-    def test_main_and_ivykids_apis_are_fully_separated(self, recruitment_session_factory):
+    def test_main_and_ivykids_apis_are_fully_separated(
+        self, recruitment_session_factory
+    ):
         with recruitment_session_factory() as session:
             session.add(
                 RecruitmentVisit(
@@ -92,6 +94,8 @@ class TestRecruitmentIvykidsApi:
             keyword=None,
             page=1,
             page_size=50,
+            school_year=None,
+            semester=None,
             _=None,
         )
         ivykids_records = list_recruitment_ivykids_records(
@@ -111,7 +115,9 @@ class TestRecruitmentIvykidsApi:
         assert ivykids_records["total"] == 1
         assert ivykids_records["records"][0]["child_name"] == "官網名單"
         assert ivykids_records["records"][0]["external_status"] == "預約正常"
-        assert ivykids_records["records"][0]["external_created_at"] == "2026-04-10 09:15"
+        assert (
+            ivykids_records["records"][0]["external_created_at"] == "2026-04-10 09:15"
+        )
 
     def test_sync_imports_into_dedicated_table_without_touching_manual_records(
         self,
@@ -132,7 +138,9 @@ class TestRecruitmentIvykidsApi:
             session.commit()
 
         monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "_login_session", lambda _session: None)
+        monkeypatch.setattr(
+            ivykids_sync_service, "_login_session", lambda _session: None
+        )
         monkeypatch.setattr(
             ivykids_sync_service,
             "_build_requests_session",
@@ -219,7 +227,9 @@ class TestRecruitmentIvykidsApi:
             session.commit()
 
         monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "_login_session", lambda _session: None)
+        monkeypatch.setattr(
+            ivykids_sync_service, "_login_session", lambda _session: None
+        )
         monkeypatch.setattr(
             ivykids_sync_service,
             "_build_requests_session",
@@ -282,7 +292,9 @@ class TestRecruitmentIvykidsApi:
         monkeypatch,
     ):
         monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "_login_session", lambda _session: None)
+        monkeypatch.setattr(
+            ivykids_sync_service, "_login_session", lambda _session: None
+        )
         monkeypatch.setattr(
             ivykids_sync_service,
             "_build_requests_session",
@@ -339,9 +351,15 @@ class TestRecruitmentIvykidsApi:
             assert row.child_name == "取消件名單"
             assert row.external_created_at == "2026-04-09 16:03:31"
 
-    def test_delete_only_clears_ivykids_records_and_sync_state(self, recruitment_session_factory):
+    def test_delete_only_clears_ivykids_records_and_sync_state(
+        self, recruitment_session_factory
+    ):
         with recruitment_session_factory() as session:
-            session.add(RecruitmentVisit(month="115.05", child_name="手動名單", has_deposit=False))
+            session.add(
+                RecruitmentVisit(
+                    month="115.05", child_name="手動名單", has_deposit=False
+                )
+            )
             session.add(
                 RecruitmentIvykidsRecord(
                     external_id="1001",
@@ -379,7 +397,9 @@ class TestRecruitmentIvykidsApi:
         monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
         monkeypatch.setattr(ivykids_sync_service, "scheduler_requested", lambda: True)
         monkeypatch.setattr(ivykids_sync_service, "scheduler_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "get_sync_interval_minutes", lambda: 10)
+        monkeypatch.setattr(
+            ivykids_sync_service, "get_sync_interval_minutes", lambda: 10
+        )
 
         synced_at = datetime(2026, 4, 12, 9, 30, 0)
         with recruitment_session_factory() as session:
@@ -475,10 +495,18 @@ class TestRecruitmentIvykidsApi:
         assert stats["total_visit"] == 3
         assert stats["total_deposit"] == 2
         assert stats["total_enrolled"] == 0
-        assert [row["month"] for row in stats["by_month"]] == ["113.04", "113.05", "115.04"]
+        assert [row["month"] for row in stats["by_month"]] == [
+            "113.04",
+            "113.05",
+            "115.04",
+        ]
 
         assert records["total"] == 3
-        assert [row["child_name"] for row in records["records"]] == ["新資料", "五月資料", "起算秒資料"]
+        assert [row["child_name"] for row in records["records"]] == [
+            "新資料",
+            "五月資料",
+            "起算秒資料",
+        ]
 
     def test_sync_prunes_and_skips_records_before_created_at_cutoff(
         self,
@@ -503,7 +531,9 @@ class TestRecruitmentIvykidsApi:
 
         monkeypatch.setenv("IVYKIDS_SYNC_CREATED_AT_CUTOFF", "2026-04-01 00:00:00")
         monkeypatch.setattr(ivykids_sync_service, "sync_configured", lambda: True)
-        monkeypatch.setattr(ivykids_sync_service, "_login_session", lambda _session: None)
+        monkeypatch.setattr(
+            ivykids_sync_service, "_login_session", lambda _session: None
+        )
         monkeypatch.setattr(
             ivykids_sync_service,
             "_build_requests_session",
@@ -565,5 +595,9 @@ class TestRecruitmentIvykidsApi:
         assert result["skipped"] == 1
 
         with recruitment_session_factory() as session:
-            rows = session.query(RecruitmentIvykidsRecord).order_by(RecruitmentIvykidsRecord.external_id).all()
+            rows = (
+                session.query(RecruitmentIvykidsRecord)
+                .order_by(RecruitmentIvykidsRecord.external_id)
+                .all()
+            )
             assert [row.external_id for row in rows] == ["new-fetched"]
