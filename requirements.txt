@@ -11,7 +11,7 @@ reportlab>=4.0.0
 Pillow>=12.2.0  # CVE-2026-25990, CVE-2026-40192, CVE-2026-42308/9/10/11, PYSEC-2026-165（修補版 12.2.0；專案 requires-python>=3.10）
 # pillow-heif 可選：若部署環境有 libheif 且安裝成功，HEIC 上傳會自動轉 JPG；
 # 未安裝則拒絕 HEIC 上傳並提示使用者改用 JPG/PNG。
-pillow-heif>=0.16.0
+pillow-heif>=1.4.0
 pydantic>=2.0.0
 pydantic-settings>=2.0,<3.0
 holidays>=0.30.0
