@@ -165,6 +165,9 @@ class Student(Base):
     enrollment_school_year = Column(
         Integer, nullable=True, comment="發號學年（民國）；身分認定鍵之一，永久不變"
     )
+    enrollment_semester = Column(
+        Integer, nullable=True, comment="入學學期 1=上/2=下；入學配發一次、終身不變"
+    )
     enrollment_seq = Column(
         Integer, nullable=True, comment="永久流水號；入學配發一次、終身不變"
     )
