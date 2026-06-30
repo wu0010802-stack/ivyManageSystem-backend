@@ -9,10 +9,12 @@ from __future__ import annotations
 import re
 from typing import Literal, Optional, Protocol
 
+from datetime import date
+
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from utils.academic import term_bounds
+from utils.academic import resolve_current_academic_term, term_bounds
 
 Stage = Literal["visited", "deposited", "enrolled", "active"]
 STAGES: tuple[Stage, ...] = ("visited", "deposited", "enrolled", "active")
@@ -40,6 +42,26 @@ def school_term_to_roc_months(
                 m = 1
                 y += 1
     return labels
+
+
+def roc_month_to_school_term(month: str) -> tuple[int, int]:
+    """民國月份標籤（"115.03"）→ 所屬學年/學期（民國）。
+
+    school_term_to_roc_months 的反函式：依 utils.academic 學年邊界
+    （上學期 8/1~隔年1/31、下學期 2/1~同年7/31）判定 month 落在哪個學年/學期。
+    用於招生「入學學期」的 backfill（Alembic）與 Excel 匯入時由訪視月份推導預設值。
+    """
+    parts = (month or "").strip().split(".")
+    if len(parts) < 2:
+        raise ValueError(f"invalid roc month label: {month!r}")
+    try:
+        roc_year = int(parts[0])
+        mm = int(parts[1])
+    except ValueError as exc:
+        raise ValueError(f"invalid roc month label: {month!r}") from exc
+    if not 1 <= mm <= 12:
+        raise ValueError(f"invalid month in label: {month!r}")
+    return resolve_current_academic_term(target_date=date(roc_year + 1911, mm, 1))
 
 
 class _VisitLike(Protocol):
