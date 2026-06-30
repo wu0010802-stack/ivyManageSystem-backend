@@ -11,6 +11,7 @@ from tests.test_recruitment_api import (  # noqa: F401
 )
 from api.recruitment.records import (
     create_recruitment_record,
+    list_recruitment_records,
     update_recruitment_record,
 )
 from api.recruitment.shared import RecruitmentVisitCreate, RecruitmentVisitUpdate
@@ -93,3 +94,55 @@ def test_create_record_rejects_bad_semester(recruitment_session_factory):
             target_school_year=115,
             target_semester=3,
         )
+
+
+def test_list_records_filter_by_term(recruitment_session_factory):
+    """GET /records?school_year=&semester= 依 target_school_year/target_semester 篩選。"""
+    for name, sy, sem in [("甲", 114, 1), ("乙", 114, 2), ("丙", 115, 1)]:
+        payload = RecruitmentVisitCreate(
+            month="114.09",
+            child_name=f"濾測{name}",
+            target_school_year=sy,
+            target_semester=sem,
+        )
+        create_recruitment_record(payload, _=None)
+
+    # 指定學年+學期 → 只回該期
+    r = list_recruitment_records(
+        school_year=114,
+        semester=2,
+        month=None,
+        grade=None,
+        source=None,
+        referrer=None,
+        has_deposit=None,
+        no_deposit_reason=None,
+        keyword=None,
+        dataset_scope="all",
+        page=1,
+        page_size=50,
+        _=None,
+    )
+    names = {rec["child_name"] for rec in r["records"]}
+    assert "濾測乙" in names
+    assert "濾測甲" not in names and "濾測丙" not in names
+
+    # 只指定學年 → 涵蓋整學年（上+下）
+    r2 = list_recruitment_records(
+        school_year=114,
+        semester=None,
+        month=None,
+        grade=None,
+        source=None,
+        referrer=None,
+        has_deposit=None,
+        no_deposit_reason=None,
+        keyword=None,
+        dataset_scope="all",
+        page=1,
+        page_size=50,
+        _=None,
+    )
+    names2 = {rec["child_name"] for rec in r2["records"]}
+    assert {"濾測甲", "濾測乙"} <= names2
+    assert "濾測丙" not in names2

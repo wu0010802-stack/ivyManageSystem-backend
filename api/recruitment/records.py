@@ -66,6 +66,8 @@ def list_recruitment_records(
     has_deposit: Optional[bool] = Query(None),
     no_deposit_reason: Optional[str] = Query(None),
     keyword: Optional[str] = Query(None),
+    school_year: Optional[int] = Query(None),
+    semester: Optional[int] = Query(None),
     dataset_scope: str = Query(DATASET_SCOPE_ALL, pattern="^(all)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -75,6 +77,10 @@ def list_recruitment_records(
         q = _build_scoped_query(session, dataset_scope)
         if month:
             q = q.filter(RecruitmentVisit.month == month)
+        if school_year is not None:
+            q = q.filter(RecruitmentVisit.target_school_year == school_year)
+        if semester is not None:
+            q = q.filter(RecruitmentVisit.target_semester == semester)
         if grade:
             q = q.filter(RecruitmentVisit.grade == grade)
         if source:
