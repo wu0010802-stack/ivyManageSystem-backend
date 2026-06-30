@@ -18,6 +18,7 @@ class NetworkSettings(BaseSettings):
     # 型別保留 str（不用 Literal），讓 utils/cookie.py 自己處理 invalid value warn+fallback。
     cookie_samesite: str = "strict"
     school_wifi_ips: CsvList = []
+    attendance_kiosk_allowed_ips: CsvList = []  # env: ATTENDANCE_KIOSK_ALLOWED_IPS
     rate_limit_backend: str = "memory"
 
     # 全域 request body 大小上限（bytes）。Starlette/uvicorn 預設不限 body 大小，單一
