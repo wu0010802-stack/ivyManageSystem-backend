@@ -26,6 +26,7 @@ from utils.academic import resolve_current_academic_term
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
+from services.recruitment_funnel import roc_month_to_school_term
 from services.recruitment_timeline import build_visit_timeline, TimelineNotFound
 from schemas.recruitment_timeline import TimelineOut
 
@@ -314,6 +315,15 @@ def import_recruitment_records(
             visit.expected_start_label = _extract_expected_label_from_text(
                 visit.notes, visit.parent_response, visit.grade
             )
+            if visit.target_school_year is None or visit.target_semester is None:
+                try:
+                    sy, sem = roc_month_to_school_term(month)
+                except ValueError:
+                    sy = sem = None
+                if visit.target_school_year is None:
+                    visit.target_school_year = sy
+                if visit.target_semester is None:
+                    visit.target_semester = sem
             session.add(visit)
             existing.add(dedup_key)
             inserted += 1
