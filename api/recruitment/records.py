@@ -22,6 +22,7 @@ from services.recruitment_conversion import (
     RecruitmentConversionError,
     convert_recruitment_to_student,
 )
+from utils.academic import resolve_current_academic_term
 from utils.auth import require_staff_permission
 from utils.errors import raise_safe_500
 from utils.permissions import Permission
@@ -183,6 +184,12 @@ def create_recruitment_record(
     with session_scope() as session:
         data = payload.model_dump(exclude={"geocoding_consent"})
         record = RecruitmentVisit(**data)
+        if record.target_school_year is None or record.target_semester is None:
+            cur_year, cur_sem = resolve_current_academic_term()
+            if record.target_school_year is None:
+                record.target_school_year = cur_year
+            if record.target_semester is None:
+                record.target_semester = cur_sem
         if payload.geocoding_consent:
             record.geocoding_consent_at = now_taipei_naive()
         record.expected_start_label = _extract_expected_label_from_text(

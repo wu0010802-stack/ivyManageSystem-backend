@@ -639,6 +639,8 @@ class RecruitmentVisitCreate(BaseModel):
     no_deposit_reason_detail: Optional[str] = None
     enrolled: bool = False
     transfer_term: bool = False
+    target_school_year: Optional[int] = None
+    target_semester: Optional[int] = None
 
     geocoding_consent: bool = Field(
         default=False,
@@ -649,6 +651,13 @@ class RecruitmentVisitCreate(BaseModel):
     @classmethod
     def validate_month_format(cls, v: str) -> str:
         return _normalize_roc_month(v)
+
+    @field_validator("target_semester")
+    @classmethod
+    def validate_target_semester(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v not in (1, 2):
+            raise ValueError("target_semester must be 1 or 2")
+        return v
 
 
 class RecruitmentVisitUpdate(BaseModel):
@@ -671,6 +680,8 @@ class RecruitmentVisitUpdate(BaseModel):
     no_deposit_reason_detail: Optional[str] = None
     enrolled: Optional[bool] = None
     transfer_term: Optional[bool] = None
+    target_school_year: Optional[int] = None
+    target_semester: Optional[int] = None
 
     geocoding_consent: bool | None = Field(
         default=None,
@@ -683,6 +694,13 @@ class RecruitmentVisitUpdate(BaseModel):
         if v is None:
             return v
         return _normalize_roc_month(v)
+
+    @field_validator("target_semester")
+    @classmethod
+    def validate_target_semester(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v not in (1, 2):
+            raise ValueError("target_semester must be 1 or 2")
+        return v
 
 
 class ImportRecord(BaseModel):
