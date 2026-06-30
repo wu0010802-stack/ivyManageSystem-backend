@@ -66,7 +66,9 @@ def _create_user(session, username: str, password: str = "TempPass123") -> User:
 
 
 def _login(client: TestClient, username: str, password: str = "TempPass123"):
-    return client.post("/api/auth/login", json={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 class TestStudentsApi:
@@ -74,16 +76,41 @@ class TestStudentsApi:
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "student_filter_admin")
-            current_classroom = Classroom(name="海豚班", school_year=114, semester=2, is_active=True)
-            same_term_other_classroom = Classroom(name="星星班", school_year=114, semester=2, is_active=True)
-            old_classroom = Classroom(name="月亮班", school_year=113, semester=2, is_active=True)
-            session.add_all([current_classroom, same_term_other_classroom, old_classroom])
+            current_classroom = Classroom(
+                name="海豚班", school_year=114, semester=2, is_active=True
+            )
+            same_term_other_classroom = Classroom(
+                name="星星班", school_year=114, semester=2, is_active=True
+            )
+            old_classroom = Classroom(
+                name="月亮班", school_year=113, semester=2, is_active=True
+            )
+            session.add_all(
+                [current_classroom, same_term_other_classroom, old_classroom]
+            )
             session.flush()
-            session.add_all([
-                Student(student_id="S001", name="小明", classroom_id=current_classroom.id, is_active=True),
-                Student(student_id="S002", name="小美", classroom_id=same_term_other_classroom.id, is_active=True),
-                Student(student_id="S003", name="小宇", classroom_id=old_classroom.id, is_active=True),
-            ])
+            session.add_all(
+                [
+                    Student(
+                        student_id="S001",
+                        name="小明",
+                        classroom_id=current_classroom.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S002",
+                        name="小美",
+                        classroom_id=same_term_other_classroom.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S003",
+                        name="小宇",
+                        classroom_id=old_classroom.id,
+                        is_active=True,
+                    ),
+                ]
+            )
             session.commit()
             classroom_id = current_classroom.id
 
@@ -95,27 +122,50 @@ class TestStudentsApi:
             params={"school_year": 114, "semester": 2},
         )
         assert same_term_res.status_code == 200
-        assert [item["student_id"] for item in same_term_res.json()["items"]] == ["S001", "S002"]
+        assert [item["student_id"] for item in same_term_res.json()["items"]] == [
+            "S001",
+            "S002",
+        ]
 
         classroom_res = client.get(
             "/api/students",
             params={"school_year": 114, "semester": 2, "classroom_id": classroom_id},
         )
         assert classroom_res.status_code == 200
-        assert [item["student_id"] for item in classroom_res.json()["items"]] == ["S001"]
+        assert [item["student_id"] for item in classroom_res.json()["items"]] == [
+            "S001"
+        ]
 
-    def test_bulk_transfer_moves_active_students_to_target_classroom(self, students_client):
+    def test_bulk_transfer_moves_active_students_to_target_classroom(
+        self, students_client
+    ):
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "student_transfer_admin")
-            source = Classroom(name="海豚班", school_year=114, semester=2, is_active=True)
-            target = Classroom(name="星星班", school_year=114, semester=2, is_active=True)
+            source = Classroom(
+                name="海豚班", school_year=114, semester=2, is_active=True
+            )
+            target = Classroom(
+                name="星星班", school_year=114, semester=2, is_active=True
+            )
             session.add_all([source, target])
             session.flush()
-            session.add_all([
-                Student(student_id="S001", name="小明", classroom_id=source.id, is_active=True),
-                Student(student_id="S002", name="小美", classroom_id=source.id, is_active=True),
-            ])
+            session.add_all(
+                [
+                    Student(
+                        student_id="S001",
+                        name="小明",
+                        classroom_id=source.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="S002",
+                        name="小美",
+                        classroom_id=source.id,
+                        is_active=True,
+                    ),
+                ]
+            )
             session.commit()
             target_id = target.id
 
@@ -145,11 +195,22 @@ class TestStudentsApi:
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "student_transfer_invalid")
-            source = Classroom(name="海豚班", school_year=114, semester=2, is_active=True)
-            target = Classroom(name="停用班", school_year=114, semester=2, is_active=False)
+            source = Classroom(
+                name="海豚班", school_year=114, semester=2, is_active=True
+            )
+            target = Classroom(
+                name="停用班", school_year=114, semester=2, is_active=False
+            )
             session.add_all([source, target])
             session.flush()
-            session.add(Student(student_id="S001", name="小明", classroom_id=source.id, is_active=True))
+            session.add(
+                Student(
+                    student_id="S001",
+                    name="小明",
+                    classroom_id=source.id,
+                    is_active=True,
+                )
+            )
             session.commit()
             target_id = target.id
 
@@ -172,17 +233,28 @@ class TestStudentsApi:
         client, session_factory = students_client
         with session_factory() as session:
             _create_user(session, "delete_test_admin")
-            classroom = Classroom(name="刪除測試班", school_year=114, semester=2, is_active=True)
+            classroom = Classroom(
+                name="刪除測試班", school_year=114, semester=2, is_active=True
+            )
             session.add(classroom)
             session.flush()
-            session.add(Student(student_id="DEL001", name="被刪除的學生", classroom_id=classroom.id, is_active=True))
+            session.add(
+                Student(
+                    student_id="DEL001",
+                    name="被刪除的學生",
+                    classroom_id=classroom.id,
+                    is_active=True,
+                )
+            )
             session.commit()
 
         login_res = _login(client, "delete_test_admin")
         assert login_res.status_code == 200
 
         # 取得學生 id
-        list_res = client.get("/api/students", params={"school_year": 114, "semester": 2})
+        list_res = client.get(
+            "/api/students", params={"school_year": 114, "semester": 2}
+        )
         assert list_res.status_code == 200
         student_id = list_res.json()["items"][0]["id"]
 
@@ -248,3 +320,67 @@ class TestStudentsApi:
             json={"name": "日期測試生", "birthday": "2020-05-15"},
         )
         assert res.status_code == 201
+
+    def test_students_search_multi_token(self, students_client):
+        """搜尋字串含空格時各 token 做 AND，多 token 可縮小結果"""
+        client, session_factory = students_client
+        with session_factory() as session:
+            _create_user(session, "search_multi_token_admin")
+            classroom = Classroom(
+                name="搜尋測試班", school_year=114, semester=2, is_active=True
+            )
+            session.add(classroom)
+            session.flush()
+            session.add_all(
+                [
+                    Student(
+                        student_id="SM001",
+                        name="林美麗",
+                        classroom_id=classroom.id,
+                        is_active=True,
+                    ),
+                    Student(
+                        student_id="SM002",
+                        name="林大同",
+                        classroom_id=classroom.id,
+                        is_active=True,
+                    ),
+                ]
+            )
+            session.commit()
+
+        login_res = _login(client, "search_multi_token_admin")
+        assert login_res.status_code == 200
+
+        resp = client.get("/api/students", params={"search": "林 美"})
+        assert resp.status_code == 200
+        names = [s["name"] for s in resp.json()["items"]]
+        assert "林美麗" in names
+        assert "林大同" not in names
+
+    def test_students_search_wildcard_escaped(self, students_client):
+        """`%` 字元應被跳脫，不可當萬用字元匹配所有學生"""
+        client, session_factory = students_client
+        with session_factory() as session:
+            _create_user(session, "search_escape_admin")
+            classroom = Classroom(
+                name="跳脫測試班", school_year=114, semester=2, is_active=True
+            )
+            session.add(classroom)
+            session.flush()
+            session.add(
+                Student(
+                    student_id="SE001",
+                    name="林美麗",
+                    classroom_id=classroom.id,
+                    is_active=True,
+                )
+            )
+            session.commit()
+
+        login_res = _login(client, "search_escape_admin")
+        assert login_res.status_code == 200
+
+        resp = client.get("/api/students", params={"search": "%"})
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []

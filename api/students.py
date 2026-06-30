@@ -57,6 +57,7 @@ from models.classroom import (
 logger = logging.getLogger(__name__)
 
 from utils.audit import mark_soft_delete, write_explicit_audit
+from utils.search import build_search_filter, tokenize_query
 
 
 def _invalidate_activity_dashboard_after_enrollment_change(session) -> None:
@@ -537,13 +538,12 @@ def get_students(
 
         if classroom_id is not None:
             q = q.filter(Student.classroom_id == classroom_id)
-        if search:
-            like = f"%{search}%"
-            q = q.filter(
-                (Student.name.ilike(like))
-                | (Student.student_id.ilike(like))
-                | (Student.parent_name.ilike(like))
-            )
+        tokens = tokenize_query(search)
+        clause = build_search_filter(
+            tokens, [Student.name, Student.student_id, Student.parent_name]
+        )
+        if clause is not None:
+            q = q.filter(clause)
 
         total = q.count()
         students = q.order_by(Student.id).offset(skip).limit(limit).all()
