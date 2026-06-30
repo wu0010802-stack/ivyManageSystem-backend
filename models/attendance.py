@@ -66,6 +66,11 @@ class Attendance(Base):
     early_leave_minutes = Column(Integer, default=0, comment="早退分鐘數")
 
     remark = Column(Text, comment="備註")
+    source = Column(
+        String(20),
+        nullable=True,
+        comment="打卡來源：kiosk（即時打卡）/manual（管理端補卡）/import（批次匯入）；NULL=歷史未知",
+    )
 
     # 異常確認欄位
     confirmed_action = Column(
