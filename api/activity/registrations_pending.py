@@ -33,7 +33,12 @@ from utils.errors import raise_lock_contention_or_500, raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 from utils.portfolio_access import can_view_guardian_pii, can_view_student_pii
-from utils.search import LIKE_ESCAPE_CHAR, escape_like_pattern
+from utils.search import (
+    build_search_filter,
+    escape_like_pattern,
+    LIKE_ESCAPE_CHAR,
+    tokenize_query,
+)
 
 from ._shared import (
     _calc_total_amount,
@@ -213,7 +218,6 @@ def admin_search_students(
         raise HTTPException(status_code=403, detail="缺少學生資料讀取權限")
 
     from models.database import Student, Classroom
-    from sqlalchemy import or_
 
     session = get_session()
     try:
@@ -228,27 +232,19 @@ def admin_search_students(
         # （否則可用部分手機號反查學生，形成繞過 GUARDIANS_READ 的側信道）。
         can_guardian = can_view_guardian_pii(current_user)
 
-        # S2：跳脫 % / _ 萬用字元，避免搜尋 '%' 拉全校學生目錄
-        like = f"%{escape_like_pattern(q.strip())}%"
-        search_predicates = [
-            Student.name.ilike(like, escape=LIKE_ESCAPE_CHAR),
-            Student.student_id.ilike(like, escape=LIKE_ESCAPE_CHAR),
-        ]
+        # S2：跳脫 % / _ 由 build_search_filter 負責；多關鍵字 token 間 AND
+        search_cols = [Student.name, Student.student_id]
         if can_guardian:
-            search_predicates.append(
-                Student.parent_phone.ilike(like, escape=LIKE_ESCAPE_CHAR)
-            )
-            search_predicates.append(
-                Student.emergency_contact_phone.ilike(like, escape=LIKE_ESCAPE_CHAR)
-            )
+            search_cols.append(Student.parent_phone)
+            search_cols.append(Student.emergency_contact_phone)
+        clause = build_search_filter(tokenize_query(q), search_cols)
         query = (
             session.query(Student, Classroom)
             .outerjoin(Classroom, Classroom.id == Student.classroom_id)
-            .filter(
-                Student.is_active.is_(True),
-                or_(*search_predicates),
-            )
+            .filter(Student.is_active.is_(True))
         )
+        if clause is not None:
+            query = query.filter(clause)
         if pii_allowed is not None:
             query = query.filter(Student.classroom_id.in_(pii_allowed))
         rows = query.limit(limit).all()
