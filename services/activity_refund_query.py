@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from models.database import (
     ActivityAttendance,
     ActivityCourse,
+    ActivityPaymentRecord,
     ActivityRegistration,
     ActivitySession,
     ActivitySupply,
@@ -165,11 +166,31 @@ def build_refund_suggestion(session: Session, reg_id: int) -> dict[str, Any]:
         )
         # supply suggested=0，不增 total_suggested
 
+    # ── 已退累計 → 剩餘建議額 ─────────────────────────────────────────────
+    # prior_refunded：該 reg 過去未作廢（voided_at IS NULL）的退費金額累計，
+    # 與簽核閘 require_approve_for_cumulative_refund / refund_diff 同口徑。
+    # remaining_suggested：total_suggested 扣掉已退、夾到 0。前端應預填此值（非
+    # total_suggested），否則第二次退費會把全額建議再預填一次，使累積實退超過建議
+    # 總額而踩到 diff 簽核閘容差（2026-06-29 audit F1）。
+    prior_refunded = (
+        session.query(func.coalesce(func.sum(ActivityPaymentRecord.amount), 0))
+        .filter(
+            ActivityPaymentRecord.registration_id == reg_id,
+            ActivityPaymentRecord.type == "refund",
+            ActivityPaymentRecord.voided_at.is_(None),
+        )
+        .scalar()
+    ) or 0
+    prior_refunded = int(prior_refunded)
+    remaining_suggested = max(total_suggested - prior_refunded, 0)
+
     return {
         "registration_id": reg_id,
         "computed_at": now_taipei_naive().isoformat(),
         "total_suggested_amount": total_suggested,
         "total_amount_due": total_amount_due,
+        "prior_refunded_amount": prior_refunded,
+        "remaining_suggested_amount": remaining_suggested,
         "needs_manual_review": needs_manual_review,
         "items": items,
     }

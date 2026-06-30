@@ -438,6 +438,11 @@ class RefundSuggestionResponse(BaseModel):
     # 算法見 spec §6：item.suggested 為 None 時以 amount_due fallback 加總
     total_suggested_amount: int
     total_amount_due: int
+    # 該 reg 已退累計（未作廢）與剩餘建議退費額 = max(total_suggested - prior, 0)。
+    # 前端退費 UI 應預填 remaining_suggested_amount（非 total），避免多次退費重複
+    # 預填全額建議造成累積超退（2026-06-29 audit F1）。
+    prior_refunded_amount: int = 0
+    remaining_suggested_amount: int
     items: list[RefundSuggestionItem]
 
 

@@ -11,7 +11,7 @@
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -24,6 +24,7 @@ from utils.taipei_time import today_taipei
 from models.database import (
     ActivityAttendance,
     ActivityCourse,
+    ActivityPaymentRecord,
     ActivityRegistration,
     ActivitySession,
     ActivitySupply,
@@ -88,6 +89,22 @@ def _create_reg(session, **kwargs):
     session.add(reg)
     session.flush()
     return reg
+
+
+def _add_refund(session, reg_id, amount, *, voided=False):
+    """對 reg 寫一筆退費記錄（type='refund'）。voided=True 模擬已作廢應被排除。"""
+    rec = ActivityPaymentRecord(
+        registration_id=reg_id,
+        type="refund",
+        amount=amount,
+        payment_date=date(2026, 5, 1),
+        payment_method="現金",
+        notes="測試退費",
+        voided_at=(datetime(2026, 5, 2) if voided else None),
+    )
+    session.add(rec)
+    session.flush()
+    return rec
 
 
 def _attend_n_sessions(session, reg_id, course_id, n, is_present=True):
@@ -407,3 +424,92 @@ def test_today_session_still_counts(db_session):
     result = build_refund_suggestion(db_session, reg.id)
     course_item = result["items"][0]
     assert course_item["calc_payload"]["T_served"] == 1
+
+
+def test_prior_refunded_zero_remaining_equals_total(db_session):
+    """無既有退費 → prior_refunded_amount=0、remaining = total_suggested。
+
+    第一次退費的常見情形：前端預填 remaining 與舊 total_suggested 同值（無回歸）。
+    """
+    course = _create_course(db_session, sessions=10, price=1500)
+    reg = _create_reg(db_session)
+    db_session.add(
+        RegistrationCourse(
+            registration_id=reg.id,
+            course_id=course.id,
+            status="enrolled",
+            price_snapshot=1500,
+        )
+    )
+    db_session.flush()  # 0 attendance → 全退 1500
+
+    result = build_refund_suggestion(db_session, reg.id)
+    assert result["total_suggested_amount"] == 1500
+    assert result["prior_refunded_amount"] == 0
+    assert result["remaining_suggested_amount"] == 1500
+
+
+def test_prior_refunded_subtracted_from_remaining(db_session):
+    """已退一部分 → remaining = total_suggested - prior_refunded（多次退費不重複預填）。
+
+    2026-06-29 audit F1：UI 應預填「剩餘建議額」而非「累積建議總額」，否則第二次
+    退費會把全額建議再預填一次造成超退。
+    """
+    course = _create_course(db_session, sessions=10, price=1500)
+    reg = _create_reg(db_session)
+    db_session.add(
+        RegistrationCourse(
+            registration_id=reg.id,
+            course_id=course.id,
+            status="enrolled",
+            price_snapshot=1500,
+        )
+    )
+    db_session.flush()  # 0 attendance → total_suggested 1500
+    _add_refund(db_session, reg.id, 500)  # 已退 500
+
+    result = build_refund_suggestion(db_session, reg.id)
+    assert result["total_suggested_amount"] == 1500
+    assert result["prior_refunded_amount"] == 500
+    assert result["remaining_suggested_amount"] == 1000  # 1500 - 500
+
+
+def test_remaining_floors_at_zero_when_overrefunded(db_session):
+    """既退已 ≥ 建議總額 → remaining 夾到 0（不得為負）。"""
+    course = _create_course(db_session, sessions=10, price=1500)
+    reg = _create_reg(db_session)
+    db_session.add(
+        RegistrationCourse(
+            registration_id=reg.id,
+            course_id=course.id,
+            status="enrolled",
+            price_snapshot=1500,
+        )
+    )
+    db_session.flush()  # total_suggested 1500
+    _add_refund(db_session, reg.id, 1800)  # 已退超過建議
+
+    result = build_refund_suggestion(db_session, reg.id)
+    assert result["prior_refunded_amount"] == 1800
+    assert result["remaining_suggested_amount"] == 0
+
+
+def test_voided_refund_excluded_from_prior_refunded(db_session):
+    """已作廢（voided_at IS NOT NULL）的退費不計入 prior_refunded（與簽核閘口徑一致）。"""
+    course = _create_course(db_session, sessions=10, price=1500)
+    reg = _create_reg(db_session)
+    db_session.add(
+        RegistrationCourse(
+            registration_id=reg.id,
+            course_id=course.id,
+            status="enrolled",
+            price_snapshot=1500,
+        )
+    )
+    db_session.flush()
+    _add_refund(db_session, reg.id, 500)  # 有效
+    _add_refund(db_session, reg.id, 400, voided=True)  # 已作廢，應排除
+
+    result = build_refund_suggestion(db_session, reg.id)
+    assert result["prior_refunded_amount"] == 500
+    assert result["remaining_suggested_amount"] == 1000
