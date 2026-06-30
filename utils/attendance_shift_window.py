@@ -61,3 +61,61 @@ def compute_status_for_employee_date(
         is_assistant=is_assistant,
     )
     return compute_shift_aware_status(punch_in_dt, punch_out_dt, start_dt, end_dt)
+
+
+def build_shift_maps_for_employee_date(session, employee, attendance_date):
+    """查該員工該日的班別視窗來源，回 (daily_shift_map, shift_schedule_map)。
+
+    純查詢、無副作用。格式對齊 compute_status_for_employee_date 所需：
+      daily_shift_map:   {(emp_id, date): {"work_start", "work_end", "name"}}
+      shift_schedule_map:{(emp_id, week_start): {"work_start", "work_end", "name"}}
+    """
+    from datetime import timedelta
+
+    from models.database import DailyShift, ShiftAssignment, ShiftType
+
+    daily_shift_map = {}
+    daily_row = (
+        session.query(DailyShift)
+        .filter(
+            DailyShift.employee_id == employee.id, DailyShift.date == attendance_date
+        )
+        .first()
+    )
+    if daily_row and daily_row.shift_type_id:
+        st = (
+            session.query(ShiftType)
+            .filter(ShiftType.id == daily_row.shift_type_id)
+            .first()
+        )
+        if st:
+            daily_shift_map[(employee.id, attendance_date)] = {
+                "work_start": st.work_start,
+                "work_end": st.work_end,
+                "name": st.name,
+            }
+
+    shift_schedule_map = {}
+    week_start = attendance_date - timedelta(days=attendance_date.weekday())
+    sa_row = (
+        session.query(ShiftAssignment)
+        .filter(
+            ShiftAssignment.employee_id == employee.id,
+            ShiftAssignment.week_start_date == week_start,
+        )
+        .first()
+    )
+    if sa_row:
+        st_sa = (
+            session.query(ShiftType)
+            .filter(ShiftType.id == sa_row.shift_type_id)
+            .first()
+        )
+        if st_sa:
+            shift_schedule_map[(employee.id, week_start)] = {
+                "work_start": st_sa.work_start,
+                "work_end": st_sa.work_end,
+                "name": st_sa.name,
+            }
+
+    return daily_shift_map, shift_schedule_map
