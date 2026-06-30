@@ -77,8 +77,8 @@ def test_import_derives_target_term_from_month_upper_semester(
         assert record.target_semester == 1, f"expected 1, got {record.target_semester}"
 
 
-def test_import_invalid_month_leaves_target_none(recruitment_session_factory):
-    """月份格式錯誤時不應拋例外，target_school_year/semester 設為 None 並仍插入。"""
+def test_import_invalid_month_is_skipped(recruitment_session_factory):
+    """月份格式錯誤的列在 _normalize_roc_month 階段即被略過（skipped），不會插入、也不會讓整批匯入崩潰。"""
     result = import_recruitment_records(
         [ImportRecord(**{"月份": "notamonth", "幼生姓名": "壞月份童"})],
         _=None,
@@ -86,3 +86,8 @@ def test_import_invalid_month_leaves_target_none(recruitment_session_factory):
     # 壞月份 → _normalize_roc_month 拋 ValueError → 直接 skip
     # (handler 在 normalize 時就 skip，不會到 target 推導)
     assert result["skipped"] == 1
+
+    # 驗證未插入任何記錄
+    with recruitment_session_factory() as session:
+        count = session.query(RecruitmentVisit).filter_by(child_name="壞月份童").count()
+        assert count == 0, "malformed month record should not be inserted"
