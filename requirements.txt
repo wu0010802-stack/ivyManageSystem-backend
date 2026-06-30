@@ -1,7 +1,7 @@
 fastapi==0.136.1  # 釘版：fastapi 0.137+/0.138 的 include_router 產生 _IncludedRouter wrapper（app.routes 不再攤平、無 .path），破壞全部路由內省測試。0.136.x 仍攤平。亦避開 0.136.3 typosquat MAL-2026-4750
 starlette==1.3.1  # 釘版：1.1.0/1.2.x 有 CVE-2026-54282/54283（fixed 1.3.0/1.3.1）。1.3.1 與 fastapi 0.136.1 相容（後者僅要求 starlette>=0.46.0）且不含 _IncludedRouter（那是 fastapi 端變更）。後續宜改用 lockfile 統一釘版
 uvicorn>=0.24.0
-sqlalchemy>=2.0.0
+sqlalchemy>=2.0.51
 psycopg2-binary>=2.9.12
 pandas>=2.0.0
 openpyxl>=3.1.5
@@ -19,7 +19,7 @@ python-jose>=3.3.0
 python-dateutil>=2.9.0.post0
 cachetools>=5.3.0
 python-dotenv>=1.2.2  # CVE-2026-28684（修補版 1.2.2；專案 requires-python>=3.10）
-alembic>=1.13.0
+alembic>=1.18.5
 requests>=2.33.0  # CVE-2026-25645（修補版 2.33.0；專案 requires-python>=3.10）
 supabase>=2.0.0  # 物件儲存（activity_posters / leave_attachments）
 python-json-logger>=2.0.7
