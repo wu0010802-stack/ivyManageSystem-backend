@@ -313,7 +313,7 @@ class TestRecruitmentStats:
             )
             session.commit()
 
-        stats = get_recruitment_stats(_=None)
+        stats = get_recruitment_stats(school_year=None, semester=None, _=None)
 
         assert stats["total_visit"] == 4
         assert stats["total_deposit"] == 3
@@ -435,7 +435,7 @@ class TestRecruitmentStats:
             )
             session.commit()
 
-        stats = get_recruitment_stats(_=None)
+        stats = get_recruitment_stats(school_year=None, semester=None, _=None)
 
         by_source_map = {
             item["source"]: {"visit": item["visit"], "deposit": item["deposit"]}
@@ -543,7 +543,7 @@ class TestRecruitmentStats:
             )
             session.commit()
 
-        stats = get_recruitment_stats(_=None)
+        stats = get_recruitment_stats(school_year=None, semester=None, _=None)
 
         assert stats["chuannian_visit"] == 2
         assert stats["chuannian_deposit"] == 1
@@ -709,7 +709,9 @@ class TestRecruitmentStats:
             )
             session.commit()
 
-        stats = get_recruitment_stats(reference_month="115.05", _=None)
+        stats = get_recruitment_stats(
+            reference_month="115.05", school_year=None, semester=None, _=None
+        )
 
         assert stats["reference_month"] == "115.05"
         assert stats["decision_summary"]["current_month"]["visit"] == 7
@@ -832,7 +834,9 @@ class TestRecruitmentStats:
             )
             session.commit()
 
-        response = export_recruitment_stats(reference_month="115.05", _=None)
+        response = export_recruitment_stats(
+            reference_month="115.05", school_year=None, semester=None, _=None
+        )
 
         async def _collect_body():
             chunks = []

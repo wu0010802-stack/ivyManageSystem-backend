@@ -82,7 +82,9 @@ class TestRecruitmentIvykidsApi:
             )
             session.commit()
 
-        recruitment_stats = get_recruitment_stats(_=None)
+        recruitment_stats = get_recruitment_stats(
+            school_year=None, semester=None, _=None
+        )
         ivykids_stats = get_recruitment_ivykids_stats(_=None)
         recruitment_records = list_recruitment_records(
             month=None,

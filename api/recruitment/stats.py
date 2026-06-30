@@ -59,13 +59,19 @@ def _query_stats(
     session,
     reference_month: Optional[str] = None,
     dataset_scope: Optional[str] = None,
+    school_year: Optional[int] = None,
+    semester: Optional[int] = None,
 ) -> dict:
     """執行招生統計所有 SQL 查詢，回傳統計字典（供 /stats 與 /stats/export 共用）。"""
 
     def _pct_value(num: int, den: int) -> float:
         return round(num / den * 100, 1) if den else 0
 
-    base_filters = _dataset_scope_filters(dataset_scope)
+    base_filters = list(_dataset_scope_filters(dataset_scope))
+    if school_year is not None:
+        base_filters.append(RecruitmentVisit.target_school_year == school_year)
+    if semester is not None:
+        base_filters.append(RecruitmentVisit.target_semester == semester)
     ch_cond = _chuannian_sql_cond()
     dep_case = case((RecruitmentVisit.has_deposit == True, 1), else_=0)
     enrolled_case = case((RecruitmentVisit.enrolled == True, 1), else_=0)
@@ -639,13 +645,19 @@ def _query_stats(
 @router.get("/stats")
 def get_recruitment_stats(
     reference_month: Optional[str] = None,
+    school_year: Optional[int] = Query(None),
+    semester: Optional[int] = Query(None),
     dataset_scope: str = Query(DATASET_SCOPE_ALL, pattern="^(all)$"),
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
-    """完整統計匯總（全 SQL GROUP BY，效能最佳化版）"""
+    """完整統計匯總（全 SQL GROUP BY，效能最佳化版）；可依入學學期 scope。"""
     with session_scope() as session:
         return _query_stats(
-            session, reference_month=reference_month, dataset_scope=dataset_scope
+            session,
+            reference_month=reference_month,
+            dataset_scope=dataset_scope,
+            school_year=school_year,
+            semester=semester,
         )
 
 
@@ -669,14 +681,20 @@ def _pct(num: int, den: int) -> str:
 @router.get("/stats/export")
 def export_recruitment_stats(
     reference_month: Optional[str] = None,
+    school_year: Optional[int] = Query(None),
+    semester: Optional[int] = Query(None),
     dataset_scope: str = Query(DATASET_SCOPE_ALL, pattern="^(all)$"),
     _=Depends(require_staff_permission(Permission.RECRUITMENT_READ)),
 ):
-    """匯出招生統計 Excel（多頁簽）"""
+    """匯出招生統計 Excel（多頁簽）；可依入學學期 scope。"""
     with session_scope() as session:
         normalized_scope = _normalize_dataset_scope(dataset_scope)
         s = _query_stats(
-            session, reference_month=reference_month, dataset_scope=normalized_scope
+            session,
+            reference_month=reference_month,
+            dataset_scope=normalized_scope,
+            school_year=school_year,
+            semester=semester,
         )
 
     wb = Workbook()
