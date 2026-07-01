@@ -67,3 +67,8 @@ setup_db.py
 query_debug.py
 init_holidays.py
 .worktrees/
+
+# 誤落雜物：pip wheel（可重下載）、手動備份、暫存產出物
+*.whl
+*.before-*
+.scratch/
