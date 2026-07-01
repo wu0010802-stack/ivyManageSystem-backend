@@ -496,6 +496,11 @@ def reject_registration(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        # A-2：reject 釋位後 _auto_promote_first_waitlist 遞補，且與家長 confirm/decline
+        # 反序鎖，併發可撞死鎖（40P01）→ 可重試 409，與同檔 match/rematch/force/restore 一致。
+        session.rollback()
+        raise_lock_contention_or_500(e, context="拒絕報名")
     except Exception as e:
         session.rollback()
         logger.error("拒絕報名失敗：%s", e)

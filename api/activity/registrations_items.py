@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
 
 from models.database import (
     get_session,
@@ -32,7 +33,7 @@ from models.database import (
 from services.activity_service import activity_service
 from utils.activity_constants import OCCUPYING_STATUSES, effective_capacity
 from utils.advisory_lock import acquire_activity_daily_close_lock
-from utils.errors import raise_safe_500
+from utils.errors import raise_lock_contention_or_500, raise_safe_500
 from utils.auth import require_staff_permission
 from utils.permissions import Permission
 
@@ -208,6 +209,13 @@ def add_registration_course(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        # A-2：鎖爭用 / 死鎖（40P01 / 55P03）→ 可重試 409（與 public.py /
+        # registrations_pending 既有守衛對齊），其餘 → raise_safe_500。此端點對熱門
+        # ActivityCourse / reg 列下 with_for_update 並可觸發 _auto_promote_first_waitlist，
+        # 併發時可撞死鎖；原本落通用 except → 500，不可重試且噪音上報。
+        session.rollback()
+        raise_lock_contention_or_500(e, context="才藝報名項目異動")
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
@@ -305,6 +313,13 @@ def add_registration_supply(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        # A-2：鎖爭用 / 死鎖（40P01 / 55P03）→ 可重試 409（與 public.py /
+        # registrations_pending 既有守衛對齊），其餘 → raise_safe_500。此端點對熱門
+        # ActivityCourse / reg 列下 with_for_update 並可觸發 _auto_promote_first_waitlist，
+        # 併發時可撞死鎖；原本落通用 except → 500，不可重試且噪音上報。
+        session.rollback()
+        raise_lock_contention_or_500(e, context="才藝報名項目異動")
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
@@ -486,6 +501,13 @@ def remove_registration_supply(
     except HTTPException:
         session.rollback()
         raise
+    except OperationalError as e:
+        # A-2：鎖爭用 / 死鎖（40P01 / 55P03）→ 可重試 409（與 public.py /
+        # registrations_pending 既有守衛對齊），其餘 → raise_safe_500。此端點對熱門
+        # ActivityCourse / reg 列下 with_for_update 並可觸發 _auto_promote_first_waitlist，
+        # 併發時可撞死鎖；原本落通用 except → 500，不可重試且噪音上報。
+        session.rollback()
+        raise_lock_contention_or_500(e, context="才藝報名項目異動")
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
@@ -728,6 +750,13 @@ def withdraw_course(
         # session.delete / flush 殘留在事務中
         session.rollback()
         raise
+    except OperationalError as e:
+        # A-2：鎖爭用 / 死鎖（40P01 / 55P03）→ 可重試 409（與 public.py /
+        # registrations_pending 既有守衛對齊），其餘 → raise_safe_500。此端點對熱門
+        # ActivityCourse / reg 列下 with_for_update 並可觸發 _auto_promote_first_waitlist，
+        # 併發時可撞死鎖；原本落通用 except → 500，不可重試且噪音上報。
+        session.rollback()
+        raise_lock_contention_or_500(e, context="才藝報名項目異動")
     except Exception as e:
         session.rollback()
         raise_safe_500(e)

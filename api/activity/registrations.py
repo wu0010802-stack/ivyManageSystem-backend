@@ -870,6 +870,10 @@ def promote_waitlist(
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
+    except OperationalError as e:
+        # A-2：手動升位鎖佔位課程列，併發時可撞死鎖（40P01）→ 可重試 409。
+        session.rollback()
+        raise_lock_contention_or_500(e, context="候補手動升位")
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
@@ -895,6 +899,10 @@ def sweep_expired_waitlist_promotions(
             result.get("final_reminded", 0),
         )
         return {"message": "候補過期掃描完成", **result}
+    except OperationalError as e:
+        # A-2：掃描過期候補會遞補（_auto_promote），併發時可撞死鎖（40P01）→ 可重試 409。
+        session.rollback()
+        raise_lock_contention_or_500(e, context="候補過期掃描")
     except Exception as e:
         session.rollback()
         logger.error("候補過期掃描失敗：%s", e)
@@ -1010,6 +1018,11 @@ def delete_registration(
         raise HTTPException(status_code=409, detail=msg)
     except HTTPException:
         raise
+    except OperationalError as e:
+        # A-2：刪報名鎖佔位課程 + service 內 _auto_promote_first_waitlist 遞補，併發時
+        # 可撞死鎖（40P01）；轉可重試 409（與 registrations_pending 群一致），非通用 500。
+        session.rollback()
+        raise_lock_contention_or_500(e, context="刪除才藝報名")
     except Exception as e:
         session.rollback()
         raise_safe_500(e)
