@@ -13,7 +13,11 @@ from utils.kiosk_guard import assert_kiosk_ip_allowed
 from utils.errors import raise_safe_500
 from utils.auth import verify_password
 from utils.rate_limit import create_limiter
-from services.attendance_kiosk import resolve_punch_action
+from services.attendance_kiosk import (
+    apply_punch,
+    MonthFinalizedError,
+    resolve_punch_action,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,6 +56,13 @@ class KioskPreviewResponse(BaseModel):
     will_overwrite: bool
     current_punch_out: Optional[datetime]
     server_time: datetime
+
+
+class KioskPunchResponse(BaseModel):
+    employee_name: str
+    action: str
+    punch_time: datetime
+    status: str
 
 
 def _authenticate_pin(session, employee_id: int, pin: str) -> Employee:
@@ -98,6 +109,35 @@ def kiosk_preview(body: KioskPunchRequest):
     except HTTPException:
         raise
     except Exception as e:
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
+@router.post(
+    "/kiosk/punch",
+    response_model=KioskPunchResponse,
+    dependencies=[Depends(assert_kiosk_ip_allowed)],
+)
+def kiosk_punch(body: KioskPunchRequest):
+    """即時打卡：驗 PIN 後寫入伺服器當前時間（first-in/last-out）。body 無時間戳欄位，天然防止 self 反向注入。"""
+    session = get_session()
+    try:
+        emp = _authenticate_pin(session, body.employee_id, body.pin)
+        try:
+            r = apply_punch(session, emp, now_taipei_naive())
+        except MonthFinalizedError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return KioskPunchResponse(
+            employee_name=r.employee_name,
+            action=r.action,
+            punch_time=r.punch_time,
+            status=r.status,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
         raise_safe_500(e)
     finally:
         session.close()
