@@ -74,18 +74,18 @@ jobs:
 
     steps:
       - name: Checkout ivy-backend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: ivy-backend
 
       - name: Checkout ivy-frontend (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/ivyManageSystem-frontend
           path: ivy-frontend
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -127,7 +127,7 @@ jobs:
           echo "::error::後端 45×2s 內未就緒"; tail -50 backend.log; exit 1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: npm
@@ -165,7 +165,7 @@ jobs:
 
       - name: Upload Playwright report + logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-report
           path: |
