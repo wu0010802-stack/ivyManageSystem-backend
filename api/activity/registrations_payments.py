@@ -526,14 +526,21 @@ def add_registration_payment(
             session.commit()
         except IntegrityError as e:
             # DB 層 UNIQUE 攔下並發同 idempotency_key 的第二筆：轉為 idempotent replay。
-            # 上下文守衛與正常 replay 路徑共用 _assert_idempotency_context_match
-            # （含 payment_date），不一致視為 key 誤用回 409。
+            # 對齊前置檢查（line 373-382）與 POS spec C5：
+            #   ① 濾 voided 的「有效」hit → 內容守衛後 replay；
+            #   ② 有效 hit 為 None 但 key 命中全 voided → 回 409（不可 replay 作廢紀錄，
+            #      否則員工誤認已收、DB 無有效紀錄 → 靜默漏收；邏輯漏洞 P0 #7）。
+            # 注意：此處刻意用「裸查詢」而非 _find_idempotent_hit / _has_any_record_for_key，
+            # 因 race 模擬會 monkeypatch 那兩個 helper（前置檢查用），fallback 必須獨立以
+            # 真實 DB 狀態判定撞鍵紀錄。舊實作漏了 `voided_at IS NULL` 過濾，會命中作廢紀錄
+            # 回 200 假成功，與前置檢查及 POS 兩處守衛不對稱。
             session.rollback()
             if body.idempotency_key and "idempotency_key" in str(e.orig).lower():
                 hit = (
                     session.query(ActivityPaymentRecord)
                     .filter(
-                        ActivityPaymentRecord.idempotency_key == body.idempotency_key
+                        ActivityPaymentRecord.idempotency_key == body.idempotency_key,
+                        ActivityPaymentRecord.voided_at.is_(None),
                     )
                     .order_by(ActivityPaymentRecord.id.asc())
                     .first()
@@ -558,6 +565,28 @@ def add_registration_payment(
                         "paid_amount": paid_hit,
                         "payment_status": _derive_payment_status(paid_hit, total_hit),
                     }
+                # 有效 hit 為 None 但撞 UNIQUE → key 命中全 voided → 409。
+                any_record = (
+                    session.query(ActivityPaymentRecord.id)
+                    .filter(
+                        ActivityPaymentRecord.idempotency_key == body.idempotency_key
+                    )
+                    .first()
+                )
+                if any_record is not None:
+                    logger.warning(
+                        "add_registration_payment UNIQUE conflict on voided key: "
+                        "key=%s reg=%s",
+                        body.idempotency_key,
+                        registration_id,
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "idempotency_key 對應的紀錄已被作廢；請改用新 key "
+                            "重新建立繳費/退費記錄"
+                        ),
+                    )
             raise
         _invalidate_activity_dashboard_caches(session, summary_only=True)
         _invalidate_finance_summary_cache()

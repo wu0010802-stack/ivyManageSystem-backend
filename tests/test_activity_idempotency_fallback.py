@@ -487,6 +487,75 @@ class TestAddRegistrationPaymentWithKey:
             reg = s.query(ActivityRegistration).get(reg_id)
             assert reg.paid_amount == 500, "paid_amount 只應 +500 一次（未雙扣）"
 
+    def test_with_key_race_fallback_voided_key_rejected(self, idk_client, monkeypatch):
+        """race fallback 撞 UNIQUE 但 key 對應紀錄已全 voided → 必須 409。
+
+        對齊 POS spec C5（pos.py:1069）：voided 紀錄不可被當 replay 回傳。
+        情境：一筆帶 key 的繳費建立後被 void（key 仍佔用 UNIQUE、paid_amount 歸零）。
+        另一併發請求在 race window 內前置 `_has_any_record_for_key` 尚未看到（以
+        monkeypatch 讓其首呼回 False 模擬），第二筆同 key INSERT 撞 UNIQUE →
+        IntegrityError fallback。單筆端點的 fallback 若沿用「不濾 voided 的裸查詢」
+        會命中該作廢紀錄、context 相符 → 回 201「新增成功」+ paid_amount（已反映
+        void=0）→ 員工誤認已收、DB 無有效紀錄 → 靜默漏收（P0-class）。正確行為：
+        與 POS 對齊回 409、不加回款項。"""
+        import api.activity.pos as pos_mod
+
+        client, sf = idk_client
+        with sf() as s:
+            _create_admin(s)
+            reg = _setup_reg(s, paid_amount=0)
+            s.commit()
+            reg_id = reg.id
+
+        assert _login(client).status_code == 200
+
+        key = "REG-PAY-RACE-VOIDED-0001"
+        body = {
+            "type": "payment",
+            "amount": 500,
+            "payment_date": date.today().isoformat(),
+            "payment_method": "現金",
+            "notes": "",
+            "idempotency_key": key,
+        }
+        # 1) 正常建立一筆
+        res_create = client.post(
+            f"/api/activity/registrations/{reg_id}/payments", json=body
+        )
+        assert res_create.status_code == 201, res_create.text
+        with sf() as s:
+            rec = (
+                s.query(ActivityPaymentRecord)
+                .filter(ActivityPaymentRecord.idempotency_key == key)
+                .first()
+            )
+            payment_id = rec.id
+        # 2) void 該筆 → key 對應紀錄全 voided、paid_amount 歸零
+        res_void = client.request(
+            "DELETE",
+            f"/api/activity/registrations/{reg_id}/payments/{payment_id}",
+            json={"reason": "誤刷退款，測試 voided race fallback。"},
+        )
+        assert res_void.status_code == 200, res_void.text
+        with sf() as s:
+            reg = s.query(ActivityRegistration).get(reg_id)
+            assert reg.paid_amount == 0
+
+        # 3) 模擬 race window：前置檢查的兩個 helper 都還沒看到（與同類 race 測試一致）。
+        #    fallback 刻意以真實 DB 狀態（裸查詢）判定 → 命中全 voided → 409。
+        monkeypatch.setattr(pos_mod, "_find_idempotent_hit", lambda *a, **k: None)
+        monkeypatch.setattr(pos_mod, "_has_any_record_for_key", lambda *a, **k: False)
+
+        # 4) 同 key 再送 → INSERT 撞 UNIQUE → fallback。全 voided → 必須 409。
+        res2 = client.post(f"/api/activity/registrations/{reg_id}/payments", json=body)
+        assert res2.status_code == 409, res2.text
+
+        # 5) 未回假成功、未加回款項；DB 仍只 1 筆（原 voided）
+        with sf() as s:
+            reg = s.query(ActivityRegistration).get(reg_id)
+            assert reg.paid_amount == 0, "voided race fallback 不應回假成功、加回款項"
+            assert _count_records(s, reg_id) == 1
+
 
 class TestPosCheckoutRequiresKey:
     """POS checkout：idempotency_key 必填，無/空 key 一律 422 且不出帳。"""
