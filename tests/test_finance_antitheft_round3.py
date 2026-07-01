@@ -185,7 +185,17 @@ class TestPOSRefundCumulative:
     def test_third_small_pos_refund_blocked_when_cumulative_over_threshold(
         self, round3_client
     ):
-        """同一 registration 連開三張小退費 POS 收據，第三張讓累積 > NT$1000 即整張 403。"""
+        """同一 registration 累積退費跨過 NT$1000 門檻即整張 403（剛好卡門檻仍通過）。
+
+        2026-06-30 commit 1f065af7 起，guard 3（實退 vs 建議偏離）的比對基準改成
+        「累積實退（含本次）」vs `build_refund_suggestion` 算出的一次性建議總額（不隨
+        已退款而變動）。若像舊版測試那樣連開三張各自「單筆金額=建議總額」的退費收據，
+        會在第二筆就先被 guard 3 擋下（cumulative 800 對上固定建議 400，diff 400 已超
+        NT$100 門檻），使本測試真正想驗證的 guard 2（累積 > NT$1000 才需簽核）反而測不到。
+        改把 course_price 設為與「最終要測的累積值」同一量級（1000），並直接以 ORM 預埋
+        一筆有效歷史退費模擬「已經退過一部分」，讓兩道 guard 在整個流程中都維持 diff<=100，
+        藉此把 guard 2 的邊界（剛好 1000 通過、1001 起擋）單獨且乾淨地測出來。
+        """
         client, sf = round3_client
         with sf() as s:
             _create_user(
@@ -193,11 +203,23 @@ class TestPOSRefundCumulative:
                 username="cashier",
                 permission_names=["ACTIVITY_READ", "ACTIVITY_WRITE"],
             )
-            # sessions=10 + course_price=400 + 0 出席 → 建議全退 = 400 = 退費額 → diff=0
-            # → sessions/diff guard 通過（sessions-NULL 強制簽核路徑另有專測，正交）；
-            # 本 test 目的是測累積 guard 2（累積 1200 > 1000 → 403）。
+            # sessions=10 + course_price=1000 + 0 出席 → 建議全退 = 1000，與下方測的累積值
+            # 同量級，讓 guard 3（diff<=100）全程通過，只有 guard 2（累積>1000）會決定成敗。
             reg = _setup_reg(
-                s, paid_amount=5000, is_paid=True, course_price=400, sessions=10
+                s, paid_amount=5000, is_paid=True, course_price=1000, sessions=10
+            )
+            # 預埋一筆有效歷史退費 NT$600（不經 API，模擬已退過一部分），
+            # 使第一筆 API 退費送達「剛好卡在門檻上」的累積值。
+            s.add(
+                ActivityPaymentRecord(
+                    registration_id=reg.id,
+                    type="refund",
+                    amount=600,
+                    payment_date=date.today(),
+                    payment_method="現金",
+                    notes="歷史退費（測試預埋）",
+                    operator="prev_op",
+                )
             )
             s.commit()
             reg_id = reg.id
@@ -205,7 +227,7 @@ class TestPOSRefundCumulative:
         assert _login(client, "cashier").status_code == 200
         today = date.today().isoformat()
 
-        # 第一筆 NT$400 退費 → 累積 400 → 通過
+        # 累積 600(預埋) + 400 = 1000 → 剛好卡門檻（>1000 才擋）→ 通過
         res1 = client.post(
             "/api/activity/pos/checkout",
             json={
@@ -213,40 +235,26 @@ class TestPOSRefundCumulative:
                 "items": [{"registration_id": reg_id, "amount": 400}],
                 "payment_method": "現金",
                 "payment_date": today,
-                "notes": "第一次小額退費測試（家長申請）",
+                "notes": "累積剛好卡門檻的退費測試（家長申請）",
                 "idempotency_key": "antitheft-refund-1",
             },
         )
         assert res1.status_code == 201, res1.text
 
-        # 第二筆 NT$400 退費 → 累積 800 → 仍通過
+        # 累積 1000 + 1 = 1001 跨閾值 → 無簽核權限即 403
         res2 = client.post(
             "/api/activity/pos/checkout",
             json={
                 "type": "refund",
-                "items": [{"registration_id": reg_id, "amount": 400}],
+                "items": [{"registration_id": reg_id, "amount": 1}],
                 "payment_method": "現金",
                 "payment_date": today,
-                "notes": "第二次小額退費測試（家長申請）",
+                "notes": "累積跨過門檻一元的退費測試（測試案例）",
                 "idempotency_key": "antitheft-refund-2",
             },
         )
-        assert res2.status_code == 201, res2.text
-
-        # 第三筆 NT$400 退費 → 累積 1200 跨閾值 → 無簽核權限即 403
-        res3 = client.post(
-            "/api/activity/pos/checkout",
-            json={
-                "type": "refund",
-                "items": [{"registration_id": reg_id, "amount": 400}],
-                "payment_method": "現金",
-                "payment_date": today,
-                "notes": "第三次小額退費觸發累積門檻（測試）",
-                "idempotency_key": "antitheft-refund-3",
-            },
-        )
-        assert res3.status_code == 403
-        assert "累積退費總額" in res3.json()["detail"]
+        assert res2.status_code == 403
+        assert "累積退費總額" in res2.json()["detail"]
 
     def test_pos_cumulative_with_approve_permission_allowed(self, round3_client):
         """有 ACTIVITY_PAYMENT_APPROVE 權限者不受累積簽核擋。"""

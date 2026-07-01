@@ -480,14 +480,14 @@ class TestActivityRefundCumulative:
         """已 voided 的退費不計入累積（避免封過刪過的歷史誤殺合法後續操作）。"""
         client, sf = strict_client
         with sf() as s:
-            # sessions=10 + course_price=400 + 0 出席 → 建議全退 = 400 = 退費金額
-            # → diff=0，require_approve_for_refund_diff 放行；且 sessions 非 NULL
-            # 不觸發 needs_manual_review 強制簽核。保留 guard 2（voided 排除累積）
-            # 為本測試 active 驗證的對象。
-            # （原本靠 sessions=NULL fallback 取 price 湊 diff=0，guard 收緊成
-            #   sessions-NULL 一律簽核後該技巧失效，改用具體 sessions。）
+            # sessions=10 + course_price=900 + 0 出席 → 建議全退 = 900，與下方「有效累積
+            # 500+400=900」同量級，讓 guard 3（實退 vs 建議偏離 <= NT$100）全程通過，只有
+            # guard 2（累積 > NT$1000 才需簽核）決定成敗，兩道 guard 才不會互相干擾。
+            # （2026-06-30 commit 1f065af7 起 guard 3 比對基準改成「累積實退（含本次）」，
+            #   若沿用舊版 course_price=400，cumulative 900 對上固定建議 400，diff=500
+            #   會先被 guard 3 擋下，測不到本測試真正要驗的 voided 排除邏輯。）
             reg = _seed_activity_registration(
-                s, paid_amount=5000, course_price=400, sessions=10
+                s, paid_amount=5000, course_price=900, sessions=10
             )
             _make_user(
                 s,
