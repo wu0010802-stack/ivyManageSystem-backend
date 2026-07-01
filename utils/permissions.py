@@ -815,7 +815,7 @@ def get_permission_list(user_perms: List[str] | None) -> List[str]:
     """展開權限清單為合法權限名稱列表。
 
     - None → []
-    - 含 wildcard "*" → 全部 63 個 Permission name
+    - 含 wildcard "*" → 全部 Permission name（數量以 Permission enum 為準）
     - 否則 → 過濾掉非法名稱
     """
     if user_perms is None:
