@@ -3,6 +3,7 @@
 
 import os
 import sys
+from datetime import datetime, date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +13,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from main import app
 from utils.kiosk_guard import assert_kiosk_ip_allowed
 from models.database import Employee
+from models.attendance import Attendance
 from utils.auth import hash_password
+from utils.taipei_time import today_taipei
 
 
 @pytest.fixture
@@ -51,3 +54,59 @@ def test_roster_lists_active_with_has_pin(kiosk_client, test_db_session):
     # 最小揭露：不含 PII 欄位
     assert "phone" not in names["有PIN"] and "email" not in names["有PIN"]
     assert names["無PIN"]["today_state"] == "none"
+
+
+def test_roster_today_state_in_only_and_done(kiosk_client, test_db_session):
+    """測試 in_only（僅上班）與 done（已下班）兩態。"""
+    emp_a = Employee(employee_id="E970", name="僅打卡進", is_active=True)
+    emp_b = Employee(employee_id="E971", name="已下班", is_active=True)
+    test_db_session.add(emp_a)
+    test_db_session.add(emp_b)
+    test_db_session.flush()
+
+    today = today_taipei()
+    test_db_session.add(
+        Attendance(
+            employee_id=emp_a.id,
+            attendance_date=today,
+            punch_in_time=datetime(2026, 6, 30, 8, 0),
+            punch_out_time=None,
+            status="normal",
+        )
+    )
+    test_db_session.add(
+        Attendance(
+            employee_id=emp_b.id,
+            attendance_date=today,
+            punch_in_time=datetime(2026, 6, 30, 8, 0),
+            punch_out_time=datetime(2026, 6, 30, 17, 0),
+            status="normal",
+        )
+    )
+    test_db_session.commit()
+
+    res = kiosk_client.get("/api/attendance/kiosk/roster")
+    assert res.status_code == 200
+    names = {e["name"]: e for e in res.json()}
+    assert names["僅打卡進"]["today_state"] == "in_only"
+    assert names["已下班"]["today_state"] == "done"
+
+
+def test_roster_excludes_resign_date(kiosk_client, test_db_session):
+    """測試 resign_date 存在時排除該員工（即使 is_active=True）。"""
+    emp_active = Employee(employee_id="E980", name="在職", is_active=True)
+    emp_resigned = Employee(
+        employee_id="E981",
+        name="有離職日期",
+        is_active=True,
+        resign_date=date(2020, 1, 1),
+    )
+    test_db_session.add(emp_active)
+    test_db_session.add(emp_resigned)
+    test_db_session.commit()
+
+    res = kiosk_client.get("/api/attendance/kiosk/roster")
+    assert res.status_code == 200
+    names = {e["name"]: e for e in res.json()}
+    assert "在職" in names
+    assert "有離職日期" not in names  # 有 resign_date 即排除
