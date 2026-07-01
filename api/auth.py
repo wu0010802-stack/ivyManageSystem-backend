@@ -1404,7 +1404,13 @@ def change_password(
     （bug sweep round 4 F-PRE-1，pre-existing 自 2026-05-13 commit 3e728d2b）。
     管理員代為重設（reset_password）則維持「強制當事人下次登入」語意，不發
     新 token。
+
+    qa-loop 廣掃（2026-07-01 P1）：全程用 current_user['user_id']（模擬期間為被
+    冒充的 target），比照 /sessions 三端點加上模擬守衛，禁止在模擬期間真的改掉
+    無辜 target 的密碼/token_version/refresh family。
     """
+    _reject_if_impersonating(current_user)
+
     client_ip = get_client_ip(request) or "unknown"
     user_id = current_user["user_id"]
     username_for_audit = current_user.get("username", "")
