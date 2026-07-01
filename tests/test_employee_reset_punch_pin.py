@@ -9,6 +9,7 @@ TDD 兩案例：
 
 import os
 import sys
+from datetime import datetime
 
 import pytest
 from fastapi import FastAPI
@@ -115,6 +116,7 @@ def test_reset_clears_pin(admin_client, test_db_session):
         name="陳老師",
         is_active=True,
         punch_pin_hash=hash_password("1234"),
+        punch_pin_set_at=datetime(2025, 1, 1),  # 預先設定時間，確保 reset 真正清空
     )
     test_db_session.add(emp)
     test_db_session.commit()

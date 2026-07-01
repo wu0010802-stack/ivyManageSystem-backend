@@ -5,7 +5,11 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from models.database import Attendance
-from utils.attendance_leave_merge import merge_attendance_with_leave
+from utils.attendance_leave_merge import (
+    merge_attendance_with_leave,
+    reset_confirmation_if_changed,
+    snapshot_attendance_confirmation_inputs,
+)
 from utils.attendance_shift_window import (
     build_shift_maps_for_employee_date,
     compute_status_for_employee_date,
@@ -78,11 +82,16 @@ def apply_punch(session, employee, now_dt: datetime) -> PunchResult:
         )
 
     row = _today_row(session, employee, attendance_date)
+    _row_existed = row is not None  # 追蹤是否為既有列（新建 row 無豁免可清）
     if row is None:
         row = Attendance(
             employee_id=employee.id, attendance_date=attendance_date, status="normal"
         )
         session.add(row)
+
+    # 快照（必須在任何欄位覆寫之前；僅對既有 row，與 records.py F-D 不變量一致）
+    if _row_existed:
+        _confirm_before = snapshot_attendance_confirmation_inputs(row)
 
     # first-in / last-out
     if row.punch_in_time is None:
@@ -122,6 +131,11 @@ def apply_punch(session, employee, now_dt: datetime) -> PunchResult:
     row.is_missing_punch_in = row.punch_in_time is None
     row.is_missing_punch_out = row.punch_out_time is None
     row.source = "kiosk"
+
+    # 豁免重置（punch/旗標實質改變時清 confirmed_action，防 admin_waive 殘留致薪資漏扣；
+    # 必須在 merge_attendance_with_leave 之前，與 records.py F-D ordering 一致）
+    if _row_existed:
+        reset_confirmation_if_changed(row, _confirm_before)
 
     # 請假同步
     merge_attendance_with_leave(row, session)
