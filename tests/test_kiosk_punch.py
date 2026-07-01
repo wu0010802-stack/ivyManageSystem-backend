@@ -153,3 +153,20 @@ def test_punch_rate_limit_locks_after_repeated_failures(kiosk_app_client):
             json={"employee_id": emp_id, "pin": "0000"},
         )
     assert last.status_code == 429
+
+
+def test_punch_month_finalized_returns_409(kiosk_app_client):
+    """月份已結算 → MonthFinalizedError 轉 409。"""
+    from unittest.mock import patch
+    from services.attendance_kiosk import MonthFinalizedError
+
+    client, sf = kiosk_app_client
+    emp_id = _create_emp(sf, eid="E986")
+    with patch(
+        "api.attendance.kiosk.apply_punch", side_effect=MonthFinalizedError("已結算")
+    ):
+        res = client.post(
+            "/api/attendance/kiosk/punch",
+            json={"employee_id": emp_id, "pin": "1234"},
+        )
+    assert res.status_code == 409
