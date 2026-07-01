@@ -46,7 +46,7 @@ jobs:
           echo "DUMP_DATE=$DATE" >> "$GITHUB_ENV"
           ls -lh ivy-${DATE}.*
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
