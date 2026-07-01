@@ -1641,7 +1641,12 @@ class ActivityService:
                 ),
             )
             .order_by(RegistrationCourse.id)
-            .with_for_update()
+            # A-1（2026-07-01）：of=RegistrationCourse 收斂鎖範圍。join 上的裸
+            # FOR UPDATE 會連同候補者的 activity_registrations 列一起鎖，逸出既有
+            # canonical 鎖序（advisory → activity_courses → registration_courses），
+            # 跨課交叉候補的並發刪除/退課可在兩張 AR 列上形成 ABBA 死鎖。此處只需
+            # 原子翻轉候補 rc 的 status，AR 欄位（student_name/parent_phone）僅供讀取。
+            .with_for_update(of=RegistrationCourse)
             .first()
         )
         if not row:
