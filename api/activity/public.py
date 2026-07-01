@@ -1370,7 +1370,11 @@ def public_update_registration(
                 ActivityAttendance.session_id.in_(session_ids_subq),
             ).delete(synchronize_session=False)
 
-        reg.remark = body.remark
+        # C-1：不從家長 update payload 覆寫 reg.remark。/public/update 的前端 UI 無
+        # remark 輸入欄、恆送空字串，remark 由家長「報名時」填寫或 admin 事後維護
+        # （可能含過敏/照護註記）。若在此無條件 `reg.remark = body.remark`，家長任一次
+        # 自助編輯即靜默清空/覆寫備註 → 資料遺失，且可經 crafted API 覆寫成任意值。
+        # 備註的維護走 admin 專屬端點；此端點刻意不動 remark（body.remark 忽略）。
 
         # 超繳一律拒絕（不再自動沖帳）。理由詳見 docstring；replace 後若需退費，
         # 請家長改聯繫校方由管理員執行帶簽核權限的退費流程。

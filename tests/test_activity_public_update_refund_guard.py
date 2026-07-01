@@ -258,6 +258,47 @@ class TestPublicUpdateRefundGuard:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# C-1：家長 update 不得清空既有 remark
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestPublicUpdatePreservesRemark:
+    """/public/update 的 UI 無 remark 輸入欄，前端硬送 remark=''。remark 由家長報名時
+    填寫或 admin 事後維護（可能含過敏/照護註記）。後端不應據家長 update payload 覆寫
+    reg.remark，否則家長任一次自助編輯即靜默清空備註 → 資料遺失。
+    """
+
+    def test_update_does_not_clear_existing_remark(self, public_update_client):
+        client, sf = public_update_client
+        note = "孩子對花生過敏，點心需特別注意。"
+        with sf() as s:
+            reg, _course = _setup(s, paid_amount=0, is_paid=False)
+            reg.remark = note
+            s.commit()
+            reg_id = reg.id
+
+        # 家長自助編輯（同課程、無金流變動），payload 依前端硬送 remark=''
+        res = client.post(
+            "/api/activity/public/update",
+            json={
+                "id": reg_id,
+                "name": "王小明",
+                "birthday": "2020-01-01",
+                "class": "海豚班",
+                "parent_phone": "0912345678",
+                "courses": [{"name": "圍棋"}],
+                "supplies": [],
+                "remark": "",
+            },
+        )
+        assert res.status_code == 200, res.text
+
+        with sf() as s:
+            reg = s.query(ActivityRegistration).get(reg_id)
+            assert reg.remark == note, "家長 update 不應清空/覆寫既有備註"
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # A.1：移除已點名課程清除 attendance 孤兒
 # ═══════════════════════════════════════════════════════════════════════
 
