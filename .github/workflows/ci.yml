@@ -210,7 +210,7 @@ jobs:
         run: pip install coverage
 
       - name: Download all partial coverage
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: coverage-partial-*
           path: cov-parts
