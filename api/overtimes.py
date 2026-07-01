@@ -915,6 +915,14 @@ def batch_create_overtimes(
         validated: list[tuple[Employee, float]] = []
         seen: set[int] = set()
 
+        # 批量預載員工，避免迴圈內逐筆 SELECT（N+1）
+        emp_by_id = {
+            e.id: e
+            for e in session.query(Employee)
+            .filter(Employee.id.in_([item.employee_id for item in data.employees]))
+            .all()
+        }
+
         for item in data.employees:
             if item.employee_id in seen:
                 errors.append(
@@ -927,9 +935,7 @@ def batch_create_overtimes(
                 continue
             seen.add(item.employee_id)
 
-            emp = (
-                session.query(Employee).filter(Employee.id == item.employee_id).first()
-            )
+            emp = emp_by_id.get(item.employee_id)
             if not emp:
                 errors.append(
                     {
@@ -971,6 +977,9 @@ def batch_create_overtimes(
                 },
             )
 
+        # commit 後 emp 物件會 expire，存取 .id 會再觸發 SELECT；先抓好供 audit 用
+        validated_emp_ids = [emp.id for emp, _ in validated]
+
         # ── Phase 2：全通過 → 一次建立 + 單次 commit ──
         records: list[OvertimeRecord] = []
         for emp, hours in validated:
@@ -1008,7 +1017,7 @@ def batch_create_overtimes(
             "overtime_date": data.overtime_date.isoformat(),
             "overtime_type": data.overtime_type,
             "use_comp_leave": data.use_comp_leave,
-            "employee_ids": [emp.id for emp, _ in validated],
+            "employee_ids": validated_emp_ids,
             "created_ids": created_ids,
         }
         return {

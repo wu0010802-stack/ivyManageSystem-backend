@@ -402,33 +402,38 @@ def get_assignments(
         session.close()
 
 
-def _apply_employee_assignment_action(session, existing, item, week_date: str) -> str:
+def _apply_employee_assignment_action(session, existing, item, week_date: date):
     """針對單一員工執行排班 upsert 或刪除。
 
     僅影響該員工自身的記錄，不動其他員工的資料。
+    week_date 傳 date 物件（非字串）：Date 欄位在 PG 兩者等價，但 SQLite
+    測試 DB 只接受 date 物件。
 
-    Returns: 'inserted' | 'updated' | 'deleted' | 'skipped'
+    Returns: (status, assignment)
+      status ∈ {'inserted', 'updated', 'deleted', 'skipped'}
+      assignment 為受影響的 ShiftAssignment（deleted/skipped 回 None）；
+      供 caller 同步「已預載的既有排班 map」，讓同批重複 employee_id 的後續
+      動作能看到本輪剛 insert/delete 的結果（與原逐筆 autoflush 行為一致）。
     """
     if item.shift_type_id is None:
         if existing:
             session.delete(existing)
-            return "deleted"
-        return "skipped"
+            return "deleted", None
+        return "skipped", None
 
     if existing:
         existing.shift_type_id = item.shift_type_id
         existing.notes = item.notes
-        return "updated"
+        return "updated", existing
 
-    session.add(
-        ShiftAssignment(
-            employee_id=item.employee_id,
-            shift_type_id=item.shift_type_id,
-            week_start_date=week_date,
-            notes=item.notes,
-        )
+    obj = ShiftAssignment(
+        employee_id=item.employee_id,
+        shift_type_id=item.shift_type_id,
+        week_start_date=week_date,
+        notes=item.notes,
     )
-    return "inserted"
+    session.add(obj)
+    return "inserted", obj
 
 
 @router.post(
@@ -446,18 +451,29 @@ def save_assignments(
         week_date = week_date - timedelta(days=week_date.weekday())
 
         saved = deleted = 0
+        # 批量預載該週既有排班，避免迴圈內逐筆 SELECT（N+1）
+        existing_by_emp = {
+            a.employee_id: a
+            for a in session.query(ShiftAssignment)
+            .filter(
+                ShiftAssignment.employee_id.in_(
+                    [item.employee_id for item in data.assignments]
+                ),
+                ShiftAssignment.week_start_date == week_date,
+            )
+            .all()
+        }
         for item in data.assignments:
-            existing = (
-                session.query(ShiftAssignment)
-                .filter(
-                    ShiftAssignment.employee_id == item.employee_id,
-                    ShiftAssignment.week_start_date == week_date,
-                )
-                .first()
+            existing = existing_by_emp.get(item.employee_id)
+            action, obj = _apply_employee_assignment_action(
+                session, existing, item, week_date
             )
-            action = _apply_employee_assignment_action(
-                session, existing, item, str(week_date)
-            )
+            # 同步 map：讓同批重複 employee_id 的後續動作看到本輪結果，
+            # 對齊原逐筆 .first() 靠 autoflush 的行為（避免重複 insert 撞唯一約束）
+            if action == "inserted":
+                existing_by_emp[item.employee_id] = obj
+            elif action == "deleted":
+                existing_by_emp.pop(item.employee_id, None)
             if action in ("inserted", "updated"):
                 saved += 1
             elif action == "deleted":

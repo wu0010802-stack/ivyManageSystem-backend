@@ -78,11 +78,11 @@ class TestApplyEmployeeAssignmentAction:
         session = MockSession()
         item = MockAssignmentItem(employee_id=1, shift_type_id=10)
 
-        result = _apply_employee_assignment_action(
+        status, _obj = _apply_employee_assignment_action(
             session, existing=None, item=item, week_date=WEEK
         )
 
-        assert result == "inserted"
+        assert status == "inserted"
         assert len(session.added) == 1
         assert len(session.deleted) == 0
         assert session.added[0].employee_id == 1
@@ -96,11 +96,11 @@ class TestApplyEmployeeAssignmentAction:
         )
         item = MockAssignmentItem(employee_id=1, shift_type_id=10)
 
-        result = _apply_employee_assignment_action(
+        status, _obj = _apply_employee_assignment_action(
             session, existing=existing, item=item, week_date=WEEK
         )
 
-        assert result == "updated"
+        assert status == "updated"
         assert existing.shift_type_id == 10  # 原記錄被更新
         assert len(session.added) == 0  # 不新增
         assert len(session.deleted) == 0  # 不刪
@@ -113,11 +113,11 @@ class TestApplyEmployeeAssignmentAction:
         )
         item = MockAssignmentItem(employee_id=1, shift_type_id=None)
 
-        result = _apply_employee_assignment_action(
+        status, _obj = _apply_employee_assignment_action(
             session, existing=existing, item=item, week_date=WEEK
         )
 
-        assert result == "deleted"
+        assert status == "deleted"
         assert existing in session.deleted
         assert len(session.added) == 0
 
@@ -126,11 +126,11 @@ class TestApplyEmployeeAssignmentAction:
         session = MockSession()
         item = MockAssignmentItem(employee_id=1, shift_type_id=None)
 
-        result = _apply_employee_assignment_action(
+        status, _obj = _apply_employee_assignment_action(
             session, existing=None, item=item, week_date=WEEK
         )
 
-        assert result == "skipped"
+        assert status == "skipped"
         assert len(session.added) == 0
         assert len(session.deleted) == 0
 
