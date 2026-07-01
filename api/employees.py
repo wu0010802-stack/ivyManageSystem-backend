@@ -918,6 +918,30 @@ def offboard_employee(
         session.close()
 
 
+@router.post("/employees/{employee_id}/reset-punch-pin")
+def reset_employee_punch_pin(
+    employee_id: int,
+    current_user: dict = Depends(require_staff_permission(Permission.ATTENDANCE_WRITE)),
+):
+    """管理端重置員工打卡 PIN（清空，員工須至 Portal 重設）。不經手、不回傳明文 PIN。"""
+    session = get_session()
+    try:
+        emp = session.query(Employee).filter(Employee.id == employee_id).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="找不到員工")
+        emp.punch_pin_hash = None
+        emp.punch_pin_set_at = None
+        session.commit()
+        return {"message": "打卡 PIN 已重置"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise_safe_500(e)
+    finally:
+        session.close()
+
+
 @router.get(
     "/employees/{employee_id}/final-salary-preview",
     response_model=FinalSalaryPreviewOut,
