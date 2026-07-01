@@ -93,6 +93,11 @@ class Employee(Base):
     work_start_time = Column(String(5), default="08:00", comment="上班時間 HH:MM")
     work_end_time = Column(String(5), default="17:00", comment="下班時間 HH:MM")
 
+    punch_pin_hash = Column(
+        String(200), nullable=True, comment="打卡 PIN 雜湊（PBKDF2，明文不落庫）"
+    )
+    punch_pin_set_at = Column(DateTime, nullable=True, comment="打卡 PIN 設定/重置時間")
+
     is_active = Column(Boolean, default=True, comment="是否在職")
     resign_date = Column(Date, nullable=True, comment="離職日期")
     resign_reason = Column(String(200), nullable=True, comment="離職原因")

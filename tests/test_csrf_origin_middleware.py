@@ -41,6 +41,10 @@ def app_with_csrf(monkeypatch):
     def public_register():
         return {"ok": True}
 
+    @app.post("/api/attendance/kiosk/preview")
+    def kiosk_preview():
+        return {"ok": True}
+
     return TestClient(app, raise_server_exceptions=True)
 
 
@@ -94,3 +98,14 @@ def test_bypass_paths_skip_csrf(app_with_csrf):
     res2 = app_with_csrf.post("/api/activity/public/register")
     assert res1.status_code == 200
     assert res2.status_code == 200
+
+
+def test_kiosk_path_bypasses_csrf(app_with_csrf):
+    """POST /api/attendance/kiosk/* 不帶 Origin → 通過 CSRF 層（200）。
+
+    kiosk 裝置無 cookie/session，CSRF 攻擊面不存在；
+    已有 IP 白名單 + PIN 雙重保護，豁免合理。
+    """
+    res = app_with_csrf.post("/api/attendance/kiosk/preview")
+    # 200 = CSRF 中介層放行（無 Origin 仍通過）
+    assert res.status_code == 200
